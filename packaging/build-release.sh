@@ -57,6 +57,8 @@ release_documents=(
   benchmarks/2026-07-20-interrupted-soak-and-storage-architecture.md
   benchmarks/2026-07-23-schema16-release-soak-subject.json
   benchmarks/2026-07-23-schema16-release-soak.json
+  benchmarks/2026-07-24-v0.1.1-release-soak-subject.json
+  benchmarks/2026-07-24-v0.1.1-release-soak.json
   benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md
   benchmarks/README.md
   benchmarks/release-soak.json

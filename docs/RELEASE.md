@@ -90,19 +90,22 @@ That exact v0.1.0 daemon completed the preserved clean
 [promotion manifest](benchmarks/2026-07-23-schema16-release-soak-subject.json) remains checked
 historical evidence.
 
-The most recently qualified release subject is the retained v0.1.1 `mealyd` from protected
-revision `8867c467`,
-SHA-256 `78591cafdbe79691805d651ecc03e3383313fec8bfeb6ed3428a051fa23f69a7`. It completed the
-canonical clean [release soak](benchmarks/release-soak.json) for 86,415.473 seconds, 19,208 turns,
-and 48 hard restarts. It recovered 52 interrupted-provider turns, resumed one undispatched
-read-tool turn, retained complete recorded-only replay and SQLite integrity `ok`, drained cleanly,
-and left zero residue. The report names an ancestor of this report-bearing tree directly, so no
-current lineage proof is required. Its protected report CI and reviewed free-model OpenRouter
-acceptance passed, but the
+The most recently qualified release subject is the retained v0.2.0 `mealyd` from protected
+revision `bd0fa3c`,
+SHA-256 `083f0ea7e4eaa1d0fff49175114bb56b20891f8639c1353266b3e0eda8374a4b`. It completed the
+canonical clean [release soak](benchmarks/release-soak.json) for 86,412.498 seconds, 19,248 turns,
+and 48 hard restarts. It recovered 53 interrupted-provider turns, retained complete recorded-only
+replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names an
+ancestor of this report-bearing tree directly, so no current lineage proof is required. The exact
+private custom-provider run also passed. Its report-bearing protected CI, final reviewed free-model
+OpenRouter acceptance, and complete public tag workflow remain release gates.
+
+The prior v0.1.1 report and subject are retained as
+[historical evidence](benchmarks/2026-07-24-v0.1.1-release-soak.json). Its protected report CI and
+reviewed free-model OpenRouter acceptance passed, but the
 [`v0.1.1` tag workflow](benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md)
 failed before publication on a temporary-home package fixture. The tag is retained and will not be
-moved or reused. The v0.2.0 candidate changes source and package inputs, so it requires a new exact
-24-hour subject before native public-package verification and attested publication.
+moved or reused.
 
 The soak host and GitHub's Linux runner are different native link environments. A hosted-runner
 rebuild is therefore audited as a source build but is not mislabeled as the byte-identical soak

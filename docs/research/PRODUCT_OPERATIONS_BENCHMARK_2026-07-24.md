@@ -42,9 +42,11 @@ Anthropic API, strict-free OpenRouter, custom endpoints, and Claude Code itself
 remain the supported alternatives.
 
 This is not a retroactive change to the matrix observed before implementation.
-It does not yet equal the complete competitor delivery experience: protected
-integration, an owner-controlled production signing identity, a new exact
-v0.2.0 soak, and a published qualifying tag remain delivery gates.
+The exact integrated v0.2.0 daemon has now completed its new 24-hour soak, and
+the owner-controlled production signing identity is configured and
+clean-install tested. It does not yet equal the complete competitor delivery
+experience: report-bearing protected integration, final reviewed free-model
+acceptance, and a published qualifying tag remain delivery gates.
 Exact generated-service removal is now plan-first and composed into owner-local
 uninstall. Installed two-release failure injection now activates a checksum-valid
 but deliberately unready newer package under the real owner service, proves the
@@ -53,22 +55,23 @@ client, and requires automatic rollback plus health, `doctor`, backup, and
 durable-task preservation. All newer work remains next-release source until
 protected installed-package and supported-distribution acceptance qualify it.
 
-Delivery-state recheck at 2026-07-24T18:49:22+12:00: Mealy v0.1.0 is a public,
+Delivery-state recheck through 2026-07-25: Mealy v0.1.0 is a public,
 immutable stable GitHub release whose exact tag workflow passed native
 packaging, attestations, and public archive installation. That release predates
 the signed APT/DNF/Pacman repository and guided-onboarding stack audited here.
-GitHub Pages is enabled at `https://amekn.github.io/mealy/`, but the URL still
-returns HTTP 404 because no stable tag has yet deployed the new repository
-artifact. The exact v0.1.1 candidate completed its 24-hour soak; protected main
-CI run `30070483983` and reviewed free-model OpenRouter run `30071532254` passed
-for its exact report-bearing commit. Annotated tag `v0.1.1` was pushed, but
-release run `30071875207` failed before publication because its native-package
-fixture placed a persistent service home below `/tmp`. No v0.1.1 GitHub release
-exists, and the tag will not be moved or reused. The protected signing
-Environment has the expected Pages URL and tag-only approval policy, but its
-production key export and fingerprint are not configured. These observations
-replace the stale pre-publication statements in the point-in-time matrix
-without rewriting what the competitor audit originally measured.
+No stable tag has yet deployed the new repository artifact. The exact v0.1.1
+candidate completed its 24-hour soak, protected main CI, and reviewed free-model
+OpenRouter run, but release run `30071875207` failed before publication because
+its native-package fixture placed a persistent service home below `/tmp`. No
+v0.1.1 release exists, and the tag will not be moved or reused. The corrected
+exact v0.2.0 daemon subsequently completed 86,412.498 seconds, 19,248 turns,
+48 hard restarts, SQLite integrity `ok`, and zero residue; its private custom
+provider acceptance also passed. The protected signing Environment now has the
+owner-controlled fingerprint and signing-subkey export, and that key passed
+signed APT, DNF, and Pacman clean-install acceptance. Report-bearing protected
+CI, final reviewed free-model acceptance, and qualifying publication remain.
+These observations update delivery state without rewriting what the competitor
+audit originally measured.
 
 ## Executive result
 
@@ -78,12 +81,12 @@ easiest end-user harnesses: setup was fragmented across expert commands, the
 verified installer stopped before a working service, lifecycle operations were
 incomplete, and no short first-five-minute path organized the experience.
 
-The v0.2.0 candidate source closes those verified orchestration gaps. The
-largest remaining gap is delivery: it must merge through protected CI, receive
-an owner-controlled repository signing identity, complete a new exact-binary
-24-hour soak, pass reviewed free-model and public multi-distribution
-acceptance, and publish immutable attested artifacts. The currently public
-v0.1.0 release still predates this experience.
+The v0.2.0 candidate source closes those verified orchestration gaps, and its
+exact daemon has passed the long-duration and private-provider gates. The
+largest remaining gap is delivery: its report must merge through protected CI,
+then pass reviewed free-model and public multi-distribution acceptance and
+publish immutable attested artifacts. The currently public v0.1.0 release
+still predates this experience.
 
 OpenClaw, Hermes, OpenCode, Codex, Pi, and Claude Code all make the first useful
 conversation the organizing product outcome. Vercel AI SDK and Eve are
