@@ -10,19 +10,21 @@ green pull-request check proves the exact source revision it tested; it does not
 revision is merged, tagged, published, or installed by an ordinary user. “Source-ready” below
 therefore remains distinct from “publicly complete.”
 
-At the 2026-07-24T18:49:22+12:00 delivery recheck, v0.1.0 was the only public immutable
+At the 2026-07-25 delivery recheck, v0.1.0 remains the only public immutable
 stable release with green native package, attestation, and public archive
 acceptance. It predates this onboarding stack and the signed Linux repository
-workflow. The configured Pages URL still returned HTTP 404, so documentation
-must not describe APT, DNF, or Pacman publication as an already available user
-surface. Exact v0.1.1 runtime revision
-`8867c46774c693a335853625dd967fd3520976ff` completed the checked 24-hour soak;
-its report-bearing main commit passed protected CI and reviewed zero-price
-OpenRouter acceptance. The pushed v0.1.1 tag workflow then failed before
-publication because its package fixture used `/tmp` for a persistent service
-home. No v0.1.1 release exists, and that tag will not be moved or reused. The
-tag-protected signing Environment had its Pages URL but no production
-fingerprint or secret-subkey export.
+workflow, so documentation must not describe APT, DNF, or Pacman publication as
+an already available user surface. The v0.1.1 failure remains preserved without
+moving or reusing its tag. Exact v0.2.0 runtime revision
+`bd0fa3c12e29a69dd89b8f038b941ef421c28bd5` has now completed the checked
+24-hour soak: 19,248 turns, 48 hard restarts, 53 interrupted-provider
+recoveries, SQLite integrity `ok`, and zero residual work. A fresh authenticated
+download of its staged exact daemon passed the full release validator. The
+private custom-provider run also passed, and the owner-controlled repository
+fingerprint plus signing-subkey export are configured and clean-install tested.
+The report-bearing protected-main integration, final reviewed zero-price
+OpenRouter run, qualifying tag workflow, and public repository acceptance
+remain.
 
 ## Requirement evidence
 
@@ -68,15 +70,13 @@ The composed path also has direct negative evidence:
 
 ## Remaining gates before the goal is publicly true
 
-1. The integrated v0.2.0 candidate must merge through protected CI, be built reproducibly, and
-   complete a new uninterrupted exact-binary 24-hour soak with a passing checked report.
+1. The exact checked v0.2.0 report and promotion manifest must merge through protected CI without
+   any runtime-source change after the observed revision.
 2. Final v0.2.0 archives and native packages must be rebuilt from the promoted subject and pass
    protected release/package acceptance, including the corrected persistent-home fixture.
 3. An owner-reviewed, exact-zero-price OpenRouter run must pass against the exact v0.2.0
    report-bearing commit.
-4. The owner must supply the offline-controlled production repository identity, fingerprint, and
-   encrypted signing-subkey export; CI must not invent that trust root.
-5. The tag workflow must publish immutable attested assets under a new semantic version, deploy the
+4. The tag workflow must publish immutable attested assets under a new semantic version, deploy the
    signed repositories, and pass clean public HTTPS bootstrap plus APT/DNF/Pacman acceptance.
 
 Until those gates are satisfied, the implementation is a protected-green candidate experience,
