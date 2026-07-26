@@ -138,6 +138,14 @@ size/SHA-pinned offline zizmor bootstrap to `v1.28.0`. Zizmor `v1.28.0` removes 
 in `v1.27.0`; Mealy's affected runs used explicit offline, non-verbose mode, and a token-shape scan
 of their strict-job logs found no credential-shaped output.
 
+The 2026-07-26 final pre-tag review advanced Chrome for Testing Headless Shell to stable
+`151.0.7922.47` (120,169,688 bytes, SHA-256
+`e60f546a64ecc6b5b5ddbde7b47f1304fc8fdba9ea65fd63c16bbc994787b3d5`). The reviewed Checkout,
+artifact upload/download, Attest, Syft, and zizmor pins remained their current upstream releases.
+The refresh changes only the exact browser-fetch helper, its integration-test expectation, and
+documentation; it does not change either shipped Rust binary source boundary. The fresh-process
+browser and protected package/lifecycle gates must pass again before tagging.
+
 The native tag jobs run
 `scripts/validate-public-license.sh` and refuse publication if restrictive terms,
 redirected/mismatched license metadata, an unsupported/mismatched license text, or a workspace
