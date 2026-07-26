@@ -38,7 +38,9 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 ```
 
 Before opening a pull request, run the checks affected by the change. For a release-bound or
-cross-cutting change, reproduce the strict documentation and packaging gates too:
+cross-cutting change, reproduce the strict documentation and packaging gates too. The Debian
+fixture requires `dpkg-deb` and `lintian`; protected CI installs both and treats every Lintian
+warning or error as a failure:
 
 ```sh
 cargo test --locked --workspace --doc --all-features

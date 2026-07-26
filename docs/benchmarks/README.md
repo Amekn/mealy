@@ -92,6 +92,13 @@ is retained separately as negative delivery evidence. Both architecture jobs rej
 fixture that placed a persistent service home below `/tmp`; publication never ran and no
 `v0.1.1` release exists. The runtime safety check remains intact, the release fixture now uses a
 persistent container-overlay path, and the public tag will not be moved or reused.
+The failed
+[`v0.2.0` release-workflow attempt](2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
+is retained separately as the next negative delivery observation. Both native package lifecycles
+passed, but the release-only Lintian gate rejected an 87-column Debian extended-description line
+before signing or publication. Protected CI now runs Lintian and the builder independently bounds
+those lines. The immutable tag is retained; v0.2.1 must qualify its own exact versioned binaries
+before a corrected release can publish.
 The [superseded schema-14 long-soak failure](2026-07-13-schema14-long-soak-failure.md) is retained
 as negative evidence: it cannot satisfy a durability gate and motivated failure-report retention.
 That retained path reproduced a current one-second read-tool timeout under contention. After both
@@ -161,4 +168,6 @@ while 48 bounded tasks retained complete replay, integrity, and zero residue. It
 worktree evidence and did not replace the fresh clean exact-package 24-hour report. The preserved
 v0.1.1 [schema-16 release soak](2026-07-24-v0.1.1-release-soak.json) subsequently completed that
 runtime's gate. The current v0.2.0 [release soak](release-soak.json) repeats the complete
-long-duration proof for the integrated onboarding candidate.
+long-duration proof for the integrated onboarding candidate. It remains exact historical evidence
+after the v0.2.0 tag's pre-publication Debian metadata failure; it cannot be relabeled for the
+version-distinct v0.2.1 correction.

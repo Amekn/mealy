@@ -395,10 +395,11 @@ verified release payloads and requires byte-for-byte reproducibility. It checks 
 `debian-binary`/control/data archive boundary, package identity and dependencies, absence of
 maintainer scripts, root-installable modes, fixed command-link/binary identity, embedded payload and
 Debian `md5sums`, checksum-identical third-party license documentation, explicit duplicate/tamper
-failure, and checksum-manifest atomicity. The pinned license-notice generator independently runs
+failure, checksum-manifest atomicity, bounded extended-description lines, and a warning-free
+Lintian result. The pinned license-notice generator independently runs
 twice against the frozen all-feature supported-Linux dependency graph and rejects divergent,
 active-content, path-leaking, missing, or oversized output. The tag matrix
-then rejects every Lintian error or warning tag and runs `scripts/installed-deb-smoke.sh` on each
+repeats the Lintian gate and runs `scripts/installed-deb-smoke.sh` on each
 native package: it installs with `dpkg`, checks
 root ownership and service generation, completes and recorded-replays a task, drains, removes the
 package, and proves the user database remains. The archive smoke and Debian smoke use identical

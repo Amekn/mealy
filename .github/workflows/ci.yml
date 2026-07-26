@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes apparmor-profiles apparmor-utils binutils bubblewrap curl jq shellcheck
+          sudo apt-get install --yes apparmor-profiles apparmor-utils binutils bubblewrap curl jq lintian shellcheck
           scripts/prepare-bwrap-boundary.sh
       - run: cargo fmt --all -- --check
       - name: Validate GitHub Actions workflows
@@ -231,7 +231,7 @@ jobs:
           set -euo pipefail
           docker run --rm --volume "$PWD:/workspace:ro" "$IMAGE" sh -lc '
             apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install --yes binutils jq
+            DEBIAN_FRONTEND=noninteractive apt-get install --yes binutils jq lintian
             /workspace/packaging/test-deb-packaging.sh
           '
       - name: Verify Fedora RPM

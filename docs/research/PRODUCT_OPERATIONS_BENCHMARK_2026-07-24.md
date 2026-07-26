@@ -45,8 +45,10 @@ This is not a retroactive change to the matrix observed before implementation.
 The exact integrated v0.2.0 daemon has now completed its new 24-hour soak, and
 the owner-controlled production signing identity is configured and
 clean-install tested. It does not yet equal the complete competitor delivery
-experience: report-bearing protected integration, final reviewed free-model
-acceptance, and a published qualifying tag remain delivery gates.
+experience: its report-bearing protected integration and final reviewed
+free-model acceptance passed, but the tag was rejected before publication by a
+release-only Debian metadata warning. The corrected v0.2.1 binary and a
+published qualifying tag remain delivery gates.
 Exact generated-service removal is now plan-first and composed into owner-local
 uninstall. Installed two-release failure injection now activates a checksum-valid
 but deliberately unready newer package under the real owner service, proves the
@@ -55,7 +57,7 @@ client, and requires automatic rollback plus health, `doctor`, backup, and
 durable-task preservation. All newer work remains next-release source until
 protected installed-package and supported-distribution acceptance qualify it.
 
-Delivery-state recheck through 2026-07-25: Mealy v0.1.0 is a public,
+Delivery-state recheck through 2026-07-26: Mealy v0.1.0 is a public,
 immutable stable GitHub release whose exact tag workflow passed native
 packaging, attestations, and public archive installation. That release predates
 the signed APT/DNF/Pacman repository and guided-onboarding stack audited here.
@@ -69,7 +71,12 @@ exact v0.2.0 daemon subsequently completed 86,412.498 seconds, 19,248 turns,
 provider acceptance also passed. The protected signing Environment now has the
 owner-controlled fingerprint and signing-subkey export, and that key passed
 signed APT, DNF, and Pacman clean-install acceptance. Report-bearing protected
-CI, final reviewed free-model acceptance, and qualifying publication remain.
+CI and final reviewed free-model acceptance passed for exact tag commit
+`92801dc`. Release run `30188985959` then rejected both completed native Debian
+packages because one extended-description line was 87 columns; signing and
+publication never ran. The immutable v0.2.0 tag is retained. The v0.2.1
+correction makes Lintian a protected-CI fixture gate and must repeat its exact
+binary qualification before qualifying publication.
 These observations update delivery state without rewriting what the competitor
 audit originally measured.
 

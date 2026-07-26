@@ -76,6 +76,7 @@ release_documents=(
   benchmarks/2026-07-24-v0.1.1-release-soak-subject.json
   benchmarks/2026-07-24-v0.1.1-release-soak.json
   benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md
+  benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md
   benchmarks/README.md
   benchmarks/release-soak.json
   benchmarks/release-soak-subject.json
@@ -98,6 +99,7 @@ release_documents=(
   releases/v0.1.0.md
   releases/v0.1.1.md
   releases/v0.2.0.md
+  releases/v0.2.1.md
 )
 
 for command in ar awk chmod cp date dirname find gzip install jq ln md5sum mkdir mktemp mv od \
@@ -352,8 +354,33 @@ printf '%s\n' \
   'Description: local-first durable personal agent runtime' \
   ' Mealy runs a single-owner local daemon with durable sessions, recovery,' \
   ' governed tools, approvals, memory, channels, scheduling, and replay.' \
-  ' The companion client provides onboarding, setup, chat, operations, and administration.' \
+  ' The companion client provides onboarding, setup, chat, operations, and' \
+  ' administration.' \
   >"$control_root/control"
+if ! awk '
+  /^Description:/ {
+    in_description = 1
+    next
+  }
+  in_description && /^ / {
+    lines += 1
+    if (length($0) > 79) {
+      exit 1
+    }
+    next
+  }
+  in_description {
+    in_description = 0
+  }
+  END {
+    if (lines == 0) {
+      exit 1
+    }
+  }
+' "$control_root/control"; then
+  echo "Debian extended description is absent or exceeds 79 columns" >&2
+  exit 65
+fi
 while IFS= read -r relative; do
   (cd "$data_root" && md5sum "$relative")
 done < <(find "$data_root" -type f -printf '%P\n' | sort) >"$control_root/md5sums"

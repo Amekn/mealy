@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
-for command in cmp dpkg-deb find jq md5sum readlink sha256sum sort stat tar; do
+for command in awk cmp dpkg-deb find jq lintian md5sum readlink sha256sum sort stat tar; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Debian packaging test requires $command" >&2
     exit 69
@@ -82,12 +82,34 @@ deb="$temporary/first/$deb_name"
 [[ $(dpkg-deb --field "$deb" Architecture) == "$debian_architecture" ]]
 [[ $(dpkg-deb --field "$deb" Depends) == 'bubblewrap, ca-certificates, libc-bin (>= 2.39), libc6 (>= 2.39), libgcc-s1' ]]
 [[ $(dpkg-deb --field "$deb" Suggests) == 'apparmor-profiles, apparmor-utils, curl, fonts-liberation, libasound2t64, libatk-bridge2.0-0t64, libatk1.0-0t64, libatspi2.0-0t64, libdbus-1-3, libexpat1, libgbm1, libglib2.0-0t64, libnspr4, libnss3, libudev1, libx11-6, libxcb1, libxcomposite1, libxdamage1, libxext6, libxfixes3, libxkbcommon0, libxrandr2, unzip' ]]
+lintian --fail-on error,warning "$deb"
 control_inventory=$(dpkg-deb --ctrl-tarfile "$deb" | tar -tf - | sort)
 [[ $control_inventory == $'./\n./control\n./md5sums' ]]
 
 mkdir -p "$temporary/extracted" "$temporary/control"
 dpkg-deb --extract "$deb" "$temporary/extracted"
 dpkg-deb --control "$deb" "$temporary/control"
+awk '
+  /^Description:/ {
+    in_description = 1
+    next
+  }
+  in_description && /^ / {
+    lines += 1
+    if (length($0) > 79) {
+      exit 1
+    }
+    next
+  }
+  in_description {
+    in_description = 0
+  }
+  END {
+    if (lines == 0) {
+      exit 1
+    }
+  }
+' "$temporary/control/control"
 release_root="$temporary/extracted/usr/lib/mealy/release"
 cmp "$temporary/bin/mealyd" "$temporary/extracted/usr/bin/mealyd"
 cmp "$temporary/bin/mealyctl" "$temporary/extracted/usr/bin/mealyctl"
