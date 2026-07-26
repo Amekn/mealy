@@ -97,8 +97,14 @@ canonical clean [release soak](benchmarks/release-soak.json) for 86,412.498 seco
 and 48 hard restarts. It recovered 53 interrupted-provider turns, retained complete recorded-only
 replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names an
 ancestor of this report-bearing tree directly, so no current lineage proof is required. The exact
-private custom-provider run also passed. Its report-bearing protected CI, final reviewed free-model
-OpenRouter acceptance, and complete public tag workflow remain release gates.
+private custom-provider run, report-bearing protected CI, and final reviewed free-model OpenRouter
+acceptance also passed. The immutable
+[`v0.2.0` tag workflow](benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
+then failed before publication because one Debian extended-description line exceeded Lintian's
+limit. The tag is retained and will not be moved or reused. The `v0.2.1` correction makes Lintian
+part of protected CI and bounds the generated description independently. Its semantic-version
+change alters the binaries' exact identity, so it must repeat exact-binary qualification before a
+new tag can publish; the successful v0.2.0 report remains historical evidence and is not relabeled.
 
 The prior v0.1.1 report and subject are retained as
 [historical evidence](benchmarks/2026-07-24-v0.1.1-release-soak.json). Its protected report CI and

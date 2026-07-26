@@ -10,7 +10,7 @@ green pull-request check proves the exact source revision it tested; it does not
 revision is merged, tagged, published, or installed by an ordinary user. “Source-ready” below
 therefore remains distinct from “publicly complete.”
 
-At the 2026-07-25 delivery recheck, v0.1.0 remains the only public immutable
+At the 2026-07-26 delivery recheck, v0.1.0 remains the only public immutable
 stable release with green native package, attestation, and public archive
 acceptance. It predates this onboarding stack and the signed Linux repository
 workflow, so documentation must not describe APT, DNF, or Pacman publication as
@@ -22,9 +22,13 @@ recoveries, SQLite integrity `ok`, and zero residual work. A fresh authenticated
 download of its staged exact daemon passed the full release validator. The
 private custom-provider run also passed, and the owner-controlled repository
 fingerprint plus signing-subkey export are configured and clean-install tested.
-The report-bearing protected-main integration, final reviewed zero-price
-OpenRouter run, qualifying tag workflow, and public repository acceptance
-remain.
+Its report-bearing protected-main integration and final reviewed zero-price
+OpenRouter run passed. The immutable
+[`v0.2.0` tag workflow](../benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
+then failed before signing or publication because one Debian extended-description
+line exceeded Lintian's limit. The tag is retained. The v0.2.1 correction adds
+protected-CI Lintian parity and must repeat exact-binary qualification, qualifying
+tag publication, and public repository acceptance.
 
 ## Requirement evidence
 
@@ -70,14 +74,14 @@ The composed path also has direct negative evidence:
 
 ## Remaining gates before the goal is publicly true
 
-1. The exact checked v0.2.0 report and promotion manifest must merge through protected CI without
-   any runtime-source change after the observed revision.
-2. Final v0.2.0 archives and native packages must be rebuilt from the promoted subject and pass
-   protected release/package acceptance, including the corrected persistent-home fixture.
-3. An owner-reviewed, exact-zero-price OpenRouter run must pass against the exact v0.2.0
-   report-bearing commit.
-4. The tag workflow must publish immutable attested assets under a new semantic version, deploy the
-   signed repositories, and pass clean public HTTPS bootstrap plus APT/DNF/Pacman acceptance.
+1. Protected CI must pass the v0.2.1 Debian metadata correction, including Lintian on the
+   deterministic fixture in the strict and Debian-family lanes.
+2. A clean exact v0.2.1 release daemon must repeat the 86,400-second retained-disk gate and be
+   promoted through the checked report/subject flow without later runtime-source changes.
+3. Protected `main` CI and an owner-reviewed, exact-zero-price OpenRouter run must pass against the
+   exact v0.2.1 report-bearing commit.
+4. The v0.2.1 tag workflow must publish immutable attested assets, deploy the signed repositories,
+   and pass clean public HTTPS bootstrap plus APT/DNF/Pacman acceptance.
 
 Until those gates are satisfied, the implementation is a protected-green candidate experience,
 not a production release available to everyone.

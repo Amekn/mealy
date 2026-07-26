@@ -35,9 +35,9 @@ fakes from `mealy-testkit`. A feature is not complete until its failure and rest
 Run `bash -n` and `shellcheck` for changed shell entry points. Browser-boundary changes must also pass the three
 pinned-runtime ignored suites documented in [`docs/TESTING.md`](docs/TESTING.md); provider/channel
 credentials are never required for the ordinary deterministic gate.
-On Ubuntu/Debian or the stock Ubuntu test container, also run `packaging/test-deb-packaging.sh`;
-the native tag jobs additionally reject Lintian error/warning tags and run the system-installing
-Debian smoke on disposable runners.
+On Ubuntu/Debian or the stock Ubuntu test container, install `dpkg-deb` and `lintian`, then also run
+`packaging/test-deb-packaging.sh`; that fixture rejects every Lintian error or warning. The native
+tag jobs repeat the check and run the system-installing Debian smoke on disposable runners.
 Dependency changes must also pass `cargo-deny` and the pinned reproducible license-notice gate;
 the notice is generated from `about.toml` and `packaging/third-party-licenses.hbs`, not edited by
 hand.

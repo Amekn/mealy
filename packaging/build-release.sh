@@ -60,6 +60,7 @@ release_documents=(
   benchmarks/2026-07-24-v0.1.1-release-soak-subject.json
   benchmarks/2026-07-24-v0.1.1-release-soak.json
   benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md
+  benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md
   benchmarks/README.md
   benchmarks/release-soak.json
   benchmarks/release-soak-subject.json
@@ -82,6 +83,7 @@ release_documents=(
   releases/v0.1.0.md
   releases/v0.1.1.md
   releases/v0.2.0.md
+  releases/v0.2.1.md
 )
 
 if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \
