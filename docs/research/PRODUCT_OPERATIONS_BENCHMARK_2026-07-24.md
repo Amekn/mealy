@@ -42,22 +42,23 @@ Anthropic API, strict-free OpenRouter, custom endpoints, and Claude Code itself
 remain the supported alternatives.
 
 This is not a retroactive change to the matrix observed before implementation.
-The exact integrated v0.2.0 daemon has now completed its new 24-hour soak, and
-the owner-controlled production signing identity is configured and
-clean-install tested. It does not yet equal the complete competitor delivery
-experience: its report-bearing protected integration and final reviewed
-free-model acceptance passed, but the tag was rejected before publication by a
-release-only Debian metadata warning. The corrected v0.2.1 binary and a
-published qualifying tag remain delivery gates.
+The exact integrated v0.2.0 daemon completed its 24-hour soak and provider
+gates, but its tag was rejected before publication by a release-only Debian
+metadata warning. The corrected exact v0.2.1 daemon has now completed two
+byte-identical builds, native-package lifecycles, protected observed-commit CI,
+and its own 86,425.487-second soak. The owner-controlled production signing
+identity remains configured and clean-install tested. Protected report
+promotion, final provider acceptance, and a published qualifying tag remain
+delivery gates.
 Exact generated-service removal is now plan-first and composed into owner-local
 uninstall. Installed two-release failure injection now activates a checksum-valid
 but deliberately unready newer package under the real owner service, proves the
 preserved old helper verifies candidate bytes without executing its broken
 client, and requires automatic rollback plus health, `doctor`, backup, and
-durable-task preservation. All newer work remains next-release source until
-protected installed-package and supported-distribution acceptance qualify it.
+durable-task preservation. Those operations are protected-source and installed-package
+qualified; ordinary-user availability still depends on the first qualifying public tag.
 
-Delivery-state recheck through 2026-07-26: Mealy v0.1.0 is a public,
+Delivery-state recheck through 2026-07-28: Mealy v0.1.0 is a public,
 immutable stable GitHub release whose exact tag workflow passed native
 packaging, attestations, and public archive installation. That release predates
 the signed APT/DNF/Pacman repository and guided-onboarding stack audited here.
@@ -75,8 +76,14 @@ CI and final reviewed free-model acceptance passed for exact tag commit
 `92801dc`. Release run `30188985959` then rejected both completed native Debian
 packages because one extended-description line was 87 columns; signing and
 publication never ran. The immutable v0.2.0 tag is retained. The v0.2.1
-correction makes Lintian a protected-CI fixture gate and must repeat its exact
-binary qualification before qualifying publication.
+correction makes Lintian a protected-CI fixture gate. Its exact revision
+`eec96a8f` and daemon SHA-256
+`63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`
+subsequently passed reproducible builds, protected observed-commit CI, exact
+archive/Debian/RPM/Arch installed lifecycles, and an 86,425.487-second soak
+with 19,248 turns, 48 hard restarts, 53 interrupted-provider recoveries,
+integrity `ok`, and zero residue. Qualifying protected evidence promotion,
+live acceptance, and publication remain.
 These observations update delivery state without rewriting what the competitor
 audit originally measured.
 

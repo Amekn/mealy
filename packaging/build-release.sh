@@ -60,6 +60,8 @@ release_documents=(
   benchmarks/2026-07-24-v0.1.1-release-soak-subject.json
   benchmarks/2026-07-24-v0.1.1-release-soak.json
   benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md
+  benchmarks/2026-07-25-v0.2.0-release-soak-subject.json
+  benchmarks/2026-07-25-v0.2.0-release-soak.json
   benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md
   benchmarks/README.md
   benchmarks/release-soak.json

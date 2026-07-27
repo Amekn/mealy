@@ -36,16 +36,16 @@ scripts/run-soak.sh --release \
 ```
 
 The checked [release soak](release-soak.json) is the clean packaged-binary durability observation.
-It ran for 86,412.498 seconds, completed 19,248 turns across eight sessions, survived 48 hard
+It ran for 86,425.487 seconds, completed 19,248 turns across eight sessions, survived 48 hard
 restarts, retained 1,129 exact duplicate admissions, and recovered 53 interrupted-provider turns.
 It finished with SQLite integrity `ok`, complete recorded-only replay, clean drain, and zero
-residual work. It binds clean v0.2.0 revision `bd0fa3c`, exact external `mealyd` SHA-256
-`083f0ea7e4eaa1d0fff49175114bb56b20891f8639c1353266b3e0eda8374a4b`, and a retained disk-backed
-Btrfs home. Peak RSS was 302,680 KiB; p95/p99 latency was 8.409/10.345 seconds while the database
-grew to 1,693,999,104 bytes, or 88,009 bytes per completed turn. These are observed durability
+residual work. It binds clean v0.2.1 revision `eec96a8f`, exact external `mealyd` SHA-256
+`63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`, and a retained disk-backed
+Btrfs home. Peak RSS was 313,872 KiB; p95/p99 latency was 8.360/10.315 seconds while the database
+grew to 1,694,420,992 bytes, or 88,031 bytes per completed turn. These are observed durability
 measurements, not portable resource or latency guarantees.
 The unedited report SHA-256 is
-`0755d0f567bbf8a0ba35ebcc9e1c5c01c5259dabe3b71c6240ceda0d4f488fd7`. After clean drain, the
+`32f9d36d1f74b1976c9d608cdf76e40d61b105586573feaf717093fc05364582`. After clean drain, the
 stopped retained database independently returned `ok` from a full SQLite `integrity_check`, and a
 fresh authenticated download of the manifest-pinned draft asset was byte-identical to the retained
 daemon before the evidence change was committed.
@@ -61,6 +61,10 @@ evidence. The v0.1.0
 being overwritten. The v0.1.1
 [`schema-16 report`](2026-07-24-v0.1.1-release-soak.json) and its
 [`promotion manifest`](2026-07-24-v0.1.1-release-soak-subject.json) are preserved the same way.
+The v0.2.0
+[`onboarding report`](2026-07-25-v0.2.0-release-soak.json) and its
+[`promotion manifest`](2026-07-25-v0.2.0-release-soak-subject.json) are preserved after that
+version's pre-publication package-metadata failure rather than relabeled for v0.2.1.
 The release validator independently verifies report identity, commit ancestry, daemon
 digest/version, duration, recovery accounting, retained storage, integrity, and zero residue.
 
@@ -97,8 +101,8 @@ The failed
 is retained separately as the next negative delivery observation. Both native package lifecycles
 passed, but the release-only Lintian gate rejected an 87-column Debian extended-description line
 before signing or publication. Protected CI now runs Lintian and the builder independently bounds
-those lines. The immutable tag is retained; v0.2.1 must qualify its own exact versioned binaries
-before a corrected release can publish.
+those lines. The immutable tag is retained; the canonical v0.2.1 report above now qualifies its
+own exact versioned binaries, while protected report promotion and public release gates remain.
 The [superseded schema-14 long-soak failure](2026-07-13-schema14-long-soak-failure.md) is retained
 as negative evidence: it cannot satisfy a durability gate and motivated failure-report retention.
 That retained path reproduced a current one-second read-tool timeout under contention. After both
@@ -167,7 +171,8 @@ bundled context evidence reduced observed maximum writer wait from 14.05 seconds
 while 48 bounded tasks retained complete replay, integrity, and zero residue. It is focused dirty-
 worktree evidence and did not replace the fresh clean exact-package 24-hour report. The preserved
 v0.1.1 [schema-16 release soak](2026-07-24-v0.1.1-release-soak.json) subsequently completed that
-runtime's gate. The current v0.2.0 [release soak](release-soak.json) repeats the complete
-long-duration proof for the integrated onboarding candidate. It remains exact historical evidence
-after the v0.2.0 tag's pre-publication Debian metadata failure; it cannot be relabeled for the
-version-distinct v0.2.1 correction.
+runtime's gate. The preserved v0.2.0
+[release soak](2026-07-25-v0.2.0-release-soak.json) then repeated the complete long-duration proof
+for the integrated onboarding candidate before its pre-publication Debian metadata failure. The
+current v0.2.1 [release soak](release-soak.json) independently repeats that proof for the
+version-distinct correction.

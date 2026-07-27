@@ -10,7 +10,7 @@ green pull-request check proves the exact source revision it tested; it does not
 revision is merged, tagged, published, or installed by an ordinary user. “Source-ready” below
 therefore remains distinct from “publicly complete.”
 
-At the 2026-07-26 delivery recheck, v0.1.0 remains the only public immutable
+At the 2026-07-28 delivery recheck, v0.1.0 remains the only public immutable
 stable release with green native package, attestation, and public archive
 acceptance. It predates this onboarding stack and the signed Linux repository
 workflow, so documentation must not describe APT, DNF, or Pacman publication as
@@ -27,8 +27,15 @@ OpenRouter run passed. The immutable
 [`v0.2.0` tag workflow](../benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
 then failed before signing or publication because one Debian extended-description
 line exceeded Lintian's limit. The tag is retained. The v0.2.1 correction adds
-protected-CI Lintian parity and must repeat exact-binary qualification, qualifying
-tag publication, and public repository acceptance.
+protected-CI Lintian parity; the evidence below records its separate exact-binary
+qualification. Qualifying tag publication and public repository acceptance remain.
+The corrected exact v0.2.1 daemon at `eec96a8f91718679b258c754e00f04056e629430`
+has now passed two byte-identical auditable builds, every exact x86-64 archive/native-package
+lifecycle, protected observed-commit CI, and a fresh 86,425.487-second retained-disk soak with
+19,248 completed turns, 48 hard restarts, 53 interrupted-provider recoveries, SQLite integrity
+`ok`, and zero residue. Its staged subject was downloaded afresh and matched the retained daemon
+byte-for-byte. Protected report promotion, exact live acceptance, publication, and public
+repository acceptance remain.
 
 ## Requirement evidence
 
@@ -74,13 +81,13 @@ The composed path also has direct negative evidence:
 
 ## Remaining gates before the goal is publicly true
 
-1. Protected CI must pass the v0.2.1 Debian metadata correction, including Lintian on the
-   deterministic fixture in the strict and Debian-family lanes.
-2. A clean exact v0.2.1 release daemon must repeat the 86,400-second retained-disk gate and be
-   promoted through the checked report/subject flow without later runtime-source changes.
-3. Protected `main` CI and an owner-reviewed, exact-zero-price OpenRouter run must pass against the
-   exact v0.2.1 report-bearing commit.
-4. The v0.2.1 tag workflow must publish immutable attested assets, deploy the signed repositories,
+The protected Debian correction and clean exact-binary 24-hour gate are complete.
+
+1. The unedited v0.2.1 report and metadata-derived subject manifest must merge through protected
+   `main` CI without a later runtime-source change.
+2. An owner-reviewed, exact-zero-price OpenRouter run and the private custom-provider acceptance
+   must pass against the exact v0.2.1 report-bearing commit.
+3. The v0.2.1 tag workflow must publish immutable attested assets, deploy the signed repositories,
    and pass clean public HTTPS bootstrap plus APT/DNF/Pacman acceptance.
 
 Until those gates are satisfied, the implementation is a protected-green candidate experience,
