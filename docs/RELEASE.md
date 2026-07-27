@@ -90,21 +90,26 @@ That exact v0.1.0 daemon completed the preserved clean
 [promotion manifest](benchmarks/2026-07-23-schema16-release-soak-subject.json) remains checked
 historical evidence.
 
-The most recently qualified release subject is the retained v0.2.0 `mealyd` from protected
-revision `bd0fa3c`,
-SHA-256 `083f0ea7e4eaa1d0fff49175114bb56b20891f8639c1353266b3e0eda8374a4b`. It completed the
-canonical clean [release soak](benchmarks/release-soak.json) for 86,412.498 seconds, 19,248 turns,
+The most recently qualified release subject is the retained v0.2.1 `mealyd` from protected
+revision `eec96a8f`,
+SHA-256 `63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`. It completed the
+canonical clean [release soak](benchmarks/release-soak.json) for 86,425.487 seconds, 19,248 turns,
 and 48 hard restarts. It recovered 53 interrupted-provider turns, retained complete recorded-only
-replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names an
-ancestor of this report-bearing tree directly, so no current lineage proof is required. The exact
-private custom-provider run, report-bearing protected CI, and final reviewed free-model OpenRouter
-acceptance also passed. The immutable
+replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names the
+parent of this evidence tree directly, so no lineage proof is required. Two clean auditable builds
+were byte-identical, exact archive/Debian/RPM/Arch installed lifecycles passed, and the observed
+commit's protected-main run passed all 16 jobs. Report-bearing protected CI, exact final
+live-provider acceptance, and public tag publication remain.
+
+The v0.2.0 report and subject remain preserved as
+[historical evidence](benchmarks/2026-07-25-v0.2.0-release-soak.json). Its exact private
+custom-provider run, report-bearing protected CI, and final reviewed free-model OpenRouter
+acceptance passed. The immutable
 [`v0.2.0` tag workflow](benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
 then failed before publication because one Debian extended-description line exceeded Lintian's
 limit. The tag is retained and will not be moved or reused. The `v0.2.1` correction makes Lintian
-part of protected CI and bounds the generated description independently. Its semantic-version
-change alters the binaries' exact identity, so it must repeat exact-binary qualification before a
-new tag can publish; the successful v0.2.0 report remains historical evidence and is not relabeled.
+part of protected CI and bounds the generated description independently. Its separate successful
+report above proves the corrected binary rather than relabeling the v0.2.0 observation.
 
 The prior v0.1.1 report and subject are retained as
 [historical evidence](benchmarks/2026-07-24-v0.1.1-release-soak.json). Its protected report CI and

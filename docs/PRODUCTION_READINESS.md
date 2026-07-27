@@ -1,9 +1,9 @@
 # Production readiness
 
-- Status: the exact v0.2.0 onboarding runtime, protected CI, and free-model acceptance passed; its
-  tag failed before publication on Debian metadata, and the corrected v0.2.1 candidate must repeat
-  exact-binary qualification and the complete public release path
-- Reviewed: 2026-07-26
+- Status: the exact v0.2.1 candidate, native packages, protected base CI, and 24-hour soak pass;
+  protected evidence promotion, final live-provider acceptance, attested publication, and public
+  repository acceptance remain
+- Reviewed: 2026-07-28
 - Target: one-owner Linux production release across Ubuntu, Debian, Fedora, Arch, and compatible
   derivatives; macOS and Windows are outside the active production contract
 
@@ -11,16 +11,18 @@ This document separates Mealy's completed runtime proof from a product an owner 
 every day. Passing the release-one architecture scenarios is necessary, but it is not sufficient
 for a production claim.
 
-The checked schema-16 release soak qualifies the exact v0.2.0 protected onboarding runtime and
+The checked schema-16 release soak qualifies the exact v0.2.1 protected onboarding runtime and
 package daemon for the long-duration gate. It exercises the accepted
 [writer/snapshot-reader and bundled-manifest architecture](decisions/0009-sqlite-writer-and-snapshot-readers.md).
-Its exact private custom-provider acceptance, protected CI, and reviewed free-model OpenRouter
-acceptance passed, and the repository signing identity is configured and clean-install tested. The
+Two clean auditable builds were byte-identical, exact archive/Debian/RPM/Arch installed lifecycles
+passed, its observed commit's protected CI passed all 16 jobs, and the repository signing identity
+is configured and clean-install tested. The
 [`v0.2.0` tag workflow](benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
-failed before publication only when Lintian rejected one long Debian extended-description line.
-The immutable tag is retained. The corrected v0.2.1 candidate adds equivalent protected-CI
-coverage, then must repeat the exact-binary long-duration gate before attested
-multi-distribution publication and dependent public-download verification.
+failed before publication when Lintian rejected one long Debian extended-description line; that
+immutable tag and its exact report remain historical. The corrected v0.2.1 candidate now has
+protected-CI Lintian parity and its own successful 86,425.487-second exact-binary report. Protected
+report promotion and live acceptance must still pass before attested multi-distribution
+publication and dependent public-download verification.
 
 ## Comparison baseline
 
@@ -107,7 +109,7 @@ direct Anthropic Messages API adapter remains supported.
 | Scheduling | Schedules are canonical SQLite state with timezone/missed-run policy, durable due claims, run history, pause/resume, overlap control, and channel/webhook delivery. | Canonical five-field cron definitions, IANA zones/DST, bounded `skip`/`latest` coalescing, overlap policy, leased/recoverable claims, deterministic idempotent session admission, revision-fenced lifecycle, API/CLI, status/metrics/doctor visibility, run history, safe-mode denial, remote Telegram-session delivery, and process/unit/store proofs are implemented. | P0 acceptance is complete. Editing requires cancel/create, and one-shot or sub-minute schedules remain outside the current contract. |
 | Provider and extension operations | Status/doctor report configured identity, last success/failure, degraded state, rate/concurrency pressure, and actionable repair without exposing secrets. | Authenticated status/doctor expose each primary/fallback protocol, identity, model, residency, locality, streaming, live health, latency estimate, live/max concurrency, current-minute/max rate pressure, cumulative durable invocation counts, durable last success/failure timestamps, and recent failures. A restart process proof retains the exact history while returning live health to `configured_unprobed`, so stale success never masquerades as current connectivity. Doctor emits concrete secret-free repair guidance for every health class. | P0 acceptance is complete. Automated upstream credential rotation remains future convenience. |
 | Configuration lifecycle | Setup and edits validate before activation, high-risk changes are approved, activation cannot split an in-flight turn, and rollback/backup behavior is tested. | Configuration mutation is deliberately a stopped-daemon transaction: every command holds the real home lock, validates the complete candidate before atomic publication, archives the prior bytes, and cannot coexist with an in-flight turn. The next start records the exact effective digest and rotates affected context epochs before dispatch. Startup validation, digest history, approved rollback, isolated backup verification, exact-digest encrypted backup activation, and exact-transition pre-migration snapshot activation through stopped-home atomic directory exchanges with untouched prior homes retained are implemented and process-tested. Complete archives and migration reconstruction also carry exact configured skill packages, content-addressed MCP executables, and every file/executable-mode bit in the configured browser bundle. Browser inspect/add/enable performs sandboxed product/CDP/render verification; disable/revoke preserves rollback bytes and web authority cannot be removed underneath an enabled browser. | P0 acceptance is complete under the stopped-daemon activation boundary. Hot reload, guided general mutation, and a visual diff remain future convenience rather than weaker alternate mutation paths. |
-| Release quality | Public-API smoke, upgrade/downgrade, clean-install, backup/restore, adversarial tool, load, cancellation, soak, and optional live-provider suites pass with published measurements. | Tag-driven Linux x86-64/ARM64 jobs re-run strict, RustSec, auditable-binary, sandbox, systemd, browser, package lifecycle, SBOM, and provenance gates. Publication requires a clean retained-disk external-binary report of at least 86,400 seconds for the exact promoted daemon and tag ancestry (or a checked identical-tree lineage proof), with complete recovery accounting, SQLite integrity, ordered latency evidence, and zero residue. The publisher revalidates the remote tag, exact protected-main CI, and owner-reviewed free-model live-provider run immediately before creating the immutable release. Dependent delivery jobs download only public assets, verify release/asset integrity, provenance, checksums, and exact inventory, then repeat tokenless bootstrap and native package lifecycles on Ubuntu 24.04/26.04, Debian 13, Fedora 44, and Arch Linux. Pinned dependency, workflow, shell, browser, load/recovery, and all-feature gates remain mandatory. The exact v0.2.0 schema-16 [release soak](benchmarks/release-soak.json) ran 86,412.498 seconds, completed 19,248 turns across eight sessions, survived 48 hard restarts, recovered 53 interrupted-provider turns, retained complete recorded-only replay and SQLite integrity `ok`, drained cleanly, and left zero residual work. | The v0.2.0 exact-binary soak, private provider, protected CI, and free OpenRouter gates passed, but its tag was rejected before publication by the release-only Debian metadata check. The corrected v0.2.1 candidate must repeat exact-binary qualification and the complete public-package and attested-publication path. |
+| Release quality | Public-API smoke, upgrade/downgrade, clean-install, backup/restore, adversarial tool, load, cancellation, soak, and optional live-provider suites pass with published measurements. | Tag-driven Linux x86-64/ARM64 jobs re-run strict, RustSec, auditable-binary, sandbox, systemd, browser, package lifecycle, SBOM, and provenance gates. Publication requires a clean retained-disk external-binary report of at least 86,400 seconds for the exact promoted daemon and tag ancestry (or a checked identical-tree lineage proof), with complete recovery accounting, SQLite integrity, ordered latency evidence, and zero residue. The publisher revalidates the remote tag, exact protected-main CI, and owner-reviewed free-model live-provider run immediately before creating the immutable release. Dependent delivery jobs download only public assets, verify release/asset integrity, provenance, checksums, and exact inventory, then repeat tokenless bootstrap and native package lifecycles on Ubuntu 24.04/26.04, Debian 13, Fedora 44, and Arch Linux. Pinned dependency, workflow, shell, browser, load/recovery, and all-feature gates remain mandatory. The exact v0.2.1 schema-16 [release soak](benchmarks/release-soak.json) ran 86,425.487 seconds, completed 19,248 turns across eight sessions, survived 48 hard restarts, recovered 53 interrupted-provider turns, retained complete recorded-only replay and SQLite integrity `ok`, drained cleanly, and left zero residual work. | The v0.2.1 exact binary, reproducible builds, native package lifecycles, protected observed-commit CI, and 24-hour soak pass. Protected report promotion, final provider acceptance, and the complete attested public-package path remain. |
 | Documentation/support | Install, setup, first task, approvals, backup/restore, upgrades, incident recovery, limits, costs, security boundary, and troubleshooting are verified from a clean machine. | Quickstart, local HTTP/SSE API, developer-to-production delivery, operations, and attested package install/upgrade/same-schema/cross-schema rollback/uninstall runbooks exist; public Rust APIs are documented under a warnings-denied CI gate, and credential-scoped provider discovery, encrypted backup, and migration-snapshot activation have executable offline process proofs. | Complete only for an exact published tag whose dependent x86_64 and ARM64 clean-host acceptance jobs are green. |
 
 The v0.2.0 source adds `mealyctl onboard` as the single-command composition missing from the
@@ -181,12 +183,13 @@ daemon SHA-256 `78591cafdbe79691805d651ecc03e3383313fec8bfeb6ed3428a051fa23f69a7
 Its protected CI and reviewed free OpenRouter acceptance passed, but the
 [`v0.1.1` tag workflow](benchmarks/2026-07-24-v0.1.1-release-workflow-fixture-failure.md)
 failed before creating a release because its package fixture placed a persistent service home
-below `/tmp`. That pushed tag will not be moved or reused. The current canonical report qualifies
-exact v0.2.0 revision `bd0fa3c` and daemon SHA-256
-`083f0ea7e4eaa1d0fff49175114bb56b20891f8639c1353266b3e0eda8374a4b` for the long-duration gate.
-Owner-local private-provider and reviewed free-model acceptance passed for its exact protected tag
-commit, but the release-only Debian metadata gate rejected the package before publication. The
-v0.2.1 correction must produce and qualify its own exact binary identity.
+below `/tmp`. That pushed tag will not be moved or reused. The preserved
+[v0.2.0 report](benchmarks/2026-07-25-v0.2.0-release-soak.json) qualifies exact revision
+`bd0fa3c` and daemon SHA-256
+`083f0ea7e4eaa1d0fff49175114bb56b20891f8639c1353266b3e0eda8374a4b`; its provider gates passed,
+but the release-only Debian metadata gate rejected the package before publication. The current
+canonical report independently qualifies corrected v0.2.1 revision `eec96a8f` and daemon SHA-256
+`63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`.
 
 The first exact-candidate 24-hour attempt was externally terminated after approximately 9 hours 14
 minutes. Its retained database contains 7,272 succeeded turns, 18 planned hard-restart recoveries,
