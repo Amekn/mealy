@@ -399,7 +399,7 @@ until they are usable.
 
 | Area | Acceptance |
 |---|---|
-| Browser | A dedicated agent-only browser profile supports navigate, snapshot, click, type, download, screenshot, and bounded cleanup through an isolated worker; attaching a personal profile is an explicit higher-trust mode. |
+| Browser | The isolated fresh-profile research browser supports bounded navigation, snapshots, exact safe activation/fill/GET, downloads, screenshots, and cleanup. The v0.4 branch adds separately enabled, exact-owner-approved one-shot same-origin POST effects with private artifact uploads, bounded response downloads, `NeverRetry` recovery, and execution-free replay. General clicking/JavaScript, payments, ambient-login/personal profiles, and unattended transactions remain outside the contract. |
 | Skills | Versioned instruction/resource bundles have discovery, install, inspect, update, disable, provenance, and approval-aware tool references; skills never grant executable authority by themselves. |
 | MCP | Stdio/HTTP MCP servers run out of process with reviewed tool/resource grants, secret scoping, output limits, health, revocation, and crash isolation. |
 | Delegation | An agent-facing operation creates durable child runs with explicit context, model/tool/budget scopes, bounded parallelism/depth, cancellation propagation, deterministic result ordering, and owner inspection. |
@@ -432,8 +432,9 @@ normal tool policy. Complete backup/restore/export and migration rollback retain
 package bytes. Network marketplaces, signatures beyond owner-pinned SHA-256, and executable helpers
 remain extension concerns rather than hidden skill authority.
 
-Browser acceptance is complete for the read-only research subset, but not yet for the full
-competitive row. Linux x86_64 can fetch a repository size/SHA-pinned Chrome Headless Shell,
+Browser acceptance is complete for the read-only research subset and the first separately
+approved transaction effect, but not yet for the full competitive row. Linux x86_64 can fetch a
+repository size/SHA-pinned Chrome Headless Shell,
 inspect it without host network/home authority, publish the complete content-addressed inventory,
 and activate it only after a live isolated CDP/navigation/render test. `browser.snapshot` uses a
 new agent-only profile and private network namespace per call, a Unix-socket host proxy restricted
@@ -449,12 +450,28 @@ during the call so same-origin connection churn cannot retain thread resources u
 download adapter normalizes integral CDP JSON number encodings but rejects fractional, negative,
 or inexact progress values, and its protocol failure is independently classified. Three
 consecutive fresh-process conformance runs pass after that regression fix. The
-systemd unit supplies the physical-memory/swap/task cgroup boundary V8 needs. CLI lifecycle,
-real-browser, real-provider, backup, migration, tamper, non-read, WebSocket, and replay tests are
-mandatory in CI and release. Arbitrary clicking/keyboard events, POST or multi-control form
-submission, uploads, unbounded/owner-path downloads, persistent sessions, a personal-profile trust
-mode, non-x86 release evidence, and effect/approval semantics remain open; Mealy does not describe
-this subset as arbitrary browser control.
+systemd unit supplies the physical-memory/swap/task cgroup boundary V8 needs.
+
+The v0.4 branch additionally implements `browser.transact` behind an independent stopped-home flag.
+Each model proposal binds a canonical initial URL, one inert-catalog form digest, exact public
+fields/submitter, ordered owner-private upload artifact identities/digests, the pinned browser
+identity, one origin, ceilings, and deadline. Policy always requires authenticated exact-subject
+approval. Dispatch reloads and revalidates the form in a fresh profile, closes the hostile source
+target, reconstructs only approved controls in a clean target, and permits exactly one matching
+same-origin POST. A bounded same-origin response may publish one private download artifact. The
+effect is non-idempotent and `NeverRetry`: crash-after-dispatch parks `outcome_unknown`, restart
+does not resubmit, owner reconciliation is revision fenced, and schema-23 recorded replay remains
+complete after the live browser bundle is removed. Low-level real-browser tests cover hidden/form
+drift, controlled submission, cross-origin/second-write denial and bounded response evidence; a
+real daemon process test proves approval, one POST, hard crash, restart/no-redispatch,
+reconciliation, terminal continuation, and zero-execution replay.
+
+CLI lifecycle, real-browser, real-provider, backup, migration, tamper, non-read, WebSocket, and
+replay tests are mandatory in CI and release. Arbitrary clicking/keyboard events, general
+JavaScript automation, payments, cross-origin transactions, persistent sessions, a
+personal-profile trust mode, non-x86 browser release evidence, and unattended batches remain open;
+Mealy does not describe these bounded contracts as arbitrary browser control. The transaction
+slice is implementation evidence for v0.4, not a production-qualified v0.4 release.
 
 MCP acceptance is complete for the least-authority local tool subset and the first two governed
 Streamable HTTP slices, but not for the full competitive row. Linux can inspect and activate
@@ -584,7 +601,7 @@ The critical path is:
 5. Telegram or Discord plus durable schedules;
 6. packaged install/upgrade/release pipeline;
 7. load, soak, live-provider, clean-machine, and recovery acceptance;
-8. effectful browser interaction, broader HTTP/resource/credential-bearing MCP, additional providers/channels,
+8. broader/persistent browser interaction, additional HTTP MCP lifecycle breadth, additional providers/channels,
    multimodal input, and broader dashboard administration beyond its completed
    conversation/control, task-usage/cost, unknown-effect, schedule-creation/lifecycle, governed-memory, and
    extension-lifecycle subsets.

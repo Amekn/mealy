@@ -162,7 +162,13 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > It can also capture one exact accessible same-origin attachment up to 512 KiB into durable
 > digest/base64 evidence, and can return a bounded PNG without
 > exposing CDP or a personal browser profile. Browser traffic is narrowed to
-> the initial exact origin, so cross-origin redirects, subresources, and links fail closed. Explicit
+> the initial exact origin, so cross-origin redirects, subresources, and links fail closed. A
+> separately stopped-home-enabled `browser.transact` effect can submit one digest-matched
+> same-origin POST form only after exact authenticated owner approval. It revalidates an inert
+> form catalog in a fresh profile, closes the hostile page, reconstructs the approved form in a
+> controlled target, admits only digest-verified private upload artifacts, captures at most one
+> bounded response download, and never retries after the running boundary. It carries no ambient
+> login or personal-browser credentials. Explicit
 > `/act` turns can also create one new file in a
 > separately writable workspace after exact approval and sandboxed dispatch; `/edit` can atomically
 > replace one existing bounded file only while its approved current-content digest still matches,
@@ -195,8 +201,8 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > exposing the daemon bearer to the browser or providing an arbitrary proxy. It is not an
 > unrestricted general-purpose host assistant: recursive tree mutation, directory moves, overwrite/chmod,
 > interactive
-> arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
-> persistent or personal profiles,
+> arbitrary browser events/clicking, origin-wide or unattended POST authority, owner-path uploads
+> or downloads, payments, cross-origin transactions, persistent or personal profiles,
 > OAuth dynamic client registration, resource-template expansion, resumable MCP streams, or
 > long-lived MCP sessions,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published

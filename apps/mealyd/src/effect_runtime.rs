@@ -21,7 +21,7 @@ use mealy_domain::{
     AttemptId, ChannelBindingId, EffectId, FencingToken, PolicyProfile, PrincipalId, RunId, TaskId,
 };
 use mealy_infrastructure::{
-    ImageGenerationAdapter, LinuxBubblewrapConfig, LinuxBubblewrapExecutor,
+    BrowserTransactionTool, ImageGenerationAdapter, LinuxBubblewrapConfig, LinuxBubblewrapExecutor,
     LinuxBubblewrapMediaNormalizer, McpEffectTool, SandboxRuntimeBinding,
     is_trusted_system_executable,
 };
@@ -87,6 +87,7 @@ pub struct PhaseThreeRuntime {
     mcp_effect_tools: BTreeMap<String, McpEffectTool>,
     image_generation: Option<ImageGenerationAdapter>,
     image_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
+    browser_transaction: Option<BrowserTransactionTool>,
     kind: WriteRuntimeKind,
     outcome_commit_delay: std::time::Duration,
     dispatch_commit_delay: std::time::Duration,
@@ -134,6 +135,7 @@ impl PhaseThreeRuntime {
             mcp_effect_tools: BTreeMap::new(),
             image_generation: None,
             image_normalizer: None,
+            browser_transaction: None,
             kind: WriteRuntimeKind::Fixture,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -211,6 +213,7 @@ impl PhaseThreeRuntime {
             mcp_effect_tools: BTreeMap::new(),
             image_generation: None,
             image_normalizer: None,
+            browser_transaction: None,
             kind: WriteRuntimeKind::WorkspaceCreate,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -298,6 +301,34 @@ impl PhaseThreeRuntime {
         self.image_normalizer.as_deref()
     }
 
+    /// Adds the separately enabled one-shot transactional browser effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for descriptor collision or invalid runtime evidence.
+    pub fn with_browser_transaction(
+        mut self,
+        tool: BrowserTransactionTool,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let descriptor = tool.descriptor().clone();
+        descriptor.validate()?;
+        if self
+            .descriptors
+            .insert(descriptor.tool_id.clone(), descriptor)
+            .is_some()
+            || self.browser_transaction.replace(tool).is_some()
+        {
+            return Err("transactional browser authority collides with configured effects".into());
+        }
+        Ok(self)
+    }
+
+    /// Startup-validated one-shot transactional browser, when configured.
+    #[must_use]
+    pub const fn browser_transaction(&self) -> Option<&BrowserTransactionTool> {
+        self.browser_transaction.as_ref()
+    }
+
     /// Configured logical command identities in stable order.
     #[must_use]
     pub fn command_ids(&self) -> Vec<String> {
@@ -352,6 +383,13 @@ impl PhaseThreeRuntime {
                 .ok_or("image-generation adapter disappeared")?;
             return Ok(mealy_application::normalize_image_generation_arguments(
                 adapter.config(),
+                arguments,
+            )?);
+        }
+        if tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+            self.browser_transaction()
+                .ok_or("transactional browser adapter disappeared")?;
+            return Ok(mealy_application::normalize_browser_transaction_arguments(
                 arguments,
             )?);
         }

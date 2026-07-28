@@ -57,10 +57,11 @@ const MIGRATION_0020: &str = include_str!("../migrations/0020_slack_socket_chann
 const MIGRATION_0021: &str = include_str!("../migrations/0021_session_input_media.sql");
 const MIGRATION_0022: &str =
     include_str!("../migrations/0022_agent_effect_budget_reservations.sql");
+const MIGRATION_0023: &str = include_str!("../migrations/0023_browser_transaction_origin.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 22;
+pub const LATEST_SCHEMA_VERSION: i64 = 23;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -365,6 +366,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0022)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (22, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 22;
+        }
+        if existing_version == 22 {
+            transaction.execute_batch(MIGRATION_0023)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (23, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -862,8 +871,8 @@ mod tests {
     use super::{
         JournalRecord, LATEST_SCHEMA_VERSION, MIGRATION_0001, MIGRATION_0002, MIGRATION_0003,
         MIGRATION_0004, MIGRATION_0005, MIGRATION_0006, MIGRATION_0007, MIGRATION_0008,
-        MIGRATION_0009, MIGRATION_0010, OutboxRecord, SqliteStore, StoreError, TaskMutation,
-        ensure_initial_journal_envelope, ensure_phase_one_run_columns,
+        MIGRATION_0009, MIGRATION_0010, MIGRATION_0023, OutboxRecord, SqliteStore, StoreError,
+        TaskMutation, ensure_initial_journal_envelope, ensure_phase_one_run_columns,
     };
     use mealy_domain::{CorrelationId, EventId, OutboxId, PrincipalId, TaskId, TaskState};
     use rusqlite::Connection;
@@ -933,6 +942,7 @@ mod tests {
     }
 
     fn remove_image_generation_schema(connection: &Connection) {
+        remove_browser_transaction_origin_schema(connection);
         connection
             .execute_batch(
                 "DROP TABLE agent_effect_budget_reservation;
@@ -962,6 +972,80 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 22;",
             )
             .expect("remove v22 image generation schema");
+    }
+
+    fn remove_browser_transaction_origin_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER agent_effect_invocation_origin_insert;
+                 CREATE TRIGGER agent_effect_invocation_origin_insert
+                 BEFORE INSERT ON agent_effect_invocation
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS(
+                         SELECT 1
+                         FROM effect_intent intent
+                         JOIN effect ON effect.id = intent.effect_id
+                         JOIN model_attempt attempt ON attempt.attempt_id = NEW.model_attempt_id
+                         WHERE intent.effect_id = NEW.effect_id
+                           AND intent.run_id = NEW.run_id
+                           AND intent.task_id = NEW.task_id
+                           AND effect.task_id = NEW.task_id
+                           AND effect.run_id = NEW.run_id
+                           AND attempt.run_id = NEW.run_id
+                           AND attempt.state = 'completed'
+                           AND attempt.response_kind = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.kind') = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.tool_id') = effect.tool_id
+                           AND (
+                               (
+                                   effect.tool_id <> 'image.generate'
+                                   AND json(json_extract(attempt.response_json, '$.arguments'))
+                                       = json(intent.normalized_arguments_json)
+                               )
+                               OR
+                               (
+                                   effect.tool_id = 'image.generate'
+                                   AND json(json_extract(attempt.response_json, '$.arguments'))
+                                       = json_object(
+                                           'prompt',
+                                           json_extract(
+                                               intent.normalized_arguments_json, '$.prompt'
+                                           )
+                                         )
+                                   AND json_type(
+                                         intent.normalized_arguments_json,
+                                         '$.maximumCostMicrounits'
+                                       ) = 'integer'
+                                   AND json_extract(
+                                         intent.normalized_arguments_json,
+                                         '$.maximumCostMicrounits'
+                                       ) > 0
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.model'
+                                       ) = 'text'
+                                   AND json_extract(
+                                         intent.normalized_arguments_json, '$.outputFormat'
+                                       ) = 'jpeg'
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.quality'
+                                       ) = 'text'
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.size'
+                                       ) = 'text'
+                                   AND (
+                                       SELECT COUNT(*)
+                                       FROM json_each(intent.normalized_arguments_json)
+                                   ) = 6
+                               )
+                           )
+                     ) THEN RAISE(
+                         ABORT,
+                         'agent effect origin does not match normalized model result'
+                     ) END;
+                 END;
+                 DELETE FROM schema_version WHERE version = 23;",
+            )
+            .expect("remove v23 browser transaction origin schema");
     }
 
     fn remove_media_schema(connection: &Connection) {
@@ -2686,6 +2770,179 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v22_upgrade_installs_browser_transaction_origin_invariant() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_browser_transaction_origin_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v22 browser transaction origin schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        let origin_trigger: String = upgraded
+            .connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name = 'agent_effect_invocation_origin_insert'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("browser transaction model-origin trigger");
+        for evidence in [
+            "effect.tool_id = 'browser.transact'",
+            "'initialUrl'",
+            "'formDigest'",
+            "'fields'",
+            "'submitter'",
+            "'uploads'",
+        ] {
+            assert!(
+                origin_trigger.contains(evidence),
+                "browser origin trigger omitted {evidence}"
+            );
+        }
+        upgraded
+            .readiness_check()
+            .expect("upgraded browser transaction readiness");
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn browser_transaction_origin_trigger_accepts_only_bounded_normalization() {
+        let connection = Connection::open_in_memory().expect("origin fixture database");
+        connection
+            .execute_batch(
+                "CREATE TABLE effect_intent(
+                     effect_id TEXT PRIMARY KEY,
+                     run_id TEXT NOT NULL,
+                     task_id TEXT NOT NULL,
+                     normalized_arguments_json TEXT NOT NULL
+                 );
+                 CREATE TABLE effect(
+                     id TEXT PRIMARY KEY,
+                     task_id TEXT NOT NULL,
+                     run_id TEXT NOT NULL,
+                     tool_id TEXT NOT NULL
+                 );
+                 CREATE TABLE model_attempt(
+                     attempt_id TEXT PRIMARY KEY,
+                     run_id TEXT NOT NULL,
+                     state TEXT NOT NULL,
+                     response_kind TEXT NOT NULL,
+                     response_json TEXT NOT NULL
+                 );
+                 CREATE TABLE agent_effect_invocation(
+                     effect_id TEXT NOT NULL,
+                     run_id TEXT NOT NULL,
+                     task_id TEXT NOT NULL,
+                     model_attempt_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER agent_effect_invocation_origin_insert
+                 BEFORE INSERT ON agent_effect_invocation BEGIN SELECT 1; END;",
+            )
+            .expect("minimal v22 origin schema");
+        connection
+            .execute_batch(MIGRATION_0023)
+            .expect("install browser origin trigger");
+
+        let form_digest = "a".repeat(64);
+        let normalized = json!({
+            "initialUrl": "https://example.test/form",
+            "formDigest": form_digest,
+            "fields": [{"name": "message", "value": "approved"}],
+            "uploads": [],
+        });
+        connection
+            .execute(
+                "INSERT INTO effect_intent(
+                     effect_id, run_id, task_id, normalized_arguments_json
+                 ) VALUES ('effect', 'run', 'task', ?1);
+                 ",
+                [normalized.to_string()],
+            )
+            .expect("normalized intent");
+        connection
+            .execute(
+                "INSERT INTO effect(id, task_id, run_id, tool_id)
+                 VALUES ('effect', 'task', 'run', 'browser.transact')",
+                [],
+            )
+            .expect("effect");
+
+        let insert_invocation = |connection: &Connection| {
+            connection.execute(
+                "INSERT INTO agent_effect_invocation(
+                     effect_id, run_id, task_id, model_attempt_id
+                 ) VALUES ('effect', 'run', 'task', 'attempt')",
+                [],
+            )
+        };
+        let set_response = |connection: &Connection, arguments: serde_json::Value| {
+            connection
+                .execute("DELETE FROM model_attempt", [])
+                .expect("replace model attempt");
+            connection
+                .execute(
+                    "INSERT INTO model_attempt(
+                         attempt_id, run_id, state, response_kind, response_json
+                     ) VALUES ('attempt', 'run', 'completed', 'tool_call', ?1)",
+                    [json!({
+                        "kind": "tool_call",
+                        "tool_id": "browser.transact",
+                        "arguments": arguments,
+                    })
+                    .to_string()],
+                )
+                .expect("model response");
+        };
+
+        set_response(
+            &connection,
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+            }),
+        );
+        insert_invocation(&connection).expect("omitted optional arrays are bounded normalization");
+        connection
+            .execute("DELETE FROM agent_effect_invocation", [])
+            .expect("reset invocation");
+
+        for tampered in [
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "b".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+            }),
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "changed"}],
+            }),
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+                "unexpected": true,
+            }),
+        ] {
+            set_response(&connection, tampered);
+            let error = insert_invocation(&connection).expect_err("tampered origin must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("agent effect origin does not match normalized model result")
+            );
+        }
     }
 
     #[test]

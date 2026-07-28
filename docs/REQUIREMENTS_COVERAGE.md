@@ -92,13 +92,17 @@ boundary:
 ## Deliberate release boundary
 
 The deferred items in the requirements—multi-tenant hosting, distributed scheduling, public
-internet exposure, mobile clients—and the plan's effectful browser interaction,
+internet exposure, mobile clients—and the plan's personal/persistent browser interaction,
 guild/group Discord, vector, and marketplace work remain outside release one. The supported
 one-human Discord DM does not imply arbitrary guild or multi-user channel authority. The read-only
 rendered-browser subset permits only an exact same-origin GET link, exact native form-free button
 activation, or exact native non-password text/search fill with an optional selected-field-only GET.
-It does not imply arbitrary clicking/keyboard events, POST or multi-control form submission,
-uploads, unbounded/owner-path downloads, persistence, or a personal-profile attachment.
+Separately enabled v0.4 `browser.transact` permits one exact digest-matched same-origin POST form
+after authenticated owner approval, with digest-verified owner-private artifact uploads, a bounded
+response/download, a clean reconstructed target, and `NeverRetry` recovery through explicit
+unknown-outcome reconciliation. Neither browser contract implies arbitrary clicking/keyboard
+events, origin-wide or unattended POST authority, owner-path uploads/downloads, payments,
+cross-origin transactions, persistence, or a personal-profile attachment.
 Additional live provider and tool adapters can be added behind the covered
 contracts; they must pass the same provider, sandbox, effect, recovery, and traceability suites
 before being advertised as supported.

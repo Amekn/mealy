@@ -25,8 +25,9 @@ mod workspace;
 
 pub use artifact::{ArtifactGarbageCollectionReport, ArtifactStorageUsage, FileArtifactBlobStore};
 pub use browser::{
-    BrowserHostError, BrowserReadTool, BrowserRuntimeProbe, browser_worker_main,
-    probe_browser_bundle_product, verify_browser_runtime_installation,
+    BrowserHostError, BrowserReadTool, BrowserRuntimeProbe, BrowserTransactionDownload,
+    BrowserTransactionExecution, BrowserTransactionTool, BrowserTransactionUploadFile,
+    browser_worker_main, probe_browser_bundle_product, verify_browser_runtime_installation,
 };
 pub use browser_bundle::{
     BrowserBundleEntry, BrowserBundleError, BrowserBundleInspection, inspect_browser_bundle,

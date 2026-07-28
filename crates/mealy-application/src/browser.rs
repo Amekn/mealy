@@ -23,6 +23,10 @@ const BROWSER_MAXIMUM_TEXT_BYTES: usize = 128 * 1024;
 const BROWSER_DEFAULT_TEXT_BYTES: usize = 64 * 1024;
 const BROWSER_MAXIMUM_ELEMENTS: usize = 128;
 const BROWSER_DEFAULT_ELEMENTS: usize = 64;
+/// Maximum actionable POST forms returned by one read-only snapshot.
+pub const BROWSER_MAXIMUM_FORMS: usize = 16;
+/// Maximum controls admitted into one actionable form identity.
+pub const BROWSER_MAXIMUM_FORM_CONTROLS: usize = 64;
 const BROWSER_MAXIMUM_FILL_VALUE_BYTES: usize = 4 * 1024;
 const BROWSER_MAXIMUM_SCREENSHOT_BYTES: u64 = 512 * 1024;
 const BROWSER_MAXIMUM_DOWNLOAD_BYTES: u64 = 512 * 1024;
@@ -33,6 +37,8 @@ const BROWSER_MAXIMUM_OUTPUT_BYTES: u64 = 1024 * 1024;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserConfig {
     enabled: bool,
+    #[serde(default)]
+    transactional_enabled: bool,
     bundle_path: String,
     bundle_digest: String,
     executable_relative_path: String,
@@ -58,6 +64,7 @@ impl BrowserConfig {
     ) -> Result<Self, BrowserConfigError> {
         let config = Self {
             enabled,
+            transactional_enabled: false,
             bundle_path,
             bundle_digest,
             executable_relative_path,
@@ -73,6 +80,12 @@ impl BrowserConfig {
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Whether new model contexts may expose the separately approved transactional effect.
+    #[must_use]
+    pub const fn transactional_enabled(&self) -> bool {
+        self.transactional_enabled
     }
 
     /// Owner-private Mealy-home-relative content-addressed bundle path.
@@ -119,6 +132,14 @@ impl BrowserConfig {
         changed
     }
 
+    /// Returns a transaction-enabled/disabled copy without changing read-only browser authority.
+    #[must_use]
+    pub fn with_transactional_enabled(&self, transactional_enabled: bool) -> Self {
+        let mut changed = self.clone();
+        changed.transactional_enabled = transactional_enabled;
+        changed
+    }
+
     /// Validates configuration loaded from durable non-secret state.
     ///
     /// # Errors
@@ -127,6 +148,7 @@ impl BrowserConfig {
     pub fn validate(&self) -> Result<(), BrowserConfigError> {
         if !crate::is_sha256_digest(&self.bundle_digest)
             || !crate::is_sha256_digest(&self.executable_digest)
+            || self.transactional_enabled && !self.enabled
             || self.bundle_path != format!("browser-runtimes/{}", self.bundle_digest)
             || !safe_relative_path(&self.bundle_path)
             || self.executable_relative_path != "chrome-headless-shell"
@@ -441,7 +463,7 @@ pub fn browser_snapshot_descriptor()
     let schema_digest = sha256_digest(input_schema.to_string().as_bytes());
     let mut descriptor = ReadToolDescriptor {
         tool_id: BROWSER_SNAPSHOT_TOOL_ID.to_owned(),
-        version: "4".to_owned(),
+        version: "5".to_owned(),
         input_schema,
         output_schema,
         descriptor_digest: String::new(),
@@ -502,6 +524,7 @@ fn browser_snapshot_output_schema() -> Value {
             },
             "finalUrl": {"type": "string", "minLength": 1, "maxLength": 4096},
             "filledElement": browser_filled_element_output_schema(),
+            "forms": browser_forms_output_schema(),
             "followedLink": {
                 "oneOf": [
                     {"type": "null"},
@@ -542,9 +565,65 @@ fn browser_snapshot_output_schema() -> Value {
         },
         "required": [
             "activatedElement", "browserProduct", "download", "elements", "filledElement",
-            "finalUrl", "followedLink", "protocolVersion", "screenshot", "sourceLocator",
-            "text", "title", "truncatedElements", "truncatedText"
+            "finalUrl", "followedLink", "forms", "protocolVersion", "screenshot",
+            "sourceLocator", "text", "title", "truncatedElements", "truncatedText"
         ]
+    })
+}
+
+fn browser_forms_output_schema() -> Value {
+    json!({
+        "type": "array",
+        "maxItems": BROWSER_MAXIMUM_FORMS,
+        "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "action": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "controls": {
+                    "type": "array",
+                    "maxItems": BROWSER_MAXIMUM_FORM_CONTROLS,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "acceptedMediaTypes": {
+                                "type": "array",
+                                "maxItems": 16,
+                                "items": {"type": "string", "minLength": 1, "maxLength": 128}
+                            },
+                            "kind": {"enum": ["file", "submit", "text", "textarea"]},
+                            "maximumBytes": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": crate::BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES
+                            },
+                            "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                            },
+                            "required": {"type": "boolean"},
+                            "submitterValue": {
+                                "oneOf": [
+                                    {"type": "null"},
+                                    {"type": "string", "maxLength": 8192}
+                                ]
+                            }
+                        },
+                        "required": [
+                            "acceptedMediaTypes", "kind", "maximumBytes", "name",
+                            "required", "submitterValue"
+                        ]
+                    }
+                },
+                "encoding": {
+                    "enum": ["application/x-www-form-urlencoded", "multipart/form-data"]
+                },
+                "formDigest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "required": ["action", "controls", "encoding", "formDigest"]
+        }
     })
 }
 
@@ -697,7 +776,7 @@ mod tests {
         assert!(config.enabled());
         let descriptor = browser_snapshot_descriptor().expect("descriptor");
         assert_eq!(descriptor.tool_id, "browser.snapshot");
-        assert_eq!(descriptor.version, "4");
+        assert_eq!(descriptor.version, "5");
         assert_eq!(descriptor.required_capability, "network:browser");
         assert_eq!(descriptor.effect_class, "read_only");
         assert_eq!(descriptor.risk_class, "medium");
@@ -833,6 +912,7 @@ mod tests {
             "filledElement": null,
             "finalUrl": "https://example.com/",
             "followedLink": null,
+            "forms": [],
             "protocolVersion": "1.3",
             "screenshot": null,
             "sourceLocator": "https://example.com/",

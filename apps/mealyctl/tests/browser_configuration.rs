@@ -110,6 +110,27 @@ fn inspect_add_disable_enable_revoke_is_approved_verified_and_rollback_safe() {
     assert_eq!(added["browser"]["bundleDigest"], inspected["bundleDigest"]);
     let listed = run_success(home.path(), &["config", "browser-list"]);
     assert_eq!(listed["browser"]["enabled"], true);
+    assert_eq!(listed["browser"]["transactionalEnabled"], false);
+    assert!(
+        !run(home.path(), &["browser", "--enable-transactions"])
+            .status
+            .success()
+    );
+    let transactional = run_success(
+        home.path(),
+        &["browser", "--enable-transactions", "--approve"],
+    );
+    assert_eq!(transactional["browser"]["transactionalEnabled"], true);
+    assert!(
+        !run(home.path(), &["config", "browser-disable", "--approve"])
+            .status
+            .success()
+    );
+    let research_only = run_success(
+        home.path(),
+        &["browser", "--disable-transactions", "--approve"],
+    );
+    assert_eq!(research_only["browser"]["transactionalEnabled"], false);
     assert!(
         !run(home.path(), &["config", "web-disable", "--approve"])
             .status
@@ -144,6 +165,6 @@ fn inspect_add_disable_enable_revoke_is_approved_verified_and_rollback_safe() {
         fs::read_dir(home.path().join("config-history"))
             .expect("history")
             .count()
-            >= 6
+            >= 8
     );
 }

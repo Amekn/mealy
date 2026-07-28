@@ -532,12 +532,16 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
     let has_manage = grant.tools.contains(crate::WORKSPACE_MANAGE_PATH_TOOL_ID);
     let has_process = grant.tools.contains(crate::PROCESS_RUN_TOOL_ID);
     let has_workspace = has_workspace_read || has_write || has_manage || has_process;
-    let has_web = grant
-        .tools
-        .iter()
-        .any(|tool| tool.starts_with("web.") || tool == crate::BROWSER_SNAPSHOT_TOOL_ID);
+    let has_web = grant.tools.iter().any(|tool| {
+        tool.starts_with("web.")
+            || matches!(
+                tool.as_str(),
+                crate::BROWSER_SNAPSHOT_TOOL_ID | crate::BROWSER_TRANSACTION_TOOL_ID
+            )
+    });
     let has_mcp = grant.tools.iter().any(|tool| valid_mcp_tool_id(tool));
     let has_image_generation = grant.tools.contains(crate::IMAGE_GENERATION_TOOL_ID);
+    let has_browser_transaction = grant.tools.contains(crate::BROWSER_TRANSACTION_TOOL_ID);
     let has_delegation = grant.tools.contains(crate::AGENT_DELEGATE_TOOL_ID)
         || grant.tools.contains(crate::AGENT_DELEGATE_PARALLEL_TOOL_ID);
     let has_non_mcp_read = grant.tools.iter().any(|tool| {
@@ -581,6 +585,10 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         expected_effect_classes.insert(EffectClass::NonIdempotent);
         expected_profiles.insert(PolicyProfile::ServiceOperator);
     }
+    if has_browser_transaction {
+        expected_effect_classes.insert(EffectClass::NonIdempotent);
+        expected_profiles.insert(PolicyProfile::ServiceOperator);
+    }
     grant.validate().is_ok()
         && grant.tools.iter().all(|tool| {
             valid_mcp_tool_id(tool)
@@ -601,6 +609,7 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
                         | "web.search"
                         | crate::BROWSER_SNAPSHOT_TOOL_ID
                         | crate::IMAGE_GENERATION_TOOL_ID
+                        | crate::BROWSER_TRANSACTION_TOOL_ID
                 )
         })
         && grant.effect_classes == expected_effect_classes
@@ -622,11 +631,16 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
             .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
         && (!has_web || !grant.network_destinations.is_empty())
         && (!has_image_generation || !grant.network_destinations.is_empty())
-        && (grant.network_destinations.is_empty() || has_web || has_mcp || has_image_generation)
+        && (!has_browser_transaction || !grant.network_destinations.is_empty())
+        && (grant.network_destinations.is_empty()
+            || has_web
+            || has_mcp
+            || has_image_generation
+            || has_browser_transaction)
         && valid_general_assistant_executable_identities(
             grant,
             has_process,
-            mcp_service || has_image_generation,
+            mcp_service || has_image_generation || has_browser_transaction,
         )
         && (grant.secret_references.is_empty()
             || grant.tools.contains("web.search")

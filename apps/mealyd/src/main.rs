@@ -57,8 +57,8 @@ use mealy_domain::{
     InboxEntryId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
 };
 use mealy_infrastructure::{
-    BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
-    FileProviderSecretStore, ImageGenerationAdapter, LATEST_SCHEMA_VERSION,
+    BrowserReadTool, BrowserTransactionTool, FileArtifactBlobStore, FileChannelSecretStore,
+    FileMcpOAuthTokenStore, FileProviderSecretStore, ImageGenerationAdapter, LATEST_SCHEMA_VERSION,
     LinuxBubblewrapMediaNormalizer, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
     SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
     create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_tools,
@@ -672,25 +672,38 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         (tools, effects)
     };
     mcp_effect_tools.extend(mcp_http_effect_tools);
-    let browser_tool = if arguments.safe_mode
+    let (browser_tool, browser_transaction) = if arguments.safe_mode
         || daemon_config.provider().is_builtin_fixture()
         || daemon_config
             .browser()
             .is_none_or(|browser| !browser.enabled())
     {
-        None
+        (None, None)
     } else {
         let launcher = fs::canonicalize(std::env::current_exe()?)?;
+        let browser_config = daemon_config
+            .browser()
+            .ok_or("browser configuration disappeared")?
+            .clone();
         let tool = BrowserReadTool::load(
             &arguments.home,
             Path::new("/usr/bin/bwrap"),
             &launcher,
-            daemon_config
-                .browser()
-                .ok_or("browser configuration disappeared")?
-                .clone(),
+            browser_config.clone(),
             daemon_config.web_access().clone(),
         )?;
+        let transaction = browser_config
+            .transactional_enabled()
+            .then(|| {
+                BrowserTransactionTool::load(
+                    &arguments.home,
+                    Path::new("/usr/bin/bwrap"),
+                    &launcher,
+                    browser_config,
+                    daemon_config.web_access().clone(),
+                )
+            })
+            .transpose()?;
         tracing::info!(
             product = daemon_config
                 .browser()
@@ -698,7 +711,10 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .unwrap_or_default(),
             "isolated rendered-browser read tool enabled"
         );
-        Some(tool)
+        if transaction.is_some() {
+            tracing::info!("approval-gated one-shot transactional browser enabled");
+        }
+        (Some(tool), transaction)
     };
     let read_tool = Arc::new(RuntimeReadTools::new(
         phase_two_read_tool()?,
@@ -797,7 +813,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     let effect_runtime = effect_runtime
         .map(|runtime| {
             let runtime = runtime.with_mcp_effect_tools(mcp_effect_tools)?;
-            match image_generation {
+            let runtime = match image_generation {
                 Some(adapter) => runtime.with_image_generation(
                     adapter,
                     Arc::clone(
@@ -806,6 +822,10 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                             .ok_or("image-generation normalizer is unavailable")?,
                     ),
                 ),
+                None => Ok(runtime),
+            }?;
+            match browser_transaction {
+                Some(tool) => runtime.with_browser_transaction(tool),
                 None => Ok(runtime),
             }
         })
@@ -995,6 +1015,8 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         });
         let has_image_generation =
             effect_tools_runtime.is_some_and(|runtime| runtime.image_generation().is_some());
+        let has_browser_transaction =
+            effect_tools_runtime.is_some_and(|runtime| runtime.browser_transaction().is_some());
         let mut effect_classes = BTreeSet::new();
         let mut profiles = BTreeSet::new();
         if has_read_tools {
@@ -1009,7 +1031,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             effect_classes.insert(EffectClass::NonIdempotent);
             profiles.insert(PolicyProfile::WorkspaceWrite);
         }
-        if has_mcp_effect_tool || has_image_generation {
+        if has_mcp_effect_tool || has_image_generation || has_browser_transaction {
             if let Some(runtime) = effect_tools_runtime {
                 effect_classes.extend(
                     runtime
@@ -1018,6 +1040,8 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                         .filter(|descriptor| {
                             runtime.mcp_effect_tool(&descriptor.tool_id).is_some()
                                 || descriptor.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID
+                                || descriptor.tool_id
+                                    == mealy_application::BROWSER_TRANSACTION_TOOL_ID
                         })
                         .map(|descriptor| descriptor.effect_class),
                 );
@@ -1059,6 +1083,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     .filter(|descriptor| {
                         runtime.mcp_effect_tool(&descriptor.tool_id).is_some()
                             || descriptor.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID
+                            || descriptor.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID
                     })
                     .map(|descriptor| descriptor.executable_identity_digest.clone()),
             );

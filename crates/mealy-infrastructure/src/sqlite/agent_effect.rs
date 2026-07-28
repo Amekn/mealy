@@ -904,14 +904,21 @@ pub(super) fn load_replay_agent_effects(
                     | mealy_application::WORKSPACE_MANAGE_PATH_TOOL_ID
                     | mealy_application::PROCESS_RUN_TOOL_ID
                     | mealy_application::IMAGE_GENERATION_TOOL_ID
+                    | mealy_application::BROWSER_TRANSACTION_TOOL_ID
             ) || view.policy_request.tool.tool_id.starts_with("mcp."))
             || !valid_replay_write_contract(&view)
         {
             return Ok(None);
         }
-        if !verify_effect_model_origin(connection, run_id, &model_attempt_id, &tool_call_id, &view)?
-            || !verify_terminal_effect_attempt(connection, effect_id, view.status)?
-        {
+        let model_origin = verify_effect_model_origin(
+            connection,
+            run_id,
+            &model_attempt_id,
+            &tool_call_id,
+            &view,
+        )?;
+        let terminal_attempt = verify_terminal_effect_attempt(connection, effect_id, view.status)?;
+        if !model_origin || !terminal_attempt {
             return Ok(None);
         }
         let invocation = AgentEffectInvocation {
@@ -924,29 +931,35 @@ pub(super) fn load_replay_agent_effects(
         let projection = load_terminal_projection(connection, &invocation)?;
         let expected_content = projection.content.to_string();
         let expected_digest = sha256_digest(expected_content.as_bytes());
-        if content != expected_content
-            || content_digest != expected_digest
-            || message_role.as_deref() != Some("tool")
-            || media_type.as_deref() != Some("application/json")
-            || byte_length.and_then(|value| usize::try_from(value).ok()) != Some(content.len())
-            || message_content.as_deref() != Some(content.as_str())
-            || content_artifact_id.is_some()
-            || message_digest.as_deref() != Some(content_digest.as_str())
-            || source_attempt_id.is_some()
-            || source_tool_call_id.is_some()
-            || source_effect_id.as_deref() != Some(effect_id_text.as_str())
-            || message_created_at_ms != Some(observed_at_ms)
-            || !verify_effect_observation_event(
-                connection,
-                &message_id,
-                effect_id,
-                observed_revision,
-                &model_attempt_id,
-                &tool_call_id,
-                &content_digest,
-                observed_at_ms,
-            )?
-            || !agent::verify_aggregate_sequence_chain(connection, "effect", &effect_id_text)?
+        let projection_matches = content == expected_content;
+        let digest_matches = content_digest == expected_digest;
+        let observation_event = verify_effect_observation_event(
+            connection,
+            &message_id,
+            effect_id,
+            observed_revision,
+            &model_attempt_id,
+            &tool_call_id,
+            &content_digest,
+            observed_at_ms,
+        )?;
+        let aggregate_chain =
+            agent::verify_aggregate_sequence_chain(connection, "effect", &effect_id_text)?;
+        let metadata_matches = message_role.as_deref() == Some("tool")
+            && media_type.as_deref() == Some("application/json")
+            && byte_length.and_then(|value| usize::try_from(value).ok()) == Some(content.len())
+            && message_content.as_deref() == Some(content.as_str())
+            && content_artifact_id.is_none()
+            && message_digest.as_deref() == Some(content_digest.as_str())
+            && source_attempt_id.is_none()
+            && source_tool_call_id.is_none()
+            && source_effect_id.as_deref() == Some(effect_id_text.as_str())
+            && message_created_at_ms == Some(observed_at_ms);
+        if !projection_matches
+            || !digest_matches
+            || !metadata_matches
+            || !observation_event
+            || !aggregate_chain
         {
             return Ok(None);
         }
@@ -984,6 +997,9 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
     }
     if request.tool.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
         return valid_replay_image_generation_contract(view);
+    }
+    if request.tool.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+        return valid_replay_browser_transaction_contract(view);
     }
     if request.tool.tool_id == mealy_application::FIXTURE_WRITE_FILE_TOOL_ID {
         let Some(workspace_root) = request.workspace_roots.first() else {
@@ -1071,6 +1087,86 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
         return false;
     }
     valid_replay_workspace_create_contract(view, workspace_id, workspace_root)
+}
+
+fn valid_replay_browser_transaction_contract(view: &mealy_application::EffectLedgerView) -> bool {
+    let Some(approval) = view.approval.as_ref() else {
+        return false;
+    };
+    let request = &view.policy_request;
+    let (
+        Some(capability),
+        Some(target_resource),
+        Some(network_destination),
+        Some(initial_url),
+        Some(form_digest),
+    ) = (
+        request
+            .tool
+            .required_capabilities
+            .first()
+            .filter(|_| request.tool.required_capabilities.len() == 1),
+        request
+            .target_resources
+            .first()
+            .filter(|_| request.target_resources.len() == 1),
+        request
+            .network_destinations
+            .first()
+            .filter(|_| request.network_destinations.len() == 1),
+        request
+            .normalized_arguments
+            .get("initialUrl")
+            .and_then(Value::as_str),
+        request
+            .normalized_arguments
+            .get("formDigest")
+            .and_then(Value::as_str),
+    )
+    else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(initial_url).map(|url| url.origin().ascii_serialization())
+    else {
+        return false;
+    };
+    if target_resource != &format!("browser-transaction:{origin}")
+        || network_destination != &format!("origin:{origin}")
+        || request.resource_claims
+            != [format!(
+                "browser-transaction-form:{target_resource}:{form_digest}"
+            )]
+        || !request.secret_references.is_empty()
+        || !request.workspace_roots.is_empty()
+    {
+        return false;
+    }
+    let grant = mealy_application::BrowserTransactionPolicyGrant {
+        principal_id: request.principal_id,
+        channel_binding_id: request.channel_binding_id,
+        task_id: request.task_id,
+        run_id: request.run_id,
+        tool_descriptor_digest: request.tool.descriptor_digest.clone(),
+        runtime_identity_digest: request.tool.executable_identity_digest.clone(),
+        capability: capability.clone(),
+        target_resource: target_resource.clone(),
+        network_destination: network_destination.clone(),
+        valid_from_ms: request.evaluated_at_ms,
+        expires_at_ms: approval.subject.expires_at_ms,
+    };
+    let normalized =
+        mealy_application::normalize_browser_transaction_arguments(&request.normalized_arguments)
+            .is_ok_and(|normalized| normalized == request.normalized_arguments);
+    let policy = mealy_application::evaluate_browser_transaction_policy(request, &grant)
+        == view.policy_evaluation;
+    let subject = mealy_application::browser_transaction_approval_subject(
+        view.effect_id,
+        request,
+        &grant,
+        approval.subject.expires_at_ms,
+    )
+    .is_ok_and(|subject| subject == approval.subject);
+    normalized && policy && subject
 }
 
 fn valid_replay_image_generation_contract(view: &mealy_application::EffectLedgerView) -> bool {
@@ -1347,15 +1443,11 @@ fn verify_effect_model_origin(
     };
     let origin_matches = if let ProviderResponse::ToolCall { tool_id, arguments } = response {
         tool_id == view.policy_request.tool.tool_id
-            && if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
-                arguments.as_object().is_some_and(|arguments| {
-                    arguments.len() == 1
-                        && arguments.get("prompt")
-                            == view.policy_request.normalized_arguments.get("prompt")
-                })
-            } else {
-                arguments == view.policy_request.normalized_arguments
-            }
+            && model_effect_arguments_match(
+                &tool_id,
+                &arguments,
+                &view.policy_request.normalized_arguments,
+            )
     } else {
         false
     };
@@ -1366,6 +1458,19 @@ fn verify_effect_model_origin(
         && origin_matches
         && declared.input_schema == view.policy_request.tool.input_schema
         && declared.schema_digest == view.policy_request.tool.input_schema_digest)
+}
+
+fn model_effect_arguments_match(tool_id: &str, raw: &Value, normalized: &Value) -> bool {
+    if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+        return raw.as_object().is_some_and(|arguments| {
+            arguments.len() == 1 && arguments.get("prompt") == normalized.get("prompt")
+        });
+    }
+    if tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+        return mealy_application::normalize_browser_transaction_arguments(raw)
+            .is_ok_and(|canonical| canonical == *normalized);
+    }
+    raw == normalized
 }
 
 fn verify_terminal_effect_attempt(

@@ -278,7 +278,9 @@ fn downgrade_to_schema_13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);
+             DELETE FROM schema_version WHERE version IN (
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+             );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate v13");

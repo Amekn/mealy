@@ -2,6 +2,7 @@
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::State,
     http::{HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
@@ -156,6 +157,8 @@ enum PendingToolCall {
     Mcp,
     ImageGeneration,
     Browser,
+    BrowserThenTransaction,
+    BrowserTransactionAfterSnapshot,
 }
 
 #[derive(Clone, Default)]
@@ -318,6 +321,18 @@ impl MockProviderState {
         })))
     }
 
+    fn with_browser_transaction_tool_call(web_origin: String) -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::BrowserThenTransaction,
+            web_tool_steps_remaining: 0,
+            web_origin: Some(web_origin),
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
     fn with_delayed_delegation_tool_call(delay: Duration) -> Self {
         let state = Self::with_delegation_tool_call();
         state
@@ -396,6 +411,8 @@ async fn responses_handler(
         call_mcp,
         call_image_generation,
         call_browser,
+        call_browser_transaction_catalog,
+        call_browser_transaction,
         web_tool_call,
         delegated_child_delay_ms,
     ) = {
@@ -416,6 +433,8 @@ async fn responses_handler(
         };
         if pending_tool_call == PendingToolCall::DelegationThenParallel {
             state.pending_tool_call = PendingToolCall::ParallelAfterChild;
+        } else if pending_tool_call == PendingToolCall::BrowserThenTransaction {
+            state.pending_tool_call = PendingToolCall::BrowserTransactionAfterSnapshot;
         }
         let web_tool_call = if !fail && state.web_tool_steps_remaining > 0 {
             let step = state.web_tool_steps_remaining;
@@ -447,7 +466,12 @@ async fn responses_handler(
             ),
             pending_tool_call == PendingToolCall::Mcp,
             pending_tool_call == PendingToolCall::ImageGeneration,
-            pending_tool_call == PendingToolCall::Browser,
+            matches!(
+                pending_tool_call,
+                PendingToolCall::Browser | PendingToolCall::BrowserThenTransaction
+            ),
+            pending_tool_call == PendingToolCall::BrowserThenTransaction,
+            pending_tool_call == PendingToolCall::BrowserTransactionAfterSnapshot,
             web_tool_call,
             delegated_child_delay_ms,
         )
@@ -860,6 +884,24 @@ async fn responses_handler(
             })
             .and_then(|tool| tool["name"].as_str())
             .expect("browser provider tool name");
+        let mut arguments = json!({
+            "url": if call_browser_transaction_catalog {
+                format!("{web_origin}/transaction-page")
+            } else {
+                format!("{web_origin}/page")
+            },
+            "maximumTextBytes": 4096,
+            "maximumElements": 16,
+        });
+        if !call_browser_transaction_catalog {
+            arguments["captureScreenshot"] = Value::Bool(true);
+            arguments["fillElement"] = json!({
+                "role": "searchbox",
+                "name": "Evidence query",
+                "value": "durable browser evidence",
+                "submitGetForm": true
+            });
+        }
         let mut response = Json(json!({
             "id": "resp-browser-call",
             "object": "response",
@@ -869,18 +911,7 @@ async fn responses_handler(
                 "type": "function_call",
                 "call_id": "call-browser-snapshot",
                 "name": tool_name,
-                "arguments": json!({
-                    "url": format!("{web_origin}/page"),
-                    "maximumTextBytes": 4096,
-                    "maximumElements": 16,
-                    "captureScreenshot": true,
-                    "fillElement": {
-                        "role": "searchbox",
-                        "name": "Evidence query",
-                        "value": "durable browser evidence",
-                        "submitGetForm": true
-                    }
-                }).to_string()
+                "arguments": arguments.to_string()
             }],
             "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
         }))
@@ -888,6 +919,56 @@ async fn responses_handler(
         response
             .headers_mut()
             .insert("x-request-id", HeaderValue::from_static("req-browser-call"));
+        return response;
+    }
+    if call_browser_transaction {
+        let web_origin = state
+            .0
+            .lock()
+            .expect("provider capture lock")
+            .web_origin
+            .clone()
+            .expect("browser origin");
+        let form_digest = find_string_field(&body, "formDigest")
+            .filter(|digest| mealy_application::is_sha256_digest(digest))
+            .expect("browser snapshot form digest");
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"].as_str().is_some_and(|description| {
+                        description.contains("digest-matched same-origin POST")
+                    })
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .expect("browser transaction provider tool name");
+        let mut response = Json(json!({
+            "id": "resp-browser-transaction-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-browser-transaction",
+                "name": tool_name,
+                "arguments": json!({
+                    "initialUrl": format!("{web_origin}/transaction-page"),
+                    "formDigest": form_digest,
+                    "fields": [{
+                        "name": "message",
+                        "value": "exact durable browser transaction"
+                    }],
+                    "submitter": {"name": "action", "value": "send"}
+                }).to_string()
+            }],
+            "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-browser-transaction-call"),
+        );
         return response;
     }
     if let Some((step, web_origin)) = web_tool_call {
@@ -1257,6 +1338,31 @@ fn find_effect_observation(value: &Value) -> Option<(Value, String)> {
         Value::Array(values) => values.iter().find_map(find_effect_observation),
         Value::Object(values) => values.values().find_map(find_effect_observation),
         Value::Null | Value::Bool(_) | Value::Number(_) => None,
+    }
+}
+
+fn find_string_field(value: &Value, field: &str) -> Option<String> {
+    match value {
+        Value::Object(values) => values
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                values
+                    .values()
+                    .find_map(|value| find_string_field(value, field))
+            }),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_string_field(value, field)),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .or_else(|| {
+                text.find('{')
+                    .and_then(|start| serde_json::from_str::<Value>(&text[start..]).ok())
+            })
+            .and_then(|decoded| find_string_field(&decoded, field)),
+        _ => None,
     }
 }
 
@@ -4756,6 +4862,247 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "set MEALY_BROWSER_BUNDLE to a reviewed Chrome Headless Shell bundle"]
+#[allow(clippy::too_many_lines)]
+async fn browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let source = std::env::var_os("MEALY_BROWSER_BUNDLE")
+        .map(std::path::PathBuf::from)
+        .expect("reviewed browser bundle path");
+    let (web_origin, web_state, web_server) = spawn_browser_transaction_web_server().await;
+    let state = MockProviderState::with_browser_transaction_tool_call(web_origin.clone());
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    let browser_path = add_transactional_browser_config(home.path(), &source, &web_origin);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &first_connection, "/v1/admin/status").await;
+    assert!(
+        status
+            .enabled_action_tools
+            .iter()
+            .any(|tool| tool == "browser.transact"),
+        "transaction effect must be separately visible: {status:?}"
+    );
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "browser-transaction-dispatch-crash".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content:
+                "Inspect the authorized form, then propose exactly one transaction for approval."
+                    .to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let pending: PendingApprovalsResponse =
+                authorized_get(&client, &first_connection, "/v1/approvals").await;
+            if !pending.approvals.is_empty() {
+                break pending;
+            }
+            let task: TaskResponse =
+                authorized_get(&client, &first_connection, &format!("/v1/tasks/{task_id}")).await;
+            if Instant::now() >= deadline
+                || matches!(
+                    task.status,
+                    TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            {
+                let timeline: TimelinePageResponse = authorized_get(
+                    &client,
+                    &first_connection,
+                    &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+                )
+                .await;
+                let failures = timeline
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type.ends_with(".failed"))
+                    .map(|event| (&event.event_type, &event.payload))
+                    .collect::<Vec<_>>();
+                panic!(
+                    "browser approval was not requested; task={task:?}; failures={failures:?}; provider_request_count={}",
+                    state.requests().len()
+                );
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let approval = pending.approvals.first().expect("browser approval");
+    assert_eq!(approval.subject.tool_id, "browser.transact");
+    assert!(
+        approval
+            .subject
+            .target_resources
+            .iter()
+            .any(|target| target == &format!("browser-transaction:{web_origin}"))
+    );
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-browser-transaction-dispatch-crash".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let dispatch_deadline = Instant::now() + Duration::from_secs(45);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if web_state.posts.load(Ordering::SeqCst) == 1
+            && let Some(event) = timeline
+                .events
+                .iter()
+                .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("browser dispatch attempt")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < dispatch_deadline,
+            "browser transaction never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
+    assert_eq!(web_state.bodies.lock().expect("POST bodies").len(), 1);
+    {
+        let bodies = web_state.bodies.lock().expect("POST bodies");
+        let body = &bodies[0];
+        for expected in [
+            b"csrf=private-fixture-csrf".as_slice(),
+            b"message=exact+durable+browser+transaction".as_slice(),
+            b"action=send".as_slice(),
+        ] {
+            assert!(
+                body.windows(expected.len())
+                    .any(|window| window == expected),
+                "encoded transaction body omitted an approved component: {body:?}"
+            );
+        }
+    }
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-browser-transaction-dispatch-crash".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Failed,
+            evidence: json!({
+                "basis": "owner verified the fixture transaction was intentionally treated as failed",
+                "observedPostCount": 1,
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Failed);
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "browser task: {task:?}");
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "never-retry browser transaction must not redispatch after recovery"
+    );
+    fs::remove_dir_all(&browser_path).expect("remove live browser bundle before replay");
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "browser crash replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
+    provider_server.abort();
+    web_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
 async fn explicit_action_creates_one_approved_file_and_replays_without_redispatch() {
     if !Path::new("/usr/bin/bwrap").is_file() {
@@ -6321,6 +6668,63 @@ async fn spawn_web_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
     (origin, requests, server)
 }
 
+#[derive(Clone, Default)]
+struct MockBrowserTransactionWebState {
+    requests: Arc<AtomicUsize>,
+    posts: Arc<AtomicUsize>,
+    bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+async fn mock_browser_transaction_page(
+    State(state): State<MockBrowserTransactionWebState>,
+) -> Response {
+    state.requests.fetch_add(1, Ordering::SeqCst);
+    (
+        [("content-type", "text/html; charset=utf-8")],
+        "<!doctype html><title>Transaction</title><form action=\"/transaction\" method=\"post\" enctype=\"application/x-www-form-urlencoded\"><input type=\"hidden\" name=\"csrf\" value=\"private-fixture-csrf\"><label>Message <textarea name=\"message\" maxlength=\"256\" required></textarea></label><button type=\"submit\" name=\"action\" value=\"send\">Send</button></form><script>setTimeout(()=>{try{HTMLFormElement.prototype.submit.call(document.forms[0])}catch(_){}},1000)</script>",
+    )
+        .into_response()
+}
+
+async fn mock_browser_transaction_result(
+    State(state): State<MockBrowserTransactionWebState>,
+    body: Bytes,
+) -> Response {
+    state.requests.fetch_add(1, Ordering::SeqCst);
+    state.posts.fetch_add(1, Ordering::SeqCst);
+    state
+        .bodies
+        .lock()
+        .expect("POST body capture")
+        .push(body.to_vec());
+    (
+        StatusCode::CREATED,
+        [("content-type", "text/html; charset=utf-8")],
+        "<!doctype html><title>Committed</title><main>Committed exact daemon transaction</main>",
+    )
+        .into_response()
+}
+
+async fn spawn_browser_transaction_web_server()
+-> (String, MockBrowserTransactionWebState, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock transaction endpoint");
+    let address = listener.local_addr().expect("transaction web address");
+    let origin = format!("http://{address}");
+    let state = MockBrowserTransactionWebState::default();
+    let app = Router::new()
+        .route("/transaction-page", get(mock_browser_transaction_page))
+        .route("/transaction", post(mock_browser_transaction_result))
+        .with_state(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("mock transaction web server");
+    });
+    (origin, state, server)
+}
+
 fn write_provider_config(home: &Path, base_url: &str) {
     fs::create_dir_all(home).expect("create daemon home");
     let config = json!({
@@ -6649,6 +7053,24 @@ fn add_browser_config(home: &Path, source: &Path, origin: &str) -> std::path::Pa
         serde_json::to_vec_pretty(&config).expect("encode browser provider config"),
     )
     .expect("write browser provider config");
+    installed
+}
+
+fn add_transactional_browser_config(
+    home: &Path,
+    source: &Path,
+    origin: &str,
+) -> std::path::PathBuf {
+    let installed = add_browser_config(home, source, origin);
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read browser config"))
+        .expect("decode browser config");
+    config["browser"]["transactionalEnabled"] = Value::Bool(true);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode transactional browser config"),
+    )
+    .expect("write transactional browser config");
     installed
 }
 

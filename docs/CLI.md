@@ -62,6 +62,7 @@ public command cannot be added or removed without updating this reference.
 | `service` | Render/install or plan/remove an owner-level systemd user unit on Linux. |
 | `config` | Inspect or change governed stopped-home configuration. |
 | `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
+| `browser` | Explicitly activate or disable separately governed one-shot browser transactions. |
 | `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
@@ -240,6 +241,22 @@ An interrupted dispatch is never retried and becomes `outcome_unknown`; inspect 
 private canonical JPEG and identified by an artifact ID in the tool observation. Retrieve it
 through the authenticated artifact metadata/content API. TUI/dashboard/channel previews and image
 edits are not enabled by this backend command.
+
+Transactional browser authority is separate from installing or enabling the default read-only
+browser. With the daemon stopped, activate or remove it explicitly:
+
+```sh
+mealyctl --home "$HOME/.mealy" browser --enable-transactions --approve
+mealyctl --home "$HOME/.mealy" browser --disable-transactions --approve
+```
+
+Exactly one of `--enable-transactions` or `--disable-transactions` is required, and `--approve` is
+mandatory. Enabling fails unless the content-pinned read browser and its governed web authority are
+already valid. It publishes no broad origin approval: every `browser.transact` proposal still
+parks for exact authenticated owner review. Disable retains the installed read browser and its
+immutable bundle. Read-browser disable is rejected until the separate transaction switch is
+disabled; terminal browser revoke removes both authorities. Read-browser re-enable does not
+silently restore transactions.
 
 `provider switch` is different from scoped selection: it changes which compatible configured
 route automatic routing prefers. Without `--approve`, it emits a non-mutating

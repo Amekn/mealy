@@ -81,7 +81,10 @@ passive: installing one does not create a user, start a service, or modify `$HOM
 > button, fill one exact non-password text/search control with an optional selected-field-only
 > same-origin GET, or capture one exact same-origin attachment up to 512 KiB in a fresh agent
 > profile. It cannot perform arbitrary keyboard/click events, POST or multi-control forms, uploads,
-> owner-path downloads, or persistent/personal-profile browsing. A
+> owner-path downloads, or persistent/personal-profile browsing. A separately enabled v0.4
+> transaction effect can submit one exact digest-matched same-origin POST after authenticated
+> owner approval, using only digest-verified private upload artifacts and `NeverRetry` recovery;
+> it does not widen the default read profile or provide ambient-login/general browser control. A
 > first-party Telegram bot channel supports
 > an exact user/chat allowlist, durable conversation controls, bounded text attachments, approvals,
 > restart recovery, scheduled turns, and guided private-chat pairing. Provider model discovery is
@@ -1880,11 +1883,42 @@ input/change/submit events. Optional GET submission is constructed and authorize
 not delegated to page script, and any request still must be same-origin GET/HEAD. This is not
 general clicking or arbitrary form automation.
 
-The browser does **not** dispatch keyboard/input/change events, submit POST or multi-control forms,
-upload files, choose owner download paths, capture more than one/512-KiB attachment, retain cookies,
-expose raw DOM/CDP, or use a personal profile. Arbitrary or effectful interaction requires a future
-approval contract and must not be inferred from `browser.snapshot`. Recorded task replay uses
-stored evidence and never launches Chrome, even if the installed runtime was later removed.
+The default `browser.snapshot` tool does **not** dispatch keyboard/input/change events, submit POST
+or multi-control forms, upload files, choose owner download paths, capture more than one/512-KiB
+attachment, retain cookies, expose raw DOM/CDP, or use a personal profile. Its read authority never
+implies transaction authority.
+
+To enable the separate v0.4 one-shot transaction effect, stop the daemon and approve the additional
+authority:
+
+```sh
+"$MEALYCTL" --home "$HOME/.mealy" drain
+"$MEALYCTL" --home "$HOME/.mealy" browser --enable-transactions --approve
+"$MEALYD" --home "$HOME/.mealy"
+```
+
+`browser.snapshot` then exposes a bounded inert catalog of actionable same-origin POST forms. When
+the model proposes `browser.transact`, Mealy parks the exact canonical initial URL, form digest,
+public values, submitter, private upload artifact IDs/digests, runtime identity, limits, and
+deadline for authenticated local approval. Approval is per invocation; a prior approval, page
+text, Slack message, or read-only browser grant cannot approve another transaction.
+
+After approval, a fresh isolated profile reloads and revalidates the exact form. Mealy closes that
+hostile page, reconstructs only the approved controls in a clean target, and permits one matching
+same-origin POST. Uploads can come only from existing owner-private content-addressed artifacts;
+host paths never enter the worker. One bounded same-origin response download may become a private
+artifact. A crash, cancellation, timeout, or daemon restart after dispatch becomes
+`outcome_unknown`, never retries, and requires `mealyctl effect reconcile` after the owner verifies
+the external result. Recorded task replay uses stored evidence and never launches Chrome or
+resubmits, even if the runtime was later removed.
+
+This contract has no ambient login cookies or saved credentials and does not support payments,
+WebAuthn, extension wallets, cross-origin identity flows, arbitrary clicks/JavaScript, unattended
+batches, or personal/persistent profiles. Disable only the transaction effect, while stopped, with:
+
+```sh
+"$MEALYCTL" --home "$HOME/.mealy" browser --disable-transactions --approve
+```
 
 Run browser-enabled production deployments through the installed systemd user service (or an
 equivalent cgroup). Its unit applies `MemoryHigh=1G`, `MemoryMax=1536M`, zero swap, and a task cap to
@@ -1895,6 +1929,7 @@ equivalent service-level physical-memory ceiling.
 Disable or revoke while stopped:
 
 ```sh
+"$MEALYCTL" --home "$HOME/.mealy" browser --disable-transactions --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-disable --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-enable --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-revoke --approve
@@ -1904,7 +1939,9 @@ Re-enable repeats the full bundle/product/CDP/rendering verification. Disable an
 immutable runtime bytes for configuration rollback. `web-disable` is rejected while the browser is
 enabled; disable/revoke the browser first. Safe mode never launches it. Complete backups, isolated
 restore verification, activation, and cross-schema rollback preserve and re-verify the referenced
-bundle.
+bundle. Read-browser disable is rejected until transaction authority is disabled; terminal revoke
+removes both. Re-enabling the read browser does not reactivate transactions unless the separate
+`browser --enable-transactions --approve` command is run.
 
 ## Connect a Telegram bot
 

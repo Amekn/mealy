@@ -858,17 +858,44 @@ GET/HEAD interception. It may instead fill one exact enabled native non-password
 through a value setter captured before page code. No input/change/submit event is dispatched. An
 optional form step accepts only GET plus same-origin action plus empty/`_self` target and constructs
 the destination from only the selected non-empty field name/value; hidden and sibling fields never
-cross the proxy. There is no host CDP port, arbitrary keyboard/form event authority, POST or
-multi-control form submission, personal profile, cookie persistence, or upload authority. One exact
-accessible same-origin `downloadLink` is the only download exception: Chrome writes a CDP GUID-
+cross the proxy. There is no host CDP port, arbitrary keyboard/form event authority, personal
+profile, cookie persistence, or upload authority in this default read tool. One exact accessible
+same-origin `downloadLink` is the only read-tool download exception: Chrome writes a CDP GUID-
 named file under the per-call ephemeral profile, progress and total bytes are capped, the worker
 opens it with `NOFOLLOW`, and the result carries at most 512 KiB as base64 plus SHA-256/size/URL.
 No configured workspace or owner-selected path is mounted or written.
+
+One-shot POST authority is an independent stopped-daemon switch and remains disabled after browser
+installation or read-browser re-enable:
+
+```sh
+mealyctl --home "$HOME/.mealy" browser --enable-transactions --approve
+mealyctl --home "$HOME/.mealy" browser --disable-transactions --approve
+```
+
+With it enabled, `browser.snapshot` may report inert POST-form catalog entries and
+`browser.transact` may propose one exact digest-matched same-origin form. Every invocation requires
+authenticated local approval binding the canonical initial URL, form digest, public values,
+submitter, private upload artifact identities/digests, runtime identity, ceilings, and deadline.
+Dispatch reloads and revalidates the form in a fresh profile, closes the hostile source target,
+reconstructs the approved controls in a controlled blank target, and arms one POST only after the
+durable running boundary. Uploads are digest-rechecked owner-private artifacts, never host paths.
+The proxy rejects any second state-changing request, cross-origin redirect, popup, background
+fetch/XHR/beacon, or service worker.
+
+`browser.transact` is `NeverRetry`. If the daemon or worker disappears after dispatch, status parks
+at `outcome_unknown`; inspect the external system and the exact effect/attempt evidence, then use
+the ordinary revision-fenced `effect reconcile` command. Never “fix” a parked transaction by
+restarting it or editing SQLite. Recorded replay validates the intent, approval, attempt,
+observation, artifacts, and event chain without Chrome or network. The boundary intentionally has
+no ambient login cookies, personal profile, payments, WebAuthn, wallet extensions, cross-origin
+identity flow, arbitrary JavaScript/clicking, or unattended batching.
 
 Disable before removing web authority; `web-disable` deliberately refuses to orphan an enabled
 browser:
 
 ```sh
+mealyctl --home "$HOME/.mealy" browser --disable-transactions --approve
 mealyctl --home "$HOME/.mealy" config browser-disable --approve
 mealyctl --home "$HOME/.mealy" config web-disable --approve
 # Re-enable performs complete bundle/product/CDP/render verification:

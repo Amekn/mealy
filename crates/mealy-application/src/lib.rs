@@ -5,6 +5,7 @@ mod agent_effect;
 mod approval;
 mod artifact;
 mod browser;
+mod browser_transaction;
 mod channel;
 mod channel_adapter;
 mod compaction;
@@ -77,10 +78,24 @@ pub use artifact::{
 };
 pub use browser::{
     BROWSER_CDP_PROTOCOL_VERSION, BROWSER_MAXIMUM_BUNDLE_BYTES, BROWSER_MAXIMUM_BUNDLE_FILE_BYTES,
-    BROWSER_MAXIMUM_BUNDLE_FILES, BROWSER_SNAPSHOT_TOOL_ID, BrowserConfig, BrowserConfigError,
-    BrowserElementTarget, BrowserFillTarget, BrowserLinkTarget, BrowserSnapshotRequest,
-    browser_maximum_screenshot_bytes, browser_snapshot_descriptor,
-    validate_browser_snapshot_arguments,
+    BROWSER_MAXIMUM_BUNDLE_FILES, BROWSER_MAXIMUM_FORM_CONTROLS, BROWSER_MAXIMUM_FORMS,
+    BROWSER_SNAPSHOT_TOOL_ID, BrowserConfig, BrowserConfigError, BrowserElementTarget,
+    BrowserFillTarget, BrowserLinkTarget, BrowserSnapshotRequest, browser_maximum_screenshot_bytes,
+    browser_snapshot_descriptor, validate_browser_snapshot_arguments,
+};
+pub use browser_transaction::{
+    BROWSER_TRANSACTION_APPROVAL_EXPLANATION, BROWSER_TRANSACTION_CAPABILITY_PREFIX,
+    BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES, BROWSER_TRANSACTION_MAXIMUM_FIELD_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_FIELDS, BROWSER_TRANSACTION_MAXIMUM_FIELDS_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_OUTPUT_BYTES, BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_UPLOADS, BROWSER_TRANSACTION_MAXIMUM_UPLOADS_BYTES,
+    BROWSER_TRANSACTION_POLICY_VERSION, BROWSER_TRANSACTION_TIMEOUT_MS,
+    BROWSER_TRANSACTION_TOOL_ID, BrowserTransactionContractError, BrowserTransactionField,
+    BrowserTransactionPolicyGrant, BrowserTransactionRequest, BrowserTransactionUpload,
+    browser_transaction_approval_subject, browser_transaction_policy_grant,
+    browser_transaction_required_capability, browser_transaction_runtime_identity_digest,
+    browser_transaction_tool_descriptor, evaluate_browser_transaction_policy,
+    normalize_browser_transaction_arguments,
 };
 pub use channel::{
     CompleteWebhookDeliveryCommit, OutboundWebhookTarget, RegisterWebhookChannelCommit,

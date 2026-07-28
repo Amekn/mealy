@@ -220,6 +220,17 @@ struct MediaArguments {
     command: MediaNamespace,
 }
 
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed rendered-browser administration")]
+struct BrowserArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Browser configuration namespace.
+    #[command(subcommand)]
+    command: BrowserNamespace,
+}
+
 #[derive(Debug, Subcommand)]
 enum McpHttpNamespace {
     /// Inspect or change governed Streamable HTTP MCP authority.
@@ -230,6 +241,30 @@ enum McpHttpNamespace {
 enum MediaNamespace {
     /// Inspect or change bounded media capabilities.
     Media(MediaOptions),
+}
+
+#[derive(Debug, Subcommand)]
+enum BrowserNamespace {
+    /// Inspect or change separately governed transactional browser authority.
+    Browser(BrowserOptions),
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("transaction_mode")
+        .required(true)
+        .args(["enable_transactions", "disable_transactions"])
+))]
+struct BrowserOptions {
+    /// Activate one-shot high-risk POST form authority.
+    #[arg(long)]
+    enable_transactions: bool,
+    /// Remove POST authority while retaining the read-only research browser.
+    #[arg(long)]
+    disable_transactions: bool,
+    /// Confirm this stopped-daemon authority change.
+    #[arg(long)]
+    approve: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -2652,9 +2687,11 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <MediaNamespace as clap::Subcommand>::augment_subcommands(
-        <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-            <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+    <BrowserNamespace as clap::Subcommand>::augment_subcommands(
+        <MediaNamespace as clap::Subcommand>::augment_subcommands(
+            <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+                <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+            ),
         ),
     )
     .subcommand_required(false)
@@ -2763,6 +2800,25 @@ fn media_invocation(arguments: &[OsString]) -> bool {
             continue;
         }
         return argument == "media";
+    }
+    false
+}
+
+fn browser_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "browser";
     }
     false
 }
@@ -3708,6 +3764,18 @@ fn remove_verified_owner_service_if_present(_home: &Path) -> Result<(), CliError
 async fn run() -> Result<(), CliError> {
     let raw_arguments = apply_default_operational_subcommand(std::env::args_os().collect())?;
     let home_override_supplied = cli_home_override_supplied(&raw_arguments);
+    if browser_invocation(&raw_arguments) {
+        let mut arguments = BrowserArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let BrowserNamespace::Browser(options) = arguments.command;
+        return tokio::task::block_in_place(|| {
+            configure_browser_transaction_enabled(
+                &arguments.home,
+                options.enable_transactions,
+                options.approve,
+            )
+        });
+    }
     if media_invocation(&raw_arguments) {
         let mut arguments = MediaArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
@@ -16051,6 +16119,9 @@ fn configure_browser_enabled(home: &Path, enabled: bool, approve: bool) -> Resul
     if browser.enabled() == enabled {
         return Err(CliError::InvalidBrowserConfiguration);
     }
+    if !enabled && browser.transactional_enabled() {
+        return Err(CliError::BrowserTransactionsRequireBrowser);
+    }
     if enabled {
         require_enabled_web_for_browser(object)?;
         verify_configured_browser(&home, &browser)?;
@@ -16063,6 +16134,52 @@ fn configure_browser_enabled(home: &Path, enabled: bool, approve: bool) -> Resul
         &current_body,
         &value,
         if enabled { "enabled" } else { "disabled" },
+        Some(browser),
+        true,
+    )
+}
+
+fn configure_browser_transaction_enabled(
+    home: &Path,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home =
+        exact_canonical_directory(&home).map_err(|_| CliError::InvalidBrowserConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidBrowserConfiguration)?;
+    let mut browser = configured_browser(object)?.ok_or(CliError::BrowserNotFound)?;
+    if browser.transactional_enabled() == enabled || enabled && !browser.enabled() {
+        return Err(CliError::InvalidBrowserConfiguration);
+    }
+    if enabled {
+        require_enabled_web_for_browser(object)?;
+        verify_configured_browser(&home, &browser)?;
+    }
+    browser = browser.with_transactional_enabled(enabled);
+    browser
+        .validate()
+        .map_err(|_| CliError::InvalidBrowserConfiguration)?;
+    object.insert("browser".to_owned(), serde_json::to_value(&browser)?);
+    publish_browser_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        if enabled {
+            "transactional_enabled"
+        } else {
+            "transactional_disabled"
+        },
         Some(browser),
         true,
     )
@@ -18903,6 +19020,11 @@ enum CliError {
     /// Browser authority cannot be activated without an explicit web destination grant.
     #[error("browser authority requires enabled web access configuration")]
     BrowserRequiresWeb,
+    /// Read-only browser authority cannot be removed while the transaction profile is active.
+    #[error(
+        "transactional browser authority must be disabled before disabling the rendered browser"
+    )]
+    BrowserTransactionsRequireBrowser,
     /// Browser bundle inspection or immutable publication failed closed.
     #[error(transparent)]
     BrowserBundle(#[from] BrowserBundleError),
@@ -18981,23 +19103,25 @@ enum CliError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCommand, Arguments, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
-        CompactionCommand, ConfigCommand, DelegationCommand, DiscordPairMessage, DiscordPairUser,
-        EffectCommand, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
-        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
+        ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
+        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigCommand, DelegationCommand,
+        DiscordPairMessage, DiscordPairUser, EffectCommand, ExtensionCommand,
+        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
+        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
         MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
         MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
         OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
         SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
         SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
         TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, chat_usage_line, configure_provider_image_generation,
-        configure_workspace_grant, decode, generate_discord_pair_challenge,
-        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
-        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
-        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
-        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
+        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
+        configure_provider_image_generation, configure_workspace_grant, decode,
+        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
+        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
+        normalize_openrouter_display_name, observe_discord_pair_messages,
+        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
+        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
+        prepare_local_image_attachment, prepare_local_text_attachment,
         provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
         select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
         stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
@@ -19734,6 +19858,44 @@ mod tests {
                     && options.secret_id.as_deref() == Some("openrouter-primary")
                     && options.approve
         ));
+    }
+
+    #[test]
+    fn browser_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("browser"),
+            OsString::from("--enable-transactions"),
+            OsString::from("--approve"),
+        ];
+        assert!(browser_invocation(&arguments));
+        assert!(!browser_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            BrowserArguments::try_parse_from(arguments).expect("separate browser command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            BrowserNamespace::Browser(options)
+                if options.enable_transactions
+                    && !options.disable_transactions
+                    && options.approve
+        ));
+        assert!(BrowserArguments::try_parse_from(["mealyctl", "browser", "--approve"]).is_err());
+        assert!(
+            BrowserArguments::try_parse_from([
+                "mealyctl",
+                "browser",
+                "--enable-transactions",
+                "--disable-transactions",
+                "--approve"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

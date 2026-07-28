@@ -3718,7 +3718,7 @@ fn valid_recorded_read_tool_descriptor(descriptor: &ReadToolDescriptor) -> bool 
             || (descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
                 && descriptor.maximum_output_bytes == 64 * 1024
                 && descriptor.conflict_key_template == "agent-delegate-parallel"));
-    let browser = matches!(descriptor.version.as_str(), "1" | "2" | "3" | "4")
+    let browser = matches!(descriptor.version.as_str(), "1" | "2" | "3" | "4" | "5")
         && descriptor.risk_class == "medium"
         && descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
         && descriptor.required_capability == "network:browser"
@@ -3795,6 +3795,10 @@ fn read_tool_policy(descriptor: &ReadToolDescriptor) -> Option<(&'static str, &'
         ))
     } else if descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID {
         Some(match descriptor.version.as_str() {
+            "5" => (
+                "mealy.browser-tools.v5",
+                "allow: isolated fresh-profile rendered browser snapshot, governed read-only interaction, bounded same-origin attachment capture, and inert POST form catalog evidence",
+            ),
             "4" => (
                 "mealy.browser-tools.v4",
                 "allow: isolated fresh-profile rendered browser snapshot, governed read-only interaction, and bounded same-origin attachment capture",
@@ -5219,15 +5223,16 @@ fn verify_recorded_replay(
     let Some(effects) = agent_effect::load_replay_agent_effects(connection, task.run_id)? else {
         return Ok(false);
     };
+    let manifest_count = count_for_run(connection, "context_manifest", task.run_id)?;
+    let unique_manifests = attempts
+        .iter()
+        .map(|attempt| attempt.context_manifest_id.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     if u64::try_from(attempts.len()).ok() != Some(task.model_attempts)
         || u64::try_from(tools.len().saturating_add(effects.len())).ok() != Some(task.tool_calls)
-        || count_for_run(connection, "context_manifest", task.run_id)? != task.model_attempts
-        || attempts
-            .iter()
-            .map(|attempt| attempt.context_manifest_id.as_str())
-            .collect::<HashSet<_>>()
-            .len()
-            != attempts.len()
+        || manifest_count != task.model_attempts
+        || unique_manifests != attempts.len()
     {
         return Ok(false);
     }
@@ -5311,7 +5316,15 @@ fn verify_recorded_replay(
         .iter()
         .filter(|attempt| matches!(attempt.response, Some(ProviderResponse::Final { .. })))
         .count();
-    let final_boundary = verify_final_boundary(connection, task_id, task, final_attempt, &tools)?;
+    let final_boundary = verify_final_boundary(
+        connection,
+        task_id,
+        task,
+        final_attempt,
+        &attempts,
+        &tools,
+        &effects,
+    )?;
     let terminal =
         verify_terminal_graph_and_events(connection, task_id, task, final_attempt, &effects)?;
     let checkpoints = verify_checkpoint_chain(
@@ -6018,7 +6031,11 @@ fn declared_tool_within_capability(tool_id: &str, capability: &CapabilityGrant) 
                 && capability.profiles.contains(&PolicyProfile::WorkspaceWrite)
                 && !capability.writable_workspace_roots.is_empty()
                 && !capability.executable_identity_digests.is_empty()
-        } else if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+        } else if matches!(
+            tool_id,
+            mealy_application::IMAGE_GENERATION_TOOL_ID
+                | mealy_application::BROWSER_TRANSACTION_TOOL_ID
+        ) {
             capability
                 .effect_classes
                 .contains(&EffectClass::NonIdempotent)
@@ -6108,6 +6125,24 @@ fn recorded_effect_within_capability(
                     .secret_references
                     .iter()
                     .all(|reference| capability.secret_references.contains(reference))
+        } else if effect.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+            effect.effect_class == EffectClass::NonIdempotent
+                && capability
+                    .effect_classes
+                    .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect.target_resources.len() == 1
+                && effect.target_resources[0].starts_with("browser-transaction:http")
+                && effect.network_destinations.len() == 1
+                && capability
+                    .network_destinations
+                    .contains(&effect.network_destinations[0])
+                && effect.secret_references.is_empty()
         } else if effect.tool_id.starts_with("mcp.") {
             capability.effect_classes.contains(&effect.effect_class)
                 && effect.effect_class != EffectClass::ReadOnly
@@ -6195,15 +6230,16 @@ fn verify_model_tool_linkage(
         let Some(declared) = declared else {
             return false;
         };
-        if tool_id != &tool.tool_id
-            || arguments != &tool.arguments
-            || declared.schema_digest != tool.schema_digest
-            || declared.input_schema != tool.descriptor.input_schema
-            || !read_tool_policy_within_manifest(
-                &tool.tool_id,
-                &tool.policy_version,
-                &parent.manifest_policy_version,
-            )
+        let read_identity = tool_id == &tool.tool_id;
+        let read_arguments = arguments == &tool.arguments;
+        let read_schema_digest = declared.schema_digest == tool.schema_digest;
+        let read_schema = declared.input_schema == tool.descriptor.input_schema;
+        let read_policy = read_tool_policy_within_manifest(
+            &tool.tool_id,
+            &tool.policy_version,
+            &parent.manifest_policy_version,
+        );
+        if !read_identity || !read_arguments || !read_schema_digest || !read_schema || !read_policy
         {
             return false;
         }
@@ -6236,6 +6272,9 @@ fn verify_model_tool_linkage(
             arguments.as_object().is_some_and(|arguments| {
                 arguments.len() == 1 && arguments.get("prompt") == effect.arguments.get("prompt")
             })
+        } else if effect.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+            mealy_application::normalize_browser_transaction_arguments(arguments)
+                .is_ok_and(|canonical| canonical == effect.arguments)
         } else {
             arguments == &effect.arguments
         };
@@ -6276,10 +6315,15 @@ fn read_tool_policy_within_manifest(
     tool_policy_version: &str,
     manifest_policy_version: &str,
 ) -> bool {
+    let manifest_includes_read_tools = matches!(
+        manifest_policy_version,
+        "mealy.read-tools.v1" | "mealy.read-and-governed-effect-tools.v2"
+    );
     tool_policy_version == manifest_policy_version
+        || tool_policy_version == "mealy.read-tools.v1" && manifest_includes_read_tools
         || tool_id.starts_with("mcp.")
             && tool_policy_version == "mealy.mcp-stdio-tools.v1"
-            && manifest_policy_version == "mealy.read-tools.v1"
+            && manifest_includes_read_tools
         || tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
             && matches!(
                 tool_policy_version,
@@ -6287,8 +6331,9 @@ fn read_tool_policy_within_manifest(
                     | "mealy.browser-tools.v2"
                     | "mealy.browser-tools.v3"
                     | "mealy.browser-tools.v4"
+                    | "mealy.browser-tools.v5"
             )
-            && manifest_policy_version == "mealy.read-tools.v1"
+            && manifest_includes_read_tools
 }
 
 fn verify_tool_parent_timeline_order(
@@ -8142,7 +8187,9 @@ fn verify_final_boundary(
     task_id: TaskId,
     task: &AgentTaskView,
     final_attempt: &ReplayAttempt,
+    attempts: &[ReplayAttempt],
     tools: &[ReplayTool],
+    effects: &[agent_effect::ReplayAgentEffect],
 ) -> Result<bool, AgentStoreError> {
     let row = connection
         .query_row(
@@ -8198,11 +8245,29 @@ fn verify_final_boundary(
     let Some(ProviderResponse::Final { text }) = &final_attempt.response else {
         return Ok(false);
     };
-    let expected_tool = tools
+    let attempt_ordinals = attempts
+        .iter()
+        .map(|attempt| (attempt.attempt_id.as_str(), attempt.ordinal))
+        .collect::<HashMap<_, _>>();
+    let expected_read_tool = tools
         .iter()
         .rev()
         .find(|tool| tool.state == "succeeded")
-        .map(|tool| tool.tool_call_id.as_str());
+        .and_then(|tool| {
+            attempt_ordinals
+                .get(tool.model_attempt_id.as_str())
+                .map(|ordinal| (*ordinal, tool.tool_call_id.as_str()))
+        });
+    let expected_effect_tool = effects.iter().rev().find_map(|effect| {
+        attempt_ordinals
+            .get(effect.model_attempt_id.as_str())
+            .map(|ordinal| (*ordinal, effect.tool_call_id.as_str()))
+    });
+    let expected_tool = expected_read_tool.and_then(|(read_ordinal, tool_call_id)| {
+        let effect_is_newer =
+            expected_effect_tool.is_some_and(|(effect_ordinal, _)| effect_ordinal > read_ordinal);
+        (!effect_is_newer).then_some(tool_call_id)
+    });
     let Some(content) = content else {
         return Ok(false);
     };

@@ -649,6 +649,17 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
   GUID-confined attachment plus oversized/ambient-download denial, screenshot
   bounds, non-read/WebSocket denial, model-visible citation,
   complete bundle backup/recovery, and replay after runtime deletion.
+- The separately enabled transactional-browser gate proves that inert POST-form catalogs expose
+  hidden-value digests rather than secrets; exact form/action/control/upload drift fails before
+  dispatch; only owner-private digest-matched artifacts can become uploads; the hostile source
+  target is closed before a controlled form is armed; exactly one same-origin POST can cross the
+  proxy; background/second writes, popups, service workers, and cross-origin redirects fail closed;
+  and a crash after dispatch parks for authenticated reconciliation without redispatch.
+- Schema 23 binds the exact completed model tool call to the normalized transaction intent,
+  admitting only omitted optional collections. Replay reconstructs policy, approval, attempt,
+  reconciliation, observation, event chain, capability ceiling, and final boundary without Chrome
+  or network. Noncanonical URLs, unknown fields, changed form digests/values, approval-subject
+  drift, and missing evidence fail closed.
 - API binds loopback only and rejects missing credentials and disallowed Origins.
 - The dashboard process test proves exact Host/Origin/token enforcement, DNS-rebinding rejection,
   no daemon-bearer disclosure, fixed snapshot/timeline aggregation, exact typed command forwarding,

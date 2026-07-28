@@ -3361,7 +3361,7 @@ mod tests {
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);
+                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
@@ -3572,7 +3572,7 @@ mod tests {
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);
+                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");

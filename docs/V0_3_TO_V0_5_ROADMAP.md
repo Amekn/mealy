@@ -234,7 +234,26 @@ final-route revocation removes them. Slack chat deliberately cannot grant effect
 Migration/storage tests and a real HTTP/WebSocket public-process proof cover crash-after-ack
 recovery, exact allowlists, duplicate acknowledgement, thread routing, 429 retry, stable
 downstream identity, secret exclusion/deletion, and revocation. Package/upgrade matrices and the
-complete v0.4 release gate remain pending with the other unfinished v0.4 slices.
+complete v0.4 release gate remain pending.
+
+The first transactional-browser effect is also implemented. A stopped-home flag, separate from
+the safer read browser, exposes `browser.transact` only when the pinned runtime and web authority
+remain valid. `browser.snapshot` emits bounded inert POST-form catalogs with hidden-value digests.
+Each transaction proposal binds one canonical URL/origin/form digest, exact fields/submitter,
+ordered digest-verified private upload artifacts, runtime identity, ceilings, and deadline; policy
+always parks for exact authenticated owner approval. After approval a fresh worker revalidates the
+source form, closes the hostile target, reconstructs only approved controls in a clean target, and
+permits one same-origin POST plus at most one bounded response download. The effect is
+non-idempotent and `NeverRetry`.
+
+Schema 23 preserves the bounded raw-model-to-normalized-intent proof and denies noncanonical URLs,
+unknown fields, or form/value drift. Low-level real Chrome tests exercise controlled submission and
+denial boundaries. A daemon process test proves approval, exactly one POST, crash after durable
+dispatch, restart without resubmission, authenticated reconciliation, terminal continuation, and
+complete recorded-only replay after the browser bundle is removed. Persistent/personal profiles,
+ambient login, arbitrary clicking/JavaScript, payments, cross-origin transactions, and unattended
+batches remain separate future contracts. [ADR 0019](decisions/0019-one-shot-transactional-browser-effects.md)
+records the boundary.
 
 ### v0.4 release gate
 
