@@ -3312,7 +3312,12 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "browser.snapshot", "web.fetch"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "browser.snapshot",
+            "web.fetch",
+        ]
     );
 
     let session: CreateSessionResponse = authorized_post(
