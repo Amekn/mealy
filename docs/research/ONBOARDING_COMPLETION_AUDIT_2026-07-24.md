@@ -2,6 +2,8 @@
 
 Observed: 2026-07-24 (Pacific/Auckland)
 
+Completion recheck: 2026-07-28 (Pacific/Auckland)
+
 Standard: the ten-item definition in
 [PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md](PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md#definition-of-competitor-grade-onboarding)
 
@@ -10,47 +12,39 @@ green pull-request check proves the exact source revision it tested; it does not
 revision is merged, tagged, published, or installed by an ordinary user. “Source-ready” below
 therefore remains distinct from “publicly complete.”
 
-At the 2026-07-28 delivery recheck, v0.1.0 remains the only public immutable
-stable release with green native package, attestation, and public archive
-acceptance. It predates this onboarding stack and the signed Linux repository
-workflow, so documentation must not describe APT, DNF, or Pacman publication as
-an already available user surface. The v0.1.1 failure remains preserved without
-moving or reusing its tag. Exact v0.2.0 runtime revision
-`bd0fa3c12e29a69dd89b8f038b941ef421c28bd5` has now completed the checked
-24-hour soak: 19,248 turns, 48 hard restarts, 53 interrupted-provider
-recoveries, SQLite integrity `ok`, and zero residual work. A fresh authenticated
-download of its staged exact daemon passed the full release validator. The
-private custom-provider run also passed, and the owner-controlled repository
-fingerprint plus signing-subkey export are configured and clean-install tested.
-Its report-bearing protected-main integration and final reviewed zero-price
-OpenRouter run passed. The immutable
-[`v0.2.0` tag workflow](../benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md)
-then failed before signing or publication because one Debian extended-description
-line exceeded Lintian's limit. The tag is retained. The v0.2.1 correction adds
-protected-CI Lintian parity; the evidence below records its separate exact-binary
-qualification. Qualifying tag publication and public repository acceptance remain.
-The corrected exact v0.2.1 daemon at `eec96a8f91718679b258c754e00f04056e629430`
-has now passed two byte-identical auditable builds, every exact x86-64 archive/native-package
-lifecycle, protected observed-commit CI, and a fresh 86,425.487-second retained-disk soak with
-19,248 completed turns, 48 hard restarts, 53 interrupted-provider recoveries, SQLite integrity
-`ok`, and zero residue. Its staged subject was downloaded afresh and matched the retained daemon
-byte-for-byte. Protected report promotion, exact live acceptance, publication, and public
-repository acceptance remain.
+At the completion recheck, the onboarding goal is publicly complete for Mealy's documented Linux
+contract. Immutable stable
+[`v0.2.1`](https://github.com/Amekn/mealy/releases/tag/v0.2.1) points to exact release commit
+`b8e9d8576f228fd43a523ad38704a86b4630b115`. Its promoted daemon is byte-identical to soaked
+revision `eec96a8f91718679b258c754e00f04056e629430`, which completed 86,425.487 seconds,
+19,248 turns, 48 hard restarts, 53 interrupted-provider recoveries, SQLite integrity `ok`, and
+zero residue. Exact protected-main CI, owner-reviewed strictly free OpenRouter acceptance, the
+private custom endpoint, native packaging, attestations, public rootless installation, and the
+install-to-first-chat journey all passed.
+
+The tag workflow published the immutable release and signed repositories, but its first
+repository-verifier attempt raced the newly deployed manifest and ended red after publication.
+That negative result is retained. The verifier was repaired through protected main CI, then
+[`v0.2.1` post-publication acceptance](https://github.com/Amekn/mealy/actions/runs/30324688498)
+verified the exact signed and attested manifest and installed the exact release through APT on
+Ubuntu x86-64 and Debian ARM64, DNF on Fedora x86-64 and ARM64, and Pacman on Arch x86-64. The
+live [version-matched repository page](https://amekn.github.io/mealy/) now carries the supported
+install, onboarding, continuation, diagnostics, update, and independent trust-verification path.
 
 ## Requirement evidence
 
 | # | Ordinary-user outcome | Authoritative evidence | Current conclusion |
 | --- | --- | --- | --- |
-| 1 | Obtain an attested package without Rust | `packaging/install-release.sh` verifies exact release-workflow Sigstore bundles and complete checksums; native packages and `packaging/build-signed-linux-repositories.sh` cover APT, DNF, and Pacman; package/repository clean-install tests cover every qualified family. | **v0.1.0 archives are publicly attested; the onboarding/repository experience is public-release gated.** No source checkout or older tag can substitute for the first qualifying onboarding tag and public repository acceptance. |
-| 2 | Run one guided command | Bare terminal `mealyctl` selects onboarding for an unconfigured private home and a new chat for a configured home; `mealyctl onboard` composes provider selection, reviewed activation, service installation/start, health, `doctor`, and chat. A PTY process proof covers both bare-command journeys and proves non-terminal use fails without mutation. The verified interactive bootstrap hands off to the same installed command. The implicit private home is the stable `$HOME/.mealy`, not a directory-relative `.mealy`, and a process proof reuses it after changing working directories. | **Source-ready and process-tested.** |
-| 3 | Choose free, subscription, local, custom, or advanced API routes without researching accounting | The `OnboardRouteArgument` command surface and provider-configuration process tests cover strict free OpenRouter, authenticated custom Responses, credentialless loopback, the official Codex subscription client, OpenAI API, and Anthropic API. The ChatGPT route uses bounded official app-server account/login/model methods: terminal users separately consent to browser or headless device login when needed, then onboarding selects the unique account-catalog default or validates an exact override. Mealy retains a conservative 128,000-token context ceiling without asking the user for internal model metadata. Browser/device, signed-in, non-terminal, decline, and missing-client process proofs cover credential containment, official prerequisite guidance, and no-mutation behavior; a live model-call-free run selected the installed Plus account's `gpt-5.6-sol` default. Claude subscription routing is excluded because Anthropic's current third-party terms prohibit it; legacy names fail before mutation/invocation and direct Anthropic API, OpenRouter, custom, or Claude Code alternatives are reported. Catalog routes derive limits/prices; advanced routes require explicit conservative values. When a remote route's named environment variable is absent, terminal onboarding captures one bounded credential with echo disabled, restores echo before the next prompt, and reuses the same zeroizing value through discovery/probe/broker activation. PTY tests cover OpenRouter and custom endpoints; non-terminal absence fails before mutation. | **Source-ready, process-tested, and live account/catalog accepted.** OpenRouter free remains subject to exact live acceptance for publication. |
-| 4 | See a bounded live route probe pass | Onboarding calls the existing byte-, event-, identity-, timeout-, and model-bounded provider probes before activation. Provider process tests cover each protocol and redaction; the private custom endpoint has separate live acceptance. | **Source-ready.** The release still requires reviewed free-OpenRouter live evidence. |
-| 5 | Have the owner service installed and running | `scripts/systemd-service-smoke.sh` starts from a clean home, uses the real generated enabled systemd user unit, requires health plus sandbox-conformant `doctor`, and executes a governed mutation. Protected Linux CI prepares a clean user manager with lingering enabled. The tag workflow repeats the proof from the exact public rootless download before accepting a release. | **Source-ready and installed-service tested; first qualifying public tag remains required.** |
-| 6 | Reach the first useful chat | The same installed-service journey drives onboarding through a real terminal input, requires the visible model response, verifies exact usage, and finds the committed durable task before accepting success. Public acceptance uses the downloaded installer without a repository override and reruns this journey through first chat, restart, `doctor`, durable continuation, and uninstall. | **Source-ready and end-to-end tested; first qualifying public tag remains required.** |
-| 7 | Restart and resume | `chat --continue` selects the newest exact-binding session without creating another, while `chat --pick` provides a bounded terminal-only chooser for 20 recent exact-binding sessions and resumes only the selected one. The systemd journey captures the enabled installed service and its PID, restarts it, requires a distinct healthy daemon and passing `doctor`, then resumes the exact prior session and rechecks the one-session inventory. Login-manager lingering plus the generated enabled unit cover boot activation under the supported distro contract. | **Implemented; exact protected systemd acceptance is required on every revision.** A hosted runner cannot reboot its physical host, so Mealy proves the controllable cold-process, durable-state, enabled-unit, and distro-contract components instead of claiming a literal hardware reboot occurred in CI. |
-| 8 | Diagnose a failure with one command | `mealyctl doctor` checks API readiness, SQLite startup integrity, permissions, required system executables, and enforceability of every sandbox profile; onboarding will not report completion until it passes. | **Source-ready and package-tested.** |
-| 9 | Update and roll back without losing state | `install-status`, no-mutation `update`, restartable approved archive update, pre-update backup, qualification, automatic same-schema slot rollback, repair, uninstall, and native manager handoffs are implemented. Installed failure injection requires the prior package, health, `doctor`, backup, and durable task to survive. | **Source-ready and installed-package tested.** |
-| 10 | Find the same short, version-matched workflow | `GETTING_STARTED.md` is bundled in every archive/native package. The signed repository landing page carries distro install, onboarding, continuation, diagnostics, update, fingerprint, and version-tagged detailed links inside the complete signed repository inventory. Documentation validation binds public CLI/API surfaces and local links. | **Source-ready and package/repository tested, not deployed.** The configured public URL currently returns HTTP 404. |
+| 1 | Obtain an attested package without Rust | `packaging/install-release.sh` verifies exact release-workflow Sigstore bundles and complete checksums; native packages and `packaging/build-signed-linux-repositories.sh` cover APT, DNF, and Pacman; package/repository clean-install tests cover every qualified family. | **Publicly complete.** v0.2.1 has attested rootless archives and signed APT, DNF, and Pacman repositories; post-publication acceptance installed the exact release on every qualified family/architecture lane. |
+| 2 | Run one guided command | Bare terminal `mealyctl` selects onboarding for an unconfigured private home and a new chat for a configured home; `mealyctl onboard` composes provider selection, reviewed activation, service installation/start, health, `doctor`, and chat. A PTY process proof covers both bare-command journeys and proves non-terminal use fails without mutation. The verified interactive bootstrap hands off to the same installed command. The implicit private home is the stable `$HOME/.mealy`, not a directory-relative `.mealy`, and a process proof reuses it after changing working directories. | **Publicly complete.** Public release acceptance installed the downloaded payload and exercised the same one-command guided journey from a clean private home. |
+| 3 | Choose free, subscription, local, custom, or advanced API routes without researching accounting | The `OnboardRouteArgument` command surface and provider-configuration process tests cover strict free OpenRouter, authenticated custom Responses, credentialless loopback, the official Codex subscription client, OpenAI API, and Anthropic API. The ChatGPT route uses bounded official app-server account/login/model methods: terminal users separately consent to browser or headless device login when needed, then onboarding selects the unique account-catalog default or validates an exact override. Mealy retains a conservative 128,000-token context ceiling without asking the user for internal model metadata. Browser/device, signed-in, non-terminal, decline, and missing-client process proofs cover credential containment, official prerequisite guidance, and no-mutation behavior; a live model-call-free run selected the installed Plus account's `gpt-5.6-sol` default. Claude subscription routing is excluded because Anthropic's current third-party terms prohibit it; legacy names fail before mutation/invocation and direct Anthropic API, OpenRouter, custom, or Claude Code alternatives are reported. Catalog routes derive limits/prices; advanced routes require explicit conservative values. When a remote route's named environment variable is absent, terminal onboarding captures one bounded credential with echo disabled, restores echo before the next prompt, and reuses the same zeroizing value through discovery/probe/broker activation. PTY tests cover OpenRouter and custom endpoints; non-terminal absence fails before mutation. | **Publicly complete for the supported routes.** The exact release commit passed strictly free OpenRouter and authenticated private-endpoint acceptance; the official ChatGPT account/catalog path passed live without a model call. Direct Claude subscription-token routing remains deliberately unsupported because it is not an authorized third-party integration. |
+| 4 | See a bounded live route probe pass | Onboarding calls the existing byte-, event-, identity-, timeout-, and model-bounded provider probes before activation. Provider process tests cover each protocol and redaction; the private custom endpoint has separate live acceptance. | **Publicly complete.** Exact-release strictly free OpenRouter and private custom-provider runs each completed probe, run, settle, replay, and drain. |
+| 5 | Have the owner service installed and running | `scripts/systemd-service-smoke.sh` starts from a clean home, uses the real generated enabled systemd user unit, requires health plus sandbox-conformant `doctor`, and executes a governed mutation. Protected Linux CI prepares a clean user manager with lingering enabled. The tag workflow repeats the proof from the exact public rootless download before accepting a release. | **Publicly complete.** Exact downloaded v0.2.1 payload acceptance left the generated owner unit enabled, healthy, and running the installed daemon. |
+| 6 | Reach the first useful chat | The same installed-service journey drives onboarding through a real terminal input, requires the visible model response, verifies exact usage, and finds the committed durable task before accepting success. Public acceptance uses the downloaded installer without a repository override and reruns this journey through first chat, restart, `doctor`, durable continuation, and uninstall. | **Publicly complete.** Public release acceptance required the visible first response and the successful committed durable task. |
+| 7 | Restart and resume | `chat --continue` selects the newest exact-binding session without creating another, while `chat --pick` provides a bounded terminal-only chooser for 20 recent exact-binding sessions and resumes only the selected one. The systemd journey captures the enabled installed service and its PID, restarts it, requires a distinct healthy daemon and passing `doctor`, then resumes the exact prior session and rechecks the one-session inventory. Login-manager lingering plus the generated enabled unit cover boot activation under the supported distro contract. | **Publicly complete at the controllable host boundary.** Exact release acceptance proves a distinct cold daemon, enabled unit, durable state, passing `doctor`, and exact-session continuation. A hosted runner cannot reboot its physical host, so the audit does not falsely claim a literal hardware reboot in CI; the qualified distro/systemd contract supplies that final host behavior. |
+| 8 | Diagnose a failure with one command | `mealyctl doctor` checks API readiness, SQLite startup integrity, permissions, required system executables, and enforceability of every sandbox profile; onboarding will not report completion until it passes. | **Publicly complete.** The command is packaged, documented, and required after initial activation and cold restart in exact-release acceptance. |
+| 9 | Update and roll back without losing state | `install-status`, no-mutation `update`, restartable approved archive update, pre-update backup, qualification, automatic same-schema slot rollback, repair, uninstall, and native manager handoffs are implemented. Installed failure injection requires the prior package, health, `doctor`, backup, and durable task to survive. | **Publicly complete.** v0.2.1 ships the lifecycle commands; protected installed-package failure injection proves automatic rollback, healthy service recovery, verified backup, and durable-task preservation. |
+| 10 | Find the same short, version-matched workflow | `GETTING_STARTED.md` is bundled in every archive/native package. The signed repository landing page carries distro install, onboarding, continuation, diagnostics, update, fingerprint, and version-tagged detailed links inside the complete signed repository inventory. Documentation validation binds public CLI/API surfaces and local links. | **Publicly complete.** The signed live landing page identifies stable v0.2.1 and links its version-pinned guide; the same short guide is bundled in every qualified archive and native package. |
 
 ## Failure-behavior audit
 
@@ -79,16 +73,23 @@ The composed path also has direct negative evidence:
 - release install, onboarding, service operations, provider activation, and update transactions
   either reuse stable identities or report their durable completion evidence.
 
-## Remaining gates before the goal is publicly true
+## Completion finding
 
-The protected Debian correction and clean exact-binary 24-hour gate are complete.
+All three former delivery gates are satisfied:
 
-1. The unedited v0.2.1 report and metadata-derived subject manifest must merge through protected
-   `main` CI without a later runtime-source change.
-2. An owner-reviewed, exact-zero-price OpenRouter run and the private custom-provider acceptance
-   must pass against the exact v0.2.1 report-bearing commit.
-3. The v0.2.1 tag workflow must publish immutable attested assets, deploy the signed repositories,
-   and pass clean public HTTPS bootstrap plus APT/DNF/Pacman acceptance.
+1. exact report-bearing release commit
+   [`b8e9d8576f228fd43a523ad38704a86b4630b115`](https://github.com/Amekn/mealy/commit/b8e9d8576f228fd43a523ad38704a86b4630b115)
+   passed [protected main CI](https://github.com/Amekn/mealy/actions/runs/30312296096);
+2. the same commit passed reviewed
+   [strictly free OpenRouter](https://github.com/Amekn/mealy/actions/runs/30314579973) and
+   [private custom-provider](https://github.com/Amekn/mealy/actions/runs/30313042644)
+   acceptance; and
+3. v0.2.1 is immutable, attested, publicly installable through the rootless bootstrap and native
+   packages, and its signed repositories passed
+   [protected post-publication acceptance](https://github.com/Amekn/mealy/actions/runs/30324688498).
 
-Until those gates are satisfied, the implementation is a protected-green candidate experience,
-not a production release available to everyone.
+The ten-item competitor-grade onboarding definition is therefore complete for the qualified
+Ubuntu, Debian, Fedora, and Arch Linux release contract. Future product polish, additional
+distributions, or a graphical installer can improve reach, but they are not unclosed requirements
+in this definition. Mealy intentionally keeps inspect-before-privilege and attestation checks
+instead of copying the shortest competitors' unauthenticated remote-script execution.
