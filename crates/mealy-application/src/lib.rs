@@ -6,6 +6,7 @@ mod approval;
 mod artifact;
 mod browser;
 mod channel;
+mod channel_adapter;
 mod compaction;
 mod context;
 mod daemon_config;
@@ -34,6 +35,7 @@ mod scheduler;
 mod session_export;
 mod session_workbench;
 mod sessions;
+mod slack;
 mod startup;
 mod telegram;
 mod timeline;
@@ -86,6 +88,10 @@ pub use channel::{
     WebhookDeliveryReservation, WebhookSignatureError, sign_webhook,
     validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
     webhook_input_dedupe_key, webhook_signature_digest,
+};
+pub use channel_adapter::{
+    ChannelAdapter, ChannelAdapterError, ChannelInboundDisposition, ChannelInboundMessage,
+    ChannelInboundReceipt, ChannelOutboundContent, ChannelOutboundRequest, ChannelPlatform,
 };
 pub use compaction::{
     COMPACTION_PROMPT_VERSION, CommitCompaction, CompactionSourceEvent, CompactionSourceSnapshot,
@@ -282,6 +288,10 @@ pub use sessions::{
     InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
     SessionStoreError, SessionUseCaseError, admit_input, create_session,
     create_session_with_selection,
+};
+pub use slack::{
+    SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
+    SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_platform_id,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,
