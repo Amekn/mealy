@@ -28,13 +28,14 @@ use mealy_domain::{
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileProviderSecretStore, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
-    MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, ProviderSecretStoreError,
-    SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
-    browser_worker_main, discover_mcp_http_server, discover_mcp_oauth_metadata,
-    discover_mcp_stdio_server, inspect_browser_bundle, inspect_mcp_http_endpoint,
-    inspect_skill_package, inspect_subscription_cli_executable, is_trusted_system_executable,
-    mcp_stdio_launcher_main, probe_browser_bundle_product, publish_browser_bundle,
+    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage,
+    MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
+    McpOAuthTokenError, ProviderSecretStoreError, SubscriptionCliProvider, SubscriptionCliSettings,
+    activate_backup, activate_migration_backup, browser_worker_main, discover_mcp_http_server,
+    discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
+    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
+    inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
+    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
     publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
@@ -79,10 +80,10 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{BufRead, IsTerminal as _, Read, Write},
-    net::IpAddr,
+    net::{IpAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, Stdio},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(unix)]
@@ -90,6 +91,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::AsFd as _;
 use thiserror::Error;
+use url::Url;
 use zeroize::{Zeroize as _, Zeroizing};
 
 const DAEMON_CONFIG_KEYS: [&str; 9] = [
@@ -1250,6 +1252,7 @@ enum ConfigCommand {
 enum McpHttpAction {
     Inspect,
     OauthInspect,
+    OauthLogin,
     Add,
     Enable,
     Disable,
@@ -1273,6 +1276,15 @@ struct McpHttpOptions {
     /// Exact issuer to select when protected-resource metadata advertises more than one.
     #[arg(long)]
     authorization_server: Option<String>,
+    /// Preregistered public OAuth client identity; required for oauth-login.
+    #[arg(long)]
+    oauth_client_id: Option<String>,
+    /// Portable owner-private rotating token-family identity; required for oauth-login.
+    #[arg(long)]
+    oauth_token_set_id: Option<String>,
+    /// Maximum time to wait for the exact loopback OAuth callback.
+    #[arg(long)]
+    oauth_timeout_seconds: Option<u64>,
     /// Exact reviewed remote tool name; repeat for add.
     #[arg(long = "allow-tool")]
     allow_tools: Vec<String>,
@@ -11558,6 +11570,21 @@ struct McpOAuthInspectionResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct McpOAuthLoginResponse {
+    server_id: String,
+    token_set_id: String,
+    resource: String,
+    authorization_server: String,
+    scopes: Vec<String>,
+    generation: u64,
+    expires_at_ms: Option<i64>,
+    configuration_changed: bool,
+    authority_exposed: bool,
+    next_step: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct McpHttpConfigurationResponse {
     server_id: String,
     operation: String,
@@ -11990,6 +12017,7 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
         McpHttpAction::Inspect
             if options.endpoint.is_some()
                 && options.authorization_server.is_none()
+                && mcp_http_has_no_oauth_client_options(options)
                 && options.allow_tools.is_empty()
                 && options.allow_resources.is_empty()
                 && options.allow_prompts.is_empty()
@@ -12013,6 +12041,9 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
                 && options.allow_prompts.is_empty()
                 && options.timeout_ms.is_none()
                 && options.maximum_output_bytes.is_none()
+                && options.oauth_client_id.is_none()
+                && options.oauth_token_set_id.is_none()
+                && options.oauth_timeout_seconds.is_none()
                 && !options.approve =>
         {
             inspect_mcp_oauth_server(
@@ -12021,8 +12052,36 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
                 options.authorization_server.as_deref(),
             )
         }
+        McpHttpAction::OauthLogin
+            if options.endpoint.is_some()
+                && options.oauth_client_id.is_some()
+                && options.oauth_token_set_id.is_some()
+                && options.bearer_secret_id.is_none()
+                && options.bearer_credential_env.is_none()
+                && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none() =>
+        {
+            configure_mcp_oauth_login(
+                home,
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.authorization_server.as_deref(),
+                options.oauth_client_id.as_deref().expect("guarded client"),
+                options
+                    .oauth_token_set_id
+                    .as_deref()
+                    .expect("guarded token identity"),
+                options.oauth_timeout_seconds.unwrap_or(300),
+                options.approve,
+            )
+        }
         McpHttpAction::Add
-            if options.endpoint.is_some() && options.authorization_server.is_none() =>
+            if options.endpoint.is_some()
+                && options.authorization_server.is_none()
+                && mcp_http_has_no_oauth_client_options(options) =>
         {
             configure_mcp_http_add(
                 home,
@@ -12051,11 +12110,20 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
     }
 }
 
+fn mcp_http_has_no_oauth_client_options(options: &McpHttpOptions) -> bool {
+    options.oauth_client_id.is_none()
+        && options.oauth_token_set_id.is_none()
+        && options.oauth_timeout_seconds.is_none()
+}
+
 fn valid_mcp_http_lifecycle_options(options: &McpHttpOptions) -> bool {
     options.endpoint.is_none()
         && options.bearer_secret_id.is_none()
         && options.bearer_credential_env.is_none()
         && options.authorization_server.is_none()
+        && options.oauth_client_id.is_none()
+        && options.oauth_token_set_id.is_none()
+        && options.oauth_timeout_seconds.is_none()
         && options.allow_tools.is_empty()
         && options.allow_resources.is_empty()
         && options.allow_prompts.is_empty()
@@ -15332,6 +15400,320 @@ fn inspect_mcp_oauth_server(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn configure_mcp_oauth_login(
+    home: &Path,
+    server_id: &str,
+    endpoint: &str,
+    authorization_server: Option<&str>,
+    client_id: &str,
+    token_set_id: &str,
+    timeout_seconds: u64,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if !(30..=600).contains(&timeout_seconds) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        McpHttpAuthentication::None,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let token_root = home.join("mcp-oauth-tokens");
+    if !valid_provider_secret_id(token_set_id) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let token_store = FileMcpOAuthTokenStore::new(token_root)?;
+    match token_store.read(token_set_id) {
+        Ok(_) => {
+            return Err(CliError::McpOAuthTokenIdentityInUse(
+                token_set_id.to_owned(),
+            ));
+        }
+        Err(McpOAuthTokenError::NotFound) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let discovery = discover_mcp_oauth_metadata(&proposal, authorization_server)?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let callback_address = listener.local_addr()?;
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", callback_address.port());
+    let transaction =
+        prepare_mcp_oauth_authorization(&discovery, token_set_id, client_id, &redirect_uri)?;
+    eprintln!(
+        "{}",
+        terminal_safe_pretty_json(&json!({
+            "action": "open_authorization_url",
+            "authorizationUrl": transaction.authorization_url(),
+            "redirectUri": transaction.redirect_uri(),
+            "timeoutSeconds": timeout_seconds,
+            "notice": "This one-time URL contains OAuth state. Open it only in your trusted browser."
+        }))?
+    );
+    let callback = wait_for_mcp_oauth_callback(
+        &listener,
+        callback_address.port(),
+        Duration::from_secs(timeout_seconds),
+    )?;
+    let McpOAuthCallback {
+        state,
+        code,
+        authorization_error,
+        stream,
+    } = callback;
+    if authorization_error {
+        let state_result = transaction.verify_returned_state(&state);
+        write_mcp_oauth_callback_response(
+            stream,
+            false,
+            "Mealy authorization was denied or failed. Return to the terminal.",
+        );
+        state_result?;
+        return Err(CliError::McpOAuthAuthorizationDenied);
+    }
+    let token_result = exchange_mcp_oauth_authorization_code(
+        transaction,
+        state,
+        code.ok_or(CliError::InvalidMcpOAuthCallback)?,
+        SystemTime::now(),
+    );
+    match token_result {
+        Ok(token_set) => {
+            if let Err(error) = token_store.create(&token_set) {
+                write_mcp_oauth_callback_response(
+                    stream,
+                    false,
+                    "Mealy authorization could not be persisted safely. Return to the terminal.",
+                );
+                return Err(error.into());
+            }
+            write_mcp_oauth_callback_response(
+                stream,
+                true,
+                "Mealy authorization completed. You may close this page.",
+            );
+            print_json(McpOAuthLoginResponse {
+                server_id: server_id.to_owned(),
+                token_set_id: token_set.grant().token_set_id().to_owned(),
+                resource: token_set.grant().resource().to_owned(),
+                authorization_server: token_set.grant().authorization_server().to_owned(),
+                scopes: token_set.grant().scopes().to_vec(),
+                generation: token_set.generation(),
+                expires_at_ms: token_set.expires_at_ms(),
+                configuration_changed: false,
+                authority_exposed: false,
+                next_step: "OAuth-backed MCP activation and token refresh remain unavailable in this staged v0.4 slice; this login grants no model-visible authority.",
+            })
+        }
+        Err(error) => {
+            write_mcp_oauth_callback_response(
+                stream,
+                false,
+                "Mealy authorization failed closed. Return to the terminal for safe diagnostics.",
+            );
+            Err(error.into())
+        }
+    }
+}
+
+struct McpOAuthCallback {
+    state: Zeroizing<String>,
+    code: Option<Zeroizing<String>>,
+    authorization_error: bool,
+    stream: TcpStream,
+}
+
+fn wait_for_mcp_oauth_callback(
+    listener: &TcpListener,
+    expected_port: u16,
+    timeout: Duration,
+) -> Result<McpOAuthCallback, CliError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                if !peer.ip().is_loopback() {
+                    continue;
+                }
+                stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+                return parse_mcp_oauth_callback(stream, expected_port);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(CliError::McpOAuthCallbackTimedOut);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(CliError::Io(error)),
+        }
+    }
+}
+
+fn parse_mcp_oauth_callback(
+    mut stream: TcpStream,
+    expected_port: u16,
+) -> Result<McpOAuthCallback, CliError> {
+    const MAXIMUM_CALLBACK_BYTES: usize = 16 * 1024;
+    let mut request = Zeroizing::new(Vec::new());
+    let mut buffer = [0_u8; 2_048];
+    let header_end = loop {
+        let count = stream.read(&mut buffer)?;
+        if count == 0 || request.len().saturating_add(count) > MAXIMUM_CALLBACK_BYTES {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+        request.extend_from_slice(&buffer[..count]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position.saturating_add(4);
+        }
+    };
+    if request.len() != header_end {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let parameters = parse_mcp_oauth_callback_request(&request, expected_port)?;
+    let state = bounded_mcp_oauth_callback_value(parameters.state, 1_024)?;
+    let code = parameters
+        .code
+        .map(|code| bounded_mcp_oauth_callback_value(Some(code), 8 * 1_024))
+        .transpose()?;
+    if !parameters.authorization_error && code.is_none() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    Ok(McpOAuthCallback {
+        state,
+        code,
+        authorization_error: parameters.authorization_error,
+        stream,
+    })
+}
+
+struct McpOAuthCallbackParameters {
+    state: Option<String>,
+    code: Option<String>,
+    authorization_error: bool,
+}
+
+fn parse_mcp_oauth_callback_request(
+    request: &[u8],
+    expected_port: u16,
+) -> Result<McpOAuthCallbackParameters, CliError> {
+    if !request.ends_with(b"\r\n\r\n") {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let text = std::str::from_utf8(request).map_err(|_| CliError::InvalidMcpOAuthCallback)?;
+    let mut lines = text[..text.len() - 2].split("\r\n");
+    let request_line = lines.next().ok_or(CliError::InvalidMcpOAuthCallback)?;
+    let mut parts = request_line.split(' ');
+    let method = parts.next();
+    let target = parts.next();
+    let version = parts.next();
+    if method != Some("GET")
+        || version != Some("HTTP/1.1")
+        || parts.next().is_some()
+        || !target.is_some_and(|target| target.starts_with('/') && !target.starts_with("//"))
+    {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let expected_host = format!("127.0.0.1:{expected_port}");
+    let mut host = None;
+    let mut content_length_seen = false;
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(CliError::InvalidMcpOAuthCallback)?;
+        let invalid_header = name.len() > 128
+            || name
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+            || value.chars().any(char::is_control)
+            || name.eq_ignore_ascii_case("transfer-encoding")
+            || (name.eq_ignore_ascii_case("content-length")
+                && (value.trim() != "0" || std::mem::replace(&mut content_length_seen, true)));
+        if invalid_header {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+        if name.eq_ignore_ascii_case("host") && host.replace(value.trim()).is_some() {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+    }
+    if host != Some(expected_host.as_str()) {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let callback_url = Url::parse(&format!(
+        "http://{expected_host}{}",
+        target.expect("guarded target")
+    ))
+    .map_err(|_| CliError::InvalidMcpOAuthCallback)?;
+    if callback_url.path() != "/callback" || callback_url.fragment().is_some() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let mut state = None;
+    let mut code = None;
+    let mut authorization_error = None;
+    for (name, value) in callback_url.query_pairs() {
+        match name.as_ref() {
+            "state" => insert_unique_mcp_oauth_callback_value(&mut state, value.into_owned())?,
+            "code" => insert_unique_mcp_oauth_callback_value(&mut code, value.into_owned())?,
+            "error" => insert_unique_mcp_oauth_callback_value(
+                &mut authorization_error,
+                value.into_owned(),
+            )?,
+            _ => {}
+        }
+    }
+    if authorization_error.is_some() && code.is_some() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    Ok(McpOAuthCallbackParameters {
+        state,
+        code,
+        authorization_error: authorization_error.is_some(),
+    })
+}
+
+fn insert_unique_mcp_oauth_callback_value(
+    slot: &mut Option<String>,
+    value: String,
+) -> Result<(), CliError> {
+    if slot.replace(value).is_some() {
+        Err(CliError::InvalidMcpOAuthCallback)
+    } else {
+        Ok(())
+    }
+}
+
+fn bounded_mcp_oauth_callback_value(
+    value: Option<String>,
+    maximum_bytes: usize,
+) -> Result<Zeroizing<String>, CliError> {
+    value
+        .filter(|value| !value.is_empty() && value.len() <= maximum_bytes)
+        .map(Zeroizing::new)
+        .ok_or(CliError::InvalidMcpOAuthCallback)
+}
+
+fn write_mcp_oauth_callback_response(mut stream: TcpStream, success: bool, message: &str) {
+    let status = if success { "200 OK" } else { "400 Bad Request" };
+    let body = format!("{message}\n");
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n\
+         Cache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors \
+         'none'; base-uri 'none'; form-action 'none'\r\nX-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn configure_mcp_http_add(
     home: &Path,
     server_id: &str,
@@ -17475,6 +17857,21 @@ enum CliError {
     /// Sandboxed MCP discovery or live verification failed closed.
     #[error(transparent)]
     McpHost(#[from] McpHostError),
+    /// Owner-private MCP OAuth authorization, exchange, or token storage failed closed.
+    #[error(transparent)]
+    McpOAuthToken(#[from] McpOAuthTokenError),
+    /// The proposed broker identity is already occupied by an OAuth token family.
+    #[error("MCP OAuth token identity {0} is already in use")]
+    McpOAuthTokenIdentityInUse(String),
+    /// The bounded loopback authorization callback did not arrive in time.
+    #[error("MCP OAuth authorization callback timed out")]
+    McpOAuthCallbackTimedOut,
+    /// The loopback authorization callback was malformed or outside its exact origin boundary.
+    #[error("MCP OAuth authorization callback was invalid")]
+    InvalidMcpOAuthCallback,
+    /// The authorization server returned an OAuth denial to the loopback callback.
+    #[error("MCP OAuth authorization was denied")]
+    McpOAuthAuthorizationDenied,
     /// Browser bundle, content pin, runtime identity, or current config is invalid.
     #[error("browser runtime configuration is invalid")]
     InvalidBrowserConfiguration,

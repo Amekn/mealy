@@ -1,5 +1,6 @@
 use crate::mcp::validated_mcp_http_endpoint;
-use serde::Serialize;
+use crate::{sha256_digest, valid_provider_secret_id};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
@@ -119,6 +120,12 @@ impl McpOAuthMetadataDiscovery {
         &self.token_endpoint
     }
 
+    /// Effective advertised token-endpoint client authentication methods.
+    #[must_use]
+    pub fn token_endpoint_auth_methods_supported(&self) -> &[String] {
+        &self.token_endpoint_auth_methods_supported
+    }
+
     /// Challenge scopes preferred for the initial least-authority request.
     #[must_use]
     pub fn challenge_scopes(&self) -> &[String] {
@@ -135,6 +142,17 @@ impl McpOAuthMetadataDiscovery {
     #[must_use]
     pub const fn client_id_metadata_document_supported(&self) -> bool {
         self.client_id_metadata_document_supported
+    }
+
+    /// Returns a stable digest of all validated metadata evidence used to authorize a login.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpOAuthMetadataError`] only if serialization unexpectedly fails.
+    pub fn metadata_digest(&self) -> Result<String, McpOAuthMetadataError> {
+        serde_json::to_vec(self)
+            .map(|bytes| sha256_digest(&bytes))
+            .map_err(|_| McpOAuthMetadataError::Invalid)
     }
 
     /// Validates deserialized or constructed discovery evidence.
@@ -176,6 +194,124 @@ impl McpOAuthMetadataDiscovery {
                 .is_err()
             || !valid_metadata_values(&self.token_endpoint_auth_methods_supported)
             || !strictly_sorted_unique(&self.token_endpoint_auth_methods_supported)
+        {
+            return Err(McpOAuthMetadataError::Invalid);
+        }
+        Ok(())
+    }
+}
+
+/// Non-secret immutable authority bound to one brokered MCP OAuth token family.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpOAuthTokenGrant {
+    token_set_id: String,
+    resource: String,
+    authorization_server: String,
+    token_endpoint: String,
+    client_id: String,
+    scopes: Vec<String>,
+    metadata_digest: String,
+}
+
+impl McpOAuthTokenGrant {
+    /// Constructs one audience- and metadata-bound OAuth credential grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpOAuthMetadataError`] when an identity, endpoint, client, scope, or digest is
+    /// malformed.
+    pub fn new(
+        token_set_id: String,
+        resource: String,
+        authorization_server: String,
+        token_endpoint: String,
+        client_id: String,
+        mut scopes: Vec<String>,
+        metadata_digest: String,
+    ) -> Result<Self, McpOAuthMetadataError> {
+        scopes.sort();
+        let grant = Self {
+            token_set_id,
+            resource,
+            authorization_server,
+            token_endpoint,
+            client_id,
+            scopes,
+            metadata_digest,
+        };
+        grant.validate()?;
+        Ok(grant)
+    }
+
+    /// Portable identity of the owner-private rotating token record.
+    #[must_use]
+    pub fn token_set_id(&self) -> &str {
+        &self.token_set_id
+    }
+
+    /// Exact MCP audience used on authorization and token requests.
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+
+    /// Exact authorization-server issuer selected by the owner.
+    #[must_use]
+    pub fn authorization_server(&self) -> &str {
+        &self.authorization_server
+    }
+
+    /// Exact token endpoint discovered and reviewed for this grant.
+    #[must_use]
+    pub fn token_endpoint(&self) -> &str {
+        &self.token_endpoint
+    }
+
+    /// Exact preregistered public OAuth client identity.
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// Exact granted scopes in canonical order.
+    #[must_use]
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
+
+    /// Digest of the complete discovery evidence used at authorization time.
+    #[must_use]
+    pub fn metadata_digest(&self) -> &str {
+        &self.metadata_digest
+    }
+
+    /// Opaque token-broker reference bound into capability ceilings and descriptors.
+    #[must_use]
+    pub fn capability_reference(&self) -> String {
+        format!("mcp_oauth_broker:{}", self.token_set_id)
+    }
+
+    /// Validates one loaded token grant without resolving any secret.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpOAuthMetadataError`] for malformed or non-canonical grant evidence.
+    pub fn validate(&self) -> Result<(), McpOAuthMetadataError> {
+        if !valid_provider_secret_id(&self.token_set_id)
+            || canonical_oauth_resource(&self.resource).is_none()
+            || canonical_oauth_issuer(&self.authorization_server).is_none()
+            || canonical_oauth_url(&self.token_endpoint).is_none()
+            || self.client_id.is_empty()
+            || self.client_id.len() > 1_024
+            || self.client_id.trim() != self.client_id
+            || self.client_id.chars().any(char::is_control)
+            || !valid_scope_set(&self.scopes)
+            || self.metadata_digest.len() != 64
+            || self
+                .metadata_digest
+                .bytes()
+                .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte))
         {
             return Err(McpOAuthMetadataError::Invalid);
         }
@@ -260,7 +396,7 @@ pub enum McpOAuthMetadataError {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpOAuthMetadataDiscovery, McpOAuthMetadataError};
+    use super::{McpOAuthMetadataDiscovery, McpOAuthMetadataError, McpOAuthTokenGrant};
 
     fn valid() -> McpOAuthMetadataDiscovery {
         McpOAuthMetadataDiscovery::new(
@@ -327,5 +463,23 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn token_grant_binds_audience_client_scopes_and_metadata() {
+        let discovery = valid();
+        let grant = McpOAuthTokenGrant::new(
+            "mcp.remote".to_owned(),
+            discovery.resource().to_owned(),
+            discovery.selected_authorization_server().to_owned(),
+            discovery.token_endpoint().to_owned(),
+            "mealy-native".to_owned(),
+            vec!["files:read".to_owned()],
+            discovery.metadata_digest().expect("metadata digest"),
+        )
+        .expect("token grant");
+        assert_eq!(grant.capability_reference(), "mcp_oauth_broker:mcp.remote");
+        assert_eq!(grant.scopes(), ["files:read"]);
+        assert_eq!(grant.metadata_digest().len(), 64);
     }
 }

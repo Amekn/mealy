@@ -181,9 +181,18 @@ metadata URL or both required well-known fallbacks. Metadata fetches reuse the s
 proxy-free, SSRF-resistant DNS-pinned boundary; the advertised resource must exactly match the MCP
 endpoint, multiple issuers require owner selection, issuer metadata must match that selection, and
 authorization-code plus PKCE S256 support is mandatory. Inspection creates no client, state,
-verifier, code, token, broker entry, configuration, or authority. The implemented slice does not
-yet grant OAuth login/token lifecycle, resource-template expansion/subscriptions, resumable GET, or
-effectful HTTP calls.
+verifier, code, token, broker entry, configuration, or authority. A separate approved stopped-home
+login accepts only pre-registered public clients advertising token authentication method `none`.
+It creates fresh high-entropy state and verifier material, uses only PKCE S256, requests the exact
+resource, and accepts only one exact literal-loopback callback with bounded GET headers, Host,
+path, unique state/code fields, and no body. Code exchange reuses the pinned network boundary and
+accepts only bounded JSON Bearer material with required cache controls and non-broadened scope.
+Tokens are zeroized in process memory; the owner-private broker rejects symlink roots/records,
+unsafe modes, collisions, oversized records, and non-generation-one creation. The immutable
+non-secret grant binds resource, issuer, token endpoint, public client, scope, and metadata digest.
+Login changes no configuration or model authority. Refresh/rotation/revocation and OAuth-backed
+activation are not yet implemented; neither are resource-template expansion/subscriptions,
+resumable GET, or effectful HTTP calls.
 
 ### Parent model delegates hidden context or excess authority
 

@@ -7,12 +7,13 @@ use mealy_application::{
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{Read, Write},
-    net::TcpListener,
+    io::{BufRead, BufReader, Read, Write},
+    net::{TcpListener, TcpStream},
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     thread,
 };
+use url::Url;
 
 #[test]
 fn configured_mcp_authority_is_listable_disableable_and_revocable_with_explicit_approval() {
@@ -381,6 +382,184 @@ fn mcp_http_oauth_inspect_is_non_mutating_and_reports_pinned_discovery() {
     server.join().expect("OAuth fixture server");
 }
 
+#[test]
+#[allow(clippy::too_many_lines)]
+fn mcp_http_oauth_login_uses_loopback_pkce_and_privately_brokers_tokens() {
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    let config = serde_json::to_vec_pretty(&default_config()).expect("config bytes");
+    fs::write(home.path().join("config.json"), &config).expect("write config");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind OAuth fixture");
+    let address = listener.local_addr().expect("OAuth fixture address");
+    let origin = format!("http://{address}");
+    let endpoint = format!("{origin}/mcp");
+    let origin_for_worker = origin.clone();
+    let server = thread::spawn(move || {
+        let discovery_responses = [
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"{origin_for_worker}/.well-known/oauth-protected-resource/mcp\", scope=\"files:read\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "resource": format!("{origin_for_worker}/mcp"),
+                    "authorization_servers": [origin_for_worker],
+                    "scopes_supported": ["files:read"]
+                }),
+                None,
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "issuer": origin_for_worker,
+                    "authorization_endpoint": format!("{origin_for_worker}/authorize"),
+                    "token_endpoint": format!("{origin_for_worker}/token"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"]
+                }),
+                None,
+            ),
+        ];
+        for response in discovery_responses {
+            let (mut stream, _) = listener.accept().expect("accept OAuth discovery request");
+            read_http_request(&mut stream);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write OAuth discovery response");
+        }
+        let (mut stream, _) = listener.accept().expect("accept OAuth token request");
+        let token_request = read_http_request(&mut stream);
+        assert!(token_request.contains("grant_type=authorization_code"));
+        assert!(token_request.contains("client_id=mealy-native"));
+        assert!(token_request.contains("code=fixture-code"));
+        assert!(token_request.contains("code_verifier="));
+        assert!(token_request.contains("redirect_uri=http%3A%2F%2F127.0.0.1"));
+        assert!(token_request.contains("resource=http%3A%2F%2F127.0.0.1"));
+        let response = http_oauth_token_response(&json!({
+            "access_token": "fixture-access-secret",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "fixture-refresh-secret",
+            "scope": "files:read"
+        }));
+        stream
+            .write_all(response.as_bytes())
+            .expect("write OAuth token response");
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mealyctl"))
+        .arg("--home")
+        .arg(home.path())
+        .args([
+            "mcp-http",
+            "oauth-login",
+            "oauth",
+            endpoint.as_str(),
+            "--oauth-client-id",
+            "mealy-native",
+            "--oauth-token-set-id",
+            "oauth.fixture",
+            "--oauth-timeout-seconds",
+            "30",
+            "--approve",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start OAuth login");
+    let mut stderr = BufReader::new(child.stderr.take().expect("OAuth login stderr"));
+    let authorization_url = loop {
+        let mut line = String::new();
+        let count = stderr.read_line(&mut line).expect("read authorization URL");
+        assert_ne!(count, 0, "OAuth login exited before presenting a URL");
+        if let Some((_, encoded)) = line.split_once("\"authorizationUrl\":") {
+            let encoded = encoded.trim().trim_end_matches(',');
+            break serde_json::from_str::<String>(encoded).expect("authorization URL JSON");
+        }
+    };
+    let authorization_url = Url::parse(&authorization_url).expect("authorization URL");
+    let query = authorization_url
+        .query_pairs()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        query.get("code_challenge_method").map(AsRef::as_ref),
+        Some("S256")
+    );
+    assert_eq!(
+        query.get("resource").map(AsRef::as_ref),
+        Some(endpoint.as_str())
+    );
+    let state = query.get("state").expect("OAuth state").to_string();
+    let redirect_uri = query
+        .get("redirect_uri")
+        .expect("OAuth redirect URI")
+        .to_string();
+    let mut callback_url = Url::parse(&redirect_uri).expect("callback URL");
+    callback_url
+        .query_pairs_mut()
+        .append_pair("code", "fixture-code")
+        .append_pair("state", &state);
+    let mut callback = TcpStream::connect((
+        callback_url.host_str().expect("callback host"),
+        callback_url.port().expect("callback port"),
+    ))
+    .expect("connect OAuth callback");
+    write!(
+        callback,
+        "GET {}?{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+        callback_url.path(),
+        callback_url.query().expect("callback query"),
+        callback_url.port().expect("callback port")
+    )
+    .expect("send OAuth callback");
+    let mut callback_response = String::new();
+    callback
+        .read_to_string(&mut callback_response)
+        .expect("read OAuth callback response");
+    assert!(callback_response.starts_with("HTTP/1.1 200 OK\r\n"));
+
+    let mut remaining_stderr = String::new();
+    stderr
+        .read_to_string(&mut remaining_stderr)
+        .expect("read remaining OAuth stderr");
+    let output = child.wait_with_output().expect("finish OAuth login");
+    assert!(
+        output.status.success(),
+        "OAuth login failed: {remaining_stderr}"
+    );
+    let response: Value = serde_json::from_slice(&output.stdout).expect("OAuth login response");
+    assert_eq!(response["tokenSetId"], "oauth.fixture");
+    assert_eq!(response["resource"], endpoint);
+    assert_eq!(response["generation"], 1);
+    assert_eq!(response["configurationChanged"], false);
+    assert_eq!(response["authorityExposed"], false);
+    assert_eq!(
+        fs::read(home.path().join("config.json")).expect("unchanged config"),
+        config
+    );
+    let token_path = home.path().join("mcp-oauth-tokens/oauth.fixture.json");
+    let token_record: Value =
+        serde_json::from_slice(&fs::read(&token_path).expect("brokered token record"))
+            .expect("token record JSON");
+    assert_eq!(token_record["accessToken"], "fixture-access-secret");
+    assert_eq!(token_record["refreshToken"], "fixture-refresh-secret");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(token_path)
+                .expect("token record metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    server.join().expect("OAuth fixture server");
+}
+
 fn fixture_config() -> McpServerConfig {
     let definition = json!({
         "name": "add",
@@ -565,7 +744,7 @@ fn spawn_http_catalog_fixture(
     (format!("http://{address}/mcp"), server)
 }
 
-fn read_http_request(stream: &mut std::net::TcpStream) {
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 4_096];
     let header_end = loop {
@@ -591,6 +770,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) {
         assert_ne!(count, 0);
         bytes.extend_from_slice(&buffer[..count]);
     }
+    String::from_utf8(bytes).expect("fixture request UTF-8")
 }
 
 fn http_json_response(status: &str, value: &Value, extra_header: Option<(&str, &str)>) -> String {
@@ -600,6 +780,14 @@ fn http_json_response(status: &str, value: &Value, extra_header: Option<(&str, &
         .unwrap_or_default();
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn http_oauth_token_response(value: &Value) -> String {
+    let body = value.to_string();
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
 }

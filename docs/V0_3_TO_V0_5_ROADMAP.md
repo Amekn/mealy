@@ -152,16 +152,20 @@ Publication requires:
   attempt, reconciliation, and replay contracts.
 - Keep server discovery metadata separate from granted authority.
 
-The first two MCP slices and the metadata-only beginning of the OAuth slice are implemented on the
+The first two MCP slices and the initial OAuth authorization slice are implemented on the
 v0.4 branch: owner-facing inspect/add/list/
 enable/disable/revoke; exact endpoint and bearer-reference authority; redirect-free DNS-pinned
 connections; fresh sessions; JSON/SSE bounds; complete tool/resource/resource-template/prompt
 catalog revalidation before every selected read; exact static-resource reads; prompts with
 advertised string arguments normalized as untrusted evidence; execution-free replay; and
 non-mutating protected-resource plus OAuth/OIDC metadata inspection with exact resource binding,
-explicit multi-issuer selection, authorization-code validation, and PKCE S256 enforcement.
-Resource-template expansion/subscriptions, resumable GET, OAuth registration/login/token
-lifecycle, health, and effectful invocation remain explicit later slices.
+explicit multi-issuer selection, authorization-code validation, and PKCE S256 enforcement. A
+separately approved stopped-daemon login supports pre-registered public clients, fresh state and
+PKCE, an exact loopback callback, bounded token exchange, narrowed scopes, and a private immutable
+generation-one token-family record without changing configuration or exposing model authority.
+OAuth refresh/rotation/revocation and OAuth-backed activation, client registration,
+resource-template expansion/subscriptions, resumable GET, health, and effectful invocation remain
+explicit later slices.
 
 ### Media
 

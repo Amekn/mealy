@@ -188,7 +188,7 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > interactive
 > arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
 > persistent or personal profiles,
-> OAuth MCP login/token activation, resource-template expansion, resumable MCP streams, or
+> OAuth-backed MCP activation/refresh, resource-template expansion, resumable MCP streams, or
 > effectful MCP calls,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
 > clean-host release evidence must be verified in the exact tag's linked workflows. The checked
@@ -277,13 +277,16 @@ prompt retrieval. Static resource URIs take no model-selected path argument. Pro
 restricted to the exact advertised string fields, and returned prompt messages are explicitly
 normalized as untrusted tool evidence rather than hidden/system instructions. Endpoint and
 credential authority are bound into durable descriptors and run ceilings; tokens never enter
-configuration or evidence. A non-mutating OAuth inspection path now validates the protected
-resource challenge, exact resource audience, OAuth/OIDC issuer metadata, authorization-code flow,
-and PKCE S256 through the same SSRF-resistant pinned boundary; multiple issuers require owner
-selection. It creates no registration, browser flow, token, broker entry, configuration, or tool
-authority. OAuth login/token lifecycle, resource-template expansion, subscriptions, resumable GET,
-and effectful MCP remain deliberately excluded until later v0.4 slices. Both boundaries exclude
-host workspace mounts.
+configuration or evidence. OAuth inspection validates the protected-resource challenge, exact
+resource audience, OAuth/OIDC issuer metadata, authorization-code flow, and PKCE S256 through the
+same SSRF-resistant pinned boundary; multiple issuers require owner selection. A separately
+approved stopped-daemon login now supports a pre-registered public client, fresh high-entropy state,
+PKCE S256, an exact literal-loopback callback, one-time authorization-code exchange, scope
+narrowing, and an owner-private no-symlink `0600` token-family broker. It prints the consent URL
+for the owner but does not alter configuration or expose model authority. Refresh, revocation,
+OAuth-backed MCP activation, resource-template expansion, subscriptions, resumable GET, and
+effectful MCP remain deliberately excluded until later v0.4 slices. Both boundaries exclude host
+workspace mounts.
 The initial rendered-browser adapter similarly treats Chrome as untrusted runtime code. The complete
 Headless Shell bundle and CDP product are pinned, owner-installed, and re-verified; Bubblewrap gives
 each invocation an empty environment, ephemeral profile, private network namespace, and no

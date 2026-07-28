@@ -459,9 +459,12 @@ process-tested. Streamable HTTP now adds canonical endpoint and bearer-reference
 redirect/proxy-free DNS-pinned fresh sessions, complete tool/resource/resource-template/prompt
 catalog pinning, exact selected static-resource reads, and prompt retrieval normalized as cited
 untrusted evidence. Process fixtures cover selection, per-call revalidation, drift, revocation, and
-execution-free replay. Resource-template expansion/subscriptions, OAuth, intentional workspace
-mounts, effectful MCP tools, resumable GET, long-lived session health, and non-Linux enforcement
-remain open before the broader MCP gate is passed.
+execution-free replay. Resource-template expansion/subscriptions, full OAuth runtime activation,
+intentional workspace mounts, effectful MCP tools, resumable GET, long-lived session health, and
+non-Linux enforcement remain open before the broader MCP gate is passed. OAuth metadata inspection and an explicitly
+approved pre-registered-public-client login now validate state/PKCE/resource and create one private
+initial token-family record, but refresh/rotation/revocation and OAuth-backed runtime activation
+remain open; the staged login alone grants no model-visible authority.
 
 Delegation acceptance is complete for bounded serial child work. The provider-visible
 `agent.delegate` operation validates a self-contained objective, instructions, one-to-eight

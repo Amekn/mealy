@@ -185,7 +185,7 @@ pub use mcp::{
 };
 pub use mcp_oauth::{
     MCP_OAUTH_MAXIMUM_AUTHORIZATION_SERVERS, MCP_OAUTH_MAXIMUM_METADATA_VALUES,
-    MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError,
+    MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError, McpOAuthTokenGrant,
 };
 pub use memory::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,

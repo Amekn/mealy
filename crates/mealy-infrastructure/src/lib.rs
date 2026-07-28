@@ -10,6 +10,7 @@ mod fixture;
 mod maintenance;
 mod mcp;
 mod mcp_oauth;
+mod mcp_oauth_token;
 mod provider_secret;
 mod sandbox;
 mod skill_package;
@@ -51,6 +52,10 @@ pub use mcp::{
     load_mcp_read_tools, mcp_stdio_launcher_main,
 };
 pub use mcp_oauth::discover_mcp_oauth_metadata;
+pub use mcp_oauth_token::{
+    FileMcpOAuthTokenStore, McpOAuthAuthorizationTransaction, McpOAuthTokenError, McpOAuthTokenSet,
+    exchange_mcp_oauth_authorization_code, prepare_mcp_oauth_authorization,
+};
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};
 pub use skill_package::{

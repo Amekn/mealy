@@ -723,10 +723,32 @@ proxies, private destinations, mismatched resources/issuers, malformed metadata,
 fail closed. Multiple advertised issuers require `--authorization-server EXACT_ISSUER`. This
 operation writes neither the Mealy home nor a credential broker.
 
+For a reviewed pre-registered public client, stage an initial token family only while the daemon is
+stopped:
+
+```sh
+mealyctl --home "$HOME/.mealy" drain
+mealyctl --home "$HOME/.mealy" mcp-http oauth-login \
+  SERVER_ID https://mcp.example.com/mcp \
+  --oauth-client-id REVIEWED_PUBLIC_CLIENT_ID \
+  --oauth-token-set-id mcp.SERVER_ID.oauth \
+  --oauth-timeout-seconds 300 \
+  --approve
+```
+
+The client prints one owner-only authorization URL and listens only on an ephemeral literal
+`127.0.0.1` callback. It validates exact Host/path/state, PKCE S256, the MCP resource parameter,
+token response cache controls, Bearer type, bounds, and non-broadened scope before creating a
+generation-one record under `mcp-oauth-tokens/`. The record is owner-only and never enters
+configuration, stdout, evidence, or model context. Login changes no MCP authority. Existing token
+identities, confidential clients, missing public-client metadata, malformed callbacks, unsafe token
+paths, and persistence failures fail closed.
+
 Use `mcp-http disable`, `mcp-http enable`, or `mcp-http revoke` with `--approve` while stopped.
-OAuth registration/login/token lifecycle and OAuth-backed activation remain unavailable after this
-metadata-only slice. Resource-template expansion/subscriptions, resumable GET, and effectful HTTP
-MCP also remain unavailable until their separate v0.4 contracts and recovery tests land.
+OAuth refresh/rotation/revocation, dynamic registration/CIMD, and OAuth-backed activation remain
+unavailable after this initial login slice. Resource-template expansion/subscriptions, resumable
+GET, and effectful HTTP MCP also remain unavailable until their separate v0.4 contracts and
+recovery tests land.
 
 The optional rendered browser is a separate stopped-daemon authority and currently has release
 evidence on Linux x86_64. Fetch only the release-pinned Headless Shell archive with the managed

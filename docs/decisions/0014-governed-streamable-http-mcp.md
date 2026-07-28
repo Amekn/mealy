@@ -4,7 +4,9 @@ Status: Accepted (2026-07-29)
 
 Implementation status: transport, complete catalog pinning, exact static-resource reads, exact
 prompt retrieval, and non-mutating OAuth protected-resource/authorization-server metadata
-discovery are implemented. OAuth registration/login/token lifecycle, resource-template
+discovery are implemented. A pre-registered-public-client authorization-code/PKCE login and private
+generation-one token broker are also implemented without configuration or model authority.
+Registration/CIMD, refresh/rotation/revocation, OAuth-backed activation, resource-template
 invocation/subscriptions, resumable GET, health, and effectful calls remain subsequent slices.
 
 ## Context
@@ -145,10 +147,22 @@ the external action did not occur.
 - The first implementation can land in independently testable slices:
   transport/inventory, resources/prompts, OAuth, then effectful calls.
 
-The first OAuth slice deliberately stops before authorization. `oauth-inspect` sends one
+The metadata OAuth slice deliberately stops before authorization. `oauth-inspect` sends one
 unauthenticated protected-resource probe, prefers an advertised `resource_metadata` challenge,
 falls back through the required path-scoped then root well-known URLs, validates the exact resource
 audience, and discovers OAuth or OpenID issuer metadata in specification order. Every fetch is
 bounded, redirect/proxy free, SSRF checked, and DNS pinned. Multiple issuers require an exact owner
 selection, and missing authorization-code or PKCE S256 support fails closed. It creates no client,
 browser flow, state, verifier, code, token, broker entry, configuration, or model authority.
+
+The next slice adds only owner authorization and initial token custody. While the daemon is stopped,
+`oauth-login` requires explicit approval, a reviewed pre-registered public client ID, and a new
+portable token-family ID. Mealy creates fresh state and a PKCE verifier, requests the exact MCP
+`resource`, uses only S256, binds an ephemeral literal-IPv4 loopback callback with a strict Host and
+request parser, and exchanges the code once through the pinned network boundary. A response must be
+JSON Bearer material with `no-store`/`no-cache`, bounded secrets, and equal-or-narrower scopes.
+Tokens are zeroizing in memory and stored in a no-symlink owner-private directory as a `0600`
+generation-one record whose non-secret grant pins resource, issuer, token endpoint, client, scopes,
+and metadata digest. Configuration and model authority remain unchanged. Refresh/rotation,
+revocation, dynamic client registration, CIMD, and OAuth-backed MCP activation require subsequent
+contracts.

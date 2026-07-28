@@ -1353,6 +1353,28 @@ and mandatory PKCE S256 through the same redirect-free, proxy-free, SSRF-resista
 boundary. If the resource advertises multiple issuers, rerun with the exact reviewed
 `--authorization-server URL`; Mealy never chooses one silently.
 
+If the service operator has pre-registered Mealy as a native/public OAuth client, drain the daemon
+and stage one initial owner token family:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-login \
+  remote-tools https://mcp.example.com/mcp \
+  --oauth-client-id REVIEWED_PUBLIC_CLIENT_ID \
+  --oauth-token-set-id mcp.remote-tools.oauth \
+  --oauth-timeout-seconds 300 \
+  --approve
+```
+
+Open only the one-time authorization URL printed by Mealy. The authorization server returns to an
+ephemeral `http://127.0.0.1:PORT/callback`; Mealy requires the exact loopback Host, state, code, and
+PKCE S256 transaction, repeats the exact MCP `resource` at the token endpoint, and accepts only a
+bounded Bearer response with equal-or-narrower scope. The token family is written under
+`mcp-oauth-tokens/` with owner-only directory/file permissions; configuration, catalog grants, and
+model-visible authority remain unchanged. Do not use a confidential client secret with this
+command. Dynamic registration, refresh/rotation, revocation, and OAuth-backed MCP activation are
+still pending later v0.4 slices, so this staged token cannot yet power a tool call.
+
 Review every returned tool, resource, resource-template, and prompt definition, drain Mealy, then
 install only the exact operations you intend to expose. Repeat any selection flag as needed:
 
@@ -1395,9 +1417,10 @@ Disable or revoke a server while Mealy is stopped:
 
 Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
 credential and an exact live inventory match before publishing authority. OAuth metadata
-inspection is available, but registration, login, token storage/refresh/revocation, and OAuth-backed
-tool activation remain unavailable. Resource-template expansion/subscriptions, resumable GET
-streams, and effectful MCP tools are also planned v0.4 slices and are not implied by bearer support.
+inspection plus a separately approved pre-registered-public-client login and private initial token
+record are available, but registration, refresh/rotation/revocation, and OAuth-backed tool
+activation remain unavailable. Resource-template expansion/subscriptions, resumable GET streams,
+and effectful MCP tools are also planned v0.4 slices and are not implied by bearer support.
 See the stable MCP
 [authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
 [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and

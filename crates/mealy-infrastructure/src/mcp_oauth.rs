@@ -506,7 +506,7 @@ fn parse_json_metadata(mut response: Response) -> Result<Value, McpHostError> {
     Ok(value)
 }
 
-fn pinned_client(url: &Url) -> Result<Client, McpHostError> {
+pub(super) fn pinned_client(url: &Url) -> Result<Client, McpHostError> {
     let sockets = validate_oauth_destination(url)?;
     let host = url.host_str().ok_or(McpHostError::InvalidConfiguration)?;
     Client::builder()
