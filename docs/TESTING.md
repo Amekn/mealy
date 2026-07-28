@@ -33,6 +33,13 @@ Required checks:
 
 Spawn the real executor/extension protocol. Verify framing, malformed messages, size limits, cancellation, timeout, stdout/stderr pressure, secret minimization, worker death, and daemon survival.
 
+`crates/mealy-infrastructure/tests/media_normalizer.rs` crosses the real Bubblewrap boundary with
+the exact media worker and proves a valid PNG is normalized while media mismatch, malformed input,
+and pre-allocation oversize fail closed. Focused media units additionally cover deterministic
+JPEG/PNG re-encoding, alpha preservation, metadata removal, APNG and animated-WebP denial,
+dimension-first rejection, and bounded downscaling. The daemon verifies canonical headers, bytes,
+size, and digest without invoking the image decoder in its own process.
+
 GitHub's Ubuntu 24.04 runner enables AppArmor's unprivileged-user-namespace restriction, which can
 make Bubblewrap fail while bringing up its private loopback device with `RTM_NEWADDR: Operation not
 permitted`. The CI and tag workflows install and directly load only Noble's packaged

@@ -148,11 +148,15 @@ artifact identity, media type, size, and SHA-256 digest, permits images only on 
 messages, caps count and aggregate bytes, charges a conservative per-image token reservation, and
 revalidates every field before provider serialization. Text-only routes reject image content
 before dispatch. Production configuration keeps image capability disabled until public ingress
-also performs bounded decode, dimension/pixel enforcement, metadata-stripping re-encode,
-content-addressed commit-before-link admission, exact owner/channel authorization, and
-crash/replay validation. A magic prefix alone is not accepted as public-ingress proof. Remote
-image URLs and provider file IDs are outside the contract, preventing mutable fetches, ambient
-network authority, and provider-retention dependence. See
+also delegates decoding to a fresh identity-pinned, empty-environment, no-network Bubblewrap
+worker with no home/workspace/secret mount and hard process/protocol limits. The worker performs
+dimension/pixel enforcement and metadata-stripping re-encode; the daemon independently validates
+the complete returned evidence. This process boundary remains mandatory because supported decoder
+release notes acknowledge hostile inputs that can panic decoders. Content-addressed
+commit-before-link admission, exact owner/channel authorization, and crash/replay validation are
+still required before activation. A magic prefix alone is not accepted as public-ingress proof.
+Remote image URLs and provider file IDs are outside the contract, preventing mutable fetches,
+ambient network authority, and provider-retention dependence. See
 [ADR 0017](decisions/0017-content-addressed-bounded-image-input.md).
 
 ### Service supervision hides state or breaks governed workers

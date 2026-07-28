@@ -61,7 +61,8 @@ use mealy_infrastructure::{
     FileProviderSecretStore, LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore,
     StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool,
     browser_worker_main, create_pre_migration_backup, inspect_existing_schema_version,
-    load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main, preserve_forensic_database,
+    load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main, media_worker_main,
+    preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -156,6 +157,13 @@ struct Arguments {
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    if std::env::args().nth(1).as_deref() == Some("--media-worker") {
+        let code = media_worker_main();
+        if code == ExitCode::SUCCESS {
+            return Ok(());
+        }
+        std::process::exit(70);
+    }
     if std::env::args().nth(1).as_deref() == Some("--browser-worker") {
         let code = browser_worker_main();
         if code == ExitCode::SUCCESS {

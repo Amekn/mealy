@@ -26,10 +26,16 @@ predictable across local OpenAI-compatible endpoints as well as those hosted API
 1. The first media slice supports authenticated owner-supplied PNG, JPEG, and WebP image input
    only. Animated GIF, SVG, PDF, audio, video, remote URLs, and provider-hosted file IDs are not
    accepted by this contract.
-2. An ingress adapter must bound encoded bytes before allocation, decode with resource limits,
-   reject animation and malformed or unsupported structures, enforce dimensions and decoded-pixel
-   limits, remove metadata by re-encoding pixels, and revalidate the canonical output. A claimed
-   media type or magic prefix alone is never sufficient at the public ingress boundary.
+2. An ingress adapter must bound encoded bytes before allocation and send them to a fresh
+   identity-pinned, empty-environment, no-network Bubblewrap worker with no home, workspace,
+   credential, or writable host mount. That worker applies OS resource limits, catches recoverable
+   decoder panics, decodes with library limits, rejects animation and malformed or unsupported
+   structures, enforces dimensions and decoded-pixel limits, removes metadata by re-encoding
+   pixels, and returns a bounded result. The daemon independently verifies its dimensions,
+   signature, media type, size, digest, and canonical bytes. Decoder release notes explicitly
+   acknowledge that hostile input can panic some decoders, so in-process daemon decoding is
+   forbidden even when a library limit is configured. A claimed media type or magic prefix alone
+   is never sufficient at the public ingress boundary.
 3. Canonical normalized bytes are committed to Mealy's owner-private content-addressed artifact
    store before input admission. A later transaction links ordered artifact identities to the
    durable inbox entry. A crash before that link may leave only an unreferenced blob, which the

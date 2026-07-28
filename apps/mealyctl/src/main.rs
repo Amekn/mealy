@@ -36,8 +36,8 @@ use mealy_infrastructure::{
     discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
     inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
     inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
-    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
-    publish_skill_package, verify_browser_runtime_installation,
+    media_worker_main, prepare_mcp_oauth_authorization, probe_browser_bundle_product,
+    publish_browser_bundle, publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -2494,6 +2494,9 @@ impl From<DeliveryArgument> for DeliveryMode {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--media-worker") {
+        return media_worker_main();
+    }
     if std::env::args().nth(1).as_deref() == Some("--browser-worker") {
         return browser_worker_main();
     }

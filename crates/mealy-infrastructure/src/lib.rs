@@ -11,6 +11,7 @@ mod maintenance;
 mod mcp;
 mod mcp_oauth;
 mod mcp_oauth_token;
+mod media;
 mod provider_secret;
 mod sandbox;
 mod skill_package;
@@ -58,6 +59,9 @@ pub use mcp_oauth_token::{
     McpOAuthTokenError, McpOAuthTokenSet, exchange_mcp_oauth_authorization_code,
     force_refresh_mcp_oauth_access_token, prepare_mcp_oauth_authorization,
     resolve_mcp_oauth_access_token,
+};
+pub use media::{
+    CanonicalImage, LinuxBubblewrapMediaNormalizer, MediaNormalizerError, media_worker_main,
 };
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};

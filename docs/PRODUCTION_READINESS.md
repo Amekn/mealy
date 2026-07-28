@@ -513,7 +513,13 @@ invalid UTF-8/NUL, unsupported type, oversize, prompt-shape, and admission bound
 multimodal/media row is still open. A disabled v0.4 provider foundation now defines digest-bound
 PNG/JPEG/WebP envelopes, strict count/byte/token bounds, text-only route rejection, low-detail
 OpenAI Responses translation, Anthropic image-block translation, and restart-sized durable request
-evidence. It is not a user-facing claim: strict decode/re-encode metadata stripping,
+evidence. Its Linux normalizer now performs PNG/JPEG/WebP validation and metadata-stripping
+re-encoding in a fresh identity-pinned, empty-environment, no-network Bubblewrap worker with no
+home/workspace/secret mount, bounded protocol, OS resource limits, panic containment, animation
+rejection, dimension/pixel caps, deterministic downscaling, and independent daemon-side
+signature/header/size/digest verification. Unit and real-namespace tests cover malformed data,
+media mismatch, APNG/animated WebP rejection, metadata removal, oversize denial, deterministic
+output, and successful normalization. This remains deliberately unavailable at user ingress:
 content-addressed inbox ownership/linkage, context hydration, migration/export/replay evidence,
 explicit per-route activation, image generation, and safe client/channel rendering remain
 required before image input can be enabled. Audio/video are not implemented.
