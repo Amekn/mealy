@@ -596,6 +596,24 @@ backup/restore verification; bounded at-rest compression whose declared and actu
 sizes, UTF-8/JSON shape, and logical digest are rechecked before dispatch/replay; optional encryption
 and future hash-chain checkpoints.
 
+### Registry or mirror serves substituted, withdrawn, frozen, or older packages
+
+Controls: a registry starts only from an owner-configured out-of-band root with exact registry
+identity, monotonic root version, expiry, ordered Ed25519 key IDs, and a signature threshold.
+Signed snapshots expire within seven days, advance monotonically, reject new bytes at an accepted
+version, and separately bind publisher key thresholds, target descriptors, and withdrawals.
+Publisher-signed releases bind exact package/publisher/version/class, host compatibility,
+manifest/archive media type, size and SHA-256, publication time, and the complete dependency
+release-envelope digest closure. Exact decoded payload bytes are domain-separated before strict
+signature verification, so parser reserialization cannot change signature meaning.
+
+Discovery remains inert. It performs no fetch, extraction, extension import, skill activation,
+configuration write, staging, or grant. A candidate must later pass the existing full-inventory
+skill/extension inspector and present an exact permission diff; an old grant is never inherited.
+Trust-root rotation, bounded mirror transport, persisted anti-rollback state, and withdrawal
+propagation to installed packages remain explicit follow-on boundaries and are not claimed by the
+first verifier slice.
+
 ### A staging asset substitutes a different release daemon
 
 Controls: the x86-64 soak subject is never selected by a mutable URL, display name alone, or a
@@ -632,6 +650,10 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
 - Duplicate delivery and stale lease tests prove no unauthorized transition.
 - Provider payload and child environment tests prove secret minimization.
 - Extension-host crash and malicious-request fixtures cannot stop or bypass the daemon.
+- Registry fixtures prove threshold signatures, exact target membership, expiry, rollback and
+  same-version-equivocation denial, withdrawal, host compatibility, dependency-envelope locks,
+  strict descriptors, and deterministic permission-diff widening without fetching or executing
+  package content.
 - MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
   SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
   executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.

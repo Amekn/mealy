@@ -23,5 +23,6 @@ ADRs record decisions that shape multiple modules or are expensive to reverse. T
 | [0017](0017-content-addressed-bounded-image-input.md) | Content-addressed bounded image input | Accepted |
 | [0018](0018-governed-image-generation-effect.md) | Governed image generation through the durable effect ledger | Accepted |
 | [0019](0019-one-shot-transactional-browser-effects.md) | One-shot transactional browser effects | Accepted |
+| [0020](0020-threshold-signed-inert-package-registry.md) | Threshold-signed inert package registry | Accepted |
 
 New ADRs use the next four-digit number and begin as `Proposed`. Superseding an ADR keeps the old file and links both directions.

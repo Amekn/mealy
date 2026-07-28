@@ -32,6 +32,7 @@ mod provider;
 mod provider_config;
 mod provider_selection;
 mod recovery;
+mod registry;
 mod schedule;
 mod scheduler;
 mod session_export;
@@ -285,6 +286,19 @@ pub use provider_selection::{
     update_session_provider_selection,
 };
 pub use recovery::{RecoveryPlan, plan_interrupted_effect};
+pub use registry::{
+    ExtensionCapabilityChange, ExtensionFilesystemPermissionChange, ExtensionPermissionDiff,
+    InspectedRegistryRelease, InspectedRegistrySnapshot, REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE,
+    REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE, REGISTRY_RELEASE_CONTRACT_VERSION,
+    REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE, REGISTRY_RELEASE_PAYLOAD_TYPE,
+    REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
+    REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE, RegistryContentDescriptor,
+    RegistryDependencyLock, RegistryError, RegistryPackageKind, RegistryPublicKey,
+    RegistryPublisher, RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm,
+    RegistrySignedEnvelope, RegistrySnapshot, RegistrySnapshotState, RegistryTarget,
+    RegistryTrustRoot, RegistryWithdrawal, SkillPermissionDiff, diff_extension_permissions,
+    diff_skill_permissions, inspect_registry_release, inspect_registry_snapshot,
+};
 pub use schedule::{
     ClaimScheduleRunCommit, CompleteScheduleRunCommit, CreateScheduleCommit,
     MAXIMUM_CRON_EXPRESSION_BYTES, MAXIMUM_MISFIRE_GRACE_MS, MAXIMUM_SCHEDULE_NAME_BYTES,

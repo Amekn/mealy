@@ -106,6 +106,7 @@ release_documents=(
   decisions/0017-content-addressed-bounded-image-input.md
   decisions/0018-governed-image-generation-effect.md
   decisions/0019-one-shot-transactional-browser-effects.md
+  decisions/0020-threshold-signed-inert-package-registry.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
@@ -423,11 +424,11 @@ install_release() {
   local entries listing
   entries=$(tar -tzf "$archive")
   listing=$(tar --numeric-owner -tvzf "$archive")
-  if [[ -z $entries ]] || ! printf '%s\n' "$listing" | awk '
+  if [[ -z $entries ]] || ! printf '%s\n' "$listing" | awk -v maximum_entries=128 '
     $1 !~ /^[-d]/ {exit 1}
     $3 !~ /^[0-9]+$/ {exit 1}
     {count += 1; total += $3}
-    count > 96 || $3 > 268435456 || total > 536870912 {exit 1}
+    count > maximum_entries || $3 > 268435456 || total > 536870912 {exit 1}
     END {if (count == 0) exit 1}
   '; then
     echo "release archive type, count, or expanded-size bound is invalid" >&2

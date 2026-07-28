@@ -272,6 +272,18 @@ browser transaction reconciliation evidence.
 - Registry discovery never executes package content and never grants requested
   authority automatically.
 
+The first v0.5 registry foundation is implemented as an inert application-layer verifier.
+An owner-supplied out-of-band root authorizes threshold-signed, expiring, monotonic snapshots;
+snapshots authorize threshold publisher keys and immutable media-type/size/SHA-256 release
+descriptors; publisher releases bind exact package/manifest identities, host compatibility, and
+dependency locks. Strict exact-byte Ed25519 fixtures cover signature tampering, missing
+thresholds, expiry, rollback, same-version equivocation, target substitution, withdrawal,
+incompatibility, and missing dependency targets. Deterministic extension and skill diffs expose
+capability contracts, filesystem/network/secret/process requests, and governed-tool references.
+Trust-root rotation, bounded mirror transport, canonical persistence, package download/inspection,
+staged activation, installed-withdrawal handling, and rollback remain later slices; the verifier
+performs none of those mutations and grants no authority.
+
 ### Memory and automation
 
 - Add optional hybrid semantic retrieval as a rebuildable derived index with

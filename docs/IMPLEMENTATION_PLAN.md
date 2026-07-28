@@ -250,6 +250,30 @@ crash/restart, no redispatch, reconciliation, and replay after runtime deletion.
 automation, payments, ambient-login/personal profiles, and unattended transactions remain future
 contracts.
 
+## Productionization slice: threshold-signed inert package registry
+
+Status: first v0.5 verification and review foundation implemented; lifecycle integration remains
+in progress. The owner-configured trust root and exact-byte envelope verifier enforce distinct
+registry and publisher Ed25519 thresholds. Expiring monotonic snapshots reject rollback,
+same-version equivocation, unknown publishers, malformed ordering, and descriptor drift. Registry
+withdrawals remain auditable but cannot install. Publisher releases bind exact package identity,
+class, host compatibility, manifest/archive descriptors, and a complete dependency closure whose
+signed-release-envelope digests must exist and remain unwithdrawn in that snapshot.
+
+Registry inspection is intentionally data-only and makes no network request, filesystem change,
+configuration mutation, install, stage, or grant. Deterministic extension diffs cover new,
+removed, and changed capability contracts plus logical filesystem, exact network, opaque secret,
+and process-spawn requests. Skill diffs cover separately governed tool references. Unit fixtures
+prove threshold failure, signature tampering, expiry, rollback, equivocation, target substitution,
+withdrawal, incompatible host ranges, missing dependency locks, and authority widening.
+
+The next slices must add stopped-home trust-root lifecycle/rotation, SSRF-resistant bounded mirror
+transport, schema-backed monotonic snapshot/release evidence, exact archive download and existing
+package inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade
+and rollback transactions, public registry publication tooling, and package/upgrade/recovery
+qualification. [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the
+boundary.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,

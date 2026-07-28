@@ -29,6 +29,19 @@ repeatable evidence. A green compiler or unrelated test is not treated as requir
 | NFR-PORT-001..002, NFR-OPS-001..002 | covered | Linux is the sole production OS contract. Ubuntu 24.04/26.04, Debian 13, and Fedora 44 receive clean x86-64/ARM64 package gates; Arch Linux receives a clean x86-64 gate. Native `.deb`, `.rpm`, and `.pkg.tar.zst` packages plus generic glibc archives cover the supported families, while derivatives are conditional on the documented Linux compatibility boundary. macOS and Windows are archived or out of scope. Native service installation is systemd-user Linux; unsupported platforms deny explicitly. CLI exposes doctor/status/backup/restore verification/safe mode/drain, forced termination evidence, and a temporary least-authority loopback dashboard. The dashboard aggregates canonical projections and exposes only typed session input, bounded timeline, exact approval, exact 30-day/per-task usage, cooperative cancellation, unknown-effect reconciliation, durable keyed schedule creation plus revision-fenced lifecycle, bounded governed-memory administration, and manifest-bounded extension lifecycle. Exact Host/Origin/capability checks, an 8 MiB daemon-response ceiling, and strict DTO limits protect the adapter without exposing the daemon bearer, creating alternate state, or providing an arbitrary proxy. |
 | NFR-QUAL-001..004 | covered | Domain property tests, policy/recovery/effect/migration units, real SQLite integration tests, real process crash scenarios, public API workflows, fallback doctor scenario, extension/channel failures, migration snapshots, and sandbox/authorization/secret security cases run locally and in CI. |
 
+The first v0.5 registry verifier extends the EXT/NFR-QUAL evidence without yet changing the
+release-one lifecycle claim. An out-of-band root verifies threshold-signed exact snapshot bytes;
+expiring monotonic state rejects signature drift, rollback, and same-version equivocation.
+Snapshots authorize separate threshold publisher keys, immutable media-type/size/SHA-256 release
+descriptors, and withdrawals. Publisher releases bind host compatibility and complete exact
+dependency locks. Deterministic extension/skill diffs enumerate every requested capability,
+filesystem, network, secret, process, and governed-tool change before a later staging transaction.
+Unit fixtures cover tampering, missing thresholds, expiry, rollback, equivocation, target
+substitution, withdrawal, incompatibility, missing dependencies, and authority widening. Root
+rotation, bounded mirror transport, canonical persistence, package fetch/inspection, staged
+activation, installed-withdrawal handling, and rollback are still open v0.5 work and therefore are
+not marked covered here.
+
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context
 manifests use one bounded, compressed, digest-verified item bundle with sparse foreign-key

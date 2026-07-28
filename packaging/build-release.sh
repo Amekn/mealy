@@ -86,6 +86,7 @@ release_documents=(
   decisions/0017-content-addressed-bounded-image-input.md
   decisions/0018-governed-image-generation-effect.md
   decisions/0019-one-shot-transactional-browser-effects.md
+  decisions/0020-threshold-signed-inert-package-registry.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
