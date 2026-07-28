@@ -1877,6 +1877,7 @@ async fn sessions(State(state): State<MockState>, headers: HeaderMap) -> Respons
             "apiVersion": API_VERSION,
             "sessions": [{
                 "sessionId": SESSION_ID,
+                "title": "Review production readiness",
                 "status": "active",
                 "revision": 3,
                 "pendingInputs": 1,

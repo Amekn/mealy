@@ -177,6 +177,9 @@ pub struct SessionStatusResponse {
 pub struct SessionSummaryResponse {
     /// Opaque session ID accepted by `chat --session-id`.
     pub session_id: String,
+    /// Bounded display title; older compatible daemons deserialize as `New conversation`.
+    #[serde(default = "default_session_title")]
+    pub title: String,
     /// Stable lifecycle spelling.
     pub status: String,
     /// Canonical optimistic-concurrency revision.
@@ -207,6 +210,9 @@ pub struct SessionsResponse {
 pub struct SessionSearchHitResponse {
     /// Owning session accepted by `chat --session-id`.
     pub session_id: String,
+    /// Bounded display title; older compatible daemons deserialize as `New conversation`.
+    #[serde(default = "default_session_title")]
+    pub session_title: String,
     /// Canonical turn identity.
     pub turn_id: String,
     /// Canonical task identity accepted by task inspection commands.
@@ -233,6 +239,10 @@ pub struct SessionSearchResponse {
     pub query: String,
     /// Matching canonical turns.
     pub hits: Vec<SessionSearchHitResponse>,
+}
+
+fn default_session_title() -> String {
+    "New conversation".to_owned()
 }
 
 /// Stable transport projection of one task.
@@ -2670,7 +2680,7 @@ mod tests {
         API_VERSION, ArtifactMetadataResponse, CancelTaskRequest, ContextItemDisposition,
         ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
         CreateDiscordChannelRequest, CreateTelegramChannelRequest, DeliveryMode,
-        SubmitInputRequest, TimelineCursor,
+        SessionSummaryResponse, SubmitInputRequest, TimelineCursor,
     };
 
     #[test]
@@ -2720,6 +2730,24 @@ mod tests {
             serde_json::to_string(&TimelineCursor(42)).expect("serialize cursor"),
             "42"
         );
+    }
+
+    #[test]
+    fn additive_session_title_defaults_for_older_v1_responses() {
+        let summary = serde_json::from_value::<SessionSummaryResponse>(serde_json::json!({
+            "sessionId": "session-1",
+            "status": "active",
+            "revision": 1,
+            "pendingInputs": 0,
+            "activeTurnId": null,
+            "createdAtMs": 1,
+            "updatedAtMs": 2
+        }))
+        .expect("deserialize older additive response");
+        assert_eq!(summary.title, "New conversation");
+
+        let value = serde_json::to_value(summary).expect("serialize titled response");
+        assert_eq!(value["title"], "New conversation");
     }
 
     #[test]

@@ -818,6 +818,7 @@
     let refreshing = false;
     let conversationRefreshing = false;
     let selectedSessionId = null;
+    let sessionTitles = new Map();
     let timelineCursor = 0;
     let timelineEvents = [];
     let activeTaskId = null;
@@ -1229,7 +1230,9 @@
       deliveryMode.disabled = !selected;
       sendInputButton.disabled = !selected;
       cancelTaskButton.disabled = !selected || !activeTaskId;
-      document.getElementById("conversation-id").textContent = selectedSessionId || "Select or create a session";
+      document.getElementById("conversation-id").textContent = selectedSessionId
+        ? (sessionTitles.get(selectedSessionId) || selectedSessionId)
+        : "Select or create a session";
       if (!selected) {
         document.getElementById("conversation-state").textContent = "No live timeline";
       } else if (status) {
@@ -2320,6 +2323,10 @@
       const target = document.getElementById("sessions");
       const picker = document.getElementById("conversation-sessions");
       const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+      sessionTitles = new Map(sessions.map(session => [
+        session.sessionId,
+        typeof session.title === "string" && session.title.length ? session.title : "New conversation"
+      ]));
       document.getElementById("session-count").textContent = `${formatCount(sessions.length)} session${sessions.length === 1 ? "" : "s"}`;
       if (!sessions.length) {
         emptyList(target, "No retained session is visible to this exact local binding.");
@@ -2331,8 +2338,8 @@
         choice.type = "button";
         choice.dataset.sessionId = session.sessionId;
         choice.append(
-          element("span", "session-choice-title", session.sessionId),
-          element("span", "session-choice-meta", `${formatCount(session.pendingInputs)} pending · ${formatTime(session.updatedAtMs)}`)
+          element("span", "session-choice-title", sessionTitles.get(session.sessionId)),
+          element("span", "session-choice-meta", `${formatCount(session.pendingInputs)} pending · ${formatTime(session.updatedAtMs)} · ${session.sessionId}`)
         );
         choice.addEventListener("click", () => { void selectSession(session.sessionId); });
         return choice;
@@ -2340,7 +2347,10 @@
       target.replaceChildren(...sessions.map(session => {
         const item = element("li", "item");
         const body = element("div");
-        body.append(element("p", "item-title", session.sessionId), element("p", "item-meta", `Revision ${formatCount(session.revision)} · updated ${formatTime(session.updatedAtMs)}`));
+        body.append(
+          element("p", "item-title", sessionTitles.get(session.sessionId)),
+          element("p", "item-meta", `${session.sessionId} · revision ${formatCount(session.revision)} · updated ${formatTime(session.updatedAtMs)}`)
+        );
         const side = element("div", "item-side");
         const open = element("button", "action", session.sessionId === selectedSessionId ? "Open" : "View");
         open.type = "button";

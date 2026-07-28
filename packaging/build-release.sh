@@ -38,6 +38,7 @@ release_documents=(
   REQUIREMENTS_COVERAGE.md
   TESTING.md
   THREAT_MODEL.md
+  V0_3_TO_V0_5_ROADMAP.md
   benchmarks/2026-07-12-development-soak.json
   benchmarks/2026-07-13-debian-13-installed-package-smoke.md
   benchmarks/2026-07-13-development-soak.json
@@ -76,6 +77,7 @@ release_documents=(
   decisions/0008-risk-based-validation.md
   decisions/0009-sqlite-writer-and-snapshot-readers.md
   decisions/0010-disconnect-resistant-update-transaction.md
+  decisions/0011-session-lineage-and-thin-workbench-clients.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md

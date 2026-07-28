@@ -3004,6 +3004,7 @@ mod tests {
                 sessions: (limit > 0)
                     .then(|| SessionSummaryResponse {
                         session_id: "session-1".to_owned(),
+                        title: "Review the release".to_owned(),
                         status: "active".to_owned(),
                         revision: 1,
                         pending_inputs: 0,

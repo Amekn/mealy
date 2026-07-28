@@ -252,10 +252,11 @@ pub use telegram::{
     TelegramUpdateReservation, telegram_input_dedupe_key, validate_telegram_binding,
 };
 pub use timeline::{
-    SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES, SessionSearchHitView, SessionSearchQuery,
-    SessionStatusView, SessionSummaryView, TimelineCursor, TimelineEvent, TimelinePage,
-    TimelineQuery, TimelineStore, TimelineStoreError, TimelineUseCaseError, query_session_status,
-    query_sessions, query_timeline, search_sessions, session_search_excerpt,
+    SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES, SESSION_TITLE_MAXIMUM_BYTES,
+    SESSION_TITLE_MAXIMUM_CHARACTERS, SessionSearchHitView, SessionSearchQuery, SessionStatusView,
+    SessionSummaryView, TimelineCursor, TimelineEvent, TimelinePage, TimelineQuery, TimelineStore,
+    TimelineStoreError, TimelineUseCaseError, UNTITLED_SESSION_TITLE, derive_session_title,
+    query_session_status, query_sessions, query_timeline, search_sessions, session_search_excerpt,
 };
 pub use tools::{
     ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput,

@@ -2,7 +2,7 @@ use super::SqliteStore;
 use mealy_application::{
     OwnershipContext, SessionSearchHitView, SessionSearchQuery, SessionStatusView,
     SessionSummaryView, TimelineCursor, TimelineEvent, TimelinePage, TimelineQuery, TimelineStore,
-    TimelineStoreError, session_search_excerpt, sha256_digest,
+    TimelineStoreError, derive_session_title, session_search_excerpt, sha256_digest,
 };
 use mealy_domain::SessionId;
 use rusqlite::{OptionalExtension, params};
@@ -19,7 +19,11 @@ impl TimelineStore for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT session.id, session.status, session.revision, \
+                "SELECT session.id, \
+                        (SELECT inbox.content FROM session_inbox inbox \
+                         WHERE inbox.session_id = session.id \
+                         ORDER BY inbox.sequence ASC LIMIT 1), \
+                        session.status, session.revision, \
                         (SELECT COUNT(*) FROM session_inbox inbox \
                          WHERE inbox.session_id = session.id AND inbox.state = 'pending'), \
                         session.active_turn_id, session.created_at_ms, session.updated_at_ms \
@@ -37,12 +41,13 @@ impl TimelineStore for SqliteStore {
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                         row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
                     ))
                 },
             )
@@ -50,6 +55,7 @@ impl TimelineStore for SqliteStore {
             .map(|row| {
                 let (
                     session_id,
+                    first_input,
                     status,
                     revision,
                     pending_inputs,
@@ -62,6 +68,7 @@ impl TimelineStore for SqliteStore {
                 }
                 Ok(SessionSummaryView {
                     session_id: parse_id(&session_id, "session ID")?,
+                    title: derive_session_title(first_input.as_deref()),
                     status,
                     revision: nonnegative_u64(revision, "session revision")?,
                     pending_inputs: nonnegative_u64(pending_inputs, "pending input count")?,
@@ -93,9 +100,12 @@ impl TimelineStore for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT session.id, turn.id, turn.task_id, inbox.content, \
-                        final_message.content_inline, final_message.content_digest, \
-                        turn.created_at_ms \
+                "SELECT session.id, \
+                        (SELECT first_inbox.content FROM session_inbox first_inbox \
+                         WHERE first_inbox.session_id = session.id \
+                         ORDER BY first_inbox.sequence ASC LIMIT 1), \
+                        turn.id, turn.task_id, inbox.content, final_message.content_inline, \
+                        final_message.content_digest, turn.created_at_ms \
                  FROM turn \
                  JOIN session ON session.id = turn.session_id \
                  JOIN session_inbox inbox ON inbox.inbox_entry_id = turn.inbox_entry_id \
@@ -120,12 +130,13 @@ impl TimelineStore for SqliteStore {
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, i64>(7)?,
                     ))
                 },
             )
@@ -133,6 +144,7 @@ impl TimelineStore for SqliteStore {
             .map(|row| {
                 let (
                     session_id,
+                    first_input,
                     turn_id,
                     task_id,
                     user_content,
@@ -156,6 +168,7 @@ impl TimelineStore for SqliteStore {
                 }
                 Ok(SessionSearchHitView {
                     session_id: parse_id(&session_id, "session ID")?,
+                    session_title: derive_session_title(first_input.as_deref()),
                     turn_id: parse_id(&turn_id, "turn ID")?,
                     task_id: parse_id(&task_id, "task ID")?,
                     user_excerpt,
