@@ -7,9 +7,10 @@ Mealy is a local-first, self-contained agent runtime for a reliable personal AI 
 For a published stable Linux release, the
 [signed repository landing page](https://amekn.github.io/mealy/) gives version-matched APT, DNF,
 and Pacman installation, onboarding, continuation, diagnostics, and update commands. Use it only
-after the selected release shows green `Publish signed Linux repositories` and public-repository
-acceptance jobs. The page, package-manager configurations, public key, and package indexes are all
-bound into the release's signed repository inventory.
+after the selected release shows green `Publish signed Linux repositories` and either its dependent
+public-repository jobs or the protected post-publication repository-acceptance workflow is green
+for that exact immutable tag. The page, package-manager configurations, public key, and package
+indexes are all bound into the release's signed repository inventory.
 
 For independent first-trust verification, a rootless install, or a release whose repository has
 not been deployed, install GitHub CLI plus the host prerequisites in the

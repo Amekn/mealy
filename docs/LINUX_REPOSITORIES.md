@@ -2,9 +2,10 @@
 
 Mealy publishes one signed package-repository site for the qualified Debian/Ubuntu, Fedora, and
 Arch Linux targets. The repository path is available only after a stable release's linked workflow
-shows `Publish signed Linux repositories` and every `Verify public … repository` job as green.
-Until that first deployment, use the attested release bootstrap described in
-[GETTING_STARTED.md](GETTING_STARTED.md).
+shows `Publish signed Linux repositories` and either every dependent `Verify public … repository`
+job or the protected post-publication repository-acceptance workflow as green for the exact
+immutable tag. Until that first qualified deployment, use the attested release bootstrap described
+in [GETTING_STARTED.md](GETTING_STARTED.md).
 
 The expected GitHub Pages address is:
 
@@ -135,6 +136,33 @@ The GitHub attestation establishes the exact manifest produced by the release wo
 manifest then establishes the repository signing fingerprint plus the SHA-256 and byte count of
 every published file; its OpenPGP signature provides a package-manager-native trust chain.
 
+## Post-publication revalidation
+
+The protected `mealy-public-repository-acceptance` workflow can revalidate an already published,
+immutable stable tag when a defect in the original verification harness—not a build, package,
+signature, attestation, or runtime defect—prevented the dependent repository jobs from running.
+It does not publish, redeploy, replace an asset, or move a tag.
+
+Dispatch it only from protected `main`:
+
+```sh
+gh workflow run public-repository-acceptance.yml \
+  --repo Amekn/mealy --ref main \
+  -f release_tag=v0.2.1
+```
+
+The workflow fails unless the input is a published stable release, the annotated tag resolves to a
+commit contained in protected `main`, the checked canonical repository URL and signing fingerprint
+match the signed manifest, and the manifest verifies against the original tag workflow's retained
+GitHub attestation. It then clean-installs the exact manifest version through APT on Ubuntu x86-64
+and Debian ARM64, DNF on Fedora x86-64 and ARM64, and Pacman on Arch x86-64. A final aggregate job
+requires all five lanes.
+
+A green revalidation run is acceptable evidence only alongside the original release run that
+successfully published the unchanged assets and Pages repository. A runtime, package, provenance,
+signing, or repository-content failure still requires a corrected semantic version and all
+release gates applicable to the changed subject.
+
 ## Updates, rollback, and removal
 
 The normal distribution command installs a signed newer package:
@@ -220,7 +248,9 @@ packages and database, a complete signed inventory, package-manager configuratio
 by-hash indexes. Protected CI generates a disposable certification/signing-subkey pair and proves
 clean installation through all three managers plus rejection after a one-byte tamper. The tag
 workflow repeats validation with the owner key, attests the manifest, deploys the exact Pages
-artifact, and accepts the public HTTPS repository on native x86-64 and ARM64 runners.
+artifact, and accepts the public HTTPS repository on native x86-64 and ARM64 runners. The same
+checked verifier and clean-install entry point are shared with protected post-publication
+revalidation, and every GitHub release operation carries an explicit repository identity.
 
 Before a signing subkey expires, add its successor to the same primary certificate and replace the
 GitHub secret with a new secret-subkey export. While the old subkey still signs releases, publish

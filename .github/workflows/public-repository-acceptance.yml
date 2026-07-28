@@ -1,0 +1,194 @@
+name: mealy-public-repository-acceptance
+
+run-name: 'Mealy public repository acceptance: ${{ inputs.release_tag }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable stable release tag currently deployed to the public repositories
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: mealy-public-repository-acceptance-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  qualify-release:
+    name: Qualify immutable published release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      version: ${{ steps.release.outputs.version }}
+      repository_base_url: ${{ steps.release.outputs.repository_base_url }}
+      repository_fingerprint: ${{ steps.release.outputs.repository_fingerprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Resolve the protected release and checked repository identity
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ $GITHUB_REF != refs/heads/main \
+            || ${GITHUB_REF_PROTECTED:-false} != true ]]; then
+            echo "post-publication acceptance must run from protected main" >&2
+            exit 65
+          fi
+          if [[ ! $RELEASE_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "post-publication acceptance requires a stable release tag" >&2
+            exit 64
+          fi
+
+          identity=packaging/linux-repository-identity.json
+          if ! jq -e \
+            --arg repository "$GITHUB_REPOSITORY" '
+              .schemaVersion == "mealy.linux-repository-identity.v1"
+              and .repository == $repository
+              and (.baseUrl | test("^https://[^[:space:]]+$"))
+              and (.signingFingerprint | test("^[0-9A-F]{40}$"))
+            ' "$identity" >/dev/null; then
+            echo "checked public repository identity is invalid" >&2
+            exit 65
+          fi
+          base_url=$(jq -er '.baseUrl | rtrimstr("/")' "$identity")
+          fingerprint=$(jq -er '.signingFingerprint' "$identity")
+
+          gh release verify "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
+          release=$(gh release view "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,assets,url)
+          if ! jq -e --arg tag "$RELEASE_TAG" '
+            .tagName == $tag
+            and .isDraft == false
+            and .isPrerelease == false
+            and any(.assets[];
+              .name == "ATTESTATION-linux-repositories.sigstore.json"
+              and (.digest | test("^sha256:[0-9a-f]{64}$")))
+          ' <<<"$release" >/dev/null; then
+            echo "release is missing, preliminary, or lacks the repository attestation" >&2
+            exit 65
+          fi
+
+          ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
+          object_type=$(jq -er '.object.type' <<<"$ref")
+          object_sha=$(jq -er '.object.sha' <<<"$ref")
+          for _ in {1..8}; do
+            if [[ $object_type == commit ]]; then
+              break
+            fi
+            if [[ $object_type != tag ]]; then
+              echo "release tag does not resolve to a commit" >&2
+              exit 65
+            fi
+            tag=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")
+            object_type=$(jq -er '.object.type' <<<"$tag")
+            object_sha=$(jq -er '.object.sha' <<<"$tag")
+          done
+          if [[ $object_type != commit || ! $object_sha =~ ^[0-9a-f]{40}$ ]]; then
+            echo "release tag resolution exceeded the fail-closed boundary" >&2
+            exit 65
+          fi
+
+          comparison=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${object_sha}...main")
+          if ! jq -e '
+            .status == "ahead" or .status == "identical"
+          ' <<<"$comparison" >/dev/null; then
+            echo "release tag commit is not contained in protected main" >&2
+            exit 65
+          fi
+
+          {
+            printf 'source_commit=%s\n' "$object_sha"
+            printf 'version=%s\n' "${RELEASE_TAG#v}"
+            printf 'repository_base_url=%s\n' "$base_url"
+            printf 'repository_fingerprint=%s\n' "$fingerprint"
+          } >>"$GITHUB_OUTPUT"
+
+  public-repository-acceptance:
+    name: Verify public ${{ matrix.distribution }} repository
+    needs: qualify-release
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read # Check out the protected verifier and download the release bundle.
+      attestations: read # Verify the manifest against the original tag-workflow provenance.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            distribution: Ubuntu 24.04 x86-64
+            family: deb
+            image: ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
+          - runner: ubuntu-24.04-arm
+            distribution: Debian 13 ARM64
+            family: deb
+            image: debian:13@sha256:fac46bff2e02f51425b6e33b0e1169f55dfb053d83511ca28aa50c09fd5ed7a4
+          - runner: ubuntu-24.04
+            distribution: Fedora 44 x86-64
+            family: rpm
+            image: fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
+          - runner: ubuntu-24.04-arm
+            distribution: Fedora 44 ARM64
+            family: rpm
+            image: fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898
+          - runner: ubuntu-24.04
+            distribution: Arch Linux x86-64
+            family: arch
+            image: archlinux:base-devel@sha256:412efebb0eeef0ef322ff24ad73f82b1ba2d3b12377db4c5fbe3074c7e7e8678
+    env:
+      MEALY_RELEASE_TAG: ${{ inputs.release_tag }}
+      MEALY_RELEASE_SOURCE_COMMIT: ${{ needs.qualify-release.outputs.source_commit }}
+      MEALY_RELEASE_VERSION: ${{ needs.qualify-release.outputs.version }}
+      MEALY_REPOSITORY_BASE_URL: ${{ needs.qualify-release.outputs.repository_base_url }}
+      MEALY_REPOSITORY_FINGERPRINT: ${{ needs.qualify-release.outputs.repository_fingerprint }}
+      MEALY_REPOSITORY_FAMILY: ${{ matrix.family }}
+      MEALY_REPOSITORY_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the public signed and attested manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/verify-public-linux-repository.sh \
+            "$GITHUB_REPOSITORY" "$MEALY_RELEASE_TAG" \
+            "$MEALY_RELEASE_SOURCE_COMMIT" "$MEALY_REPOSITORY_BASE_URL" \
+            "$MEALY_REPOSITORY_FINGERPRINT" \
+            "$RUNNER_TEMP/mealy-public-repository"
+      - name: Install the exact public package-manager release
+        run: >-
+          scripts/install-public-linux-repository.sh
+          "$MEALY_REPOSITORY_FAMILY" "$MEALY_REPOSITORY_IMAGE"
+          "$MEALY_REPOSITORY_BASE_URL" "$MEALY_REPOSITORY_FINGERPRINT"
+          "$MEALY_RELEASE_VERSION"
+
+  acceptance:
+    name: Public repository acceptance
+    if: ${{ always() }}
+    needs: [qualify-release, public-repository-acceptance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require release qualification and every clean-install lane
+        env:
+          QUALIFICATION_RESULT: ${{ needs.qualify-release.result }}
+          REPOSITORY_RESULT: ${{ needs.public-repository-acceptance.result }}
+        run: >-
+          test "$QUALIFICATION_RESULT" = success &&
+          test "$REPOSITORY_RESULT" = success

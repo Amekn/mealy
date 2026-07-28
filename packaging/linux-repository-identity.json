@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "mealy.linux-repository-identity.v1",
+  "repository": "Amekn/mealy",
+  "baseUrl": "https://amekn.github.io/mealy",
+  "signingFingerprint": "F8CB2DA307288C92757D731FFC798D3063749EA6"
+}
