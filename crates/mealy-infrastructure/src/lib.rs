@@ -47,9 +47,10 @@ pub use maintenance::{
     publish_export, verify_backup,
 };
 pub use mcp::{
-    McpHostError, McpHttpReadTool, McpReadTool, discover_mcp_http_server,
-    discover_mcp_stdio_server, inspect_mcp_http_endpoint, load_mcp_http_read_tools,
-    load_mcp_read_tools, mcp_stdio_launcher_main,
+    LoadedMcpHttpTools, LoadedMcpTools, McpEffectTool, McpEffectToolOutput, McpHostError,
+    McpHttpReadTool, McpReadTool, discover_mcp_http_server, discover_mcp_stdio_server,
+    inspect_mcp_http_endpoint, load_mcp_http_read_tools, load_mcp_http_tools, load_mcp_read_tools,
+    load_mcp_tools, mcp_stdio_launcher_main,
 };
 pub use mcp_oauth::discover_mcp_oauth_metadata;
 pub use mcp_oauth_token::{

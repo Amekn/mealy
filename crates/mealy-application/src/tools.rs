@@ -419,6 +419,9 @@ impl ReadToolDescriptor {
 /// Invalid canonical evidence attached to a tool descriptor.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum ToolDescriptorEvidenceError {
+    /// A mutating contract was presented to the legacy read-only descriptor boundary.
+    #[error("read-tool descriptor cannot represent an effectful contract")]
+    InvalidEffectContract,
     /// The hard timeout exceeded the persisted millisecond representation.
     #[error("read-tool timeout exceeds the canonical millisecond representation")]
     TimeoutOverflow,

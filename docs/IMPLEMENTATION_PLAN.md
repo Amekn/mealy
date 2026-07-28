@@ -168,7 +168,10 @@ The later native MCP stdio slice reuses this fail-closed boundary without treati
 metadata as authority: exact executable/full-toolset/full-definition/schema grants, fresh
 no-network Bubblewrap sessions, protocol/result bounds, cancellation, revocation, cited durable
 evidence, and execution-free replay are covered by fixture, CLI, and real-daemon process tests.
-HTTP MCP, resource mounts, credentials, and effectful MCP remain outside this completed subset.
+HTTP MCP, resource mounts, credentials, and effectful MCP were outside this completed phase-6
+subset. The later v0.4 work adds governed Streamable HTTP/OAuth plus owner-classified effectful
+stdio/HTTP calls through the existing approval, fenced-attempt, reconciliation, validation, and
+replay ledger; host resource mounts remain excluded.
 
 ## Phase 7: Operational hardening
 

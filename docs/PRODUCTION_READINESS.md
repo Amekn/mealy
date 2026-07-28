@@ -470,7 +470,7 @@ redirect/proxy-free DNS-pinned fresh sessions, complete tool/resource/resource-t
 catalog pinning, exact selected static-resource reads, and prompt retrieval normalized as cited
 untrusted evidence. Process fixtures cover selection, per-call revalidation, drift, revocation, and
 execution-free replay. Resource-template expansion/subscriptions, dynamic OAuth client onboarding,
-intentional workspace mounts, effectful MCP tools, resumable GET, long-lived session health, and
+intentional workspace mounts, resumable GET, long-lived session health, and
 non-Linux enforcement remain open before the broader MCP gate is passed. OAuth metadata inspection and an explicitly
 approved pre-registered-public-client login now validate state/PKCE/resource and create one private
 initial token-family record; login alone grants no model-visible authority. Separately approved
@@ -479,6 +479,15 @@ refresh, exact-scope and rotated-refresh enforcement, cross-process generation f
 `401`-triggered refresh/retry, reference-safe local revocation, and encrypted backup/migration
 recovery. Dynamic registration/CIMD, issuer-side revocation, and scope-challenge parking remain
 open.
+
+Owner-classified effectful MCP is now implemented for both stdio and HTTP/OAuth tools. Selection
+uses mutually exclusive read-only, idempotent, or non-idempotent flags; annotations never grant
+authority. The complete descriptor, immutable run ceiling, deterministic policy, exact approval,
+fresh catalog revalidation, fenced attempt, durable outcome, validation, reconciliation, and
+recorded replay reuse the existing effect ledger. A real-process happy path proves approval and
+single dispatch. Crash tests prove an interrupted idempotent call creates a visible bounded retry,
+while an interrupted non-idempotent call remains parked after exactly one dispatch until explicit
+owner evidence reconciles it. Replay produces zero live provider or MCP calls.
 
 Delegation acceptance is complete for bounded serial child work. The provider-visible
 `agent.delegate` operation validates a self-contained objective, instructions, one-to-eight

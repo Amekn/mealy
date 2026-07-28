@@ -14,13 +14,14 @@ use futures_util::StreamExt;
 use mealy_application::{
     BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
-    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolGrant,
-    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
-    ProviderRequest, ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
-    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
-    default_daemon_config_document, is_sha256_digest, sha256_digest, valid_provider_secret_id,
-    valid_session_metadata, validate_discord_snowflake, validate_mcp_http_server_set,
-    validate_mcp_server_set, validate_provider_base_url, validate_provider_chain,
+    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
+    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
+    ProviderCredentialReference, ProviderRequest, ProviderResponse,
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
+    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
+    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
+    validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
     AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
@@ -1191,7 +1192,7 @@ enum ConfigCommand {
         #[arg(long = "argument")]
         arguments: Vec<String>,
     },
-    /// Install and enable selected read-only tools from one inspected local MCP stdio server.
+    /// Install and enable explicitly classified tools from one inspected local MCP stdio server.
     McpAdd {
         /// Stable logical server identity used in model-visible tool names.
         server_id: String,
@@ -1200,9 +1201,9 @@ enum ConfigCommand {
         /// Direct non-secret process argument; repeat in server order.
         #[arg(long = "argument")]
         arguments: Vec<String>,
-        /// Exact remote tool name reviewed by the owner; repeat to expose more than one.
-        #[arg(long = "allow-tool", required = true)]
-        allow_tools: Vec<String>,
+        /// Exact remote tool: NAME for read-only, idempotent:NAME, or non-idempotent:NAME; repeat as needed.
+        #[arg(long = "allow-tool", required = true, value_parser = parse_mcp_tool_selection)]
+        allow_tools: Vec<McpToolSelectionArgument>,
         /// Hard total timeout for initialization, re-discovery, and one call.
         #[arg(long, default_value_t = 30_000)]
         timeout_ms: u64,
@@ -1288,9 +1289,9 @@ struct McpHttpOptions {
     /// Maximum time to wait for the exact loopback OAuth callback.
     #[arg(long)]
     oauth_timeout_seconds: Option<u64>,
-    /// Exact reviewed remote tool name; repeat for add.
-    #[arg(long = "allow-tool")]
-    allow_tools: Vec<String>,
+    /// Exact tool: NAME for read-only, idempotent:NAME, or non-idempotent:NAME; repeat for add.
+    #[arg(long = "allow-tool", value_parser = parse_mcp_tool_selection)]
+    allow_tools: Vec<McpToolSelectionArgument>,
     /// Exact reviewed remote resource URI; repeat for add.
     #[arg(long = "allow-resource")]
     allow_resources: Vec<String>,
@@ -1306,6 +1307,36 @@ struct McpHttpOptions {
     /// Confirm an authority-changing operation.
     #[arg(long)]
     approve: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct McpToolSelectionArgument {
+    name: String,
+    effect: McpToolEffect,
+}
+
+fn parse_mcp_tool_selection(value: &str) -> Result<McpToolSelectionArgument, String> {
+    let (effect, name) = if let Some(name) = value.strip_prefix("idempotent:") {
+        (McpToolEffect::Idempotent, name)
+    } else if let Some(name) = value.strip_prefix("non-idempotent:") {
+        (McpToolEffect::NonIdempotent, name)
+    } else {
+        (McpToolEffect::ReadOnly, value)
+    };
+    if name.is_empty()
+        || name.len() > 96
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(
+            "tool selection must be NAME, idempotent:NAME, or non-idempotent:NAME".to_owned(),
+        );
+    }
+    Ok(McpToolSelectionArgument {
+        name: name.to_owned(),
+        effect,
+    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -15461,13 +15492,31 @@ fn inspect_mcp_server(
     })
 }
 
+fn classified_mcp_tool_selections(
+    selections: &[McpToolSelectionArgument],
+) -> Result<Vec<(String, McpToolEffect)>, CliError> {
+    if selections.is_empty() || selections.len() > 64 {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let mut selected = BTreeMap::new();
+    for selection in selections {
+        if selected
+            .insert(selection.name.clone(), selection.effect)
+            .is_some()
+        {
+            return Err(CliError::InvalidMcpConfiguration);
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn configure_mcp_add(
     home: &Path,
     server_id: &str,
     executable: &Path,
     arguments: &[String],
-    allow_tools: &[String],
+    allow_tools: &[McpToolSelectionArgument],
     timeout_ms: u64,
     maximum_output_bytes: u64,
     approve: bool,
@@ -15475,14 +15524,7 @@ fn configure_mcp_add(
     if !approve {
         return Err(CliError::ApprovalRequired);
     }
-    if allow_tools.is_empty() || allow_tools.len() > 64 {
-        return Err(CliError::InvalidMcpConfiguration);
-    }
-    let mut selected = allow_tools.to_vec();
-    selected.sort();
-    if selected.windows(2).any(|window| window[0] == window[1]) {
-        return Err(CliError::InvalidMcpConfiguration);
-    }
+    let selected = classified_mcp_tool_selections(allow_tools)?;
     let (home, _instance_lock) = lock_stopped_home(home)?;
     let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
     let current = home.join("config.json");
@@ -15509,12 +15551,17 @@ fn configure_mcp_add(
     )?;
     let grants = selected
         .iter()
-        .map(|name| {
+        .map(|(name, effect)| {
             let tool = discovery
                 .tool(name)
                 .ok_or(CliError::InvalidMcpConfiguration)?;
-            McpToolGrant::new(tool.definition.clone(), timeout_ms, maximum_output_bytes)
-                .map_err(|_| CliError::InvalidMcpConfiguration)
+            McpToolGrant::new_with_effect(
+                tool.definition.clone(),
+                *effect,
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let relative_path = format!("mcp-servers/{executable_digest}/server");
@@ -15702,7 +15749,7 @@ fn configure_mcp_oauth_login(
                 expires_at_ms: token_set.expires_at_ms(),
                 configuration_changed: false,
                 authority_exposed: false,
-                next_step: "Review the live catalog, then run `mealyctl config mcp-http oauth-add SERVER_ID ENDPOINT --oauth-token-set-id TOKEN_SET_ID ... --approve` while the daemon is stopped.",
+                next_step: "Review the live catalog, then run `mealyctl mcp-http oauth-add SERVER_ID ENDPOINT --oauth-token-set-id TOKEN_SET_ID ... --approve` while the daemon is stopped.",
             })
         }
         Err(error) => {
@@ -15958,7 +16005,7 @@ fn configure_mcp_http_add(
     bearer_secret_id: Option<&str>,
     bearer_credential_env: &str,
     oauth_token_set_id: Option<&str>,
-    allow_tools: &[String],
+    allow_tools: &[McpToolSelectionArgument],
     allow_resources: &[String],
     allow_prompts: &[String],
     timeout_ms: u64,
@@ -15971,12 +16018,19 @@ fn configure_mcp_http_add(
     if bearer_secret_id.is_some() && oauth_token_set_id.is_some() {
         return Err(CliError::InvalidMcpConfiguration);
     }
-    if allow_tools
+    let selected_tools = classified_mcp_tool_selections(allow_tools).or_else(|error| {
+        if allow_tools.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        }
+    })?;
+    if selected_tools
         .len()
         .saturating_add(allow_resources.len())
         .saturating_add(allow_prompts.len())
         == 0
-        || allow_tools
+        || selected_tools
             .len()
             .saturating_add(allow_resources.len())
             .saturating_add(allow_prompts.len())
@@ -15984,13 +16038,11 @@ fn configure_mcp_http_add(
     {
         return Err(CliError::InvalidMcpConfiguration);
     }
-    let mut selected_tools = allow_tools.to_vec();
     let mut selected_resources = allow_resources.to_vec();
     let mut selected_prompts = allow_prompts.to_vec();
-    selected_tools.sort();
     selected_resources.sort();
     selected_prompts.sort();
-    if [&selected_tools, &selected_resources, &selected_prompts]
+    if [&selected_resources, &selected_prompts]
         .into_iter()
         .any(|selected| selected.windows(2).any(|window| window[0] == window[1]))
     {
@@ -16053,12 +16105,17 @@ fn configure_mcp_http_add(
     let discovery = inspect_mcp_http_endpoint(&proposal, credential, oauth_store)?;
     let grants = selected_tools
         .iter()
-        .map(|name| {
+        .map(|(name, effect)| {
             let tool = discovery
                 .tool(name)
                 .ok_or(CliError::InvalidMcpConfiguration)?;
-            McpToolGrant::new(tool.definition.clone(), timeout_ms, maximum_output_bytes)
-                .map_err(|_| CliError::InvalidMcpConfiguration)
+            McpToolGrant::new_with_effect(
+                tool.definition.clone(),
+                *effect,
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let resource_grants = selected_resources

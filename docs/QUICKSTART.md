@@ -1239,11 +1239,13 @@ skill package bytes.
 
 ## Add a local MCP stdio tool
 
-The local MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, exact
-MCP protocol revision `2025-11-25`, and read-only computation only. A server receives direct
+The local MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, and exact
+MCP protocol revision `2025-11-25`. A server receives direct
 non-secret arguments and model-proposed tool arguments, but no inherited environment, network,
 Mealy home, host workspace, secret, shell, `PATH`, or writable persistent filesystem. Script and
-interpreter entry points, host resource mounts, and effectful local tools are not supported.
+interpreter entry points and host resource mounts are not supported. Selected tools may be
+read-only, idempotent effects, or non-idempotent effects; effectful calls use Mealy's ordinary
+durable approval and recovery ledger.
 
 First inspect an exact canonical executable. Inspection runs the code inside the same sandbox but
 does not change agent authority or configuration:
@@ -1259,7 +1261,16 @@ stored in `config.json`; never put a token, password, private host path, or shel
 The JSON response contains the negotiated server metadata, every paginated tool definition, each
 definition digest, the complete tool-set digest, and the executable digest. Review the complete
 definitions and schemas. Mealy does not trust MCP annotations such as `readOnlyHint` as an
-authorization boundary.
+authorization boundary. The owner must classify each selected name explicitly:
+
+- `--allow-tool NAME` means read-only and cannot enter the effect ledger.
+- `--allow-tool idempotent:NAME` means an approved interrupted call may be retried as a new fenced
+  attempt with the same stable key.
+- `--allow-tool non-idempotent:NAME` means an ambiguous post-dispatch result is never retried and
+  parks for explicit owner reconciliation.
+
+Do not choose `idempotent` merely because the server advertises `idempotentHint`; verify the
+operation's downstream contract yourself. One remote name may appear in only one class.
 
 Stop Mealy, select only the exact remote tool names you intend to expose, and approve the
 installation:
@@ -1282,6 +1293,14 @@ tool-set pin plus each selected full definition. The model-visible name is
 `mcp.localtools.calculate`. A normal chat turn can use it when useful; successful evidence carries
 the citation `mcp://localtools/calculate`. `status` lists the enabled model-visible tool ID, and the
 task timeline records its exact version, schema, policy, output digest, and locator.
+
+To select an effectful operation, replace `--allow-tool calculate` with exactly one matching
+`--allow-tool idempotent:REMOTE_NAME` or `--allow-tool non-idempotent:REMOTE_NAME`. Every proposed
+effect requires an exact authenticated approval. Mealy revalidates the executable, complete
+inventory, selected definition, normalized arguments, target, and immutable run ceiling before it
+durably marks dispatch. An idempotent crash retry is a visible new attempt. A non-idempotent
+timeout, transport loss, or crash after dispatch becomes `outcome_unknown`; use the dashboard or
+effect reconciliation API only after independently verifying the remote result.
 
 Startup and every tool call launch a fresh process, negotiate the exact protocol, paginate the
 complete `tools/list`, and compare it with the owner-reviewed pins before `tools/call`. Any missing,
@@ -1314,7 +1333,7 @@ normal startup, keep the daemon stopped, run `mcp-list`, disable or revoke that 
 
 ## Add a remote Streamable HTTP MCP capability
 
-Mealy can expose owner-selected read-only tools, exact resource URIs, and prompts from an MCP
+Mealy can expose owner-selected read-only or effectful tools, exact resource URIs, and prompts from an MCP
 Streamable HTTP endpoint using the stable `2025-11-25` protocol. This is a separate authority from
 generic web access. Production
 endpoints must use canonical HTTPS; literal-loopback HTTP is permitted for a server on the same
@@ -1447,8 +1466,19 @@ credential and an exact live inventory match before publishing authority. `oauth
 only the local broker record and fails while any configured server still references the token
 family, so revoke every referencing server first. It does not call an issuer revocation endpoint;
 remove the authorization at the issuer separately when the service requires it. Dynamic client
-registration/CIMD, resource-template expansion/subscriptions, resumable GET streams, and effectful
-MCP tools remain planned v0.4 slices.
+Use `--allow-tool idempotent:REMOTE_NAME` or
+`--allow-tool non-idempotent:REMOTE_NAME` when installing an effect. The three classifications are
+mutually exclusive. Both
+effect classes require exact approval and pass through the same prepared effect and attempt ledger
+as built-in Mealy actions. HTTP/OAuth endpoint, credential reference, complete catalog, definition,
+schema, arguments, target, executable identity, and policy are all approval-bound. A confirmed
+response becomes durable evidence. An interrupted idempotent call may create a bounded fenced
+retry; an ambiguous non-idempotent call parks as `outcome_unknown` until the owner supplies
+external reconciliation evidence. Recorded replay never contacts the endpoint or refreshes a
+token.
+
+Dynamic client registration/CIMD, resource-template expansion/subscriptions, resumable GET
+streams, long-lived sessions, and issuer-side revocation remain planned v0.4 slices.
 See the stable MCP
 [authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
 [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and

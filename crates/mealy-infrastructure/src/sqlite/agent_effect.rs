@@ -653,6 +653,10 @@ pub(super) struct ReplayAgentEffect {
     pub(super) tool_id: String,
     pub(super) arguments: Value,
     pub(super) target_resources: Vec<String>,
+    pub(super) effect_class: mealy_domain::EffectClass,
+    pub(super) executable_identity_digest: String,
+    pub(super) network_destinations: Vec<String>,
+    pub(super) secret_references: Vec<String>,
     pub(super) message_id: String,
     pub(super) content: String,
     pub(super) content_digest: String,
@@ -766,14 +770,14 @@ pub(super) fn load_replay_agent_effects(
                     | EffectStatus::Compensated
             )
             || i64::try_from(view.revision).ok() != Some(observed_revision)
-            || !matches!(
+            || !(matches!(
                 view.policy_request.tool.tool_id.as_str(),
                 mealy_application::FIXTURE_WRITE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_CREATE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_REPLACE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_MANAGE_PATH_TOOL_ID
                     | mealy_application::PROCESS_RUN_TOOL_ID
-            )
+            ) || view.policy_request.tool.tool_id.starts_with("mcp."))
             || !valid_replay_write_contract(&view)
         {
             return Ok(None);
@@ -826,6 +830,10 @@ pub(super) fn load_replay_agent_effects(
             tool_id: view.policy_request.tool.tool_id.clone(),
             arguments: view.policy_request.normalized_arguments.clone(),
             target_resources: view.policy_request.target_resources.clone(),
+            effect_class: view.policy_request.tool.effect_class,
+            executable_identity_digest: view.policy_request.tool.executable_identity_digest.clone(),
+            network_destinations: view.policy_request.network_destinations.clone(),
+            secret_references: view.policy_request.secret_references.clone(),
             message_id,
             content,
             content_digest,
@@ -842,6 +850,9 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
     };
     let request = &view.policy_request;
     let effect_id = view.effect_id;
+    if request.tool.tool_id.starts_with("mcp.") {
+        return valid_replay_mcp_effect_contract(view);
+    }
     if request.tool.tool_id == mealy_application::FIXTURE_WRITE_FILE_TOOL_ID {
         let Some(workspace_root) = request.workspace_roots.first() else {
             return false;
@@ -928,6 +939,49 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
         return false;
     }
     valid_replay_workspace_create_contract(view, workspace_id, workspace_root)
+}
+
+fn valid_replay_mcp_effect_contract(view: &mealy_application::EffectLedgerView) -> bool {
+    let Some(approval) = view.approval.as_ref() else {
+        return false;
+    };
+    let request = &view.policy_request;
+    let effect = match request.tool.effect_class {
+        mealy_domain::EffectClass::Idempotent => mealy_application::McpToolEffect::Idempotent,
+        mealy_domain::EffectClass::NonIdempotent => mealy_application::McpToolEffect::NonIdempotent,
+        mealy_domain::EffectClass::ReadOnly | mealy_domain::EffectClass::Reversible => {
+            return false;
+        }
+    };
+    let Some(capability) = request.tool.required_capabilities.first() else {
+        return false;
+    };
+    let Some(target_resource) = request.target_resources.first() else {
+        return false;
+    };
+    let grant = mealy_application::McpEffectPolicyGrant {
+        principal_id: request.principal_id,
+        channel_binding_id: request.channel_binding_id,
+        task_id: request.task_id,
+        run_id: request.run_id,
+        tool_descriptor_digest: request.tool.descriptor_digest.clone(),
+        executable_identity_digest: request.tool.executable_identity_digest.clone(),
+        effect,
+        capability: capability.clone(),
+        target_resource: target_resource.clone(),
+        network_destination: request.network_destinations.first().cloned(),
+        secret_reference: request.secret_references.first().cloned(),
+        valid_from_ms: request.evaluated_at_ms,
+        expires_at_ms: approval.subject.expires_at_ms,
+    };
+    mealy_application::evaluate_mcp_effect_policy(request, &grant) == view.policy_evaluation
+        && mealy_application::mcp_effect_approval_subject(
+            view.effect_id,
+            request,
+            &grant,
+            approval.subject.expires_at_ms,
+        )
+        .is_ok_and(|subject| subject == approval.subject)
 }
 
 fn valid_replay_workspace_create_contract(

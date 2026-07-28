@@ -61,8 +61,7 @@ use mealy_infrastructure::{
     FileProviderSecretStore, LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore,
     StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool,
     browser_worker_main, create_pre_migration_backup, inspect_existing_schema_version,
-    load_mcp_http_read_tools, load_mcp_read_tools, mcp_stdio_launcher_main,
-    preserve_forensic_database,
+    load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main, preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -509,29 +508,34 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             "data-only skill instructions enabled"
         );
     }
-    let mcp_tools = if arguments.safe_mode || daemon_config.mcp_servers().is_empty() {
-        Vec::new()
-    } else {
-        let launcher = fs::canonicalize(std::env::current_exe()?)?;
-        let tools = load_mcp_read_tools(
-            &arguments.home,
-            Path::new("/usr/bin/bwrap"),
-            &launcher,
-            daemon_config.mcp_servers(),
-        )?;
-        tracing::info!(
-            mcp_server_count = daemon_config
-                .mcp_servers()
-                .iter()
-                .filter(|server| server.enabled())
-                .count(),
-            mcp_tool_count = tools.len(),
-            "schema-pinned isolated MCP tools enabled"
-        );
-        tools
-    };
-    let mcp_http_tools = if arguments.safe_mode || daemon_config.mcp_http_servers().is_empty() {
-        Vec::new()
+    let (mcp_tools, mut mcp_effect_tools) =
+        if arguments.safe_mode || daemon_config.mcp_servers().is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let launcher = fs::canonicalize(std::env::current_exe()?)?;
+            let loaded = load_mcp_tools(
+                &arguments.home,
+                Path::new("/usr/bin/bwrap"),
+                &launcher,
+                daemon_config.mcp_servers(),
+            )?;
+            let (tools, effects) = loaded.into_parts();
+            tracing::info!(
+                mcp_server_count = daemon_config
+                    .mcp_servers()
+                    .iter()
+                    .filter(|server| server.enabled())
+                    .count(),
+                mcp_tool_count = tools.len(),
+                mcp_effect_tool_count = effects.len(),
+                "schema-pinned isolated MCP tools enabled"
+            );
+            (tools, effects)
+        };
+    let (mcp_http_tools, mcp_http_effect_tools) = if arguments.safe_mode
+        || daemon_config.mcp_http_servers().is_empty()
+    {
+        (Vec::new(), Vec::new())
     } else {
         let credential_store =
             FileProviderSecretStore::new(arguments.home.join("provider-secrets"))?;
@@ -568,13 +572,14 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             })
             .then(|| FileMcpOAuthTokenStore::new(arguments.home.join("mcp-oauth-tokens")))
             .transpose()?;
-        let tools = tokio::task::block_in_place(|| {
-            load_mcp_http_read_tools(
+        let loaded = tokio::task::block_in_place(|| {
+            load_mcp_http_tools(
                 daemon_config.mcp_http_servers(),
                 credentials,
                 oauth_store.as_ref(),
             )
         })?;
+        let (tools, effects) = loaded.into_parts();
         tracing::info!(
             mcp_http_server_count = daemon_config
                 .mcp_http_servers()
@@ -582,6 +587,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .filter(|server| server.enabled())
                 .count(),
             mcp_http_tool_count = tools.len(),
+            mcp_http_effect_tool_count = effects.len(),
             bearer_server_count = daemon_config
                 .mcp_http_servers()
                 .iter()
@@ -603,8 +609,9 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .count(),
             "schema-pinned Streamable HTTP MCP tools enabled"
         );
-        tools
+        (tools, effects)
     };
+    mcp_effect_tools.extend(mcp_http_effect_tools);
     let browser_tool = if arguments.safe_mode
         || daemon_config.provider().is_builtin_fixture()
         || daemon_config
@@ -658,7 +665,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     workspace = runtime.workspace_root(),
                     "sandboxed fixture-write runtime available"
                 );
-                Some(Arc::new(runtime))
+                Some(runtime)
             }
             Err(error) => {
                 tracing::warn!(%error, "sandboxed fixture-write runtime unavailable; mutating tool omitted");
@@ -689,7 +696,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     tracing::info!(
                         "sandbox process boundary available; no production mutation authority configured"
                     );
-                    Some(Arc::new(runtime))
+                    Some(runtime)
                 }
                 Err(error) => {
                     tracing::warn!(%error, "sandbox process boundary unavailable; sandboxed capabilities omitted");
@@ -718,7 +725,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                         workspace_count = runtime.workspace_ids().len(),
                         "approval-gated workspace mutation runtime available"
                     );
-                    Some(Arc::new(runtime))
+                    Some(runtime)
                 }
                 Err(error) => {
                     tracing::warn!(%error, "workspace mutation runtime unavailable; mutating tools omitted");
@@ -727,6 +734,10 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
         }
     };
+    let effect_runtime = effect_runtime
+        .map(|runtime| runtime.with_mcp_effect_tools(mcp_effect_tools))
+        .transpose()?
+        .map(Arc::new);
     let reader_capacity = usize::try_from(daemon_config.maximum_daemon_agent_runs())
         .unwrap_or(64)
         .saturating_add(4);
@@ -783,11 +794,14 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     };
     let enabled_action_tools = effect_runtime
         .as_deref()
-        .filter(|runtime| !arguments.safe_mode && !runtime.is_fixture())
+        .filter(|_| !arguments.safe_mode)
         .map(|runtime| {
             runtime
                 .descriptors()
                 .into_iter()
+                .filter(|descriptor| {
+                    descriptor.tool_id != mealy_application::FIXTURE_WRITE_FILE_TOOL_ID
+                })
                 .map(|descriptor| descriptor.tool_id.clone())
                 .collect()
         })
@@ -864,14 +878,16 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             .into_iter()
             .map(|descriptor| descriptor.tool_id)
             .collect::<BTreeSet<_>>();
-        let write_runtime = effect_runtime
-            .as_deref()
-            .filter(|runtime| !runtime.is_fixture());
-        if let Some(runtime) = write_runtime {
+        let effect_tools_runtime = effect_runtime.as_deref();
+        let write_runtime = effect_tools_runtime.filter(|runtime| !runtime.is_fixture());
+        if let Some(runtime) = effect_tools_runtime {
             tool_ids.extend(
                 runtime
                     .descriptors()
                     .into_iter()
+                    .filter(|descriptor| {
+                        descriptor.tool_id != mealy_application::FIXTURE_WRITE_FILE_TOOL_ID
+                    })
                     .map(|descriptor| descriptor.tool_id.clone()),
             );
         }
@@ -897,6 +913,12 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             || tool_ids.contains(mealy_application::WORKSPACE_REPLACE_FILE_TOOL_ID);
         let has_manage_tool = tool_ids.contains(mealy_application::WORKSPACE_MANAGE_PATH_TOOL_ID);
         let has_process_tool = tool_ids.contains(mealy_application::PROCESS_RUN_TOOL_ID);
+        let has_mcp_effect_tool = effect_tools_runtime.is_some_and(|runtime| {
+            runtime
+                .descriptors()
+                .into_iter()
+                .any(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
+        });
         let mut effect_classes = BTreeSet::new();
         let mut profiles = BTreeSet::new();
         if has_read_tools {
@@ -911,6 +933,18 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             effect_classes.insert(EffectClass::NonIdempotent);
             profiles.insert(PolicyProfile::WorkspaceWrite);
         }
+        if has_mcp_effect_tool {
+            if let Some(runtime) = effect_tools_runtime {
+                effect_classes.extend(
+                    runtime
+                        .descriptors()
+                        .into_iter()
+                        .filter(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
+                        .map(|descriptor| descriptor.effect_class),
+                );
+            }
+            profiles.insert(PolicyProfile::ServiceOperator);
+        }
         let mut network_destinations = daemon_config.web_access().capability_network_destinations();
         let mut secret_references = daemon_config.web_access().capability_secret_references();
         for server in daemon_config
@@ -922,6 +956,24 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             if let Some(secret_reference) = server.capability_secret_reference() {
                 secret_references.insert(secret_reference);
             }
+        }
+        let mut executable_identity_digests = write_runtime
+            .into_iter()
+            .flat_map(PhaseThreeRuntime::command_ids)
+            .filter_map(|command_id| {
+                write_runtime
+                    .and_then(|runtime| runtime.command_identity_digest(&command_id))
+                    .map(str::to_owned)
+            })
+            .collect::<BTreeSet<_>>();
+        if let Some(runtime) = effect_tools_runtime {
+            executable_identity_digests.extend(
+                runtime
+                    .descriptors()
+                    .into_iter()
+                    .filter(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
+                    .map(|descriptor| descriptor.executable_identity_digest.clone()),
+            );
         }
         promotion_defaults =
             promotion_defaults.with_general_assistant_capability_ceiling(CapabilityGrant {
@@ -938,15 +990,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     .map(|workspace_id| format!("workspace://{workspace_id}/"))
                     .collect(),
                 network_destinations,
-                executable_identity_digests: write_runtime
-                    .into_iter()
-                    .flat_map(PhaseThreeRuntime::command_ids)
-                    .filter_map(|command_id| {
-                        write_runtime
-                            .and_then(|runtime| runtime.command_identity_digest(&command_id))
-                            .map(str::to_owned)
-                    })
-                    .collect(),
+                executable_identity_digests,
                 secret_references,
                 profiles,
                 maximum_delegated_runs: daemon_config.agent_loop_limits().maximum_delegated_runs,

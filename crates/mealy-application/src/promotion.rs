@@ -519,7 +519,7 @@ impl PromotionDefaults {
     }
 }
 
-/// Returns whether a configured conversational root grant is an exact supported read-only shape.
+/// Returns whether a configured conversational root grant is an exact supported governed shape.
 #[must_use]
 pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bool {
     let has_workspace_read = grant
@@ -538,25 +538,26 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
     let has_mcp = grant.tools.iter().any(|tool| valid_mcp_tool_id(tool));
     let has_delegation = grant.tools.contains(crate::AGENT_DELEGATE_TOOL_ID)
         || grant.tools.contains(crate::AGENT_DELEGATE_PARALLEL_TOOL_ID);
-    let has_read = has_mcp
-        || grant.tools.iter().any(|tool| {
-            matches!(
-                tool.as_str(),
-                "workspace.list"
-                    | "workspace.stat"
-                    | "workspace.read"
-                    | "workspace.search"
-                    | crate::AGENT_DELEGATE_TOOL_ID
-                    | crate::AGENT_DELEGATE_PARALLEL_TOOL_ID
-                    | "skill.read_resource"
-                    | "web.fetch"
-                    | "web.search"
-                    | crate::BROWSER_SNAPSHOT_TOOL_ID
-            )
-        });
+    let has_non_mcp_read = grant.tools.iter().any(|tool| {
+        matches!(
+            tool.as_str(),
+            "workspace.list"
+                | "workspace.stat"
+                | "workspace.read"
+                | "workspace.search"
+                | crate::AGENT_DELEGATE_TOOL_ID
+                | crate::AGENT_DELEGATE_PARALLEL_TOOL_ID
+                | "skill.read_resource"
+                | "web.fetch"
+                | "web.search"
+                | crate::BROWSER_SNAPSHOT_TOOL_ID
+        )
+    });
+    let mcp_read = has_mcp && grant.effect_classes.contains(&EffectClass::ReadOnly);
+    let mcp_service = has_mcp && grant.profiles.contains(&PolicyProfile::ServiceOperator);
     let mut expected_effect_classes = BTreeSet::new();
     let mut expected_profiles = BTreeSet::new();
-    if has_read {
+    if has_non_mcp_read || mcp_read {
         expected_effect_classes.insert(EffectClass::ReadOnly);
         expected_profiles.insert(PolicyProfile::Observe);
     }
@@ -567,6 +568,12 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
     if has_manage || has_process {
         expected_effect_classes.insert(EffectClass::NonIdempotent);
         expected_profiles.insert(PolicyProfile::WorkspaceWrite);
+    }
+    if mcp_service {
+        expected_effect_classes.extend(grant.effect_classes.iter().copied().filter(|effect| {
+            matches!(effect, EffectClass::Idempotent | EffectClass::NonIdempotent)
+        }));
+        expected_profiles.insert(PolicyProfile::ServiceOperator);
     }
     grant.validate().is_ok()
         && grant.tools.iter().all(|tool| {
@@ -591,17 +598,16 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         })
         && grant.effect_classes == expected_effect_classes
         && grant.profiles == expected_profiles
+        && (!mcp_service
+            || grant.effect_classes.contains(&EffectClass::Idempotent)
+            || grant.effect_classes.contains(&EffectClass::NonIdempotent))
         && if has_delegation {
             (1..=32).contains(&grant.maximum_delegated_runs)
                 && (1..=8).contains(&grant.maximum_delegation_depth)
         } else {
             grant.maximum_delegated_runs == 0 && grant.maximum_delegation_depth == 0
         }
-        && has_workspace != grant.workspace_roots.is_empty()
-        && grant
-            .workspace_roots
-            .iter()
-            .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
+        && valid_general_assistant_workspace_roots(grant, has_workspace)
         && (has_write || has_manage || has_process) != grant.writable_workspace_roots.is_empty()
         && grant
             .writable_workspace_roots
@@ -609,14 +615,30 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
             .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
         && (!has_web || !grant.network_destinations.is_empty())
         && (grant.network_destinations.is_empty() || has_web || has_mcp)
-        && has_process != grant.executable_identity_digests.is_empty()
+        && valid_general_assistant_executable_identities(grant, has_process, mcp_service)
+        && (grant.secret_references.is_empty()
+            || grant.tools.contains("web.search")
+            || (has_mcp && !grant.network_destinations.is_empty()))
+}
+
+fn valid_general_assistant_workspace_roots(grant: &CapabilityGrant, has_workspace: bool) -> bool {
+    has_workspace != grant.workspace_roots.is_empty()
+        && grant
+            .workspace_roots
+            .iter()
+            .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
+}
+
+fn valid_general_assistant_executable_identities(
+    grant: &CapabilityGrant,
+    has_process: bool,
+    mcp_service: bool,
+) -> bool {
+    (has_process || mcp_service) != grant.executable_identity_digests.is_empty()
         && grant
             .executable_identity_digests
             .iter()
             .all(|digest| crate::is_sha256_digest(digest))
-        && (grant.secret_references.is_empty()
-            || grant.tools.contains("web.search")
-            || (has_mcp && !grant.network_destinations.is_empty()))
 }
 
 fn valid_mcp_tool_id(tool_id: &str) -> bool {
@@ -863,6 +885,58 @@ mod tests {
                 .clone()
                 .with_general_assistant_capability_ceiling(valid_http_mcp.clone())
                 .is_ok()
+        );
+        let valid_effectful_mcp = CapabilityGrant {
+            tools: BTreeSet::from(["mcp.fixture.add".to_owned()]),
+            effect_classes: BTreeSet::from([EffectClass::Idempotent]),
+            executable_identity_digests: BTreeSet::from([crate::sha256_digest(
+                b"reviewed MCP fixture executable",
+            )]),
+            profiles: BTreeSet::from([PolicyProfile::ServiceOperator]),
+            ..CapabilityGrant::default()
+        };
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(valid_effectful_mcp.clone())
+                .is_ok()
+        );
+        let valid_effectful_http_mcp = CapabilityGrant {
+            network_destinations: BTreeSet::from(["origin:https://mcp.example.test".to_owned()]),
+            secret_references: BTreeSet::from(["broker:mcp-remote".to_owned()]),
+            ..valid_effectful_mcp.clone()
+        };
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(valid_effectful_http_mcp)
+                .is_ok()
+        );
+        let mut missing_effect_executable = valid_effectful_mcp.clone();
+        missing_effect_executable
+            .executable_identity_digests
+            .clear();
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(missing_effect_executable)
+                .is_err()
+        );
+        let mut wrong_effect_profile = valid_effectful_mcp.clone();
+        wrong_effect_profile.profiles = BTreeSet::from([PolicyProfile::Observe]);
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(wrong_effect_profile)
+                .is_err()
+        );
+        let mut reversible_effect = valid_effectful_mcp;
+        reversible_effect.effect_classes = BTreeSet::from([EffectClass::Reversible]);
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(reversible_effect)
+                .is_err()
         );
         let mut missing_http_destination = valid_http_mcp;
         missing_http_destination.network_destinations.clear();

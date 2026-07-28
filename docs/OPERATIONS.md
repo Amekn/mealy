@@ -659,7 +659,7 @@ mealyctl --home "$HOME/.mealy" config mcp-add SERVER_ID /canonical/native-server
 mealyctl --home "$HOME/.mealy" config mcp-list
 ```
 
-The first supported profile accepts only native ELF servers and MCP revision `2025-11-25`. It
+The supported profile accepts only native ELF servers and MCP revision `2025-11-25`. It
 stores no server credential and supplies no environment, network, home, workspace, host writable
 filesystem, shell, `PATH`, or child-process authority. Direct `--argument` values are persisted and
 must be non-secret. The installed executable, complete paginated advertised tool set, and every
@@ -669,6 +669,15 @@ Per-tool time and normalized-output ceilings combine with protocol message/count
 sandbox CPU/address-space/file/descriptor/process limits. Cancellation is propagated and the
 process is then terminated. Successful evidence uses `mcp://SERVER_ID/REMOTE_TOOL`; recorded replay
 does not launch a process.
+
+Classify every selected operation with exactly one repeated argument: `--allow-tool REMOTE_TOOL`
+for read-only, `--allow-tool idempotent:REMOTE_TOOL` for an effect whose downstream contract
+accepts a stable-key retry, or `--allow-tool non-idempotent:REMOTE_TOOL` for reconcile-only
+recovery. Server annotations never choose this class. Effect proposals require exact owner
+approval and bind the immutable run ceiling,
+executable/catalog/definition/schema, normalized arguments, logical target, and policy. After a
+dispatch crash, idempotent work may create a new fenced attempt; non-idempotent work becomes
+`outcome_unknown` and must not be retried before authenticated external-evidence reconciliation.
 
 If MCP verification prevents startup, keep the daemon stopped and remove authority without
 executing the server:
@@ -711,6 +720,13 @@ messages remain cited untrusted tool evidence rather than becoming system instru
 endpoint destination and credential reference are bound to the durable descriptor and immutable
 task ceiling. A changed endpoint, credential reference, protocol, inventory, definition, schema,
 or structured result fails closed.
+
+HTTP and OAuth-backed `add` accept the same `--allow-tool idempotent:REMOTE_TOOL` and
+`--allow-tool non-idempotent:REMOTE_TOOL` forms. Effectful calls use a fresh revalidated session and the
+ordinary durable approval/effect/attempt ledger. A definite pre-dispatch failure is terminal; a
+post-dispatch transport ambiguity is retryable only for the owner-classified idempotent contract.
+Non-idempotent ambiguity parks for exact revision-fenced owner reconciliation. Replay opens no
+session, performs no refresh, and repeats no effect.
 
 Before authorizing an OAuth-protected server, inspect its public metadata without mutation:
 
@@ -776,8 +792,8 @@ Local revocation fails closed while any configuration reference remains and does
 issuer revocation endpoint; remove the authorization at the issuer separately when required.
 Encrypted secret backups and migration rollback carry only validated token records. Secret-free
 backups explicitly omit `mcp-oauth-tokens/`. Dynamic registration/CIMD, issuer-side revocation,
-resource-template expansion/subscriptions, resumable GET, and effectful HTTP MCP remain unavailable
-until their separate v0.4 contracts and recovery tests land.
+resource-template expansion/subscriptions, resumable GET, and long-lived session health remain
+unavailable until their separate v0.4 contracts and recovery tests land.
 
 The optional rendered browser is a separate stopped-daemon authority and currently has release
 evidence on Linux x86_64. Fetch only the release-pinned Headless Shell archive with the managed

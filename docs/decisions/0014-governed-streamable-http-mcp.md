@@ -8,7 +8,9 @@ discovery are implemented. A pre-registered-public-client authorization-code/PKC
 rotating token broker, separately approved OAuth-backed activation, proactive/`401` refresh,
 reference-safe local revocation, and secret-backup/migration recovery are also implemented.
 Registration/CIMD, issuer-side revocation, scope-challenge parking, resource-template
-invocation/subscriptions, resumable GET, health, and effectful calls remain subsequent slices.
+invocation/subscriptions, resumable GET, and long-lived health remain subsequent slices.
+Owner-classified effectful calls are implemented by
+[ADR 0016](0016-owner-classified-effectful-mcp.md).
 
 ## Context
 
@@ -176,5 +178,6 @@ rejected generation and one retry; concurrent rejections cannot create a refresh
 revocation requires zero configuration references, removes the validated record durably, and
 retains the lock inode. Authenticated encrypted backups and migration rollback include validated
 records; secret-free backups declare them excluded. Dynamic client registration, CIMD,
-issuer-side revocation, resource-template expansion/subscriptions, resumable GET, and effectful
-calls require subsequent contracts.
+issuer-side revocation, resource-template expansion/subscriptions, and resumable GET require
+subsequent contracts. Effectful calls are governed separately by
+[ADR 0016](0016-owner-classified-effectful-mcp.md).

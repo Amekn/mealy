@@ -5892,6 +5892,27 @@ fn recorded_effect_within_capability(
         } else if effect.tool_id == mealy_application::PROCESS_RUN_TOOL_ID {
             effect_workspace_authorized(effect, capability)
                 && effect_command_authorized(effect, capability)
+        } else if effect.tool_id.starts_with("mcp.") {
+            capability.effect_classes.contains(&effect.effect_class)
+                && effect.effect_class != EffectClass::ReadOnly
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect
+                    .target_resources
+                    .iter()
+                    .all(|target| target.starts_with("mcp://"))
+                && effect
+                    .network_destinations
+                    .iter()
+                    .all(|destination| capability.network_destinations.contains(destination))
+                && effect
+                    .secret_references
+                    .iter()
+                    .all(|reference| capability.secret_references.contains(reference))
         } else {
             false
         }

@@ -61,7 +61,7 @@ public command cannot be added or removed without updating this reference.
 | `export` | Publish an immutable owner-scoped evidence bundle. |
 | `service` | Render/install or plan/remove an owner-level systemd user unit on Linux. |
 | `config` | Inspect or change governed stopped-home configuration. |
-| `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, OAuth login/activation/local revocation, and lifecycle. |
+| `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

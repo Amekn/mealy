@@ -684,6 +684,9 @@ fn apply_general_assistant_contract_overrides(
     let configured_process = capabilities
         .tools
         .contains(mealy_application::PROCESS_RUN_TOOL_ID);
+    let configured_mcp_service = capabilities
+        .profiles
+        .contains(&PolicyProfile::ServiceOperator);
     let mut effective = capabilities.clone();
     if !requested_action || !configured_action {
         effective
@@ -702,18 +705,30 @@ fn apply_general_assistant_contract_overrides(
     }
     let effective_idempotent_action =
         requested_action && configured_action || requested_edit && configured_edit;
-    if !effective_idempotent_action {
+    if !(effective_idempotent_action
+        || configured_mcp_service
+            && capabilities
+                .effect_classes
+                .contains(&EffectClass::Idempotent))
+    {
         effective.effect_classes.remove(&EffectClass::Idempotent);
     }
     if !requested_process || !configured_process {
         effective
             .tools
             .remove(mealy_application::PROCESS_RUN_TOOL_ID);
-        effective.executable_identity_digests.clear();
+        if !configured_mcp_service {
+            effective.executable_identity_digests.clear();
+        }
     }
     let effective_non_idempotent_action =
         requested_manage && configured_manage || requested_process && configured_process;
-    if !effective_non_idempotent_action {
+    if !(effective_non_idempotent_action
+        || configured_mcp_service
+            && capabilities
+                .effect_classes
+                .contains(&EffectClass::NonIdempotent))
+    {
         effective.effect_classes.remove(&EffectClass::NonIdempotent);
     }
     if !effective_idempotent_action && !effective_non_idempotent_action {

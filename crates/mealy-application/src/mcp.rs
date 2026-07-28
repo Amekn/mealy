@@ -1,6 +1,12 @@
 use crate::{
-    McpOAuthTokenGrant, ProviderCredentialReference, ReadToolDescriptor, ReadToolError,
+    ApprovalSubject, ApprovalSubjectError, McpOAuthTokenGrant, PolicyDecision, PolicyEvaluation,
+    PolicyObligations, PolicyRequest, ProviderCredentialReference, ReadToolDescriptor,
+    ReadToolError, ToolConcurrency, ToolDescriptor, canonical_arguments_digest, is_sha256_digest,
     sha256_digest,
+};
+use mealy_domain::{
+    ChannelBindingId, EffectClass, EffectId, ExecutorKind, IdempotencyClass, PolicyProfile,
+    PrincipalId, RecoveryStrategy, RiskClass, RunId, TaskId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,6 +43,105 @@ const MCP_MAXIMUM_RESOURCE_URI_BYTES: usize = 4_096;
 const MCP_MAXIMUM_PROMPT_ARGUMENTS: usize = 64;
 const MCP_MAXIMUM_TIMEOUT_MS: u64 = 60_000;
 const MCP_MINIMUM_TIMEOUT_MS: u64 = 100;
+const MCP_EFFECT_MAXIMUM_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Exact deterministic policy bundle for owner-classified MCP effects.
+pub const MCP_EFFECT_POLICY_VERSION: &str = "mealy.mcp-effect-policy.v1";
+/// Stable policy explanation for a matched approval-gated MCP effect.
+pub const MCP_EFFECT_APPROVAL_EXPLANATION: &str = "mcp_effect_requires_exact_owner_approval";
+
+/// Owner-attested effect contract for one exact MCP tool definition.
+///
+/// MCP annotations remain untrusted discovery metadata and never select this value.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToolEffect {
+    /// The exact operation cannot mutate any external or durable state.
+    #[default]
+    ReadOnly,
+    /// Repeating the exact operation and arguments has no additional external effect.
+    Idempotent,
+    /// The operation may have an additional effect when repeated.
+    NonIdempotent,
+}
+
+impl McpToolEffect {
+    /// Whether this grant may execute only through the durable effect ledger.
+    #[must_use]
+    pub const fn is_effectful(self) -> bool {
+        !matches!(self, Self::ReadOnly)
+    }
+}
+
+/// Exact runtime authority reconstructed for one owner-classified MCP effect proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpEffectPolicyGrant {
+    /// Authenticated owner principal.
+    pub principal_id: PrincipalId,
+    /// Authenticated channel binding.
+    pub channel_binding_id: ChannelBindingId,
+    /// Task whose immutable ceiling contains the tool.
+    pub task_id: TaskId,
+    /// Run proposing the effect.
+    pub run_id: RunId,
+    /// Complete generic descriptor digest.
+    pub tool_descriptor_digest: String,
+    /// Aggregate executable/transport identity from the descriptor.
+    pub executable_identity_digest: String,
+    /// Exact owner-attested effect class.
+    pub effect: McpToolEffect,
+    /// Exact descriptor capability.
+    pub capability: String,
+    /// Exact logical remote target.
+    pub target_resource: String,
+    /// Exact HTTP destination, absent for isolated stdio.
+    pub network_destination: Option<String>,
+    /// Exact opaque credential reference, absent when no credential is needed.
+    pub secret_reference: Option<String>,
+    /// First accepted evaluation instant.
+    pub valid_from_ms: i64,
+    /// Exclusive grant expiry.
+    pub expires_at_ms: i64,
+}
+
+impl McpEffectPolicyGrant {
+    fn validate(&self) -> Result<(), McpEffectPolicyError> {
+        if !self.effect.is_effectful()
+            || !is_sha256_digest(&self.tool_descriptor_digest)
+            || !is_sha256_digest(&self.executable_identity_digest)
+            || self.capability.is_empty()
+            || self.capability.len() > 1_024
+            || self.target_resource.is_empty()
+            || self.target_resource.len() > 1_024
+            || !self.target_resource.starts_with("mcp://")
+            || self
+                .network_destination
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 1_024)
+            || self
+                .secret_reference
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.len() > 1_024)
+            || self.valid_from_ms < 0
+            || self.expires_at_ms <= self.valid_from_ms
+        {
+            Err(McpEffectPolicyError::InvalidContract)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Deterministic MCP effect policy or approval-subject failure.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum McpEffectPolicyError {
+    /// Request, grant, or expiry does not match the exact supported effect contract.
+    #[error("MCP effect contract is invalid")]
+    InvalidContract,
+    /// Generic approval evidence is malformed.
+    #[error(transparent)]
+    Approval(#[from] ApprovalSubjectError),
+}
 
 /// One exact MCP tool definition reviewed and granted by the owner.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -44,6 +149,8 @@ const MCP_MINIMUM_TIMEOUT_MS: u64 = 100;
 pub struct McpToolGrant {
     definition: Value,
     definition_digest: String,
+    #[serde(default)]
+    effect: McpToolEffect,
     timeout_ms: u64,
     maximum_output_bytes: u64,
 }
@@ -60,10 +167,31 @@ impl McpToolGrant {
         timeout_ms: u64,
         maximum_output_bytes: u64,
     ) -> Result<Self, McpConfigError> {
+        Self::new_with_effect(
+            definition,
+            McpToolEffect::ReadOnly,
+            timeout_ms,
+            maximum_output_bytes,
+        )
+    }
+
+    /// Constructs a grant with an explicit owner-attested effect contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] when the definition, JSON Schema, effect contract, timeout, or
+    /// output bound is unsafe or cannot be represented by the supported MCP subset.
+    pub fn new_with_effect(
+        definition: Value,
+        effect: McpToolEffect,
+        timeout_ms: u64,
+        maximum_output_bytes: u64,
+    ) -> Result<Self, McpConfigError> {
         let definition_digest = mcp_tool_definition_digest(&definition)?;
         let grant = Self {
             definition,
             definition_digest,
+            effect,
             timeout_ms,
             maximum_output_bytes,
         };
@@ -81,6 +209,12 @@ impl McpToolGrant {
     #[must_use]
     pub fn definition_digest(&self) -> &str {
         &self.definition_digest
+    }
+
+    /// Exact owner-attested effect contract; remote annotations cannot change it.
+    #[must_use]
+    pub const fn effect(&self) -> McpToolEffect {
+        self.effect
     }
 
     /// Remote, server-local tool name.
@@ -103,7 +237,7 @@ impl McpToolGrant {
         self.definition
             .get("description")
             .and_then(Value::as_str)
-            .unwrap_or("Invokes an owner-reviewed read-only MCP tool")
+            .unwrap_or("Invokes an owner-reviewed MCP tool")
     }
 
     /// Exact advertised input JSON Schema.
@@ -1507,6 +1641,9 @@ pub fn mcp_read_tool_descriptor(
     server: &McpServerConfig,
     grant: &McpToolGrant,
 ) -> Result<ReadToolDescriptor, crate::ToolDescriptorEvidenceError> {
+    if grant.effect() != McpToolEffect::ReadOnly {
+        return Err(crate::ToolDescriptorEvidenceError::InvalidEffectContract);
+    }
     let mut input_schema = grant.input_schema().clone();
     if let Some(object) = input_schema.as_object_mut() {
         object
@@ -1577,6 +1714,9 @@ pub fn mcp_http_read_tool_descriptor(
     server: &McpHttpServerConfig,
     grant: &McpToolGrant,
 ) -> Result<ReadToolDescriptor, crate::ToolDescriptorEvidenceError> {
+    if grant.effect() != McpToolEffect::ReadOnly {
+        return Err(crate::ToolDescriptorEvidenceError::InvalidEffectContract);
+    }
     let mut input_schema = grant.input_schema().clone();
     if let Some(object) = input_schema.as_object_mut() {
         object
@@ -1644,6 +1784,345 @@ pub fn mcp_http_read_tool_descriptor(
     };
     descriptor.descriptor_digest = descriptor.computed_descriptor_digest()?;
     Ok(descriptor)
+}
+
+/// Builds the immutable governed-effect descriptor for one local stdio MCP grant.
+///
+/// The owner-attested effect contract, not the remote annotation, selects idempotency and
+/// interrupted-dispatch recovery.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for a read-only grant or an invalid generic descriptor.
+pub fn mcp_effect_tool_descriptor(
+    server: &McpServerConfig,
+    grant: &McpToolGrant,
+) -> Result<ToolDescriptor, McpConfigError> {
+    let (input_schema, output_schema) = mcp_tool_schemas(grant);
+    let executable_identity_digest = sha256_digest(
+        json!({
+            "contractVersion": "mealy.mcp-stdio-effect-tool.v1",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverId": server.server_id(),
+            "serverExecutableDigest": server.executable_digest(),
+            "serverArguments": server.arguments(),
+            "serverToolsetDigest": server.toolset_digest(),
+            "toolDefinitionDigest": grant.definition_digest(),
+            "ownerEffectContract": grant.effect(),
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    mcp_effect_descriptor(
+        server.exposed_tool_id(grant.remote_name()),
+        input_schema,
+        output_schema,
+        format!(
+            "mcp.invoke:{}:{}:sha256:{executable_identity_digest}",
+            server.server_id(),
+            grant.remote_name()
+        ),
+        format!("mcp://{}/{}", server.server_id(), grant.remote_name()),
+        executable_identity_digest,
+        grant,
+    )
+}
+
+/// Builds the immutable governed-effect descriptor for one Streamable HTTP MCP grant.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for a read-only grant, invalid endpoint authority, or invalid
+/// generic descriptor.
+pub fn mcp_http_effect_tool_descriptor(
+    server: &McpHttpServerConfig,
+    grant: &McpToolGrant,
+) -> Result<ToolDescriptor, McpConfigError> {
+    let (input_schema, output_schema) = mcp_tool_schemas(grant);
+    let transport_identity_digest = sha256_digest(
+        json!({
+            "contractVersion": "mealy.mcp-streamable-http-effect-tool.v1",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverId": server.server_id(),
+            "endpoint": server.endpoint(),
+            "authenticationReference": server
+                .authentication()
+                .capability_reference(),
+            "serverCatalogDigest": server.catalog_digest(),
+            "toolDefinitionDigest": grant.definition_digest(),
+            "ownerEffectContract": grant.effect(),
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let network_destination = server
+        .capability_network_destination()
+        .map_err(|_| McpConfigError::InvalidToolGrant)?;
+    let secret_reference = server.capability_secret_reference();
+    let authority_digest =
+        mcp_http_authority_digest(&network_destination, secret_reference.as_deref());
+    mcp_effect_descriptor(
+        server.exposed_tool_id(grant.remote_name()),
+        input_schema,
+        output_schema,
+        format!(
+            "mcp.http.invoke:{}:tool.{}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
+            server.server_id(),
+            grant.remote_name()
+        ),
+        format!("mcp://{}/tool.{}", server.server_id(), grant.remote_name()),
+        transport_identity_digest,
+        grant,
+    )
+}
+
+fn mcp_tool_schemas(grant: &McpToolGrant) -> (Value, Value) {
+    let mut input_schema = grant.input_schema().clone();
+    if let Some(object) = input_schema.as_object_mut() {
+        object
+            .entry("description")
+            .or_insert_with(|| Value::String(grant.description().to_owned()));
+    }
+    let output_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "serverId": {"type": "string"},
+            "toolName": {"type": "string"},
+            "definitionDigest": {"type": "string"},
+            "sourceLocator": {"type": "string"},
+            "isError": {"type": "boolean"},
+            "content": {"type": "array", "items": {"type": "object"}},
+            "structuredContent": {}
+        },
+        "required": ["serverId", "toolName", "definitionDigest", "sourceLocator", "isError", "content"]
+    });
+    (input_schema, output_schema)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mcp_effect_descriptor(
+    tool_id: String,
+    input_schema: Value,
+    output_schema: Value,
+    required_capability: String,
+    conflict_key: String,
+    executable_identity_digest: String,
+    grant: &McpToolGrant,
+) -> Result<ToolDescriptor, McpConfigError> {
+    let (effect_class, risk_class, idempotency, recovery) = match grant.effect() {
+        McpToolEffect::ReadOnly => return Err(McpConfigError::InvalidToolGrant),
+        McpToolEffect::Idempotent => (
+            EffectClass::Idempotent,
+            RiskClass::Medium,
+            IdempotencyClass::Idempotent,
+            RecoveryStrategy::Retry,
+        ),
+        McpToolEffect::NonIdempotent => (
+            EffectClass::NonIdempotent,
+            RiskClass::High,
+            IdempotencyClass::NonIdempotent,
+            RecoveryStrategy::Reconcile,
+        ),
+    };
+    let input_schema_digest = sha256_digest(input_schema.to_string().as_bytes());
+    let output_schema_digest = sha256_digest(output_schema.to_string().as_bytes());
+    let mut descriptor = ToolDescriptor {
+        tool_id,
+        version: format!(
+            "{}+{}",
+            MCP_PROTOCOL_VERSION,
+            &executable_identity_digest[..16]
+        ),
+        input_schema,
+        output_schema,
+        input_schema_digest,
+        output_schema_digest,
+        descriptor_digest: String::new(),
+        effect_class,
+        risk_class,
+        required_capabilities: vec![required_capability],
+        timeout: Duration::from_millis(grant.timeout_ms()),
+        maximum_output_bytes: grant.maximum_output_bytes(),
+        concurrency: ToolConcurrency::Serial,
+        conflict_key_templates: vec![conflict_key],
+        idempotency,
+        recovery,
+        executor: ExecutorKind::Builtin,
+        executable_identity_digest,
+    };
+    descriptor.descriptor_digest = descriptor
+        .computed_descriptor_digest()
+        .map_err(|_| McpConfigError::InvalidToolGrant)?;
+    descriptor
+        .validate()
+        .map_err(|_| McpConfigError::InvalidToolGrant)?;
+    Ok(descriptor)
+}
+
+/// Evaluates one exact owner-classified MCP effect and requires bound approval on every match.
+#[must_use]
+pub fn evaluate_mcp_effect_policy(
+    request: &PolicyRequest,
+    grant: &McpEffectPolicyGrant,
+) -> PolicyEvaluation {
+    let deny = |explanation: &str| PolicyEvaluation {
+        decision: PolicyDecision::Deny,
+        obligations: denied_mcp_effect_obligations(request.requested_profile),
+        policy_version: request.policy_version.clone(),
+        explanation: explanation.to_owned(),
+    };
+    if request.validate().is_err() || grant.validate().is_err() {
+        return deny("invalid_mcp_effect_request");
+    }
+    if request.principal_id != grant.principal_id
+        || request.channel_binding_id != grant.channel_binding_id
+        || request.task_id != grant.task_id
+        || request.run_id != grant.run_id
+    {
+        return deny("mcp_effect_owner_or_run_not_granted");
+    }
+    if request.evaluated_at_ms < grant.valid_from_ms
+        || request.evaluated_at_ms >= grant.expires_at_ms
+    {
+        return deny("mcp_effect_grant_not_current");
+    }
+    let (effect_class, risk_class, idempotency, recovery) = match grant.effect {
+        McpToolEffect::ReadOnly => return deny("mcp_read_tool_cannot_use_effect_policy"),
+        McpToolEffect::Idempotent => (
+            EffectClass::Idempotent,
+            RiskClass::Medium,
+            IdempotencyClass::Idempotent,
+            RecoveryStrategy::Retry,
+        ),
+        McpToolEffect::NonIdempotent => (
+            EffectClass::NonIdempotent,
+            RiskClass::High,
+            IdempotencyClass::NonIdempotent,
+            RecoveryStrategy::Reconcile,
+        ),
+    };
+    let expected_network = grant
+        .network_destination
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let expected_secrets = grant.secret_reference.iter().cloned().collect::<Vec<_>>();
+    let arguments_valid = serde_json::to_vec(&request.normalized_arguments)
+        .is_ok_and(|bytes| bytes.len() <= MCP_MAXIMUM_TOOL_ARGUMENT_BYTES)
+        && jsonschema::validator_for(&request.tool.input_schema)
+            .is_ok_and(|validator| validator.validate(&request.normalized_arguments).is_ok());
+    if !arguments_valid
+        || request.agent_role != "assistant"
+        || request.policy_version != MCP_EFFECT_POLICY_VERSION
+        || request.task_risk != risk_class
+        || request.tool.effect_class != effect_class
+        || request.tool.risk_class != risk_class
+        || request.tool.idempotency != idempotency
+        || request.tool.recovery != recovery
+        || request.tool.executor != ExecutorKind::Builtin
+        || request.tool.descriptor_digest != grant.tool_descriptor_digest
+        || request.tool.executable_identity_digest != grant.executable_identity_digest
+        || request.tool.required_capabilities != [grant.capability.clone()]
+        || request.target_resources != [grant.target_resource.clone()]
+        || !request.workspace_roots.is_empty()
+        || request.resource_claims != [format!("mcp-effect:{}", grant.target_resource)]
+        || request.secret_references != expected_secrets
+        || request.network_destinations != expected_network
+        || request.requested_capability != grant.capability
+        || request.requested_profile != PolicyProfile::ServiceOperator
+        || request.enforceable_profiles != [PolicyProfile::ServiceOperator]
+    {
+        return deny("no_matching_mcp_effect_rule");
+    }
+    PolicyEvaluation {
+        decision: PolicyDecision::RequireApproval,
+        obligations: expected_mcp_effect_obligations(request, grant),
+        policy_version: MCP_EFFECT_POLICY_VERSION.to_owned(),
+        explanation: MCP_EFFECT_APPROVAL_EXPLANATION.to_owned(),
+    }
+}
+
+/// Constructs the immutable exact owner approval subject for one matched MCP effect.
+///
+/// # Errors
+///
+/// Returns [`McpEffectPolicyError`] when policy does not match or expiry is invalid.
+pub fn mcp_effect_approval_subject(
+    effect_id: EffectId,
+    request: &PolicyRequest,
+    grant: &McpEffectPolicyGrant,
+    expires_at_ms: i64,
+) -> Result<ApprovalSubject, McpEffectPolicyError> {
+    if evaluate_mcp_effect_policy(request, grant).decision != PolicyDecision::RequireApproval
+        || expires_at_ms <= request.evaluated_at_ms
+        || expires_at_ms > grant.expires_at_ms
+    {
+        return Err(McpEffectPolicyError::InvalidContract);
+    }
+    let subject = ApprovalSubject {
+        principal_id: request.principal_id,
+        task_id: request.task_id,
+        effect_id,
+        tool_id: request.tool.tool_id.clone(),
+        tool_version: request.tool.version.clone(),
+        canonical_arguments_digest: canonical_arguments_digest(&request.normalized_arguments),
+        capability_scope: grant.capability.clone(),
+        target_resources: request.target_resources.clone(),
+        executable_identity_digest: request.tool.executable_identity_digest.clone(),
+        policy_version: MCP_EFFECT_POLICY_VERSION.to_owned(),
+        expires_at_ms,
+    };
+    subject.validate()?;
+    Ok(subject)
+}
+
+fn expected_mcp_effect_obligations(
+    request: &PolicyRequest,
+    grant: &McpEffectPolicyGrant,
+) -> PolicyObligations {
+    let spawns_server = grant.network_destination.is_none();
+    PolicyObligations {
+        profile: PolicyProfile::ServiceOperator,
+        readable_paths: Vec::new(),
+        writable_paths: Vec::new(),
+        allowed_executable_identity_digests: vec![request.tool.executable_identity_digest.clone()],
+        allow_process_spawn: spawns_server,
+        allowed_environment_variables: Vec::new(),
+        network_destinations: grant.network_destination.iter().cloned().collect(),
+        secret_references: grant.secret_reference.iter().cloned().collect(),
+        argument_rewrite: None,
+        redactions: Vec::new(),
+        maximum_duration_ms: u64::try_from(request.tool.timeout.as_millis()).unwrap_or(u64::MAX),
+        maximum_output_bytes: request.tool.maximum_output_bytes,
+        maximum_memory_bytes: if spawns_server {
+            MCP_EFFECT_MAXIMUM_MEMORY_BYTES
+        } else {
+            0
+        },
+        maximum_processes: u32::from(spawns_server),
+        validator_required: true,
+    }
+}
+
+fn denied_mcp_effect_obligations(profile: PolicyProfile) -> PolicyObligations {
+    PolicyObligations {
+        profile,
+        readable_paths: Vec::new(),
+        writable_paths: Vec::new(),
+        allowed_executable_identity_digests: Vec::new(),
+        allow_process_spawn: false,
+        allowed_environment_variables: Vec::new(),
+        network_destinations: Vec::new(),
+        secret_references: Vec::new(),
+        argument_rewrite: None,
+        redactions: Vec::new(),
+        maximum_duration_ms: 0,
+        maximum_output_bytes: 0,
+        maximum_memory_bytes: 0,
+        maximum_processes: 0,
+        validator_required: false,
+    }
 }
 
 /// Builds the immutable read descriptor for one exact owner-selected HTTP MCP resource.
@@ -1964,15 +2443,24 @@ pub fn validate_mcp_http_server_set(
 #[cfg(test)]
 mod tests {
     use super::{
-        MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpHttpAuthentication,
-        McpHttpCatalogDiscovery, McpHttpServerConfig, McpPromptGrant, McpResourceGrant,
-        McpServerConfig, McpServerDiscovery, McpToolGrant, McpToolInspection,
+        MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpEffectPolicyGrant,
+        McpHttpAuthentication, McpHttpCatalogDiscovery, McpHttpServerConfig, McpPromptGrant,
+        McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect, McpToolGrant,
+        McpToolInspection, evaluate_mcp_effect_policy, mcp_effect_approval_subject,
+        mcp_effect_tool_descriptor, mcp_http_effect_tool_descriptor,
         mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
         mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
         mcp_resource_template_definition_digest, validate_mcp_http_server_set,
         validate_mcp_prompt_arguments, validate_mcp_tool_arguments,
     };
-    use crate::{McpOAuthTokenGrant, ProviderCredentialReference};
+    use crate::{
+        MCP_EFFECT_POLICY_VERSION, McpOAuthTokenGrant, PolicyDecision, PolicyRequest,
+        ProviderCredentialReference,
+    };
+    use mealy_domain::{
+        ChannelBindingId, EffectClass, EffectId, IdempotencyClass, PolicyProfile, PrincipalId,
+        RecoveryStrategy, RiskClass, RunId, TaskId,
+    };
     use serde_json::json;
 
     fn definition(name: &str) -> serde_json::Value {
@@ -2019,6 +2507,162 @@ mod tests {
         assert_eq!(descriptor.tool_id, "mcp.math.add");
         assert!(validate_mcp_tool_arguments(&grant, &json!({"left": 1, "right": 2})).is_ok());
         assert!(validate_mcp_tool_arguments(&grant, &json!({"left": 1})).is_err());
+    }
+
+    #[test]
+    fn owner_effect_classification_is_explicit_backward_compatible_and_descriptor_bound() {
+        let read = McpToolGrant::new(definition("read"), 5_000, 64 * 1024).expect("read grant");
+        assert_eq!(read.effect(), McpToolEffect::ReadOnly);
+        let mut legacy = serde_json::to_value(&read).expect("legacy grant JSON");
+        legacy
+            .as_object_mut()
+            .expect("grant object")
+            .remove("effect");
+        let legacy: McpToolGrant = serde_json::from_value(legacy).expect("legacy grant");
+        assert_eq!(legacy.effect(), McpToolEffect::ReadOnly);
+
+        let effectful = McpToolGrant::new_with_effect(
+            definition("write"),
+            McpToolEffect::NonIdempotent,
+            5_000,
+            64 * 1024,
+        )
+        .expect("effectful grant");
+        let executable_digest = "a".repeat(64);
+        let discovery = McpServerDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "fixture", "version": "1"}),
+            tools: vec![McpToolInspection {
+                definition: effectful.definition().clone(),
+                definition_digest: effectful.definition_digest().to_owned(),
+            }],
+        };
+        let server = McpServerConfig::new(
+            "actions".to_owned(),
+            format!("mcp-servers/{executable_digest}/server"),
+            executable_digest,
+            Vec::new(),
+            discovery.toolset_digest().expect("toolset digest"),
+            true,
+            vec![effectful.clone()],
+        )
+        .expect("server");
+        assert!(mcp_read_tool_descriptor(&server, &effectful).is_err());
+        let descriptor = mcp_effect_tool_descriptor(&server, &effectful).expect("descriptor");
+        assert_eq!(descriptor.effect_class, EffectClass::NonIdempotent);
+        assert_eq!(descriptor.risk_class, RiskClass::High);
+        assert_eq!(descriptor.idempotency, IdempotencyClass::NonIdempotent);
+        assert_eq!(descriptor.recovery, RecoveryStrategy::Reconcile);
+        let idempotent = McpToolGrant::new_with_effect(
+            definition("write"),
+            McpToolEffect::Idempotent,
+            5_000,
+            64 * 1024,
+        )
+        .expect("idempotent grant");
+        let idempotent_descriptor =
+            mcp_effect_tool_descriptor(&server, &idempotent).expect("idempotent descriptor");
+        assert_ne!(
+            descriptor.executable_identity_digest,
+            idempotent_descriptor.executable_identity_digest
+        );
+        assert_ne!(
+            descriptor.descriptor_digest,
+            idempotent_descriptor.descriptor_digest
+        );
+    }
+
+    #[test]
+    fn effect_policy_binds_owner_classification_authority_arguments_and_approval() {
+        let tool = McpToolGrant::new_with_effect(
+            definition("write"),
+            McpToolEffect::NonIdempotent,
+            5_000,
+            64 * 1024,
+        )
+        .expect("effect grant");
+        let executable_digest = "b".repeat(64);
+        let discovery = McpServerDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "fixture", "version": "1"}),
+            tools: vec![McpToolInspection {
+                definition: tool.definition().clone(),
+                definition_digest: tool.definition_digest().to_owned(),
+            }],
+        };
+        let server = McpServerConfig::new(
+            "effects".to_owned(),
+            format!("mcp-servers/{executable_digest}/server"),
+            executable_digest,
+            Vec::new(),
+            discovery.toolset_digest().expect("toolset digest"),
+            true,
+            vec![tool],
+        )
+        .expect("server");
+        let descriptor =
+            mcp_effect_tool_descriptor(&server, &server.tools()[0]).expect("descriptor");
+        let principal_id = PrincipalId::new();
+        let channel_binding_id = ChannelBindingId::new();
+        let task_id = TaskId::new();
+        let run_id = RunId::new();
+        let capability = descriptor.required_capabilities[0].clone();
+        let target = "mcp://effects/write".to_owned();
+        let grant = McpEffectPolicyGrant {
+            principal_id,
+            channel_binding_id,
+            task_id,
+            run_id,
+            tool_descriptor_digest: descriptor.descriptor_digest.clone(),
+            executable_identity_digest: descriptor.executable_identity_digest.clone(),
+            effect: McpToolEffect::NonIdempotent,
+            capability: capability.clone(),
+            target_resource: target.clone(),
+            network_destination: None,
+            secret_reference: None,
+            valid_from_ms: 10,
+            expires_at_ms: 1_000,
+        };
+        let request = PolicyRequest {
+            principal_id,
+            channel_binding_id,
+            task_id,
+            run_id,
+            agent_role: "assistant".to_owned(),
+            task_risk: RiskClass::High,
+            tool: descriptor,
+            normalized_arguments: json!({"left": 1, "right": 2}),
+            target_resources: vec![target.clone()],
+            workspace_roots: Vec::new(),
+            resource_claims: vec![format!("mcp-effect:{target}")],
+            secret_references: Vec::new(),
+            network_destinations: Vec::new(),
+            requested_capability: capability.clone(),
+            requested_profile: PolicyProfile::ServiceOperator,
+            enforceable_profiles: vec![PolicyProfile::ServiceOperator],
+            evaluated_at_ms: 100,
+            policy_version: MCP_EFFECT_POLICY_VERSION.to_owned(),
+        };
+        let evaluation = evaluate_mcp_effect_policy(&request, &grant);
+        assert_eq!(evaluation.decision, PolicyDecision::RequireApproval);
+        assert_eq!(evaluation.obligations.maximum_processes, 1);
+        assert!(evaluation.obligations.allow_process_spawn);
+        let subject =
+            mcp_effect_approval_subject(EffectId::new(), &request, &grant, 900).expect("subject");
+        assert_eq!(subject.capability_scope, capability);
+
+        let mut forged = request.clone();
+        forged.normalized_arguments = json!({"left": 1});
+        assert_eq!(
+            evaluate_mcp_effect_policy(&forged, &grant).decision,
+            PolicyDecision::Deny
+        );
+        let mut forged = request;
+        forged.network_destinations = vec!["https://elsewhere.example".to_owned()];
+        assert_eq!(
+            evaluate_mcp_effect_policy(&forged, &grant).decision,
+            PolicyDecision::Deny
+        );
     }
 
     #[test]
@@ -2086,6 +2730,32 @@ mod tests {
             server.capability_secret_reference().as_deref(),
             Some("broker:mcp-remote")
         );
+        let effectful = McpToolGrant::new_with_effect(
+            definition("lookup"),
+            McpToolEffect::Idempotent,
+            5_000,
+            64 * 1024,
+        )
+        .expect("effectful HTTP grant");
+        let effect_server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            server.authentication().clone(),
+            server.catalog_digest().to_owned(),
+            true,
+            vec![effectful.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("effectful HTTP server");
+        assert!(mcp_http_read_tool_descriptor(&effect_server, &effectful).is_err());
+        let effect_descriptor =
+            mcp_http_effect_tool_descriptor(&effect_server, &effectful).expect("effect descriptor");
+        assert_eq!(effect_descriptor.effect_class, EffectClass::Idempotent);
+        assert_eq!(effect_descriptor.risk_class, RiskClass::Medium);
+        assert_eq!(effect_descriptor.idempotency, IdempotencyClass::Idempotent);
+        assert_eq!(effect_descriptor.recovery, RecoveryStrategy::Retry);
+        assert!(effect_descriptor.required_capabilities[0].contains(":authority-sha256:"));
     }
 
     #[test]

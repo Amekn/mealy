@@ -140,8 +140,9 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > progress, and exact-subject approval commands. On Linux, real-provider runs can use bounded,
 > cited list/stat/read/search tools over explicitly granted workspaces; explicitly activated profiles can also use
 > bounded, cited web search/fetch. Owner-reviewed native MCP stdio servers can expose selected,
-> schema-pinned read-only tools through a fresh no-network Bubblewrap session per call. Remote
-> Streamable HTTP MCP servers can expose separately reviewed read-only tools, exact resources, and
+> schema-pinned read-only or effectful tools through a fresh no-network Bubblewrap session per
+> call. Remote Streamable HTTP MCP servers can expose separately reviewed read-only or effectful
+> tools, exact resources, and
 > prompt templates as untrusted evidence through exact
 > endpoint/bearer-reference grants, pinned resolution, fresh sessions, and complete inventory
 > revalidation. Explicit
@@ -189,7 +190,7 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
 > persistent or personal profiles,
 > OAuth dynamic client registration, resource-template expansion, resumable MCP streams, or
-> effectful MCP calls,
+> long-lived MCP sessions,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
 > clean-host release evidence must be verified in the exact tag's linked workflows. The checked
 > clean 24-hour packaged-binary report is complete. Credential-scoped live model discovery is available
@@ -290,8 +291,13 @@ rotation, requires an exact unchanged scope and a new refresh token, and permits
 generation-fenced retry after a `401`. Local revocation is allowed only after every configuration
 reference is removed. Encrypted secret backups and migration rollback carry validated token
 families; secret-free backups explicitly omit them. Dynamic registration/CIMD, issuer-side
-revocation, resource-template expansion, subscriptions, resumable GET, and effectful MCP remain
-deliberately excluded until later v0.4 slices. Both boundaries exclude host workspace mounts.
+revocation, resource-template expansion, subscriptions, resumable GET, and long-lived session
+health remain deliberately excluded until later v0.4 slices. Owner-classified idempotent and
+non-idempotent MCP tools use the ordinary prepared-effect, exact-approval, fenced-attempt,
+reconciliation, validation, and replay ledger. Server annotations never grant effect authority.
+An interrupted idempotent action may create a bounded new fenced attempt under the same stable key;
+an ambiguous non-idempotent action parks as `outcome_unknown` until authenticated owner
+reconciliation. Both boundaries exclude host workspace mounts.
 The initial rendered-browser adapter similarly treats Chrome as untrusted runtime code. The complete
 Headless Shell bundle and CDP product are pinned, owner-installed, and re-verified; Bubblewrap gives
 each invocation an empty environment, ephemeral profile, private network namespace, and no

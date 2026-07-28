@@ -21,7 +21,7 @@ use mealy_domain::{
     AttemptId, ChannelBindingId, EffectId, FencingToken, PolicyProfile, PrincipalId, RunId, TaskId,
 };
 use mealy_infrastructure::{
-    LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding,
+    LinuxBubblewrapConfig, LinuxBubblewrapExecutor, McpEffectTool, SandboxRuntimeBinding,
     is_trusted_system_executable,
 };
 use serde_json::Value;
@@ -83,6 +83,7 @@ pub struct PhaseThreeRuntime {
     worker_identity_digest: String,
     workspace_roots: BTreeMap<String, String>,
     commands: BTreeMap<String, RuntimeCommand>,
+    mcp_effect_tools: BTreeMap<String, McpEffectTool>,
     kind: WriteRuntimeKind,
     outcome_commit_delay: std::time::Duration,
     dispatch_commit_delay: std::time::Duration,
@@ -127,6 +128,7 @@ impl PhaseThreeRuntime {
             worker_identity_digest,
             workspace_roots: BTreeMap::from([("fixture".to_owned(), workspace_root)]),
             commands: BTreeMap::new(),
+            mcp_effect_tools: BTreeMap::new(),
             kind: WriteRuntimeKind::Fixture,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -201,6 +203,7 @@ impl PhaseThreeRuntime {
             worker_identity_digest,
             workspace_roots,
             commands,
+            mcp_effect_tools: BTreeMap::new(),
             kind: WriteRuntimeKind::WorkspaceCreate,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -219,6 +222,37 @@ impl PhaseThreeRuntime {
     #[must_use]
     pub fn descriptors(&self) -> Vec<&ToolDescriptor> {
         self.descriptors.values().collect()
+    }
+
+    /// Adds startup-verified MCP effects to the same durable effect registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any tool identity collision or invalid descriptor.
+    pub fn with_mcp_effect_tools(
+        mut self,
+        tools: impl IntoIterator<Item = McpEffectTool>,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        for tool in tools {
+            let descriptor = tool.descriptor().clone();
+            descriptor.validate()?;
+            let tool_id = descriptor.tool_id.clone();
+            if self
+                .descriptors
+                .insert(tool_id.clone(), descriptor)
+                .is_some()
+                || self.mcp_effect_tools.insert(tool_id, tool).is_some()
+            {
+                return Err("MCP effect tool identity collides with configured authority".into());
+            }
+        }
+        Ok(self)
+    }
+
+    /// Startup-verified MCP effect by exact model-visible identity.
+    #[must_use]
+    pub fn mcp_effect_tool(&self, tool_id: &str) -> Option<&McpEffectTool> {
+        self.mcp_effect_tools.get(tool_id)
     }
 
     /// Configured logical command identities in stable order.
@@ -265,6 +299,9 @@ impl PhaseThreeRuntime {
     ) -> Result<Value, Box<dyn Error + Send + Sync>> {
         if self.descriptor_for(tool_id).is_none() {
             return Err("effect tool is not configured".into());
+        }
+        if let Some(tool) = self.mcp_effect_tool(tool_id) {
+            return Ok(tool.normalize_arguments(arguments)?);
         }
         match tool_id {
             mealy_application::FIXTURE_WRITE_FILE_TOOL_ID if self.is_fixture() => {

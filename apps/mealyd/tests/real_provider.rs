@@ -9,7 +9,7 @@ use axum::{
 };
 use mealy_application::{
     BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
-    MCP_PROTOCOL_VERSION, McpServerConfig, McpToolGrant, sha256_digest,
+    MCP_PROTOCOL_VERSION, McpServerConfig, McpToolEffect, McpToolGrant, sha256_digest,
 };
 use mealy_infrastructure::{
     FileProviderSecretStore, discover_mcp_stdio_server, inspect_browser_bundle,
@@ -20,13 +20,14 @@ use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
     CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
     CreateSessionRequest, CreateSessionResponse, DelegationResponse, DelegationsResponse,
-    DeliveryMode, DoctorResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
+    DeliveryMode, DoctorResponse, EffectReconciliationReceipt, EffectResponse,
+    EffectStatusResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
     PendingApprovalsResponse, ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
-    ResolveApprovalRequest, SessionCheckpointResponse, SessionForkResponse,
-    SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
-    SessionTranscriptExport, SubmitInputRequest, TaskCancellationReceipt, TaskReplayResponse,
-    TaskResponse, TaskStatus, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    ValidationMethodResponse, ValidationOutcomeResponse,
+    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
+    SessionCheckpointResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport, SubmitInputRequest,
+    TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, ValidationMethodResponse, ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -57,6 +58,19 @@ impl Daemon {
     }
 
     fn spawn_with_agent_interval(home: &Path, safe_mode: bool, agent_interval_ms: u64) -> Self {
+        Self::spawn_configured(home, safe_mode, agent_interval_ms, 0)
+    }
+
+    fn spawn_with_effect_outcome_delay(home: &Path, effect_outcome_delay_ms: u64) -> Self {
+        Self::spawn_configured(home, false, 25, effect_outcome_delay_ms)
+    }
+
+    fn spawn_configured(
+        home: &Path,
+        safe_mode: bool,
+        agent_interval_ms: u64,
+        effect_outcome_delay_ms: u64,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mealyd"));
         command
             .arg("--home")
@@ -69,6 +83,8 @@ impl Daemon {
             .arg("0")
             .arg("--agent-interval-ms")
             .arg(agent_interval_ms.to_string())
+            .arg("--effect-outcome-delay-ms")
+            .arg(effect_outcome_delay_ms.to_string())
             .arg("--outbox-delay-ms")
             .arg("0")
             .env(
@@ -84,6 +100,11 @@ impl Daemon {
         Self {
             child: command.spawn().expect("mealyd process should start"),
         }
+    }
+
+    fn kill_and_wait(&mut self) {
+        self.child.kill().expect("kill mealyd");
+        self.child.wait().expect("wait for killed mealyd");
     }
 }
 
@@ -726,7 +747,7 @@ async fn responses_handler(
                 })
             })
             .and_then(|tool| tool["name"].as_str())
-            .expect("MCP provider tool name");
+            .unwrap_or_else(|| panic!("MCP provider tool name: {body}"));
         let mut response = Json(json!({
             "id": "resp-mcp-call",
             "object": "response",
@@ -3285,6 +3306,464 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn owner_classified_mcp_effect_requires_exact_approval_dispatches_once_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    let installed_mcp = add_mcp_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &connection, "/v1/admin/status").await;
+    assert_eq!(status.enabled_action_tools, ["mcp.fixture.add"]);
+    assert_eq!(
+        status.enabled_read_tools,
+        ["agent.delegate", "agent.delegate_parallel"]
+    );
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "real-provider-mcp-effect".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &connection).await;
+    let approval = pending
+        .approvals
+        .first()
+        .expect("MCP effect must request approval");
+    assert_eq!(approval.subject.tool_id, "mcp.fixture.add");
+    assert_eq!(approval.subject.target_resources, ["mcp://fixture/add"]);
+    assert!(
+        approval
+            .subject
+            .capability_scope
+            .starts_with("mcp.invoke:fixture:add:sha256:")
+    );
+    assert!(
+        !approval
+            .subject
+            .capability_scope
+            .contains(&installed_mcp.display().to_string())
+    );
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-real-provider-mcp-effect".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "MCP effect task: {task:?}; provider requests: {:?}",
+        state.requests()
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let requests = state.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert!(requests[0].body.to_string().contains("mcp.fixture.add"));
+    assert!(requests[1].body.to_string().contains("effectRevision"));
+    assert!(requests.iter().all(|request| {
+        !request
+            .body
+            .to_string()
+            .contains(&installed_mcp.display().to_string())
+            && !request.body.to_string().contains("process-proof-secret")
+    }));
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1
+    );
+    assert!(
+        requests[1].body.to_string().contains("mcp://fixture/add"),
+        "the second model call must contain only durable MCP outcome evidence"
+    );
+
+    fs::remove_file(&installed_mcp).expect("remove live MCP executable before replay");
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.requests().len(), 2);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn idempotent_mcp_effect_retries_after_crash_at_dispatch_boundary_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    add_mcp_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "mcp-effect-crash-recovery".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed idempotent MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("MCP effect approval");
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-mcp-effect-crash-recovery".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if timeline
+            .events
+            .iter()
+            .any(|event| event.event_type == "effect.dispatched")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "MCP effect never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "recovered MCP effect task: {task:?}"
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        2,
+        "an idempotent interrupted call must create one new fenced retry attempt"
+    );
+    assert_eq!(state.requests().len(), 2);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "recovered replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn non_idempotent_mcp_effect_parks_after_dispatch_crash_until_owner_reconciles() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    add_mcp_non_idempotent_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "mcp-non-idempotent-crash-recovery".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed non-idempotent MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("MCP effect approval");
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-mcp-non-idempotent-crash-recovery".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if let Some(event) = timeline
+            .events
+            .iter()
+            .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("dispatch attempt id")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "non-idempotent MCP effect never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "a non-idempotent interrupted call must never be retried automatically"
+    );
+    assert_eq!(
+        state.requests().len(),
+        1,
+        "the model must remain parked until explicit reconciliation"
+    );
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-mcp-non-idempotent-crash-recovery".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Succeeded,
+            evidence: json!({
+                "basis": "owner verified the remote MCP operation completed",
+                "remoteReference": "fixture:add:20+22",
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.effect_id, effect_id);
+    assert_eq!(receipt.attempt_id, attempt_id);
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Succeeded);
+
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "reconciled non-idempotent MCP effect task: {task:?}"
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1
+    );
+    assert_eq!(state.requests().len(), 2);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(
+        replay.evidence_complete,
+        "reconciled non-idempotent replay: {replay:?}"
+    );
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "set MEALY_BROWSER_BUNDLE to a reviewed Chrome Headless Shell bundle"]
 #[allow(clippy::too_many_lines)]
 async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_chrome() {
@@ -5176,6 +5655,18 @@ fn add_workspace_config(home: &Path, workspace_id: &str, root: &Path) {
 }
 
 fn add_mcp_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::ReadOnly)
+}
+
+fn add_mcp_effect_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::Idempotent)
+}
+
+fn add_mcp_non_idempotent_effect_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::NonIdempotent)
+}
+
+fn add_mcp_config_with_effect(home: &Path, effect: McpToolEffect) -> std::path::PathBuf {
     let fixture = fs::canonicalize(env!("CARGO_BIN_EXE_mealyd-mcp-fixture-server"))
         .expect("canonical MCP fixture");
     let launcher =
@@ -5193,8 +5684,8 @@ fn add_mcp_config(home: &Path) -> std::path::PathBuf {
     .expect("discover MCP fixture");
     assert_eq!(discovery.protocol_version, MCP_PROTOCOL_VERSION);
     let add = discovery.tool("add").expect("MCP add definition");
-    let grant =
-        McpToolGrant::new(add.definition.clone(), 5_000, 128 * 1024).expect("MCP add grant");
+    let grant = McpToolGrant::new_with_effect(add.definition.clone(), effect, 5_000, 128 * 1024)
+        .expect("MCP add grant");
     let relative = format!("mcp-servers/{executable_digest}/server");
     let installed = home.join(&relative);
     fs::create_dir_all(installed.parent().expect("MCP install parent"))
@@ -5451,6 +5942,27 @@ async fn wait_for_pending_approval(
             return pending;
         }
         assert!(Instant::now() < deadline, "approval was not requested");
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_until_effect_status(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    effect_id: &str,
+    expected: EffectStatusResponse,
+) -> EffectResponse {
+    let deadline = Instant::now() + COMPLETION_TIMEOUT;
+    loop {
+        let effect: EffectResponse =
+            authorized_get(client, connection, &format!("/v1/effects/{effect_id}")).await;
+        if effect.status == expected {
+            return effect;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "effect did not reach {expected:?}: {effect:?}"
+        );
         sleep(Duration::from_millis(20)).await;
     }
 }

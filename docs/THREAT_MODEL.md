@@ -31,8 +31,8 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Delegated child model run | Untrusted bounded computation with explicit isolated context and an intersected read-only grant |
 | Built-in compiled adapter | Trusted code, reviewed with the daemon |
 | Third-party extension | Untrusted native code confined to its host process and grants |
-| Local MCP stdio server | Untrusted owner-selected native code confined to a fresh read-only sandbox and exact schema/tool-set grant |
-| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item grant and bounded fresh session |
+| Local MCP stdio server | Untrusted owner-selected native code confined to a fresh sandbox and exact schema/tool-set/effect-class grant |
+| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item/effect-class grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
@@ -212,9 +212,22 @@ grant plus the complete catalog before publishing selected authority. Runtime re
 cross-process serialized and generation-fenced; it repeats the exact resource/client, rejects
 scope changes and refresh-token reuse, and allows at most one `401`-triggered refresh/retry.
 Reference-safe local revocation cannot delete a token used by active configuration. Encrypted
-backups and migration recovery validate every record before restoration. Issuer-side revocation,
-dynamic registration/CIMD, scope-challenge parking, resource-template expansion/subscriptions,
-resumable GET, and effectful HTTP calls are not yet implemented.
+backups and migration recovery validate every record before restoration.
+
+Effect authority is selected by the owner as read-only, idempotent, or non-idempotent; server
+annotations remain untrusted hints. Effectful grants require the exact `service_operator` profile
+and bind the immutable run ceiling, executable or endpoint identity, credential reference, catalog,
+definition/schema, arguments, target, class, recovery, and policy into the descriptor and approval.
+The runtime and SQLite prepare boundary recheck that intersection, rediscover immediately before
+dispatch, and record a fenced running attempt before the external call. A definite pre-dispatch
+failure is terminal. Interrupted idempotent work may create a bounded new fenced attempt with the
+same stable key. Non-idempotent transport ambiguity or crash becomes `outcome_unknown`, parks the
+task, and requires authenticated revision-fenced owner reconciliation with external evidence.
+Replay performs no process, network, token refresh, approval, retry, or effect call. Adversarial
+real-process tests prove both crash branches and exact one-dispatch reconciliation.
+
+Issuer-side revocation, dynamic registration/CIMD, scope-challenge parking, resource-template
+expansion/subscriptions, resumable GET, and long-lived session health are not yet implemented.
 
 ### Parent model delegates hidden context or excess authority
 

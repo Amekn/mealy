@@ -137,6 +137,31 @@ fn mcp_add_parses_but_cannot_execute_or_mutate_without_approval() {
     );
     assert!(!home.path().join("mcp-servers").exists());
 
+    let duplicate_classification = command(
+        home.path(),
+        &[
+            "mcp-add",
+            "fixture",
+            "/definitely/not/executable",
+            "--allow-tool",
+            "add",
+            "--allow-tool",
+            "idempotent:add",
+            "--approve",
+        ],
+    );
+    assert!(!duplicate_classification.status.success());
+    assert!(
+        String::from_utf8_lossy(&duplicate_classification.stderr)
+            .contains("MCP server or tool configuration is invalid")
+    );
+    assert_eq!(
+        fs::read(home.path().join("config.json"))
+            .expect("config after duplicate local classification"),
+        before
+    );
+    assert!(!home.path().join("mcp-servers").exists());
+
     let http_output = command(
         home.path(),
         &[
@@ -152,6 +177,31 @@ fn mcp_add_parses_but_cannot_execute_or_mutate_without_approval() {
     assert!(String::from_utf8_lossy(&http_output.stderr).contains("requires --approve"));
     assert_eq!(
         fs::read(home.path().join("config.json")).expect("config after HTTP denial"),
+        before
+    );
+
+    let duplicate_http_classification = command(
+        home.path(),
+        &[
+            "mcp-http",
+            "add",
+            "remote",
+            "http://127.0.0.1:9/mcp",
+            "--allow-tool",
+            "idempotent:lookup",
+            "--allow-tool",
+            "non-idempotent:lookup",
+            "--approve",
+        ],
+    );
+    assert!(!duplicate_http_classification.status.success());
+    assert!(
+        String::from_utf8_lossy(&duplicate_http_classification.stderr)
+            .contains("MCP server or tool configuration is invalid")
+    );
+    assert_eq!(
+        fs::read(home.path().join("config.json"))
+            .expect("config after duplicate HTTP classification"),
         before
     );
 }
@@ -200,7 +250,7 @@ fn mcp_http_inspect_and_add_pin_one_live_reviewed_toolset() {
             "remote",
             endpoint.as_str(),
             "--allow-tool",
-            "lookup",
+            "idempotent:lookup",
             "--approve",
         ],
     );
@@ -218,6 +268,10 @@ fn mcp_http_inspect_and_add_pin_one_live_reviewed_toolset() {
     assert_eq!(
         read_config(home.path())["mcpHttpServers"][0]["endpoint"],
         endpoint
+    );
+    assert_eq!(
+        read_config(home.path())["mcpHttpServers"][0]["tools"][0]["effect"],
+        "idempotent"
     );
     assert!(
         read_config(home.path())["mcpHttpServers"][0]

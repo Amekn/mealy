@@ -8,12 +8,13 @@ use mealy_application::{
     MCP_MAXIMUM_RESOURCES_PER_SERVER, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION,
     McpCatalogItemInspection, McpHttpAuthentication, McpHttpCatalogDiscovery,
     McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant, McpResourceGrant, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, McpToolInspection, ReadOnlyTool, ReadToolDescriptor,
-    ReadToolError, ReadToolOutput, mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
-    mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
-    mcp_resource_definition_digest, mcp_resource_template_definition_digest,
-    mcp_tool_definition_digest, sha256_digest, validate_mcp_prompt_arguments,
-    validate_mcp_tool_arguments,
+    McpServerDiscovery, McpToolEffect, McpToolGrant, McpToolInspection, ReadOnlyTool,
+    ReadToolDescriptor, ReadToolError, ReadToolOutput, ToolDescriptor, mcp_effect_tool_descriptor,
+    mcp_http_effect_tool_descriptor, mcp_http_prompt_read_descriptor,
+    mcp_http_read_tool_descriptor, mcp_http_resource_read_descriptor, mcp_prompt_definition_digest,
+    mcp_read_tool_descriptor, mcp_resource_definition_digest,
+    mcp_resource_template_definition_digest, mcp_tool_definition_digest, sha256_digest,
+    validate_mcp_prompt_arguments, validate_mcp_tool_arguments,
 };
 use reqwest::{
     StatusCode,
@@ -99,9 +100,25 @@ pub fn load_mcp_read_tools(
     launcher_path: &Path,
     servers: &[McpServerConfig],
 ) -> Result<Vec<McpReadTool>, McpHostError> {
+    Ok(load_mcp_tools(home, bubblewrap_path, launcher_path, servers)?.read_tools)
+}
+
+/// Builds and startup-verifies every enabled local stdio MCP read and governed-effect tool.
+///
+/// # Errors
+///
+/// Returns [`McpHostError`] under the same fail-closed conditions as
+/// [`load_mcp_read_tools`].
+pub fn load_mcp_tools(
+    home: &Path,
+    bubblewrap_path: &Path,
+    launcher_path: &Path,
+    servers: &[McpServerConfig],
+) -> Result<LoadedMcpTools, McpHostError> {
     let home = fs::canonicalize(home)
         .map_err(|error| McpHostError::Io(format!("cannot canonicalize Mealy home: {error}")))?;
-    let mut result = Vec::new();
+    let mut read_tools = Vec::new();
+    let mut effect_tools = Vec::new();
     for server in servers.iter().filter(|server| server.enabled()) {
         server
             .validate()
@@ -118,21 +135,36 @@ pub fn load_mcp_read_tools(
         let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
         verify_discovery(server, &discovery)?;
         for grant in server.tools() {
-            result.push(McpReadTool::new(
-                Arc::clone(&endpoint),
-                server.clone(),
-                grant.clone(),
-            )?);
+            if grant.effect() == McpToolEffect::ReadOnly {
+                read_tools.push(McpReadTool::new(
+                    Arc::clone(&endpoint),
+                    server.clone(),
+                    grant.clone(),
+                )?);
+            } else {
+                effect_tools.push(McpEffectTool::stdio(
+                    Arc::clone(&endpoint),
+                    server.clone(),
+                    grant.clone(),
+                )?);
+            }
         }
     }
-    result.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
-    if result
+    read_tools.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
+    effect_tools.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
+    if read_tools
         .windows(2)
         .any(|window| window[0].descriptor.tool_id == window[1].descriptor.tool_id)
+        || effect_tools
+            .windows(2)
+            .any(|window| window[0].descriptor.tool_id == window[1].descriptor.tool_id)
     {
         return Err(McpHostError::InvalidConfiguration);
     }
-    Ok(result)
+    Ok(LoadedMcpTools {
+        read_tools,
+        effect_tools,
+    })
 }
 
 /// Inspects one Streamable HTTP MCP server through an SSRF-resistant, redirect-free connection.
@@ -188,16 +220,31 @@ pub fn inspect_mcp_http_endpoint(
 /// or a reviewed tool definition fails closed.
 pub fn load_mcp_http_read_tools(
     servers: &[McpHttpServerConfig],
-    mut credentials: BTreeMap<String, Zeroizing<String>>,
+    credentials: BTreeMap<String, Zeroizing<String>>,
     oauth_store: Option<&FileMcpOAuthTokenStore>,
 ) -> Result<Vec<McpHttpReadTool>, McpHostError> {
+    Ok(load_mcp_http_tools(servers, credentials, oauth_store)?.read_tools)
+}
+
+/// Builds and startup-verifies all enabled Streamable HTTP MCP read and governed-effect tools.
+///
+/// # Errors
+///
+/// Returns [`McpHostError`] under the same fail-closed conditions as
+/// [`load_mcp_http_read_tools`].
+pub fn load_mcp_http_tools(
+    servers: &[McpHttpServerConfig],
+    mut credentials: BTreeMap<String, Zeroizing<String>>,
+    oauth_store: Option<&FileMcpOAuthTokenStore>,
+) -> Result<LoadedMcpHttpTools, McpHostError> {
     let needs_oauth_store = servers.iter().any(|server| {
         server.enabled() && matches!(server.authentication(), McpHttpAuthentication::OAuth { .. })
     });
     if needs_oauth_store != oauth_store.is_some() {
         return Err(McpHostError::InvalidConfiguration);
     }
-    let mut result = Vec::new();
+    let mut read_tools = Vec::new();
+    let mut effect_tools = Vec::new();
     for server in servers.iter().filter(|server| server.enabled()) {
         server
             .validate()
@@ -221,21 +268,29 @@ pub fn load_mcp_http_read_tools(
         let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
         verify_http_discovery(server, &discovery)?;
         for grant in server.tools() {
-            result.push(McpHttpReadTool::Tool(McpHttpToolRead::new(
-                Arc::clone(&endpoint),
-                server.clone(),
-                grant.clone(),
-            )?));
+            if grant.effect() == McpToolEffect::ReadOnly {
+                read_tools.push(McpHttpReadTool::Tool(McpHttpToolRead::new(
+                    Arc::clone(&endpoint),
+                    server.clone(),
+                    grant.clone(),
+                )?));
+            } else {
+                effect_tools.push(McpEffectTool::http(
+                    Arc::clone(&endpoint),
+                    server.clone(),
+                    grant.clone(),
+                )?);
+            }
         }
         for grant in server.resources() {
-            result.push(McpHttpReadTool::Resource(McpHttpResourceRead::new(
+            read_tools.push(McpHttpReadTool::Resource(McpHttpResourceRead::new(
                 Arc::clone(&endpoint),
                 server.clone(),
                 grant.clone(),
             )?));
         }
         for grant in server.prompts() {
-            result.push(McpHttpReadTool::Prompt(McpHttpPromptRead::new(
+            read_tools.push(McpHttpReadTool::Prompt(McpHttpPromptRead::new(
                 Arc::clone(&endpoint),
                 server.clone(),
                 grant.clone(),
@@ -245,14 +300,21 @@ pub fn load_mcp_http_read_tools(
     if !credentials.is_empty() {
         return Err(McpHostError::InvalidConfiguration);
     }
-    result.sort_by(|left, right| left.descriptor().tool_id.cmp(&right.descriptor().tool_id));
-    if result
+    read_tools.sort_by(|left, right| left.descriptor().tool_id.cmp(&right.descriptor().tool_id));
+    effect_tools.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
+    if read_tools
         .windows(2)
         .any(|window| window[0].descriptor().tool_id == window[1].descriptor().tool_id)
+        || effect_tools
+            .windows(2)
+            .any(|window| window[0].descriptor.tool_id == window[1].descriptor.tool_id)
     {
         return Err(McpHostError::InvalidConfiguration);
     }
-    Ok(result)
+    Ok(LoadedMcpHttpTools {
+        read_tools,
+        effect_tools,
+    })
 }
 
 fn verify_mcp_http_oauth_metadata(config: &McpHttpEndpointConfig) -> Result<(), McpHostError> {
@@ -316,6 +378,225 @@ fn verify_http_discovery(
         return Err(McpHostError::InventoryDrift);
     }
     Ok(())
+}
+
+/// Startup-verified local stdio MCP tools split by their owner-attested effect contract.
+pub struct LoadedMcpTools {
+    read_tools: Vec<McpReadTool>,
+    effect_tools: Vec<McpEffectTool>,
+}
+
+impl LoadedMcpTools {
+    /// Consumes the verified inventory into read and effect tools.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<McpReadTool>, Vec<McpEffectTool>) {
+        (self.read_tools, self.effect_tools)
+    }
+}
+
+/// Startup-verified Streamable HTTP MCP tools split by their owner-attested effect contract.
+pub struct LoadedMcpHttpTools {
+    read_tools: Vec<McpHttpReadTool>,
+    effect_tools: Vec<McpEffectTool>,
+}
+
+impl LoadedMcpHttpTools {
+    /// Consumes the verified inventory into read and effect tools.
+    #[must_use]
+    pub fn into_parts(self) -> (Vec<McpHttpReadTool>, Vec<McpEffectTool>) {
+        (self.read_tools, self.effect_tools)
+    }
+}
+
+enum McpEffectEndpoint {
+    Stdio {
+        endpoint: Arc<McpStdioEndpoint>,
+        server: McpServerConfig,
+    },
+    Http {
+        endpoint: Arc<McpHttpEndpoint>,
+        server: McpHttpServerConfig,
+    },
+}
+
+/// One exact owner-classified MCP effect behind the same pinned transport used for reads.
+pub struct McpEffectTool {
+    endpoint: McpEffectEndpoint,
+    grant: McpToolGrant,
+    descriptor: ToolDescriptor,
+}
+
+impl std::fmt::Debug for McpEffectTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpEffectTool")
+            .field("tool_id", &self.descriptor.tool_id)
+            .field("effect", &self.grant.effect())
+            .field("http", &self.is_http())
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpEffectTool {
+    fn stdio(
+        endpoint: Arc<McpStdioEndpoint>,
+        server: McpServerConfig,
+        grant: McpToolGrant,
+    ) -> Result<Self, McpHostError> {
+        let descriptor = mcp_effect_tool_descriptor(&server, &grant)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        descriptor
+            .validate()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        Ok(Self {
+            endpoint: McpEffectEndpoint::Stdio { endpoint, server },
+            grant,
+            descriptor,
+        })
+    }
+
+    fn http(
+        endpoint: Arc<McpHttpEndpoint>,
+        server: McpHttpServerConfig,
+        grant: McpToolGrant,
+    ) -> Result<Self, McpHostError> {
+        let descriptor = mcp_http_effect_tool_descriptor(&server, &grant)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        descriptor
+            .validate()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        Ok(Self {
+            endpoint: McpEffectEndpoint::Http { endpoint, server },
+            grant,
+            descriptor,
+        })
+    }
+
+    /// Complete immutable effect contract advertised to policy and the provider.
+    #[must_use]
+    pub const fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    /// Exact owner-attested effect classification.
+    #[must_use]
+    pub const fn effect(&self) -> McpToolEffect {
+        self.grant.effect()
+    }
+
+    /// Stable configured server identity.
+    #[must_use]
+    pub fn server_id(&self) -> &str {
+        match &self.endpoint {
+            McpEffectEndpoint::Stdio { server, .. } => server.server_id(),
+            McpEffectEndpoint::Http { server, .. } => server.server_id(),
+        }
+    }
+
+    /// Exact reviewed remote tool name.
+    #[must_use]
+    pub fn remote_name(&self) -> &str {
+        self.grant.remote_name()
+    }
+
+    /// Whether dispatch uses the Streamable HTTP boundary.
+    #[must_use]
+    pub const fn is_http(&self) -> bool {
+        matches!(self.endpoint, McpEffectEndpoint::Http { .. })
+    }
+
+    /// Exact external target used in effect proposals and conflict claims.
+    #[must_use]
+    pub fn target_resource(&self) -> String {
+        if self.is_http() {
+            format!("mcp://{}/tool.{}", self.server_id(), self.remote_name())
+        } else {
+            format!("mcp://{}/{}", self.server_id(), self.remote_name())
+        }
+    }
+
+    /// Exact network authority, if this is a Streamable HTTP tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpHostError`] when the configured endpoint cannot produce one canonical
+    /// destination capability.
+    pub fn network_destination(&self) -> Result<Option<String>, McpHostError> {
+        match &self.endpoint {
+            McpEffectEndpoint::Stdio { .. } => Ok(None),
+            McpEffectEndpoint::Http { server, .. } => server
+                .capability_network_destination()
+                .map(Some)
+                .map_err(|_| McpHostError::InvalidConfiguration),
+        }
+    }
+
+    /// Opaque credential authority, if the exact HTTP configuration requires one.
+    #[must_use]
+    pub fn secret_reference(&self) -> Option<String> {
+        match &self.endpoint {
+            McpEffectEndpoint::Stdio { .. } => None,
+            McpEffectEndpoint::Http { server, .. } => server.capability_secret_reference(),
+        }
+    }
+
+    /// Validates arguments against the exact reviewed schema and returns a canonical clone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpHostError`] when the arguments do not satisfy the owner-reviewed schema.
+    pub fn normalize_arguments(&self, arguments: &Value) -> Result<Value, McpHostError> {
+        validate_mcp_tool_arguments(&self.grant, arguments)
+            .map_err(|_| McpHostError::InvalidArguments)?;
+        Ok(arguments.clone())
+    }
+
+    /// Revalidates exact live inventory, invokes once, and returns a bounded normalized result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpHostError`] when arguments, live identity/catalog validation, transport,
+    /// protocol framing, cancellation, or output bounds fail.
+    pub fn execute(
+        &self,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<McpEffectToolOutput, McpHostError> {
+        let arguments = self.normalize_arguments(arguments)?;
+        let timeout = Duration::from_millis(self.grant.timeout_ms());
+        let result = match &self.endpoint {
+            McpEffectEndpoint::Stdio { endpoint, server } => {
+                endpoint.call(server, &self.grant, &arguments, cancellation, timeout)?
+            }
+            McpEffectEndpoint::Http { endpoint, server } => {
+                endpoint.call(server, &self.grant, &arguments, cancellation, timeout)?
+            }
+        };
+        let bytes = serde_json::to_vec(&result).map_err(|_| McpHostError::InvalidProtocol)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > self.grant.maximum_output_bytes() {
+            return Err(McpHostError::OutputLimitExceeded);
+        }
+        let remote_reported_error = result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .ok_or(McpHostError::InvalidProtocol)?;
+        Ok(McpEffectToolOutput {
+            bytes,
+            source_locator: self.target_resource(),
+            remote_reported_error,
+        })
+    }
+}
+
+/// Bounded normalized evidence returned by one dispatched MCP effect.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct McpEffectToolOutput {
+    /// Canonical normalized MCP result JSON.
+    pub bytes: Vec<u8>,
+    /// Exact configured server/tool locator.
+    pub source_locator: String,
+    /// Whether the remote server returned a protocol-valid `isError: true` result.
+    pub remote_reported_error: bool,
 }
 
 /// One model-visible governed HTTP MCP catalog operation.
@@ -1734,6 +2015,9 @@ impl ReadOnlyTool for McpReadTool {
 fn map_read_error(error: McpHostError, maximum: u64) -> ReadToolError {
     match error {
         McpHostError::Cancelled => ReadToolError::Cancelled,
+        McpHostError::InvalidArguments => {
+            ReadToolError::InvalidArguments("arguments do not match the reviewed MCP schema".into())
+        }
         McpHostError::OutputLimitExceeded => ReadToolError::OutputTooLarge {
             actual: maximum.saturating_add(1),
             maximum,
@@ -2648,6 +2932,9 @@ pub enum McpHostError {
     /// Non-secret server configuration is malformed or non-canonical.
     #[error("MCP server configuration is invalid")]
     InvalidConfiguration,
+    /// Invocation arguments do not satisfy the exact owner-reviewed schema.
+    #[error("MCP tool arguments are invalid")]
+    InvalidArguments,
     /// Host cannot enforce the requested isolation boundary.
     #[error("MCP stdio host is unsupported: {0}")]
     UnsupportedHost(String),
@@ -2699,15 +2986,15 @@ pub enum McpHostError {
 mod tests {
     use super::{
         LineError, McpHostError, NeverCancelled, discover_mcp_http_server,
-        inspect_mcp_http_endpoint, jsonrpc_result, load_mcp_http_read_tools, parse_sse_response,
-        read_bounded_line,
+        inspect_mcp_http_endpoint, jsonrpc_result, load_mcp_http_read_tools, load_mcp_http_tools,
+        parse_sse_response, read_bounded_line,
     };
     use crate::{FileMcpOAuthTokenStore, McpOAuthTokenSet};
     use mealy_application::{
         MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpHttpAuthentication,
         McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig,
         McpOAuthMetadataDiscovery, McpOAuthTokenGrant, McpPromptGrant, McpResourceGrant,
-        McpToolGrant, McpToolInspection, ReadOnlyTool,
+        McpToolEffect, McpToolGrant, McpToolInspection, ReadOnlyTool,
     };
     use serde_json::{Value, json};
     use std::{
@@ -3222,6 +3509,142 @@ mod tests {
                 .contains("mcp-session-id: call-session")
         );
         assert!(!requests[7].contains("load-session"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn streamable_http_effect_is_separated_revalidated_and_invoked_once() {
+        let definition = json!({
+            "name": "update",
+            "description": "Updates one bounded fixture value",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"]
+            },
+            "outputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"revision": {"type": "integer"}},
+                "required": ["revision"]
+            }
+        });
+        let grant = McpToolGrant::new_with_effect(
+            definition.clone(),
+            McpToolEffect::Idempotent,
+            5_000,
+            64 * 1024,
+        )
+        .expect("effect grant");
+        let discovery = McpHttpCatalogDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "http-effect-fixture", "version": "1"}),
+            tools_capability: Some(json!({})),
+            resources_capability: None,
+            prompts_capability: None,
+            tools: vec![McpToolInspection {
+                definition: definition.clone(),
+                definition_digest: grant.definition_digest().to_owned(),
+            }],
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
+        };
+        let initialize = |session: &'static str| {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "http-effect-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", session)),
+            )
+        };
+        let tools = || {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 100,
+                    "result": {"tools": [definition.clone()]}
+                }),
+                None,
+            )
+        };
+        let accepted =
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let deleted =
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
+            initialize("load-effect"),
+            accepted.clone(),
+            tools(),
+            deleted.clone(),
+            initialize("call-effect"),
+            accepted,
+            tools(),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 10_000,
+                    "result": {
+                        "content": [{"type": "text", "text": "updated"}],
+                        "structuredContent": {"revision": 2},
+                        "isError": false
+                    }
+                }),
+                None,
+            ),
+            deleted,
+        ]);
+        let config = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            endpoint,
+            McpHttpAuthentication::Bearer {
+                credential: mealy_application::ProviderCredentialReference::Broker {
+                    secret_id: "mcp-http-effect".to_owned(),
+                },
+            },
+            discovery.catalog_digest().expect("catalog digest"),
+            true,
+            vec![grant],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("HTTP effect config");
+        let credentials = BTreeMap::from([(
+            "remote".to_owned(),
+            Zeroizing::new("fixture-effect-secret".to_owned()),
+        )]);
+        let (reads, effects) = load_mcp_http_tools(&[config], credentials, None)
+            .expect("load HTTP MCP effects")
+            .into_parts();
+        assert!(reads.is_empty());
+        assert_eq!(effects.len(), 1);
+        let output = effects[0]
+            .execute(&json!({"value": "alpha"}), &NeverCancelled)
+            .expect("execute HTTP MCP effect");
+        assert!(!output.remote_reported_error);
+        assert_eq!(output.source_locator, "mcp://remote/tool.update");
+        let normalized: Value = serde_json::from_slice(&output.bytes).expect("normalized output");
+        assert_eq!(normalized["structuredContent"]["revision"], 2);
+        server_thread.join().expect("fixture server");
+        let requests = requests.lock().expect("fixture requests");
+        assert_eq!(requests.len(), 9);
+        assert!(requests[7].contains("\"method\":\"tools/call\""));
+        assert!(requests[7].contains("\"arguments\":{\"value\":\"alpha\"}"));
+        assert!(
+            requests[7]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-effect-secret")
+        );
     }
 
     #[test]

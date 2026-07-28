@@ -199,6 +199,14 @@ complete backups, isolated verification, and cross-schema home reconstruction pr
 bytes, executable permissions, and validated encrypted OAuth token families without placing them
 in secret-free archives.
 
+Effectful MCP coverage adds pure policy forgery tests, backward-compatible read-only grant
+decoding, descriptor/class binding, mutually exclusive CLI selection, and immutable promotion
+ceiling checks. Real daemon/provider/process scenarios prove an exact approval followed by one
+dispatch and execution-free replay; an idempotent hard crash after the durable dispatch boundary
+creates one separately fenced retry and completes; a non-idempotent crash records
+`outcome_unknown`, remains parked with exactly one dispatch and no second model call, resumes only
+after revision-fenced owner evidence, and replays with zero live calls.
+
 The `linux-browser-conformance` CI lane downloads only the repository-pinned Chrome Headless Shell
 archive through `scripts/fetch-browser-runtime.sh`, verifies its exact HTTPS artifact size and
 SHA-256, and sets `MEALY_BROWSER_BUNDLE` for three opt-in real-process suites.
@@ -664,8 +672,10 @@ Each boundary is tested by a deterministic failpoint before and after the action
 - Approval replay with changed arguments, tool version, target, policy, principal, or expiry.
 - Sandbox path traversal, symlink, environment, process, and network escape attempts.
 - Extension requests undeclared capability/secret/network target.
-- MCP executable/tool/schema drift, malformed or excessive protocol output, ambient
-  filesystem/environment/network/process access, and ignored cancellation.
+- MCP executable/tool/schema/class drift, forged annotations/arguments/targets/executable or
+  network/secret authority, malformed or excessive protocol output, ambient
+  filesystem/environment/network/process access, ignored cancellation, idempotent fenced-retry
+  loss, and non-idempotent post-dispatch retry.
 - Browser bundle/product/protocol drift, personal-profile/host-CDP absence, unauthorized
   destination/method/auth/download/upgrade/direct-socket attempts, form/submit activation,
   excessive traffic/screenshot, startup/load timeout, and runtime-free replay.

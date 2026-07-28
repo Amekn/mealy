@@ -167,9 +167,12 @@ A distinct `oauth-add` transaction revalidates metadata/catalog evidence before 
 Runtime resolution supports proactive refresh, cross-process serialized refresh-token rotation,
 exact-scope enforcement, atomic generation fencing, and one `401`-triggered refresh/retry.
 Reference-safe local revocation, encrypted-backup restore, and migration rollback are covered.
-Dynamic client registration/CIMD, issuer-side revocation, resource-template
-expansion/subscriptions, resumable GET, health, and effectful invocation remain explicit later
-slices.
+Owner-classified effectful invocation is also implemented for both transports: mutually exclusive
+read-only/idempotent/non-idempotent grants, exact approval and immutable-ceiling binding, fresh
+pre-dispatch inventory validation, fenced attempts, retry-only idempotent crash recovery,
+reconcile-only non-idempotent ambiguity, and execution-free replay are process-tested. Dynamic
+client registration/CIMD, issuer-side revocation, resource-template expansion/subscriptions,
+resumable GET, and long-lived health remain explicit later slices.
 
 ### Media
 
