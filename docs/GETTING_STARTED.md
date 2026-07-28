@@ -99,6 +99,16 @@ Or choose from the 20 most recent owner-bound conversations:
 mealyctl chat --pick
 ```
 
+For the full-screen workbench with a session rail, transcript search, provider/context/cost status,
+structured activity previews, exact approvals, and checkpoint/fork/export controls, run:
+
+```sh
+mealyctl tui
+```
+
+Press `F1` for its complete key map. `mealyctl chat` remains the line-oriented accessibility and
+recovery surface; `session` commands remain the scripting surface.
+
 Check the installation and service:
 
 ```sh

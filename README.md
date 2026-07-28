@@ -201,7 +201,11 @@ loop persists immutable context manifests, normalized attempts and usage, conten
 artifacts, cancellation, checkpoints, and recorded-only replay. The v0.3 session-workbench
 foundation adds safe derived/owner titles, exact-binding search, immutable checkpoints,
 duplicate-safe fresh-state forks, and digest-verified bounded JSON/HTML transcript exports across
-the canonical daemon, scriptable CLI, and thin dashboard adapter. Its approval-gated fixture write
+the canonical daemon, scriptable CLI, and thin dashboard adapter. `mealyctl tui` now adds a
+full-screen thin workbench over that same state: safe session/search navigation, verified
+conversation rendering, a bounded composer, provider/context/cost status, recent structured
+activity/tool evidence, exact approval review, and checkpoint/fork/export controls. The existing
+line chat and scriptable commands remain supported. Its approval-gated fixture write
 uses an exact policy subject, durable effect ledger, stable idempotency key, out-of-process Linux
 sandbox, explicit unknown-outcome reconciliation, automatic expiry, and effect-aware replay.
 Every admitted task also has explicit success criteria and risk policy. Low-risk reads retain

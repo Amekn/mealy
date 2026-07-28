@@ -963,6 +963,31 @@ resources, forms, or replay behavior. Message text is intentionally verbatim and
 secret pasted into the conversation, so handle the downloaded file accordingly. The dashboard
 offers the same Fork, Export JSON, and Export HTML actions for its selected session.
 
+## Use the full-screen terminal workbench
+
+With the owner service running, the v0.3 workbench resumes your newest conversation:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" tui
+```
+
+Use `tui --new` for a fresh conversation or `tui --session-id SESSION_ID` for an exact one. The
+left rail browses safe titled sessions, the middle pane renders the daemon's digest-verified
+canonical transcript, and the right rail shows recent durable activity, structured event/tool
+evidence, and pending approvals. The header shows the effective provider/model, context limit,
+configured input/output microunits, and health. This is not a second history database: refresh,
+restart, the line chat, dashboard, and scriptable commands all converge on the same daemon state.
+
+Press `F1` inside the workbench for the complete controls. The common path is `Tab` to the pane you
+want, arrow keys to navigate, and `Enter` to send composer text. `/` searches canonical transcript
+text; `F2` renames; `F3` checkpoints; `F4` checkpoints and forks; `F6`/`Shift-F6` writes verified
+private JSON/inert HTML; `F7` renders an exact approval digest and targets before accepting `a` or
+`d`. `Ctrl-C` always restores the terminal, including while a local API request is stalled.
+
+Keep `mealyctl chat` for screen readers, line-oriented recovery, and simple terminals. Keep
+`session` subcommands for scripts. Piping `tui` is deliberately rejected before it can create a
+session.
+
 The same concise workflow is scriptable outside the REPL:
 
 ```sh
