@@ -121,11 +121,16 @@ mealyctl session provider set SESSION_ID \
   --provider-id openrouter.responses --model-id vendor/model:free
 mealyctl session send SESSION_ID "Use the local route for this turn." \
   --provider-id local.responses --model-id local-model
+mealyctl provider switch --provider-id local.responses --model-id local-model
 ```
 
 Only exact routes already active in the daemon can be selected. Exact per-turn selection disables
-implicit fallback for that turn. Changing the configured route set or credentials remains a
-separate stopped-daemon configuration transaction.
+implicit fallback for that turn. `provider switch` prints a no-mutation plan for promoting an
+already-configured compatible route to the automatic primary; rerun the same command with
+`--approve` to use the verified Linux service's probe/drain/restart/verify transaction. The output
+includes a transaction ID for `mealyctl provider switch-status TRANSACTION_ID`. Changing the route
+set, endpoint, model, credential, price, locality, or residency remains a separate stopped-daemon
+configuration transaction.
 
 Check the installation and service:
 

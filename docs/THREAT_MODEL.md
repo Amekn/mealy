@@ -335,11 +335,23 @@ endpoint and disables implicit fallback, while bounded classified retries may re
 endpoint. A changed default applies only to future new turns and cannot rewrite queued, active, or
 completed work.
 
-The TUI, dashboard, and CLI are thin clients of these canonical contracts. They do not edit
-configuration, broker credentials, or maintain a private routing preference. Changing the active
-route set, endpoint, credential, configured price, locality, or residency remains a stopped-daemon
-transaction until plan-first stage/probe/drain/activate/verify/rollback switching is separately
-implemented and qualified.
+The TUI, dashboard, and scoped-selection CLI are thin clients of these canonical contracts. They
+do not edit configuration, broker credentials, or maintain a private routing preference.
+
+Promoting one already-configured compatible automatic route uses a separate plan-first service
+transaction. The non-mutating plan requires exact agreement between config and the authenticated
+catalog. Approved apply binds immutable prior/candidate snapshots plus daemon/helper digests,
+probes the exact model before drain, serializes against program updates, activates only under the
+stopped-home lock, and verifies the restarted service, `doctor`, readiness, route count, config
+digest, and primary identity. Its service-manager-supervised helper resumes across disconnect or
+crash. Pre-activation failure requalifies the original route; post-activation failure restores the
+exact prior bytes and original catalog digest before reporting rollback. Environment-only secrets
+are rejected because the helper does not inherit caller shell state.
+
+The transaction reorders the complete validated chain and removes no route, so persisted exact
+session defaults remain resolvable. Trust-boundary validation rejects unsafe reorderings. Changing
+the route set, endpoint, model, credential, configured price, locality, or residency remains a
+stopped-daemon operation.
 
 ### Subscription bridge steals a session or exposes ambient client tools
 

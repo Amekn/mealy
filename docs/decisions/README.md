@@ -15,5 +15,6 @@ ADRs record decisions that shape multiple modules or are expensive to reverse. T
 | [0009](0009-sqlite-writer-and-snapshot-readers.md) | One SQLite writer, bounded snapshot readers, and bundled context evidence | Accepted |
 | [0010](0010-disconnect-resistant-update-transaction.md) | Disconnect-resistant, health-gated release update transaction | Accepted |
 | [0011](0011-session-lineage-and-thin-workbench-clients.md) | Canonical session lineage and thin workbench clients | Accepted |
+| [0012](0012-transactional-provider-primary-switch.md) | Transactional promotion of an already-configured provider route | Accepted |
 
 New ADRs use the next four-digit number and begin as `Proposed`. Superseding an ADR keeps the old file and links both directions.

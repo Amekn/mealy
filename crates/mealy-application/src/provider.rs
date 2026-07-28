@@ -22,7 +22,7 @@ impl ProviderSelection {
     #[must_use]
     pub fn is_valid(&self) -> bool {
         valid_provider_selection_label(&self.provider_id, 128)
-            && valid_provider_selection_label(&self.model_id, 256)
+            && valid_provider_selection_label(&self.model_id, 128)
     }
 }
 

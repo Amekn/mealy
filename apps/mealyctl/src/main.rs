@@ -3,6 +3,7 @@
 mod chat_picker;
 mod dashboard;
 mod lifecycle;
+mod provider_switch;
 mod tui;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -271,6 +272,12 @@ enum Command {
         /// Provider operation.
         #[command(subcommand)]
         command: ProviderCommand,
+    },
+    /// Internal restartable provider-switch helper owned by a transient user service.
+    #[command(hide = true)]
+    ProviderSwitchTransaction {
+        /// Exact durable transaction UUID prepared by the foreground client.
+        transaction_id: String,
     },
     /// Inspect, cancel, or replay durable agent tasks.
     Task {
@@ -2055,6 +2062,23 @@ impl From<MemoryAuthorizationArgument> for MemoryPromotionAuthorizationCommand {
 enum ProviderCommand {
     /// Print the ordered configured routes with capabilities, limits, health, and pressure.
     Catalog,
+    /// Plan or approve promotion of one already-configured route to primary.
+    Switch {
+        /// Exact stable configured provider identity.
+        #[arg(long)]
+        provider_id: String,
+        /// Exact configured model identity.
+        #[arg(long)]
+        model_id: String,
+        /// Drain, probe, activate, restart, verify, and automatically roll back on failure.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Inspect one durable provider-switch transaction.
+    SwitchStatus {
+        /// Transaction UUID printed by an approved switch.
+        transaction_id: String,
+    },
 }
 
 #[derive(Debug, Default, clap::Args)]
@@ -2078,7 +2102,7 @@ impl ProviderSelectionArguments {
                 if provider_id.is_empty()
                     || provider_id.len() > 128
                     || model_id.is_empty()
-                    || model_id.len() > 256
+                    || model_id.len() > 128
                     || provider_id.chars().any(char::is_control)
                     || model_id.chars().any(char::is_control)
                 {
@@ -2675,6 +2699,7 @@ fn launch_update_helper(transaction: &lifecycle::UpdateTransaction) -> Result<()
 async fn run_update_transaction(home: &Path, transaction_id: &str) -> Result<(), CliError> {
     let mut transaction = lifecycle::load_update_transaction(home, transaction_id)?;
     lifecycle::verify_update_helper_identity(&transaction, &std::env::current_exe()?)?;
+    let _maintenance_lock = lock_service_mutations(&transaction.home)?;
     let _update_lock = lock_update_transactions(&transaction.home)?;
     if transaction.phase.is_terminal() {
         return finish_update_helper(&transaction);
@@ -2683,6 +2708,12 @@ async fn run_update_transaction(home: &Path, transaction_id: &str) -> Result<(),
         recover_failed_update_transaction(&mut transaction, failure).await?;
     }
     finish_update_helper(&transaction)
+}
+
+fn lock_service_mutations(home: &Path) -> Result<File, CliError> {
+    let lock = open_private_home_lock(&home.join("service-mutations.lock"))?;
+    lock.lock()?;
+    Ok(lock)
 }
 
 fn lock_update_transactions(home: &Path) -> Result<File, CliError> {
@@ -3028,12 +3059,16 @@ async fn create_update_backup(
 }
 
 async fn drain_owner_service(transaction: &lifecycle::UpdateTransaction) -> Result<(), CliError> {
+    drain_owner_service_home(&transaction.home).await
+}
+
+async fn drain_owner_service_home(home: &Path) -> Result<(), CliError> {
     if !owner_service_active()? {
-        let (_home, lock) = lock_stopped_home(&transaction.home)?;
+        let (_home, lock) = lock_stopped_home(home)?;
         drop(lock);
         return Ok(());
     }
-    let connection = load_connection(&transaction.home)?;
+    let connection = load_connection(home)?;
     let client = control_plane_client()?;
     let response = authorized_long(
         client.post(format!("{}/v1/admin/drain", connection.base_url)),
@@ -3055,8 +3090,8 @@ async fn drain_owner_service(transaction: &lifecycle::UpdateTransaction) -> Resu
     let deadline = tokio::time::Instant::now()
         + Duration::from_millis(drain.deadline_ms.saturating_add(30_000));
     loop {
-        if !owner_service_active()? && !transaction.home.join("connection.json").exists() {
-            let (_home, lock) = lock_stopped_home(&transaction.home)?;
+        if !owner_service_active()? && !home.join("connection.json").exists() {
+            let (_home, lock) = lock_stopped_home(home)?;
             drop(lock);
             return Ok(());
         }
@@ -3288,6 +3323,7 @@ fn run_maintenance(
             CliError::MaintenanceUnavailable
         });
     }
+    let _mutation_lock = lock_service_mutations(home)?;
     eprintln!("{}", terminal_safe_pretty_json(&plan)?);
     match operation {
         lifecycle::MaintenanceOperation::Repair => {
@@ -3364,6 +3400,7 @@ async fn run() -> Result<(), CliError> {
         return run_setup(&arguments.home, options);
     }
     if let Command::Service { command } = &arguments.command {
+        let _mutation_lock = lock_service_mutations(&arguments.home)?;
         return run_service_installation(&arguments.home, command);
     }
     if let Command::Config { command } = &arguments.command {
@@ -3371,6 +3408,29 @@ async fn run() -> Result<(), CliError> {
     }
     if let Command::Skill { command } = &arguments.command {
         return run_skill_operation(&arguments.home, command);
+    }
+    if let Command::Provider {
+        command:
+            ProviderCommand::Switch {
+                provider_id,
+                model_id,
+                approve,
+            },
+    } = &arguments.command
+    {
+        return run_provider_switch(&arguments.home, provider_id, model_id, *approve).await;
+    }
+    if let Command::Provider {
+        command: ProviderCommand::SwitchStatus { transaction_id },
+    } = &arguments.command
+    {
+        return print_json(provider_switch::load_transaction(
+            &arguments.home,
+            transaction_id,
+        )?);
+    }
+    if let Command::ProviderSwitchTransaction { transaction_id } = &arguments.command {
+        return run_provider_switch_transaction(&arguments.home, transaction_id).await;
     }
     if let Command::Usage { days } = &arguments.command
         && !(1..=31).contains(days)
@@ -3456,6 +3516,9 @@ async fn run() -> Result<(), CliError> {
             run_session(&client, &arguments.home, &connection, command).await?;
         }
         Command::Provider { command } => run_provider(&client, &connection, command).await?,
+        Command::ProviderSwitchTransaction { .. } => {
+            unreachable!("provider-switch helper is dispatched before connection loading")
+        }
         Command::Task { command } => run_task(&client, &connection, command).await?,
         Command::Delegation { command } => {
             run_delegation(&client, &connection, command).await?;
@@ -7882,7 +7945,752 @@ async fn run_provider(
             .await?;
             print_json(decode::<ProviderCatalogResponse>(response).await?)
         }
+        ProviderCommand::Switch { .. } | ProviderCommand::SwitchStatus { .. } => {
+            unreachable!("provider switching is dispatched before ordinary API setup")
+        }
     }
+}
+
+#[derive(Clone, Debug)]
+struct ProviderSwitchServiceIdentity {
+    fragment: PathBuf,
+    daemon: PathBuf,
+    helper_source: PathBuf,
+}
+
+async fn run_provider_switch(
+    home: &Path,
+    provider_id: &str,
+    model_id: &str,
+    approve: bool,
+) -> Result<(), CliError> {
+    let catalog = fetch_active_provider_catalog(home).await?;
+    let service = inspect_provider_switch_service(home, true);
+    let mut prepared = provider_switch::plan(
+        home,
+        provider_id,
+        model_id,
+        &catalog,
+        service.is_ok(),
+        service
+            .as_ref()
+            .err()
+            .map(|_| "verified-active-linux-owner-service-required".to_owned()),
+    )?;
+    if !provider_switch_credential_supported(&prepared.candidate_provider) {
+        prepared.plan.apply_supported = false;
+        prepared.plan.unsupported_reason =
+            Some("environment-only-credential-cannot-enter-independent-helper".to_owned());
+    }
+    if !approve || !prepared.plan.action_required {
+        return print_json(prepared.plan);
+    }
+    if !prepared.plan.apply_supported {
+        print_json(&prepared.plan)?;
+        return Err(
+            if provider_switch_credential_supported(&prepared.candidate_provider) {
+                CliError::InvalidService(
+                    "provider switching requires a verified active production Linux owner service"
+                        .to_owned(),
+                )
+            } else {
+                CliError::ProviderSwitchCredentialUnsupported
+            },
+        );
+    }
+    let service = service.map_err(|_| {
+        CliError::InvalidService(
+            "provider switching requires a verified active production Linux owner service"
+                .to_owned(),
+        )
+    })?;
+    eprintln!("{}", terminal_safe_pretty_json(&prepared.plan)?);
+    let transaction = provider_switch::prepare_transaction(
+        home,
+        &prepared,
+        &service.fragment,
+        &service.daemon,
+        &service.helper_source,
+    )?;
+    launch_provider_switch_transaction(transaction).await
+}
+
+async fn fetch_active_provider_catalog(home: &Path) -> Result<ProviderCatalogResponse, CliError> {
+    let connection = load_connection(home)?;
+    if connection.api_version != API_VERSION {
+        return Err(CliError::Protocol(
+            "connection descriptor uses an unsupported API version".to_owned(),
+        ));
+    }
+    let response = authorized(
+        control_plane_client()?.get(format!("{}/v1/providers/catalog", connection.base_url)),
+        &connection,
+    )
+    .send()
+    .await?;
+    decode::<ProviderCatalogResponse>(response).await
+}
+
+fn inspect_provider_switch_service(
+    home: &Path,
+    require_active: bool,
+) -> Result<ProviderSwitchServiceIdentity, CliError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (home, require_active);
+        return Err(CliError::UnsupportedPlatform(
+            "transactional provider switching requires the Linux owner service".to_owned(),
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let installation = lifecycle::inspect_current_installation()?;
+        if installation.integrity != lifecycle::IntegrityStatus::Verified
+            || !matches!(
+                installation.installation_kind,
+                lifecycle::InstallationKind::ManagedArchive
+                    | lifecycle::InstallationKind::DebianPackage
+                    | lifecycle::InstallationKind::RpmPackage
+                    | lifecycle::InstallationKind::ArchPackage
+            )
+        {
+            return Err(CliError::InvalidService(
+                "provider switching requires a verified production installation".to_owned(),
+            ));
+        }
+        let helper_source = installation.executable.canonicalize()?;
+        let daemon = helper_source
+            .parent()
+            .ok_or_else(|| {
+                CliError::InvalidService(
+                    "installed client has no sibling daemon directory".to_owned(),
+                )
+            })?
+            .join("mealyd")
+            .canonicalize()?;
+        let metadata = fs::symlink_metadata(&daemon)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || daemon.parent() != helper_source.parent()
+        {
+            return Err(CliError::InvalidService(
+                "installed daemon identity is unsafe".to_owned(),
+            ));
+        }
+        let fragment = verify_provider_switch_service(home, &daemon, None, require_active)?;
+        let systemd_run = Path::new("/usr/bin/systemd-run");
+        if !systemd_run.is_file() || !is_trusted_system_executable(systemd_run) {
+            return Err(CliError::InvalidService(
+                "provider switching requires trusted /usr/bin/systemd-run".to_owned(),
+            ));
+        }
+        Ok(ProviderSwitchServiceIdentity {
+            fragment,
+            daemon,
+            helper_source,
+        })
+    }
+}
+
+fn verify_provider_switch_service(
+    home: &Path,
+    daemon: &Path,
+    expected_fragment: Option<&Path>,
+    require_active: bool,
+) -> Result<PathBuf, CliError> {
+    let home = fs::canonicalize(home)?;
+    let daemon = daemon.canonicalize()?;
+    let paths = service_read_write_paths(&home)?;
+    let (_, _, expected, _) = service_definition(&daemon, &home, &paths)?;
+    let output = run_systemctl_output(&[
+        "--user",
+        "show",
+        "--property=FragmentPath",
+        "--value",
+        "mealy.service",
+    ])?;
+    let fragment_text = std::str::from_utf8(&output)
+        .map_err(|_| CliError::InvalidService("service path is not UTF-8".to_owned()))?
+        .trim_end_matches('\n');
+    if fragment_text.is_empty()
+        || fragment_text.contains('\n')
+        || fragment_text.chars().any(char::is_control)
+    {
+        return Err(CliError::InvalidService(
+            "loaded owner-service path is invalid".to_owned(),
+        ));
+    }
+    let fragment = PathBuf::from(fragment_text);
+    let metadata = fs::symlink_metadata(&fragment)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || fragment.canonicalize()? != fragment
+        || expected_fragment.is_some_and(|expected| expected != fragment)
+        || lifecycle::read_bounded_regular_file(&fragment, 64 * 1024)? != expected.as_bytes()
+    {
+        return Err(CliError::InvalidService(
+            "loaded owner service does not match this exact home and daemon".to_owned(),
+        ));
+    }
+    if require_active && !owner_service_active()? {
+        return Err(CliError::InvalidService(
+            "provider switching requires the active owner service".to_owned(),
+        ));
+    }
+    Ok(fragment)
+}
+
+fn provider_switch_credential_supported(provider: &ProviderConfig) -> bool {
+    match provider {
+        ProviderConfig::OpenAiResponses { credential, .. }
+        | ProviderConfig::AnthropicMessages { credential, .. } => !matches!(
+            credential,
+            Some(ProviderCredentialReference::Environment { .. })
+        ),
+        ProviderConfig::SubscriptionCli { .. } => true,
+        ProviderConfig::BuiltinFixture => false,
+    }
+}
+
+fn provider_switch_probe_credential(
+    home: &Path,
+    provider: &ProviderConfig,
+) -> Result<Option<Zeroizing<String>>, CliError> {
+    match provider {
+        ProviderConfig::OpenAiResponses { credential, .. }
+        | ProviderConfig::AnthropicMessages { credential, .. } => match credential {
+            Some(ProviderCredentialReference::Broker { secret_id }) => Ok(Some(
+                FileProviderSecretStore::new(home.join("provider-secrets"))?.read(secret_id)?,
+            )),
+            Some(ProviderCredentialReference::Environment { .. }) => {
+                Err(CliError::ProviderSwitchCredentialUnsupported)
+            }
+            None => Ok(None),
+        },
+        ProviderConfig::SubscriptionCli { .. } => Ok(None),
+        ProviderConfig::BuiltinFixture => Err(CliError::InvalidProviderConfiguration),
+    }
+}
+
+async fn launch_provider_switch_transaction(
+    mut transaction: provider_switch::ProviderSwitchTransaction,
+) -> Result<(), CliError> {
+    eprintln!("{}", terminal_safe_pretty_json(&transaction)?);
+    if let Err(error) = schedule_provider_switch_helper(&transaction) {
+        transaction.failure = Some("helper-scheduling-failed".to_owned());
+        transaction.phase = provider_switch::ProviderSwitchPhase::Aborted;
+        provider_switch::persist_transaction(&transaction)?;
+        let _ = provider_switch::retire_helper(&transaction);
+        return Err(error);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(12);
+    loop {
+        let record =
+            provider_switch::load_transaction(&transaction.home, &transaction.transaction_id)?;
+        if record.phase.is_terminal() {
+            print_json(&record)?;
+            return provider_switch_terminal_result(&record);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            print_json(&record)?;
+            return Err(CliError::ProviderSwitchPending(record.transaction_id));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn schedule_provider_switch_helper(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+) -> Result<(), CliError> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = transaction;
+        return Err(CliError::UnsupportedPlatform(
+            "disconnect-resistant provider switching requires Linux".to_owned(),
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let systemd_run = Path::new("/usr/bin/systemd-run");
+        if !systemd_run.is_file() || !is_trusted_system_executable(systemd_run) {
+            return Err(CliError::InvalidService(
+                "provider switching requires trusted /usr/bin/systemd-run".to_owned(),
+            ));
+        }
+        let unit = format!(
+            "mealy-provider-switch-{}.service",
+            transaction.transaction_id.replace('-', "")
+        );
+        let output = ProcessCommand::new(systemd_run)
+            .arg("--user")
+            .arg("--quiet")
+            .arg("--collect")
+            .arg(format!("--unit={unit}"))
+            .arg("--property=Type=exec")
+            .arg("--property=Restart=on-failure")
+            .arg("--property=RestartSec=2s")
+            .arg("--property=StartLimitIntervalSec=60s")
+            .arg("--property=StartLimitBurst=5")
+            .arg("--property=NoNewPrivileges=yes")
+            .arg("--property=PrivateTmp=yes")
+            .arg("--property=UMask=0077")
+            .arg("--property=TasksMax=64")
+            .arg("--property=MemoryMax=1G")
+            .arg("--property=TimeoutStartSec=10min")
+            .arg(&transaction.helper_executable)
+            .arg("--home")
+            .arg(&transaction.home)
+            .arg("provider-switch-transaction")
+            .arg(&transaction.transaction_id)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
+        if output.stdout.len() > 64 * 1024 || output.stderr.len() > 64 * 1024 {
+            return Err(CliError::InvalidService(
+                "provider-switch helper response exceeded its bound".to_owned(),
+            ));
+        }
+        if !output.status.success() {
+            return Err(CliError::InvalidService(format!(
+                "could not schedule the provider-switch helper: {}",
+                terminal_safe_single_line(String::from_utf8_lossy(&output.stderr).trim())
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn provider_switch_terminal_result(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+) -> Result<(), CliError> {
+    match transaction.phase {
+        provider_switch::ProviderSwitchPhase::Committed => Ok(()),
+        provider_switch::ProviderSwitchPhase::Aborted => Err(CliError::ProviderSwitchAborted),
+        provider_switch::ProviderSwitchPhase::RolledBack => Err(CliError::ProviderSwitchRolledBack),
+        provider_switch::ProviderSwitchPhase::RecoveryFailed => {
+            Err(CliError::ProviderSwitchRecoveryFailed)
+        }
+        _ => Err(provider_switch::ProviderSwitchError::InvalidTransaction.into()),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ProviderSwitchFailure {
+    ServiceIdentity,
+    ConfigurationChanged,
+    Probe,
+    Drain,
+    Activation,
+    ServiceStart,
+    Qualification,
+    Rollback,
+}
+
+impl ProviderSwitchFailure {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::ServiceIdentity => "owner-service-identity-failed",
+            Self::ConfigurationChanged => "configuration-fence-failed",
+            Self::Probe => "candidate-probe-failed",
+            Self::Drain => "daemon-drain-failed",
+            Self::Activation => "candidate-activation-failed",
+            Self::ServiceStart => "owner-service-start-failed",
+            Self::Qualification => "candidate-qualification-failed",
+            Self::Rollback => "automatic-rollback-failed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProviderSwitchRecoveryRoute {
+    AbortPrevious,
+    RestorePrevious,
+    FailClosed,
+}
+
+fn provider_switch_recovery_route(
+    phase: provider_switch::ProviderSwitchPhase,
+    slot: Option<provider_switch::ProviderSwitchConfigSlot>,
+) -> ProviderSwitchRecoveryRoute {
+    use provider_switch::{ProviderSwitchConfigSlot as Slot, ProviderSwitchPhase as Phase};
+    if phase.is_terminal() {
+        return ProviderSwitchRecoveryRoute::FailClosed;
+    }
+    if slot == Some(Slot::Previous)
+        && matches!(
+            phase,
+            Phase::Scheduled | Phase::Prepared | Phase::Draining | Phase::Stopped
+        )
+    {
+        return ProviderSwitchRecoveryRoute::AbortPrevious;
+    }
+    if phase != Phase::Scheduled && slot.is_some() {
+        return ProviderSwitchRecoveryRoute::RestorePrevious;
+    }
+    ProviderSwitchRecoveryRoute::FailClosed
+}
+
+async fn run_provider_switch_transaction(
+    home: &Path,
+    transaction_id: &str,
+) -> Result<(), CliError> {
+    let mut transaction = provider_switch::load_transaction(home, transaction_id)?;
+    provider_switch::verify_helper_identity(&transaction, &std::env::current_exe()?)?;
+    let _mutation_lock = lock_service_mutations(&transaction.home)?;
+    if transaction.phase.is_terminal() {
+        return finish_provider_switch_helper(&transaction);
+    }
+    if let Err(failure) = resume_provider_switch_transaction(&mut transaction).await {
+        recover_provider_switch_transaction(&mut transaction, failure).await?;
+    }
+    finish_provider_switch_helper(&transaction)
+}
+
+fn finish_provider_switch_helper(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+) -> Result<(), CliError> {
+    print_json(transaction)?;
+    if matches!(
+        transaction.phase,
+        provider_switch::ProviderSwitchPhase::Committed
+            | provider_switch::ProviderSwitchPhase::Aborted
+            | provider_switch::ProviderSwitchPhase::RolledBack
+    ) {
+        let _ = provider_switch::retire_helper(transaction);
+    }
+    Ok(())
+}
+
+async fn resume_provider_switch_transaction(
+    transaction: &mut provider_switch::ProviderSwitchTransaction,
+) -> Result<(), ProviderSwitchFailure> {
+    use provider_switch::ProviderSwitchPhase as Phase;
+    loop {
+        match transaction.phase {
+            Phase::Scheduled => {
+                verify_provider_switch_transaction_service(transaction, true)
+                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                if provider_switch::active_config_slot(transaction)
+                    .map_err(|_| ProviderSwitchFailure::ConfigurationChanged)?
+                    != Some(provider_switch::ProviderSwitchConfigSlot::Previous)
+                {
+                    return Err(ProviderSwitchFailure::ConfigurationChanged);
+                }
+                let catalog = fetch_active_provider_catalog(&transaction.home)
+                    .await
+                    .map_err(|_| ProviderSwitchFailure::ConfigurationChanged)?;
+                validate_provider_switch_catalog(transaction, &catalog, false)
+                    .map_err(|_| ProviderSwitchFailure::ConfigurationChanged)?;
+                let provider = transaction_candidate_provider(transaction)
+                    .map_err(|_| ProviderSwitchFailure::ConfigurationChanged)?;
+                let credential = provider_switch_probe_credential(&transaction.home, &provider)
+                    .map_err(|_| ProviderSwitchFailure::Probe)?;
+                probe_provider_connectivity(
+                    &provider,
+                    credential.as_ref().map(|value| value.as_str()),
+                )
+                .map_err(|_| ProviderSwitchFailure::Probe)?;
+                transaction.phase = Phase::Prepared;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Probe)?;
+            }
+            Phase::Prepared => {
+                verify_provider_switch_transaction_service(transaction, true)
+                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                transaction.phase = Phase::Draining;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Drain)?;
+            }
+            Phase::Draining => {
+                drain_owner_service_home(&transaction.home)
+                    .await
+                    .map_err(|_| ProviderSwitchFailure::Drain)?;
+                transaction.phase = Phase::Stopped;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Drain)?;
+            }
+            Phase::Stopped => {
+                verify_provider_switch_transaction_service(transaction, false)
+                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                activate_provider_switch_candidate(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Activation)?;
+                transaction.phase = Phase::Activated;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Activation)?;
+            }
+            Phase::Activated => {
+                transaction.phase = Phase::Starting;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::ServiceStart)?;
+            }
+            Phase::Starting => {
+                start_owner_service().map_err(|_| ProviderSwitchFailure::ServiceStart)?;
+                transaction.phase = Phase::Verifying;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::ServiceStart)?;
+            }
+            Phase::Verifying => {
+                let digest = qualify_provider_switch(transaction, true)
+                    .await
+                    .map_err(|_| ProviderSwitchFailure::Qualification)?;
+                transaction.committed_config_digest = Some(digest);
+                transaction.phase = Phase::Committed;
+                provider_switch::persist_transaction(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Qualification)?;
+                return Ok(());
+            }
+            Phase::RollingBack => {
+                resume_provider_switch_rollback(transaction).await?;
+                return Ok(());
+            }
+            Phase::Committed | Phase::Aborted | Phase::RolledBack | Phase::RecoveryFailed => {
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn verify_provider_switch_transaction_service(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+    require_active: bool,
+) -> Result<(), CliError> {
+    provider_switch::verify_daemon_identity(transaction)?;
+    verify_provider_switch_service(
+        &transaction.home,
+        &transaction.daemon_executable,
+        Some(&transaction.service_fragment),
+        require_active,
+    )
+    .map(|_| ())
+}
+
+fn transaction_candidate_provider(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+) -> Result<ProviderConfig, CliError> {
+    let document =
+        serde_json::from_slice::<Value>(&provider_switch::read_candidate_config(transaction)?)?;
+    let provider = serde_json::from_value::<ProviderConfig>(
+        document
+            .get("provider")
+            .cloned()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    if provider.provider_id() != Some(transaction.candidate_provider_id.as_str())
+        || provider.model_id() != Some(transaction.candidate_model_id.as_str())
+    {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    Ok(provider)
+}
+
+fn activate_provider_switch_candidate(
+    transaction: &mut provider_switch::ProviderSwitchTransaction,
+) -> Result<(), CliError> {
+    if transaction.archived_config.is_none() {
+        transaction.archived_config = Some(transaction.home.join("config-history").join(format!(
+            "pre-provider-switch-{}.json",
+            transaction.transaction_id
+        )));
+        provider_switch::persist_transaction(transaction)?;
+    }
+    let slot = provider_switch::active_config_slot(transaction)?;
+    if slot == Some(provider_switch::ProviderSwitchConfigSlot::Candidate) {
+        return Ok(());
+    }
+    if slot != Some(provider_switch::ProviderSwitchConfigSlot::Previous) {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    let (home, _instance_lock) = lock_stopped_home(&transaction.home)?;
+    let archived = transaction
+        .archived_config
+        .as_ref()
+        .ok_or(provider_switch::ProviderSwitchError::InvalidTransaction)?;
+    let history = archived
+        .parent()
+        .ok_or(provider_switch::ProviderSwitchError::InvalidTransaction)?;
+    create_private_service_directory(history)?;
+    atomic_write_service(
+        archived,
+        &provider_switch::read_previous_config(transaction)?,
+    )?;
+    atomic_write_service(
+        &home.join("config.json"),
+        &provider_switch::read_candidate_config(transaction)?,
+    )?;
+    if provider_switch::active_config_slot(transaction)?
+        != Some(provider_switch::ProviderSwitchConfigSlot::Candidate)
+    {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    Ok(())
+}
+
+async fn qualify_provider_switch(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+    candidate: bool,
+) -> Result<String, CliError> {
+    let expected_slot = if candidate {
+        provider_switch::ProviderSwitchConfigSlot::Candidate
+    } else {
+        provider_switch::ProviderSwitchConfigSlot::Previous
+    };
+    if provider_switch::active_config_slot(transaction)? != Some(expected_slot) {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    let doctor = wait_for_onboard_readiness(&transaction.home).await?;
+    if doctor.api_version != API_VERSION || !doctor.control_plane_ready || !doctor.sandbox_available
+    {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    verify_provider_switch_transaction_service(transaction, true)?;
+    let connection = load_connection(&transaction.home)?;
+    let client = control_plane_client()?;
+    let readiness = decode::<ReadinessResponse>(
+        authorized(
+            client.get(format!("{}/health/ready", connection.base_url)),
+            &connection,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let status = decode::<AdminStatusResponse>(
+        authorized(
+            client.get(format!("{}/v1/admin/status", connection.base_url)),
+            &connection,
+        )
+        .send()
+        .await?,
+    )
+    .await?;
+    let catalog = fetch_active_provider_catalog(&transaction.home).await?;
+    if readiness.api_version != API_VERSION
+        || !readiness.ready
+        || status.api_version != API_VERSION
+        || status.safe_mode
+        || !status.admission_open
+        || status.config_digest != catalog.config_digest
+    {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    validate_provider_switch_catalog(transaction, &catalog, candidate)?;
+    Ok(catalog.config_digest)
+}
+
+fn validate_provider_switch_catalog(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+    catalog: &ProviderCatalogResponse,
+    candidate: bool,
+) -> Result<(), CliError> {
+    let (provider_id, model_id) = if candidate {
+        (
+            transaction.candidate_provider_id.as_str(),
+            transaction.candidate_model_id.as_str(),
+        )
+    } else {
+        (
+            transaction.previous_provider_id.as_str(),
+            transaction.previous_model_id.as_str(),
+        )
+    };
+    let primary = catalog
+        .routes
+        .first()
+        .ok_or(provider_switch::ProviderSwitchError::InvalidTransaction)?;
+    if catalog.api_version != API_VERSION
+        || catalog.catalog_scope != "configured_route"
+        || catalog.routes.len() != transaction.configured_route_count
+        || !is_sha256_digest(&catalog.config_digest)
+        || primary.route_ordinal != 0
+        || primary.route_role != "primary"
+        || primary.provider_id != provider_id
+        || primary.model_id != model_id
+        || !primary.selectable
+        || (!candidate && catalog.config_digest != transaction.previous_active_config_digest)
+        || (candidate && catalog.config_digest == transaction.previous_active_config_digest)
+    {
+        return Err(provider_switch::ProviderSwitchError::InvalidTransaction.into());
+    }
+    Ok(())
+}
+
+async fn recover_provider_switch_transaction(
+    transaction: &mut provider_switch::ProviderSwitchTransaction,
+    failure: ProviderSwitchFailure,
+) -> Result<(), CliError> {
+    use provider_switch::ProviderSwitchPhase as Phase;
+    transaction.failure = Some(failure.code().to_owned());
+    let slot = provider_switch::active_config_slot(transaction)
+        .ok()
+        .flatten();
+    let route = provider_switch_recovery_route(transaction.phase, slot);
+    if route == ProviderSwitchRecoveryRoute::AbortPrevious {
+        if !owner_service_active().unwrap_or(false) {
+            let _ = start_owner_service();
+        }
+        if qualify_provider_switch(transaction, false).await.is_ok() {
+            transaction.phase = Phase::Aborted;
+            provider_switch::persist_transaction(transaction)?;
+            return Ok(());
+        }
+    }
+    if route == ProviderSwitchRecoveryRoute::RestorePrevious
+        || (route == ProviderSwitchRecoveryRoute::AbortPrevious
+            && transaction.phase != Phase::Scheduled)
+    {
+        transaction.phase = Phase::RollingBack;
+        transaction.rollback_attempted = true;
+        provider_switch::persist_transaction(transaction)?;
+        if resume_provider_switch_rollback(transaction).await.is_ok() {
+            return Ok(());
+        }
+        transaction.failure = Some(ProviderSwitchFailure::Rollback.code().to_owned());
+    } else {
+        let _ = start_owner_service();
+    }
+    transaction.phase = Phase::RecoveryFailed;
+    provider_switch::persist_transaction(transaction)?;
+    Ok(())
+}
+
+async fn resume_provider_switch_rollback(
+    transaction: &mut provider_switch::ProviderSwitchTransaction,
+) -> Result<(), ProviderSwitchFailure> {
+    use provider_switch::{ProviderSwitchConfigSlot as Slot, ProviderSwitchPhase as Phase};
+    stop_owner_service(&transaction.home)
+        .await
+        .map_err(|_| ProviderSwitchFailure::Rollback)?;
+    verify_provider_switch_transaction_service(transaction, false)
+        .map_err(|_| ProviderSwitchFailure::Rollback)?;
+    match provider_switch::active_config_slot(transaction)
+        .map_err(|_| ProviderSwitchFailure::Rollback)?
+    {
+        Some(Slot::Previous) => {}
+        Some(Slot::Candidate) => {
+            let (home, _instance_lock) = lock_stopped_home(&transaction.home)
+                .map_err(|_| ProviderSwitchFailure::Rollback)?;
+            atomic_write_service(
+                &home.join("config.json"),
+                &provider_switch::read_previous_config(transaction)
+                    .map_err(|_| ProviderSwitchFailure::Rollback)?,
+            )
+            .map_err(|_| ProviderSwitchFailure::Rollback)?;
+        }
+        None => return Err(ProviderSwitchFailure::Rollback),
+    }
+    if provider_switch::active_config_slot(transaction)
+        .map_err(|_| ProviderSwitchFailure::Rollback)?
+        != Some(Slot::Previous)
+    {
+        return Err(ProviderSwitchFailure::Rollback);
+    }
+    start_owner_service().map_err(|_| ProviderSwitchFailure::Rollback)?;
+    qualify_provider_switch(transaction, false)
+        .await
+        .map_err(|_| ProviderSwitchFailure::Rollback)?;
+    transaction.phase = Phase::RolledBack;
+    provider_switch::persist_transaction(transaction).map_err(|_| ProviderSwitchFailure::Rollback)
 }
 
 async fn run_session_provider(
@@ -11601,7 +12409,7 @@ fn discover_openai_models_blocking(
     for model in envelope.data {
         if model.object != "model"
             || model.created < 0
-            || !valid_provider_discovery_text(&model.id, 256)
+            || !valid_provider_discovery_text(&model.id, 128)
             || !valid_provider_discovery_text(&model.owned_by, 256)
         {
             return Err(CliError::ProviderDiscovery(
@@ -11710,7 +12518,7 @@ fn discover_anthropic_models_blocking(
     let mut models = Vec::new();
     for model in envelope.data {
         if model.kind != "model"
-            || !valid_provider_discovery_text(&model.id, 256)
+            || !valid_provider_discovery_text(&model.id, 128)
             || !valid_provider_discovery_text(&model.display_name, 256)
             || !valid_provider_discovery_text(&model.created_at, 128)
         {
@@ -11903,7 +12711,7 @@ fn valid_openrouter_model_metadata(model: &OpenRouterModelWire) -> bool {
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     model.created >= 0
-        && valid_provider_discovery_text(&model.id, 256)
+        && valid_provider_discovery_text(&model.id, 128)
         && model.supported_parameters.len() <= 128
         && parameters.len() == model.supported_parameters.len()
         && parameters
@@ -15844,6 +16652,30 @@ enum CliError {
     /// Durable update identity, service ownership, or phase evidence disagreed.
     #[error("update transaction evidence is inconsistent with the installed system")]
     UpdateTransactionInconsistent,
+    /// Provider-switch plan or durable recovery evidence is invalid.
+    #[error(transparent)]
+    ProviderSwitch(#[from] provider_switch::ProviderSwitchError),
+    /// The independent switch helper is still working after the foreground observation window.
+    #[error(
+        "provider switch helper is still running for transaction {0}; inspect it with `mealyctl provider switch-status {0}`"
+    )]
+    ProviderSwitchPending(String),
+    /// The selected route was rejected before configuration activation.
+    #[error("provider switch was aborted before activation; the prior route remains qualified")]
+    ProviderSwitchAborted,
+    /// Candidate qualification failed and the prior route was restored.
+    #[error("provider switch failed qualification and the prior route was automatically restored")]
+    ProviderSwitchRolledBack,
+    /// Neither candidate nor prior route could be fully qualified automatically.
+    #[error(
+        "provider switch recovery could not establish one qualified route; preserve the transaction and user-service journal"
+    )]
+    ProviderSwitchRecoveryFailed,
+    /// The route uses an environment-only credential unavailable to a restartable helper.
+    #[error(
+        "transactional switching requires a brokered credential, a local credential-free endpoint, or an official subscription client"
+    )]
+    ProviderSwitchCredentialUnsupported,
     /// HTTP client failed before a structured response.
     #[error(transparent)]
     Http(#[from] reqwest::Error),
@@ -16098,22 +16930,22 @@ mod tests {
         EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
         MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MemoryCommand,
         OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
-        ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
-        SessionCommand, SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument,
-        SkillCommand, TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, chat_usage_line, configure_workspace_grant, decode,
-        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
-        inspect_mcp_executable, lifecycle_invocation, load_connection,
-        normalize_openrouter_display_name, observe_discord_pair_messages,
-        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
-        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
-        prepare_local_text_attachment, resolve_default_operational_subcommand, resolve_setup,
-        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
-        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
-        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
-        validate_discord_pair_base_url, validate_provider_probe_envelope,
-        validate_provider_probe_stream, validate_session_transcript_html,
-        validate_session_transcript_json, write_private_new_file,
+        ProviderSwitchRecoveryRoute, ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS,
+        ScheduleCommand, ServiceCommand, SessionCommand, SessionExportFormatArgument,
+        SessionProviderCommand, SetupProviderArgument, SkillCommand, TelegramPairChat,
+        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
+        chat_usage_line, configure_workspace_grant, decode, generate_discord_pair_challenge,
+        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
+        lifecycle_invocation, load_connection, normalize_openrouter_display_name,
+        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
+        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
+        parse_chat_line, prepare_local_text_attachment, provider_switch_recovery_route,
+        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
+        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
+        telegram_pair_api_url, update_recovery_route, validate_anthropic_probe_envelope,
+        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
+        validate_provider_probe_envelope, validate_provider_probe_stream,
+        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -16296,6 +17128,69 @@ mod tests {
                 UpdateRecoveryRoute::FailClosed,
                 "terminal phase {phase:?} cannot be resumed by recovery routing"
             );
+        }
+    }
+
+    #[test]
+    fn provider_switch_recovery_routes_every_config_and_phase_boundary() {
+        use super::provider_switch::{
+            ProviderSwitchConfigSlot as Slot, ProviderSwitchPhase as Phase,
+        };
+
+        for phase in [
+            Phase::Scheduled,
+            Phase::Prepared,
+            Phase::Draining,
+            Phase::Stopped,
+        ] {
+            assert_eq!(
+                provider_switch_recovery_route(phase, Some(Slot::Previous)),
+                ProviderSwitchRecoveryRoute::AbortPrevious
+            );
+            assert_eq!(
+                provider_switch_recovery_route(phase, None),
+                ProviderSwitchRecoveryRoute::FailClosed
+            );
+        }
+        assert_eq!(
+            provider_switch_recovery_route(Phase::Scheduled, Some(Slot::Candidate)),
+            ProviderSwitchRecoveryRoute::FailClosed
+        );
+        for phase in [Phase::Prepared, Phase::Draining, Phase::Stopped] {
+            assert_eq!(
+                provider_switch_recovery_route(phase, Some(Slot::Candidate)),
+                ProviderSwitchRecoveryRoute::RestorePrevious
+            );
+        }
+        for phase in [
+            Phase::Activated,
+            Phase::Starting,
+            Phase::Verifying,
+            Phase::RollingBack,
+        ] {
+            for slot in [Slot::Previous, Slot::Candidate] {
+                assert_eq!(
+                    provider_switch_recovery_route(phase, Some(slot)),
+                    ProviderSwitchRecoveryRoute::RestorePrevious
+                );
+            }
+            assert_eq!(
+                provider_switch_recovery_route(phase, None),
+                ProviderSwitchRecoveryRoute::FailClosed
+            );
+        }
+        for phase in [
+            Phase::Committed,
+            Phase::Aborted,
+            Phase::RolledBack,
+            Phase::RecoveryFailed,
+        ] {
+            for slot in [None, Some(Slot::Previous), Some(Slot::Candidate)] {
+                assert_eq!(
+                    provider_switch_recovery_route(phase, slot),
+                    ProviderSwitchRecoveryRoute::FailClosed
+                );
+            }
         }
     }
 
@@ -17586,7 +18481,6 @@ mod tests {
                 command: ProviderCommand::Catalog
             }
         ));
-
         let create = Arguments::try_parse_from([
             "mealyctl",
             "session",
@@ -17657,6 +18551,44 @@ mod tests {
             Arguments::try_parse_from(["mealyctl", "session", "provider", "set", "session-id",])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn provider_switch_commands_separate_review_apply_and_status() {
+        let switch = Arguments::try_parse_from([
+            "mealyctl",
+            "provider",
+            "switch",
+            "--provider-id",
+            "local",
+            "--model-id",
+            "model",
+            "--approve",
+        ])
+        .expect("approved provider switch");
+        assert!(matches!(
+            switch.command,
+            Command::Provider {
+                command: ProviderCommand::Switch {
+                    provider_id,
+                    model_id,
+                    approve: true,
+                }
+            } if provider_id == "local" && model_id == "model"
+        ));
+        let status = Arguments::try_parse_from([
+            "mealyctl",
+            "provider",
+            "switch-status",
+            "019f0000-0000-7000-8000-000000000099",
+        ])
+        .expect("provider switch status");
+        assert!(matches!(
+            status.command,
+            Command::Provider {
+                command: ProviderCommand::SwitchStatus { .. }
+            }
+        ));
     }
 
     #[test]

@@ -235,7 +235,7 @@ impl SubscriptionCliProvider {
         let input_token_overhead = settings.client.input_token_overhead();
         if settings.client != SubscriptionCliClient::OpenAiCodex
             || !valid_label(&settings.provider_id, 128)
-            || !valid_label(&settings.model, 256)
+            || !valid_label(&settings.model, 128)
             || !valid_label(&settings.residency, 128)
             || !is_sha256_digest(&settings.executable_sha256)
             || settings.context_tokens == 0

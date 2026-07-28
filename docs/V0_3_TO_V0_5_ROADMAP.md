@@ -97,7 +97,7 @@ switching, full-workspace qualification, and final v0.3 release gates remain in 
   and route pressure.
 - [x] Permit per-new-session and per-new-turn model selection within a compatible
   configured route.
-- [ ] Add plan-first provider switching that stages and probes a complete candidate,
+- [x] Add plan-first provider switching that stages and probes a complete candidate,
   drains incompatible in-flight work, activates atomically, verifies health,
   rotates affected context epochs, and automatically rolls back on failure.
 - Never label unverified prices or provider-advertised limits as operator
