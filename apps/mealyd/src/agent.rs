@@ -938,7 +938,7 @@ impl ModelProvider for BuiltinPhaseTwoProvider {
         let input_tokens = request
             .messages
             .iter()
-            .map(|message| estimate_tokens(&message.content))
+            .map(mealy_application::estimate_normalized_message_tokens)
             .sum::<u64>();
         let response = if let Some(observation) = request
             .messages
@@ -1306,6 +1306,7 @@ impl RuntimeModelProvider {
                         context_tokens: *context_tokens,
                         maximum_output_tokens: *maximum_output_tokens,
                         streaming: *streaming,
+                        image_input: false,
                         pricing: ProviderPricing {
                             input_microunits_per_million_tokens:
                                 *input_microunits_per_million_tokens,
@@ -1342,6 +1343,7 @@ impl RuntimeModelProvider {
                         context_tokens: *context_tokens,
                         maximum_output_tokens: *maximum_output_tokens,
                         streaming: *streaming,
+                        image_input: false,
                         pricing: ProviderPricing {
                             input_microunits_per_million_tokens:
                                 *input_microunits_per_million_tokens,

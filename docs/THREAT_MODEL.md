@@ -141,6 +141,20 @@ admission. Secret access remains a separate broker/reference boundary. The gener
 does not convert workspace declarations into daemon-level filesystem authority; each governed
 worker still receives only its request-specific mounts.
 
+### Malformed image exhausts parsing resources or bypasses durable authority
+
+Controls: the provider-neutral envelope accepts only bounded PNG/JPEG/WebP bytes, binds the
+artifact identity, media type, size, and SHA-256 digest, permits images only on authenticated user
+messages, caps count and aggregate bytes, charges a conservative per-image token reservation, and
+revalidates every field before provider serialization. Text-only routes reject image content
+before dispatch. Production configuration keeps image capability disabled until public ingress
+also performs bounded decode, dimension/pixel enforcement, metadata-stripping re-encode,
+content-addressed commit-before-link admission, exact owner/channel authorization, and
+crash/replay validation. A magic prefix alone is not accepted as public-ingress proof. Remote
+image URLs and provider file IDs are outside the contract, preventing mutable fetches, ambient
+network authority, and provider-retention dependence. See
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md).
+
 ### Service supervision hides state or breaks governed workers
 
 Controls: Linux service generation holds the stopped-home lock, canonicalizes every path, and

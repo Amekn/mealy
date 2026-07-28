@@ -235,13 +235,16 @@ pub use promotion::{
     valid_general_assistant_capability_ceiling,
 };
 pub use provider::{
-    CancellationProbe, CapabilityRequirement, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD, MessageRole,
-    ModelProvider, ModelUsage, NormalizedMessage, ProviderCapabilities, ProviderError,
-    ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy, ProviderLocality,
-    ProviderOutput, ProviderPricing, ProviderProgress, ProviderProgressSink, ProviderRequest,
-    ProviderResponse, ProviderRouteCandidate, ProviderRoutePlan, ProviderRoutingError,
-    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference, ProviderToolDefinition,
-    route_provider,
+    CancellationProbe, CapabilityRequirement, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole, ModelProvider, ModelUsage, NormalizedImageInput,
+    NormalizedMessage, PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, ProviderCapabilities, ProviderError,
+    ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy,
+    ProviderImageInputError, ProviderLocality, ProviderOutput, ProviderPricing, ProviderProgress,
+    ProviderProgressSink, ProviderRequest, ProviderResponse, ProviderRouteCandidate,
+    ProviderRoutePlan, ProviderRoutingError, ProviderRoutingPolicy, ProviderSelection,
+    ProviderSelectionPreference, ProviderToolDefinition, estimate_normalized_message_tokens,
+    route_provider, validate_provider_image_inputs,
 };
 pub use provider_config::{
     MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_FALLBACKS, ProviderConfig,

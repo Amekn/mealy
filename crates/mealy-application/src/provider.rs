@@ -1,4 +1,6 @@
-use mealy_domain::{AttemptId, ContextManifestId, RunId};
+use crate::{estimate_tokens, is_sha256_digest, sha256_digest};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use mealy_domain::{ArtifactId, AttemptId, ContextManifestId, RunId};
 use serde::{Deserialize, Serialize};
 use std::{cmp::Reverse, collections::BTreeSet};
 use thiserror::Error;
@@ -6,6 +8,21 @@ use thiserror::Error;
 /// Conservative allowance for provider-side HTTP message framing, tool schemas, and tokenizer
 /// variance that are not part of Mealy's normalized context estimate.
 pub const DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD: u64 = 2_048;
+/// Maximum number of normalized image inputs in one provider request.
+pub const MAXIMUM_PROVIDER_IMAGE_INPUTS: usize = 4;
+/// Maximum decoded bytes in one normalized image input.
+pub const MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES: usize = 2 * 1024 * 1024;
+/// Maximum aggregate decoded image bytes in one normalized provider request.
+pub const MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+/// Conservative provider-neutral token reservation for one low-detail normalized image.
+///
+/// The first image contract deliberately requests `OpenAI` `low` detail. This ceiling also exceeds
+/// `Anthropic`'s documented high-resolution visual-token cap, leaving room for provider framing
+/// without pretending that encoded byte size predicts vision-token usage.
+pub const PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION: u64 = 8_192;
+
+const MAXIMUM_PROVIDER_IMAGE_BASE64_BYTES: usize =
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES.div_ceil(3) * 4;
 
 /// Exact configured provider/model identity selected for a future turn.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -337,8 +354,204 @@ pub struct NormalizedMessage {
     pub role: MessageRole,
     /// Bounded UTF-8 content.
     pub content: String,
+    /// Ordered owner-selected image artifacts; permitted only on authenticated user messages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<NormalizedImageInput>,
     /// Tool call whose observation this message carries, when applicable.
     pub tool_call_id: Option<String>,
+}
+
+/// One content-addressed, provider-neutral image carried by an authenticated user message.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormalizedImageInput {
+    artifact_id: ArtifactId,
+    media_type: String,
+    sha256_digest: String,
+    size_bytes: u64,
+    data_base64: String,
+}
+
+impl NormalizedImageInput {
+    /// Constructs one bounded normalized image from metadata-stripped bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderImageInputError`] when the media type, byte count, signature, or encoded
+    /// representation is outside Mealy's provider-neutral image contract.
+    pub fn new(
+        artifact_id: ArtifactId,
+        media_type: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, ProviderImageInputError> {
+        let media_type = media_type.into();
+        validate_image_bytes(&media_type, bytes)?;
+        let image = Self {
+            artifact_id,
+            media_type,
+            sha256_digest: sha256_digest(bytes),
+            size_bytes: u64::try_from(bytes.len())
+                .map_err(|_| ProviderImageInputError::InvalidContract)?,
+            data_base64: BASE64_STANDARD.encode(bytes),
+        };
+        image.validated_bytes()?;
+        Ok(image)
+    }
+
+    /// Canonical owner-scoped artifact identity.
+    #[must_use]
+    pub const fn artifact_id(&self) -> ArtifactId {
+        self.artifact_id
+    }
+
+    /// Exact supported image media type.
+    #[must_use]
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
+
+    /// Digest of the exact normalized image bytes.
+    #[must_use]
+    pub fn sha256_digest(&self) -> &str {
+        &self.sha256_digest
+    }
+
+    /// Exact decoded byte count.
+    #[must_use]
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    /// Conservative provider-neutral input-token reservation for this image.
+    #[must_use]
+    pub const fn token_reservation(&self) -> u64 {
+        PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION
+    }
+
+    /// Canonical standard-base64 provider payload without a data-URL prefix.
+    #[must_use]
+    pub fn data_base64(&self) -> &str {
+        &self.data_base64
+    }
+
+    /// Decodes and revalidates durable image evidence before provider serialization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderImageInputError`] for malformed base64, unsupported media, byte/digest
+    /// drift, or a value outside the normalized bounds.
+    pub fn validated_bytes(&self) -> Result<Vec<u8>, ProviderImageInputError> {
+        if !is_sha256_digest(&self.sha256_digest)
+            || self.data_base64.is_empty()
+            || self.data_base64.len() > MAXIMUM_PROVIDER_IMAGE_BASE64_BYTES
+        {
+            return Err(ProviderImageInputError::InvalidContract);
+        }
+        let bytes = BASE64_STANDARD
+            .decode(&self.data_base64)
+            .map_err(|_| ProviderImageInputError::InvalidContract)?;
+        validate_image_bytes(&self.media_type, &bytes)?;
+        if u64::try_from(bytes.len()).ok() != Some(self.size_bytes)
+            || sha256_digest(&bytes) != self.sha256_digest
+            || BASE64_STANDARD.encode(&bytes) != self.data_base64
+        {
+            return Err(ProviderImageInputError::InvalidContract);
+        }
+        Ok(bytes)
+    }
+}
+
+/// Invalid normalized image input or provider modality selection.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum ProviderImageInputError {
+    /// Image evidence, count, media type, signature, encoding, digest, or placement is invalid.
+    #[error("normalized provider image input is invalid")]
+    InvalidContract,
+    /// The selected provider/model did not explicitly advertise image input.
+    #[error("selected provider does not support normalized image input")]
+    UnsupportedModality,
+}
+
+/// Revalidates all normalized image evidence before a provider reserves or dispatches work.
+///
+/// # Errors
+///
+/// Returns [`ProviderImageInputError`] for unsupported modality, non-user placement, invalid image
+/// evidence, or request-level count and aggregate byte bounds.
+pub fn validate_provider_image_inputs(
+    request: &ProviderRequest,
+    capabilities: &ProviderCapabilities,
+) -> Result<(), ProviderImageInputError> {
+    let image_count = request
+        .messages
+        .iter()
+        .map(|message| message.images.len())
+        .sum::<usize>();
+    if image_count == 0 {
+        return Ok(());
+    }
+    if image_count > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+        return Err(ProviderImageInputError::InvalidContract);
+    }
+    if !capabilities.input_modalities.contains("image") {
+        return Err(ProviderImageInputError::UnsupportedModality);
+    }
+    let mut total_bytes = 0_usize;
+    for message in &request.messages {
+        if !message.images.is_empty() && message.role != MessageRole::User {
+            return Err(ProviderImageInputError::InvalidContract);
+        }
+        for image in &message.images {
+            let bytes = image.validated_bytes()?;
+            total_bytes = total_bytes
+                .checked_add(bytes.len())
+                .ok_or(ProviderImageInputError::InvalidContract)?;
+            if total_bytes > MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES {
+                return Err(ProviderImageInputError::InvalidContract);
+            }
+        }
+    }
+    let normalized_input_tokens = request
+        .messages
+        .iter()
+        .try_fold(0_u64, |total, message| {
+            total.checked_add(estimate_normalized_message_tokens(message))
+        })
+        .and_then(|total| total.checked_add(capabilities.input_token_overhead))
+        .ok_or(ProviderImageInputError::InvalidContract)?;
+    if normalized_input_tokens > capabilities.context_tokens {
+        return Err(ProviderImageInputError::InvalidContract);
+    }
+    Ok(())
+}
+
+/// Conservatively estimates provider input tokens for normalized text and image content.
+///
+/// Image tokens are reserved from an explicit fixed ceiling rather than inferred from compressed
+/// byte size. Provider-reported terminal usage must still fit inside the durable reservation.
+#[must_use]
+pub fn estimate_normalized_message_tokens(message: &NormalizedMessage) -> u64 {
+    message
+        .images
+        .iter()
+        .fold(estimate_tokens(&message.content), |total, image| {
+            total.saturating_add(image.token_reservation())
+        })
+}
+
+fn validate_image_bytes(media_type: &str, bytes: &[u8]) -> Result<(), ProviderImageInputError> {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES {
+        return Err(ProviderImageInputError::InvalidContract);
+    }
+    let signature_matches = match media_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]) && bytes.ends_with(&[0xff, 0xd9]),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    };
+    signature_matches
+        .then_some(())
+        .ok_or(ProviderImageInputError::InvalidContract)
 }
 
 /// Provider-neutral tool definition.
@@ -545,9 +758,13 @@ pub trait ModelProvider: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilityRequirement, ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality,
-        ProviderPricing, ProviderRouteCandidate, ProviderRoutingPolicy, route_provider,
+        CapabilityRequirement, MessageRole, NormalizedImageInput, NormalizedMessage,
+        ProviderCapabilities, ProviderFallbackPolicy, ProviderImageInputError, ProviderLocality,
+        ProviderPricing, ProviderRequest, ProviderRouteCandidate, ProviderRoutingPolicy,
+        route_provider, validate_provider_image_inputs,
     };
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+    use mealy_domain::{ArtifactId, AttemptId, ContextManifestId, RunId};
     use std::collections::BTreeSet;
 
     #[test]
@@ -599,6 +816,82 @@ mod tests {
         )
         .expect("primary-only route");
         assert!(plan.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn normalized_image_input_is_content_bound_user_only_and_modality_gated() {
+        let bytes = BASE64_STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC")
+            .expect("one-pixel PNG");
+        let image =
+            NormalizedImageInput::new(ArtifactId::new(), "image/png", &bytes).expect("image");
+        assert_eq!(image.validated_bytes().expect("validated"), bytes);
+        let mut corrupt_digest = image.clone();
+        corrupt_digest.sha256_digest = "0".repeat(64);
+        assert_eq!(
+            corrupt_digest.validated_bytes(),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+        let mut corrupt_size = image.clone();
+        corrupt_size.size_bytes = corrupt_size.size_bytes.saturating_add(1);
+        assert_eq!(
+            corrupt_size.validated_bytes(),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+        let mut corrupt_payload = image.clone();
+        corrupt_payload.data_base64.replace_range(..4, "AAAA");
+        assert_eq!(
+            corrupt_payload.validated_bytes(),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+        let mut request = ProviderRequest {
+            run_id: RunId::new(),
+            attempt_id: AttemptId::new(),
+            context_manifest_id: ContextManifestId::new(),
+            provider_id: "vision".to_owned(),
+            model_id: "vision-model".to_owned(),
+            messages: vec![NormalizedMessage {
+                role: MessageRole::User,
+                content: "Describe this image.".to_owned(),
+                images: vec![image.clone()],
+                tool_call_id: None,
+            }],
+            tools: Vec::new(),
+            maximum_output_tokens: 128,
+            deadline_at_ms: 1,
+        };
+        let mut capabilities = candidate("vision", "local", true, 7, 50, 0).capabilities;
+        assert_eq!(
+            validate_provider_image_inputs(&request, &capabilities),
+            Err(ProviderImageInputError::UnsupportedModality)
+        );
+        capabilities.input_modalities.insert("image".to_owned());
+        assert_eq!(
+            validate_provider_image_inputs(&request, &capabilities),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+        capabilities.context_tokens = 16_384;
+        validate_provider_image_inputs(&request, &capabilities).expect("image-capable route");
+
+        request.messages[0].role = MessageRole::Assistant;
+        assert_eq!(
+            validate_provider_image_inputs(&request, &capabilities),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+        request.messages[0].role = MessageRole::User;
+        request.messages[0].images = vec![image; 5];
+        assert_eq!(
+            validate_provider_image_inputs(&request, &capabilities),
+            Err(ProviderImageInputError::InvalidContract)
+        );
+
+        let legacy = serde_json::from_value::<NormalizedMessage>(serde_json::json!({
+            "role": "user",
+            "content": "legacy text",
+            "toolCallId": null
+        }))
+        .expect("legacy message");
+        assert!(legacy.images.is_empty());
     }
 
     fn candidate(

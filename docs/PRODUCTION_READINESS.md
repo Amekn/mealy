@@ -510,9 +510,13 @@ one owner-selected no-follow regular file, allowlists UTF-8 text/source extensio
 256 KiB, binds basename/media/size/SHA-256 inside an untrusted frame, withholds the host path, and
 uses ordinary durable delivery/idempotency. Unit, pseudo-terminal, and real-daemon smoke evidence cover symlink,
 invalid UTF-8/NUL, unsupported type, oversize, prompt-shape, and admission boundaries. The broader
-multimodal/media row is still open: image/audio/video input, provider modality negotiation,
-artifact-backed binary transport, image generation, and safe channel/dashboard rendering are not
-implemented or claimed.
+multimodal/media row is still open. A disabled v0.4 provider foundation now defines digest-bound
+PNG/JPEG/WebP envelopes, strict count/byte/token bounds, text-only route rejection, low-detail
+OpenAI Responses translation, Anthropic image-block translation, and restart-sized durable request
+evidence. It is not a user-facing claim: strict decode/re-encode metadata stripping,
+content-addressed inbox ownership/linkage, context hydration, migration/export/replay evidence,
+explicit per-route activation, image generation, and safe client/channel rendering remain
+required before image input can be enabled. Audio/video are not implemented.
 
 ## Required evidence per implementation slice
 

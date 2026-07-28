@@ -528,6 +528,7 @@ pub fn compile_context(
     let mut messages = vec![NormalizedMessage {
         role: MessageRole::System,
         content: epoch.baseline_text.clone(),
+        images: Vec::new(),
         tool_call_id: None,
     }];
     let mut items = vec![ContextManifestItem {

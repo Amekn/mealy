@@ -183,6 +183,18 @@ resumable GET, and long-lived health remain explicit later slices.
   generation.
 - Reject unsupported media before provider reservation or dispatch.
 
+The provider-neutral image envelope and both direct adapter translations are implemented behind a
+disabled production capability. The envelope accepts only digest-bound PNG/JPEG/WebP bytes, limits
+one request to four images and 4 MiB total, permits images only on authenticated user messages,
+reserves 8,192 input tokens per included image, and fails unsupported text-only routes before any
+HTTP dispatch. OpenAI-compatible requests use low detail for a portable accounting ceiling;
+Anthropic requests use image-first base64 blocks. Public attachment ingress remains intentionally
+disabled until strict decode/re-encode metadata stripping, content-addressed inbox linkage,
+context-manifest hydration, authorization, migrations, exports, crash/replay tests, and explicit
+per-route image capability configuration are complete.
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines that remaining
+boundary.
+
 ### Channels and browser
 
 - Define a reusable channel adapter contract and ship Slack as the next

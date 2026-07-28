@@ -1277,6 +1277,7 @@ mod tests {
             messages: vec![NormalizedMessage {
                 role: MessageRole::User,
                 content: "hello".to_owned(),
+                images: Vec::new(),
                 tool_call_id: None,
             }],
             tools: Vec::new(),

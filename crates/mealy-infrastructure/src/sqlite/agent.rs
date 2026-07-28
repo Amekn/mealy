@@ -29,7 +29,9 @@ use std::{
 pub(super) const MAXIMUM_CONVERSATION_HISTORY_TURNS: i64 = 32;
 pub(super) const MAXIMUM_CONVERSATION_HISTORY_BYTES: i64 = 512 * 1_024;
 const MAXIMUM_RECORDED_READ_TOOL_DESCRIPTOR_BYTES: usize = 512 * 1_024;
-pub(super) const MAXIMUM_MODEL_REQUEST_JSON_BYTES: usize = 256 * 1_024;
+// Includes at most 4 MiB of normalized image bytes after base64 expansion plus the existing
+// bounded text/tool envelope. The same ceiling is enforced while decoding compressed evidence.
+pub(super) const MAXIMUM_MODEL_REQUEST_JSON_BYTES: usize = 8 * 1_024 * 1_024;
 const MAXIMUM_CONTEXT_MANIFEST_BUNDLE_JSON_BYTES: usize = 2 * 1_024 * 1_024;
 const DURABLE_JSON_COMPRESSION_THRESHOLD_BYTES: usize = 4 * 1_024;
 const DURABLE_JSON_ENCODING: &str = "deflate-zlib-base64url-v1";
@@ -1162,6 +1164,7 @@ fn load_context_sources(
         message: NormalizedMessage {
             role: MessageRole::User,
             content: content.clone(),
+            images: Vec::new(),
             tool_call_id: None,
         },
         sensitivity: "private".to_owned(),
@@ -1350,6 +1353,7 @@ fn load_compaction_context_source(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
@@ -1499,6 +1503,7 @@ fn load_conversation_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content: user_content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
@@ -1513,6 +1518,7 @@ fn load_conversation_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Assistant,
                 content: assistant_content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "internal".to_owned(),
@@ -1640,6 +1646,7 @@ fn load_fork_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content: user,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
@@ -1654,6 +1661,7 @@ fn load_fork_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Assistant,
                 content: assistant,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "internal".to_owned(),
@@ -1728,6 +1736,7 @@ fn load_memory_context_sources(
                             &cited_digests,
                             &content,
                         ),
+                        images: Vec::new(),
                         tool_call_id: None,
                     },
                     sensitivity,
@@ -1922,6 +1931,7 @@ fn load_read_tool_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Tool,
                 content,
+                images: Vec::new(),
                 tool_call_id: Some(tool_call_id),
             },
             sensitivity: "internal".to_owned(),
@@ -1971,6 +1981,7 @@ fn load_effect_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Tool,
                 content,
+                images: Vec::new(),
                 tool_call_id: Some(tool_call_id),
             },
             sensitivity: "internal".to_owned(),
@@ -9753,6 +9764,19 @@ mod durable_json_tests {
             Ok(canonical.clone())
         );
 
+        let bounded_image_request = json!({
+            "imageData": "A".repeat(4 * 1_024 * 1_024 * 4 / 3 + 4),
+            "version": 1
+        })
+        .to_string();
+        let encoded_image =
+            encode_durable_json(&bounded_image_request, MAXIMUM_MODEL_REQUEST_JSON_BYTES)
+                .expect("compress bounded normalized image request");
+        assert_eq!(
+            decode_durable_json(&encoded_image, MAXIMUM_MODEL_REQUEST_JSON_BYTES),
+            Ok(bounded_image_request)
+        );
+
         let historical = json!({"version": 1}).to_string();
         assert_eq!(
             encode_durable_json(&historical, MAXIMUM_MODEL_REQUEST_JSON_BYTES),
@@ -9963,6 +9987,7 @@ mod conversation_context_tests {
             message: NormalizedMessage {
                 role,
                 content: content.to_owned(),
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),

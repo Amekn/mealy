@@ -818,6 +818,7 @@ mod tests {
             messages: vec![NormalizedMessage {
                 role: MessageRole::User,
                 content: "read the fixture".to_owned(),
+                images: Vec::new(),
                 tool_call_id: None,
             }],
             tools: vec![ProviderToolDefinition {

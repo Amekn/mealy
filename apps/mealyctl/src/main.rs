@@ -14089,6 +14089,7 @@ fn probe_subscription_connectivity_blocking(
             role: MessageRole::User,
             content: "Reply with the single word OK. This is a bounded connectivity test."
                 .to_owned(),
+            images: Vec::new(),
             tool_call_id: None,
         }],
         tools: Vec::new(),
