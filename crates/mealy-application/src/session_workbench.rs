@@ -9,6 +9,8 @@ use thiserror::Error;
 pub const SESSION_METADATA_MAXIMUM_BYTES: usize = 160;
 /// Maximum Unicode scalar values in an owner title or checkpoint label.
 pub const SESSION_METADATA_MAXIMUM_CHARACTERS: usize = 72;
+/// Maximum UTF-8 bytes in a durable fork command idempotency key.
+pub const SESSION_FORK_IDEMPOTENCY_KEY_MAXIMUM_BYTES: usize = 128;
 
 /// Revision-fenced command to set a canonical owner title.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,18 +130,84 @@ pub struct SessionCheckpointView {
     pub created_at: SystemTime,
 }
 
+/// Idempotent command to create a fresh session from one immutable checkpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForkSessionCommand {
+    /// Source session named by the authenticated route.
+    pub source_session_id: SessionId,
+    /// Immutable source checkpoint.
+    pub checkpoint_id: SessionCheckpointId,
+    /// Exact authenticated owner and binding.
+    pub ownership: OwnershipContext,
+    /// Stable caller key for duplicate-safe retry.
+    pub idempotency_key: String,
+}
+
+/// Complete atomic persistence input for a session fork.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForkSessionCommit {
+    /// Fresh child session identity.
+    pub fork_session_id: SessionId,
+    /// Source session named by the authenticated route.
+    pub source_session_id: SessionId,
+    /// Immutable source checkpoint.
+    pub checkpoint_id: SessionCheckpointId,
+    /// Exact authenticated owner and binding.
+    pub ownership: OwnershipContext,
+    /// Validated duplicate-safe caller key.
+    pub idempotency_key: String,
+    /// Immutable `session.forked` journal event.
+    pub event_id: EventId,
+    /// Command/event correlation.
+    pub correlation_id: CorrelationId,
+    /// Application-assigned transaction time.
+    pub created_at: SystemTime,
+}
+
+/// Durable result of creating or replaying one session fork command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionForkReceipt {
+    /// Fresh child session.
+    pub fork_session_id: SessionId,
+    /// Lineage root shared with the source session.
+    pub root_session_id: SessionId,
+    /// Immediate source session that owns the checkpoint.
+    pub source_session_id: SessionId,
+    /// Immutable parent checkpoint.
+    pub source_checkpoint_id: SessionCheckpointId,
+    /// Count of successful conversation pairs referenced by the child.
+    pub referenced_turns: u64,
+    /// Immutable fork event.
+    pub event_id: EventId,
+    /// Original command/event correlation.
+    pub correlation_id: CorrelationId,
+    /// Original commit time.
+    pub created_at: SystemTime,
+    /// Whether this call returned the original receipt for the same command key.
+    pub duplicate: bool,
+}
+
 /// Persistence failures for canonical session-workbench mutations and queries.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum SessionWorkbenchStoreError {
     /// Session does not exist.
     #[error("session was not found")]
     SessionNotFound,
+    /// Checkpoint does not exist.
+    #[error("session checkpoint was not found")]
+    CheckpointNotFound,
+    /// Checkpoint precedes the currently retained timeline boundary.
+    #[error("session checkpoint is outside the retained timeline")]
+    CheckpointNotRetained,
     /// Exact principal/channel binding does not own the session.
     #[error("session access is unauthorized")]
     Unauthorized,
     /// Optimistic-concurrency state changed.
     #[error("session revision conflicts with canonical state")]
     Conflict,
+    /// A fork command key was already bound to a different checkpoint.
+    #[error("session fork idempotency key conflicts with its original command")]
+    IdempotencyConflict,
     /// Checkpoints are accepted only at a quiescent canonical boundary.
     #[error("session is not at a quiescent checkpoint boundary")]
     NotQuiescent,
@@ -186,6 +254,17 @@ pub trait SessionWorkbenchStore {
         ownership: OwnershipContext,
         limit: usize,
     ) -> Result<Vec<SessionCheckpointView>, SessionWorkbenchStoreError>;
+
+    /// Creates a fresh child session and immutable conversation references atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionWorkbenchStoreError`] on authorization, conflicting duplicate command,
+    /// invalid source evidence, or persistence failure.
+    fn fork_session(
+        &mut self,
+        commit: ForkSessionCommit,
+    ) -> Result<SessionForkReceipt, SessionWorkbenchStoreError>;
 }
 
 /// Validation or persistence rejection for session-workbench commands.
@@ -197,6 +276,9 @@ pub enum SessionWorkbenchUseCaseError {
     /// Checkpoint list limit must be one through 100.
     #[error("session checkpoint limit must be between 1 and 100")]
     InvalidLimit,
+    /// Fork command key is empty, padded, unsafe, or exceeds its bound.
+    #[error("session fork idempotency key is invalid")]
+    InvalidIdempotencyKey,
     /// Persistence rejected the operation.
     #[error(transparent)]
     Store(#[from] SessionWorkbenchStoreError),
@@ -281,6 +363,35 @@ pub fn query_session_checkpoints(
         .map_err(Into::into)
 }
 
+/// Creates or exactly replays a durable session fork from one immutable checkpoint.
+///
+/// # Errors
+///
+/// Returns [`SessionWorkbenchUseCaseError`] for an invalid command key or any atomic storage
+/// rejection.
+pub fn fork_session(
+    store: &mut impl SessionWorkbenchStore,
+    clock: &impl Clock,
+    ids: &impl IdGenerator,
+    command: ForkSessionCommand,
+) -> Result<SessionForkReceipt, SessionWorkbenchUseCaseError> {
+    if !valid_fork_idempotency_key(&command.idempotency_key) {
+        return Err(SessionWorkbenchUseCaseError::InvalidIdempotencyKey);
+    }
+    store
+        .fork_session(ForkSessionCommit {
+            fork_session_id: ids.generate_session_id(),
+            source_session_id: command.source_session_id,
+            checkpoint_id: command.checkpoint_id,
+            ownership: command.ownership,
+            idempotency_key: command.idempotency_key,
+            event_id: ids.generate_event_id(),
+            correlation_id: ids.generate_correlation_id(),
+            created_at: clock.now(),
+        })
+        .map_err(Into::into)
+}
+
 /// Returns whether owner-visible session metadata is bounded and safe for terminal/web display.
 #[must_use]
 pub fn valid_session_metadata(value: &str) -> bool {
@@ -289,6 +400,17 @@ pub fn valid_session_metadata(value: &str) -> bool {
         && value.len() <= SESSION_METADATA_MAXIMUM_BYTES
         && value.chars().count() <= SESSION_METADATA_MAXIMUM_CHARACTERS
         && !value.chars().any(unsafe_metadata_character)
+}
+
+/// Returns whether a fork command key is canonical, bounded, and safe to persist.
+#[must_use]
+pub fn valid_fork_idempotency_key(value: &str) -> bool {
+    !value.is_empty()
+        && value == value.trim()
+        && value.len() <= SESSION_FORK_IDEMPOTENCY_KEY_MAXIMUM_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn unsafe_metadata_character(character: char) -> bool {
@@ -306,7 +428,7 @@ fn unsafe_metadata_character(character: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_session_metadata;
+    use super::{valid_fork_idempotency_key, valid_session_metadata};
 
     #[test]
     fn session_metadata_rejects_padding_controls_bidi_and_oversize_text() {
@@ -316,5 +438,14 @@ mod tests {
         assert!(!valid_session_metadata("line\nbreak"));
         assert!(!valid_session_metadata("unsafe\u{202e}title"));
         assert!(!valid_session_metadata(&"界".repeat(73)));
+    }
+
+    #[test]
+    fn fork_idempotency_key_is_ascii_canonical_and_bounded() {
+        assert!(valid_fork_idempotency_key("mealyctl:019f-fork.retry_1"));
+        assert!(!valid_fork_idempotency_key(""));
+        assert!(!valid_fork_idempotency_key(" padded"));
+        assert!(!valid_fork_idempotency_key("contains/slash"));
+        assert!(!valid_fork_idempotency_key(&"x".repeat(129)));
     }
 }

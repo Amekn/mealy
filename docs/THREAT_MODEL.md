@@ -228,10 +228,12 @@ access additionally uses constant-time capability validation, and every mutation
 exact loopback Origin rather than accepting an Origin-less request. A restrictive CSP,
 `frame-ancestors 'none'`, same-origin resource/opener policies, no CORS allowance, 64 KiB request
 bodies, canonical UUID route parsing, bounded timelines/evidence, and separate one-at-a-time
-snapshot, timeline, detail, and command permits limit compromise. Every daemon body is streamed
-under an 8 MiB ceiling before decode. The adapter exposes only a
-hard-coded snapshot, session create/title/checkpoint/input, timeline, exact approval-resolution, cooperative
-task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost inspection, effect/attempt inspection,
+snapshot, timeline, detail, and command permits limit compromise. Every ordinary daemon body is
+streamed under an 8 MiB ceiling before decode; transcript attachments have a separate 32 MiB
+ceiling and are verified before browser download. The adapter exposes only a hard-coded snapshot,
+session create/title/checkpoint/fork/input, transcript export, timeline, exact approval-resolution,
+cooperative task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost
+inspection, effect/attempt inspection,
 unknown-effect reconciliation, and exact
 schedule-create/detail/run-history/pause/resume/cancel plus fixed governed-memory
 namespace/search/detail/propose/activate/correct/pin/expire/reject/delete and bounded extension
@@ -264,7 +266,7 @@ buckets, or non-exact browser integers. The per-task adapter distinguishes used 
 microunits. Neither view labels configured provider-neutral microunits as an invoice or infers
 unsupported upstream billing axes. Financial reconciliation still requires the provider's records.
 
-### Session metadata or checkpoint is used to smuggle control or inherited authority
+### Session metadata, fork, or export is used to smuggle control or inherited authority
 
 Controls: fallback titles are local deterministic projections and never provider output. Owner
 titles and checkpoint labels are exact-binding, revision-fenced commands capped at 160 UTF-8 bytes
@@ -278,8 +280,25 @@ source session revision, completed turn, immutable context epoch, configuration/
 workspace identity and owner/channel/workspace authority digest, and provider/model evidence.
 Rows are immutable and exact-owner queries are bounded. They contain no bearer, credential,
 approval grant, effect permission, lease, reservation, mutable run, pending input, or child state.
-Future fork construction must re-authorize referenced conversation evidence and cannot interpret
-a checkpoint as inherited authority.
+
+A fork command is exact-owner, UUIDv7-keyed, duplicate-safe, and bound to one retained checkpoint.
+The new session has empty operational state. It references only the newest contiguous successful
+canonical source turns beneath the checkpoint and compaction boundary, capped at 32 turns and
+512 KiB. Before any reference enters a model context, compilation requires the fork's current
+owner/channel binding and exact context epoch, configuration, policy, workspace identity, and
+workspace-authority digest to match the checkpoint. Otherwise all inherited references are
+dropped. No source approval, effect permission, lease, reservation, pending input, task, run,
+schedule, child state, mutable memory, or channel delivery is cloned.
+
+Transcript export is exact-owner and reads one coherent high-watermark snapshot. It includes only
+successful completed canonical turns, capped at the newest contiguous 1,000 turns and 4 MiB of
+message content, and reports omissions explicitly. Artifact-backed content is size/digest verified
+before hydration. JSON and HTML carry an exact response digest; the CLI and dashboard adapter
+verify it before creating or downloading a file. HTML is strict-escaped, scriptless, resource-free,
+and served with a deny-all content security policy. The export excludes daemon credentials,
+bearers, private artifact paths, provider request envelopes, and tool/effect operational state, but
+conversation text is deliberately verbatim and the format says that owner-pasted secrets remain.
+Opening an export cannot execute a provider, tool, approval, or effect.
 
 ### Subscription bridge steals a session or exposes ambient client tools
 

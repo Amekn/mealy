@@ -16,6 +16,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::{
     MAXIMUM_EFFECT_COMMAND_IDEMPOTENCY_KEY_BYTES, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES,
+    is_sha256_digest,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -29,14 +30,14 @@ use mealy_protocol::{
     DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
     EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
     ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse,
-    ExtensionsResponse, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
-    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse,
-    MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
-    PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
+    ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse, HealthResponse,
+    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse,
+    MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
     RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
     RunGarbageCollectionRequest, ScheduleLifecycleRequest, ScheduleResponse, ScheduleRunsResponse,
-    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse,
+    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest,
     TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
@@ -179,6 +180,28 @@ pub struct ArtifactContent {
     /// Declared media type validated into an HTTP header by this adapter.
     pub media_type: String,
     /// Size-bounded bytes already verified against the committed digest.
+    pub bytes: Vec<u8>,
+}
+
+/// Supported presentation for one bounded canonical session transcript.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionTranscriptFormat {
+    /// Versioned provider-neutral JSON model.
+    Json,
+    /// Inert self-contained human-readable HTML rendered from the same model.
+    Html,
+}
+
+/// Verified bounded session transcript bytes returned by a trusted daemon backend.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTranscriptContent {
+    /// Exact media type validated into an HTTP header.
+    pub media_type: String,
+    /// Safe attachment filename.
+    pub filename: String,
+    /// SHA-256 digest of the exact response bytes.
+    pub digest: String,
+    /// Bounded bytes rendered from one coherent canonical snapshot.
     pub bytes: Vec<u8>,
 }
 
@@ -384,6 +407,36 @@ pub trait ApiBackend: Send + Sync + 'static {
         _session_id: String,
         _limit: usize,
     ) -> Result<SessionCheckpointsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Creates a fresh child session from one immutable checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when identity, idempotency, lineage, retention, or persistence
+    /// checks fail.
+    fn fork_session(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _source_session_id: String,
+        _request: ForkSessionRequest,
+    ) -> Result<SessionForkResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Renders one bounded canonical transcript as JSON or inert HTML.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, canonical evidence, artifact integrity, or
+    /// rendering fails closed.
+    fn session_transcript_export(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _format: SessionTranscriptFormat,
+    ) -> Result<SessionTranscriptContent, BackendError> {
         Err(BackendError::Unavailable)
     }
 
@@ -1224,6 +1277,18 @@ fn build_router(
             get(session_checkpoints_handler).post(create_session_checkpoint_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/forks",
+            post(fork_session_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/exports/json",
+            get(session_transcript_json_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/exports/html",
+            get(session_transcript_html_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/inputs",
             post(submit_input_handler),
         )
@@ -1710,6 +1775,86 @@ async fn create_session_checkpoint_handler(
     })
     .await?;
     Ok(Json(result))
+}
+
+async fn fork_session_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<ForkSessionRequest>, JsonRejection>,
+) -> Result<Json<SessionForkResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.fork_session(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn session_transcript_json_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+) -> Result<Response, HttpError> {
+    session_transcript_handler(state, identity, session_id, SessionTranscriptFormat::Json).await
+}
+
+async fn session_transcript_html_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+) -> Result<Response, HttpError> {
+    session_transcript_handler(state, identity, session_id, SessionTranscriptFormat::Html).await
+}
+
+async fn session_transcript_handler(
+    state: AppState,
+    identity: AuthenticatedIdentity,
+    session_id: String,
+    format: SessionTranscriptFormat,
+) -> Result<Response, HttpError> {
+    let content = run_backend(state, move |backend| {
+        backend.session_transcript_export(identity, session_id, format)
+    })
+    .await?;
+    if !is_sha256_digest(&content.digest)
+        || content.filename.is_empty()
+        || content.filename.len() > 255
+        || !content
+            .filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(HttpError(BackendError::Internal));
+    }
+    let content_type = HeaderValue::try_from(content.media_type.as_str())
+        .map_err(|_| HttpError(BackendError::Internal))?;
+    let content_disposition =
+        HeaderValue::try_from(format!("attachment; filename=\"{}\"", content.filename))
+            .map_err(|_| HttpError(BackendError::Internal))?;
+    let content_digest = HeaderValue::try_from(content.digest.as_str())
+        .map_err(|_| HttpError(BackendError::Internal))?;
+    let mut response = Response::new(Body::from(content.bytes));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, content_type);
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::CONTENT_DISPOSITION, content_disposition);
+    headers.insert(
+        HeaderName::from_static("x-mealy-content-sha256"),
+        content_digest,
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        ),
+    );
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -2959,7 +3104,8 @@ const fn retryable(error: &BackendError) -> bool {
 mod tests {
     use super::{
         ApiAuth, ApiBackend, ApiConfig, ArtifactContent, AuthenticatedIdentity, BackendError,
-        SignedWebhookEnvelope, router, router_with_shutdown,
+        SessionTranscriptContent, SessionTranscriptFormat, SignedWebhookEnvelope, router,
+        router_with_shutdown,
     };
     use axum::{
         body::{Body, to_bytes},
@@ -2971,15 +3117,16 @@ mod tests {
         ContextItemDisposition, ContextManifestEvidenceItemResponse,
         ContextManifestEvidenceResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
         CreateSessionResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
-        InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
+        ForkSessionRequest, InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
         MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
         PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
         RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
         ResolveApprovalRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
-        SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse, SessionsResponse,
-        SetMemoryPinRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
-        TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse,
-        TimelineCursor, TimelinePageResponse, UpdateSessionTitleRequest,
+        SessionForkResponse, SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
+        SessionsResponse, SetMemoryPinRequest, SubmitInputRequest, TaskBudgetUsage,
+        TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
+        TaskSuccessCriteriaResponse, TimelineCursor, TimelinePageResponse,
+        UpdateSessionTitleRequest,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3209,6 +3356,58 @@ mod tests {
                     revision: 2,
                     created_at_ms: 4,
                 }],
+            })
+        }
+
+        fn fork_session(
+            &self,
+            _identity: AuthenticatedIdentity,
+            source_session_id: String,
+            request: ForkSessionRequest,
+        ) -> Result<SessionForkResponse, BackendError> {
+            if source_session_id != "session-1" || request.checkpoint_id != "checkpoint-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionForkResponse {
+                api_version: API_VERSION.to_owned(),
+                fork_session_id: "session-fork-1".to_owned(),
+                root_session_id: "session-1".to_owned(),
+                source_session_id,
+                source_checkpoint_id: request.checkpoint_id,
+                referenced_turns: 1,
+                event_id: "event-fork".to_owned(),
+                correlation_id: "correlation-fork".to_owned(),
+                created_at_ms: 5,
+                duplicate: false,
+            })
+        }
+
+        fn session_transcript_export(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+            format: SessionTranscriptFormat,
+        ) -> Result<SessionTranscriptContent, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            let (media_type, extension, bytes) = match format {
+                SessionTranscriptFormat::Json => (
+                    "application/vnd.mealy.session-transcript+json; charset=utf-8",
+                    "json",
+                    br#"{"apiVersion":"v1","sessionId":"session-1"}"#.to_vec(),
+                ),
+                SessionTranscriptFormat::Html => (
+                    "text/html; charset=utf-8",
+                    "html",
+                    b"<!doctype html><html></html>\n".to_vec(),
+                ),
+            };
+            Ok(SessionTranscriptContent {
+                media_type: media_type.to_owned(),
+                filename: format!("mealy-session-{session_id}.{extension}"),
+                digest: mealy_application::sha256_digest(&bytes),
+                bytes,
             })
         }
 
@@ -4086,6 +4285,7 @@ mod tests {
         assert_eq!(checkpoint.revision, 3);
 
         let listed_checkpoints = app
+            .clone()
             .oneshot(
                 Request::get("/v1/sessions/session-1/checkpoints?limit=20")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -4101,6 +4301,78 @@ mod tests {
         let checkpoints = serde_json::from_slice::<SessionCheckpointsResponse>(&body)
             .expect("checkpoint list response");
         assert_eq!(checkpoints.checkpoints.len(), 1);
+
+        let forked = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/session-1/forks")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "apiVersion": API_VERSION,
+                            "idempotencyKey": "fork:test:1",
+                            "checkpointId": "checkpoint-1",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("fork request"),
+            )
+            .await
+            .expect("fork response");
+        assert_eq!(forked.status(), StatusCode::OK);
+        let body = to_bytes(forked.into_body(), 4096)
+            .await
+            .expect("fork response body");
+        let fork = serde_json::from_slice::<SessionForkResponse>(&body).expect("fork response");
+        assert_eq!(fork.fork_session_id, "session-fork-1");
+        assert_eq!(fork.source_checkpoint_id, "checkpoint-1");
+
+        assert_session_export_routes(app, token).await;
+    }
+
+    async fn assert_session_export_routes(app: axum::Router, token: &str) {
+        for (format, content_type) in [
+            (
+                "json",
+                "application/vnd.mealy.session-transcript+json; charset=utf-8",
+            ),
+            ("html", "text/html; charset=utf-8"),
+        ] {
+            let exported = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("/v1/sessions/session-1/exports/{format}"))
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .expect("session export request"),
+                )
+                .await
+                .expect("session export response");
+            assert_eq!(exported.status(), StatusCode::OK);
+            assert_eq!(
+                exported.headers().get(header::CONTENT_TYPE),
+                Some(&header::HeaderValue::from_static(content_type))
+            );
+            assert_eq!(
+                exported.headers().get(header::CACHE_CONTROL),
+                Some(&header::HeaderValue::from_static("no-store"))
+            );
+            assert!(exported.headers().contains_key("x-mealy-content-sha256"));
+            assert_eq!(
+                exported.headers().get(header::CONTENT_DISPOSITION),
+                Some(
+                    &header::HeaderValue::try_from(format!(
+                        "attachment; filename=\"mealy-session-session-1.{format}\""
+                    ))
+                    .expect("disposition"),
+                )
+            );
+            let bytes = to_bytes(exported.into_body(), 4096)
+                .await
+                .expect("session export body");
+            assert!(!bytes.is_empty());
+        }
     }
 
     #[tokio::test]

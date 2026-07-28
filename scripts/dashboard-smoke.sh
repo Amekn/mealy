@@ -170,7 +170,7 @@ if contains_daemon_token "$home/index.html"; then
 fi
 
 snapshot=$(dashboard_snapshot initial)
-jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 16' \
+jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 17' \
   >/dev/null <<<"$snapshot"
 if contains_daemon_token <<<"$snapshot"; then
   echo "dashboard snapshot exposed the daemon bearer" >&2
@@ -222,6 +222,78 @@ created=$(dashboard_curl --fail --silent --show-error \
   --data '{"apiVersion":"v1"}' \
   "$origin/api/sessions")
 session_id=$(jq -er '.sessionId' <<<"$created")
+
+checkpoint=$(dashboard_curl --fail --silent --show-error \
+  -H "Origin: $origin" \
+  -H 'Content-Type: application/json' \
+  --data '{"apiVersion":"v1","expectedRevision":0,"label":"Dashboard smoke fork base"}' \
+  "$origin/api/sessions/$session_id/checkpoints")
+checkpoint_id=$(jq -er '.checkpointId' <<<"$checkpoint")
+jq -e --arg session "$session_id" \
+  '.apiVersion == "v1" and .sessionId == $session and .sourceSessionRevision == 0 and .revision == 1 and .sourceTurnId == null' \
+  >/dev/null <<<"$checkpoint"
+
+fork_body=$(jq -cn --arg checkpoint "$checkpoint_id" \
+  '{apiVersion:"v1",idempotencyKey:"real-dashboard-fork-1",checkpointId:$checkpoint}')
+forked=$(dashboard_curl --fail --silent --show-error \
+  -H "Origin: $origin" \
+  -H 'Content-Type: application/json' \
+  --data "$fork_body" \
+  "$origin/api/sessions/$session_id/forks")
+fork_session_id=$(jq -er '.forkSessionId' <<<"$forked")
+jq -e --arg fork "$fork_session_id" --arg source "$session_id" \
+  --arg checkpoint "$checkpoint_id" \
+  '.apiVersion == "v1" and .forkSessionId == $fork and .rootSessionId == $source and .sourceSessionId == $source and .sourceCheckpointId == $checkpoint and .referencedTurns == 0 and .duplicate == false' \
+  >/dev/null <<<"$forked"
+duplicate_fork=$(dashboard_curl --fail --silent --show-error \
+  -H "Origin: $origin" \
+  -H 'Content-Type: application/json' \
+  --data "$fork_body" \
+  "$origin/api/sessions/$session_id/forks")
+jq -e --arg fork "$fork_session_id" \
+  '.forkSessionId == $fork and .duplicate == true' >/dev/null <<<"$duplicate_fork"
+
+for format in json html; do
+  headers_file="$home/session-export-$format.headers"
+  body_file="$home/session-export.$format"
+  dashboard_curl --fail --silent --show-error \
+    --dump-header "$headers_file" --output "$body_file" \
+    "$origin/api/sessions/$fork_session_id/exports/$format"
+  export_digest=$(awk '
+    BEGIN { IGNORECASE = 1 }
+    /^x-mealy-content-sha256:/ {
+      gsub("\r", "", $2)
+      digest = $2
+    }
+    END { print digest }
+  ' "$headers_file")
+  if [[ ! $export_digest =~ ^[0-9a-f]{64}$ ]] \
+    || [[ $(sha256sum "$body_file" | awk '{print $1}') != "$export_digest" ]]; then
+    echo "dashboard $format transcript export failed digest verification" >&2
+    exit 70
+  fi
+  grep -Fqi "content-disposition: attachment; filename=\"mealy-session-$fork_session_id.$format\"" \
+    "$headers_file"
+  grep -Fqi "content-security-policy: default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" \
+    "$headers_file"
+  if contains_daemon_token "$headers_file" "$body_file"; then
+    echo "dashboard $format transcript export exposed the daemon bearer" >&2
+    exit 70
+  fi
+done
+jq -e --arg fork "$fork_session_id" --arg source "$session_id" \
+  --arg checkpoint "$checkpoint_id" \
+  '.apiVersion == "v1" and .schemaVersion == "mealy.session-transcript.v1" and .sessionId == $fork and .lineage.rootSessionId == $source and .lineage.parentSessionId == $source and .lineage.parentCheckpointId == $checkpoint and .bounds.totalEligibleTurns == 0 and .turns == []' \
+  "$home/session-export.json" >/dev/null
+grep -Fq 'mealy.session-transcript.v1' "$home/session-export.html"
+grep -Fq "$fork_session_id" "$home/session-export.html"
+grep -Fq "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">" \
+  "$home/session-export.html"
+if grep -Eiq '<(script|style|link|img|iframe|object|embed|form|base|area|audio|video|source|track|svg|math)([[:space:]>])' \
+  "$home/session-export.html"; then
+  echo "dashboard HTML transcript export contained active content" >&2
+  exit 70
+fi
 
 admitted=$(dashboard_curl --fail --silent --show-error \
   -H "Origin: $origin" \

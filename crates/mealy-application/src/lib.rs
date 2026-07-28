@@ -29,6 +29,7 @@ mod provider_config;
 mod recovery;
 mod schedule;
 mod scheduler;
+mod session_export;
 mod session_workbench;
 mod sessions;
 mod startup;
@@ -44,7 +45,7 @@ pub use agent::{
     AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
     AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
     AgentStoreError, AgentTaskView, AgentUseCaseError, DispatchModelAttemptCommit,
-    DispatchReadToolCommit, FinalMessageCommit, MAXIMUM_MODEL_PROGRESS_BYTES,
+    DispatchReadToolCommit, FinalMessageCommit, ForkContextBoundary, MAXIMUM_MODEL_PROGRESS_BYTES,
     MAXIMUM_MODEL_PROGRESS_DELTA_BYTES, MAXIMUM_MODEL_PROGRESS_EVENTS, ModelDispatchReceipt,
     ModelFailureReceipt, PrepareModelAttemptCommit, PrepareReadToolCommit,
     RecordModelFailureCommit, RecordModelProgressCommit, RecordModelResultCommit,
@@ -234,12 +235,20 @@ pub use scheduler::{
     SchedulerUseCaseError, claim_next_work, claim_next_work_with_concurrency, claimed_run_id,
     complete_agent_run, complete_run, heartbeat_lease, release_lease,
 };
+pub use session_export::{
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
+    SessionTranscriptAssistantMessage, SessionTranscriptLineage, SessionTranscriptSnapshot,
+    SessionTranscriptStore, SessionTranscriptStoreError, SessionTranscriptTurn,
+    SessionTranscriptUserMessage, query_session_transcript,
+};
 pub use session_workbench::{
-    CreateSessionCheckpointCommand, CreateSessionCheckpointCommit, SESSION_METADATA_MAXIMUM_BYTES,
-    SESSION_METADATA_MAXIMUM_CHARACTERS, SessionCheckpointView, SessionTitleReceipt,
-    SessionWorkbenchStore, SessionWorkbenchStoreError, SessionWorkbenchUseCaseError,
-    UpdateSessionTitleCommand, UpdateSessionTitleCommit, create_session_checkpoint,
-    query_session_checkpoints, update_session_title, valid_session_metadata,
+    CreateSessionCheckpointCommand, CreateSessionCheckpointCommit, ForkSessionCommand,
+    ForkSessionCommit, SESSION_FORK_IDEMPOTENCY_KEY_MAXIMUM_BYTES, SESSION_METADATA_MAXIMUM_BYTES,
+    SESSION_METADATA_MAXIMUM_CHARACTERS, SessionCheckpointView, SessionForkReceipt,
+    SessionTitleReceipt, SessionWorkbenchStore, SessionWorkbenchStoreError,
+    SessionWorkbenchUseCaseError, UpdateSessionTitleCommand, UpdateSessionTitleCommit,
+    create_session_checkpoint, fork_session, query_session_checkpoints, update_session_title,
+    valid_fork_idempotency_key, valid_session_metadata,
 };
 pub use sessions::{
     AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,

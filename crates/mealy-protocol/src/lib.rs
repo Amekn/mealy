@@ -209,6 +209,208 @@ pub struct SessionCheckpointsResponse {
     pub checkpoints: Vec<SessionCheckpointResponse>,
 }
 
+/// Duplicate-safe request to fork one fresh session from an immutable checkpoint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ForkSessionRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Stable caller key retained with the fork receipt.
+    pub idempotency_key: String,
+    /// Immutable checkpoint owned by the source session in the route.
+    pub checkpoint_id: String,
+}
+
+/// Durable receipt for a fresh session-lineage edge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionForkResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Fresh child session.
+    pub fork_session_id: String,
+    /// Lineage root shared with the source session.
+    pub root_session_id: String,
+    /// Immediate source session.
+    pub source_session_id: String,
+    /// Immutable parent checkpoint.
+    pub source_checkpoint_id: String,
+    /// Count of successful source-turn pairs referenced as context evidence.
+    pub referenced_turns: u64,
+    /// Immutable `session.forked` journal event.
+    pub event_id: String,
+    /// Original fork command correlation.
+    pub correlation_id: String,
+    /// UTC commit time in epoch milliseconds.
+    pub created_at_ms: i64,
+    /// True only when this call replayed the exact original command key.
+    pub duplicate: bool,
+}
+
+/// Versioned immutable lineage projection embedded in a session transcript export.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptLineageResponse {
+    /// Root session shared by the lineage.
+    pub root_session_id: String,
+    /// Immediate source session for a fork.
+    pub parent_session_id: Option<String>,
+    /// Immutable parent checkpoint for a fork.
+    pub parent_checkpoint_id: Option<String>,
+    /// Timeline cursor captured by the parent checkpoint.
+    pub parent_checkpoint_cursor: Option<TimelineCursor>,
+    /// Immutable `session.forked` journal event.
+    pub fork_event_id: Option<String>,
+}
+
+/// Durable event citation used by one exported transcript message or turn.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptCitationResponse {
+    /// Immutable journal-event identity.
+    pub event_id: String,
+    /// Durable global timeline cursor.
+    pub cursor: TimelineCursor,
+}
+
+/// Verbatim owner input and its admission evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptUserMessageResponse {
+    /// Durable admitted-input identity.
+    pub inbox_entry_id: String,
+    /// Exact owner-visible UTF-8 input.
+    pub content: String,
+    /// SHA-256 digest of the exact UTF-8 bytes.
+    pub content_digest: String,
+    /// Exact UTF-8 byte count.
+    pub byte_length: u64,
+    /// Canonical admission time in UTC epoch milliseconds.
+    pub accepted_at_ms: i64,
+    /// Admission event and cursor.
+    pub citation: SessionTranscriptCitationResponse,
+}
+
+/// Verbatim final assistant response and its immutable content evidence.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptAssistantMessageResponse {
+    /// Durable terminal message identity.
+    pub message_id: String,
+    /// Exact owner-visible UTF-8 final response.
+    pub content: String,
+    /// SHA-256 digest of the exact logical content bytes.
+    pub content_digest: String,
+    /// Exact UTF-8 byte count.
+    pub byte_length: u64,
+    /// Declared media type.
+    pub media_type: String,
+    /// Stable sensitivity classification.
+    pub sensitivity: String,
+    /// `inline` or `artifact`, without any private storage path.
+    pub storage: String,
+    /// Logical artifact identity when the final response was artifact-backed.
+    pub artifact_id: Option<String>,
+    /// Canonical message commit time in UTC epoch milliseconds.
+    pub created_at_ms: i64,
+}
+
+/// One successful canonical exported conversation pair.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptTurnResponse {
+    /// Stable session inbox order.
+    pub sequence: u64,
+    /// Canonical turn identity.
+    pub turn_id: String,
+    /// Canonical task identity.
+    pub task_id: String,
+    /// Canonical run identity.
+    pub run_id: String,
+    /// Context epoch used by the turn.
+    pub context_epoch_id: String,
+    /// Provider used by the final completed model attempt.
+    pub provider_id: String,
+    /// Model used by the final completed model attempt.
+    pub model_id: String,
+    /// Owner input and admission citation.
+    pub user: SessionTranscriptUserMessageResponse,
+    /// Final assistant response and digest evidence.
+    pub assistant: SessionTranscriptAssistantMessageResponse,
+    /// Terminal turn event and cursor.
+    pub completion: SessionTranscriptCitationResponse,
+    /// Canonical turn completion time in UTC epoch milliseconds.
+    pub completed_at_ms: i64,
+}
+
+/// Explicit disclosure of what a transcript export does and does not redact.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptRedactionResponse {
+    /// Stable policy spelling.
+    pub policy: String,
+    /// Transcript messages are exported verbatim for the authenticated owner.
+    pub transcript_content_verbatim: bool,
+    /// Whether heuristic credential replacement was attempted.
+    pub automatic_secret_redaction_applied: bool,
+    /// Classes deliberately absent from this transcript projection.
+    pub excluded_categories: Vec<String>,
+    /// Owner-facing disclosure about potentially sensitive message text.
+    pub warning: String,
+}
+
+/// Bounded-window metadata that makes omissions explicit rather than silent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptBoundsResponse {
+    /// Maximum successful canonical pairs permitted by this schema.
+    pub maximum_turns: u64,
+    /// Maximum combined user and assistant content bytes permitted by this schema.
+    pub maximum_content_bytes: u64,
+    /// Total eligible successful canonical pairs at the snapshot boundary.
+    pub total_eligible_turns: u64,
+    /// Older eligible pairs omitted by the fixed bounds.
+    pub omitted_turns: u64,
+    /// Combined exact content bytes represented in `turns`.
+    pub included_content_bytes: u64,
+    /// Oldest included inbox sequence, absent for an empty transcript.
+    pub oldest_included_sequence: Option<u64>,
+}
+
+/// Canonical provider-neutral model rendered as both JSON and inert HTML transcript exports.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptExport {
+    /// Public API version.
+    pub api_version: String,
+    /// Stable export schema contract.
+    pub schema_version: String,
+    /// Exported session.
+    pub session_id: String,
+    /// Canonical owner or deterministic derived title.
+    pub title: String,
+    /// Stable title source: `owner` or `derived`.
+    pub title_source: String,
+    /// Canonical lifecycle state.
+    pub status: String,
+    /// Canonical optimistic-concurrency revision.
+    pub revision: u64,
+    /// Session creation time in UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Latest canonical session update in UTC epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// Highest session-visible timeline cursor in the coherent read snapshot.
+    pub high_watermark: TimelineCursor,
+    /// Immutable lineage evidence.
+    pub lineage: SessionTranscriptLineageResponse,
+    /// Fixed window and explicit omission metadata.
+    pub bounds: SessionTranscriptBoundsResponse,
+    /// Explicit redaction/exclusion disclosure.
+    pub redaction: SessionTranscriptRedactionResponse,
+    /// Ordered successful canonical conversation pairs.
+    pub turns: Vec<SessionTranscriptTurnResponse>,
+}
+
 /// Authenticated, idempotent request to submit one input.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -524,6 +524,9 @@
               <span class="command-actions">
                 <button id="rename-session" class="action" type="button" disabled>Rename</button>
                 <button id="checkpoint-session" class="action" type="button" disabled>Checkpoint</button>
+                <button id="fork-session" class="action" type="button" disabled>Fork</button>
+                <button id="export-session-json" class="action" type="button" disabled>Export JSON</button>
+                <button id="export-session-html" class="action" type="button" disabled>Export HTML</button>
               </span>
             </div>
             <div id="timeline" class="timeline" aria-live="polite"><p class="empty">Choose a session to load its durable event timeline.</p></div>
@@ -748,7 +751,7 @@
     </section>
 
     <footer class="footer">
-      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/input/control, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
+      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/forks/transcript exports/input/control, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
       <p>Close the terminal command to destroy this dashboard capability. Data is never cached by this server.</p>
     </footer>
   </main>
@@ -761,6 +764,9 @@
     const newSessionButton = document.getElementById("new-session");
     const renameSessionButton = document.getElementById("rename-session");
     const checkpointSessionButton = document.getElementById("checkpoint-session");
+    const forkSessionButton = document.getElementById("fork-session");
+    const exportSessionJsonButton = document.getElementById("export-session-json");
+    const exportSessionHtmlButton = document.getElementById("export-session-html");
     const promptInput = document.getElementById("prompt");
     const deliveryMode = document.getElementById("delivery-mode");
     const sendInputButton = document.getElementById("send-input");
@@ -1240,6 +1246,9 @@
       cancelTaskButton.disabled = !selected || !activeTaskId;
       renameSessionButton.disabled = !selected || currentSessionRevision === null;
       checkpointSessionButton.disabled = !selected || currentSessionRevision === null || !currentSessionQuiescent;
+      forkSessionButton.disabled = !selected;
+      exportSessionJsonButton.disabled = !selected;
+      exportSessionHtmlButton.disabled = !selected;
       document.getElementById("conversation-id").textContent = selectedSessionId
         ? (sessionTitles.get(selectedSessionId) || selectedSessionId)
         : "Select or create a session";
@@ -1250,6 +1259,9 @@
         currentSessionQuiescent = asNumber(status.pendingInputs) === 0 && !status.activeTurnId;
         renameSessionButton.disabled = false;
         checkpointSessionButton.disabled = !currentSessionQuiescent;
+        forkSessionButton.disabled = false;
+        exportSessionJsonButton.disabled = false;
+        exportSessionHtmlButton.disabled = false;
         document.getElementById("conversation-state").textContent = `${formatCount(status.pendingInputs)} pending · revision ${formatCount(status.revision)}${status.activeTurnId ? " · active" : ""}`;
       }
     }
@@ -1390,6 +1402,102 @@
         showError(error, "A checkpoint can only be created after pending and active work has settled.");
       } finally {
         checkpointSessionButton.disabled = !selectedSessionId || !currentSessionQuiescent;
+      }
+    }
+
+    async function forkSelectedSession() {
+      if (!selectedSessionId) return;
+      forkSessionButton.disabled = true;
+      clearError();
+      let scope = null;
+      try {
+        const listed = await requestJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/checkpoints?limit=20`);
+        const latest = Array.isArray(listed.checkpoints) ? listed.checkpoints[0] : null;
+        if (!latest || !validEntityId(latest.checkpointId)) {
+          throw new Error("Create a checkpoint after the conversation settles, then fork from it.");
+        }
+        const entered = window.prompt(
+          "Fork from which checkpoint ID? The newest checkpoint is prefilled.",
+          latest.checkpointId
+        );
+        if (entered === null) return;
+        if (!validEntityId(entered)) {
+          throw new Error("Choose one exact checkpoint UUID from this conversation.");
+        }
+        scope = `session-fork:${selectedSessionId}:${entered}`;
+        const response = await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/forks`, {
+          apiVersion: "v1",
+          idempotencyKey: commandKey(scope),
+          checkpointId: entered
+        });
+        clearCommandKey(scope);
+        selectedSessionId = response.forkSessionId;
+        await refresh();
+        await refreshConversation(true);
+        document.getElementById("conversation-state").textContent = `Forked from ${response.sourceCheckpointId} · ${formatCount(response.referencedTurns)} referenced turns`;
+      } catch (error) {
+        showError(error, "The conversation could not be forked. An ambiguous retry retains the same command key.");
+      } finally {
+        forkSessionButton.disabled = !selectedSessionId;
+      }
+    }
+
+    async function downloadSelectedSession(format) {
+      if (!selectedSessionId || (format !== "json" && format !== "html")) return;
+      const button = format === "json" ? exportSessionJsonButton : exportSessionHtmlButton;
+      button.disabled = true;
+      clearError();
+      try {
+        const response = await fetch(`/api/sessions/${encodeURIComponent(selectedSessionId)}/exports/${format}`, {
+          method: "GET",
+          cache: "no-store",
+          credentials: "omit",
+          headers: {
+            "X-Mealy-Dashboard": DASHBOARD_TOKEN,
+            "Accept": format === "json"
+              ? "application/vnd.mealy.session-transcript+json"
+              : "text/html"
+          }
+        });
+        if (!response.ok) {
+          let payload = null;
+          try { payload = await response.json(); } catch (_) { /* Use the bounded fallback below. */ }
+          throw new Error(payload && typeof payload.message === "string"
+            ? payload.message
+            : `Transcript export unavailable (${response.status})`);
+        }
+        const expectedDigest = response.headers.get("X-Mealy-Content-Sha256");
+        if (!expectedDigest || !/^[0-9a-f]{64}$/.test(expectedDigest)) {
+          throw new Error("Transcript export omitted its integrity digest.");
+        }
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength > 32 * 1024 * 1024) {
+          throw new Error("Transcript export exceeded its browser safety bound.");
+        }
+        const observed = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+          .map(value => value.toString(16).padStart(2, "0"))
+          .join("");
+        if (observed !== expectedDigest) {
+          throw new Error("Transcript export failed its integrity check.");
+        }
+        const contentType = format === "json"
+          ? "application/vnd.mealy.session-transcript+json;charset=utf-8"
+          : "text/html;charset=utf-8";
+        const url = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+        try {
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `mealy-session-${selectedSessionId}.${format}`;
+          link.rel = "noopener";
+          link.click();
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+        document.getElementById("conversation-state").textContent = `Verified ${format.toUpperCase()} transcript export · SHA-256 ${expectedDigest.slice(0, 12)}…`;
+      } catch (error) {
+        showError(error, "The verified transcript export could not be downloaded.");
+      } finally {
+        button.disabled = !selectedSessionId;
       }
     }
 
@@ -2585,6 +2693,9 @@
     newSessionButton.addEventListener("click", () => { void createSession(); });
     renameSessionButton.addEventListener("click", () => { void renameSelectedSession(); });
     checkpointSessionButton.addEventListener("click", () => { void checkpointSelectedSession(); });
+    forkSessionButton.addEventListener("click", () => { void forkSelectedSession(); });
+    exportSessionJsonButton.addEventListener("click", () => { void downloadSelectedSession("json"); });
+    exportSessionHtmlButton.addEventListener("click", () => { void downloadSelectedSession("html"); });
     sendInputButton.addEventListener("click", () => { void submitInput(); });
     cancelTaskButton.addEventListener("click", () => { void cancelActiveTask(); });
     loadTaskUsageButton.addEventListener("click", () => { void loadTaskUsage(); });

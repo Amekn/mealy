@@ -360,6 +360,35 @@ their derived titles, pending-input, and active-turn state. Transcript-search hi
 session title. Use a selected ID with `chat --session-id`. Cross-channel sessions are deliberately
 not merged; inspect Telegram bindings through their channel administration view.
 
+Create a checkpoint only after the session is quiescent, then fork it with an exact
+caller-generated idempotency boundary:
+
+```sh
+mealyctl --home "$HOME/.mealy" session checkpoint create SESSION_ID \
+  --label "Before provider comparison"
+mealyctl --home "$HOME/.mealy" session fork SESSION_ID CHECKPOINT_ID
+```
+
+An exact retry returns the original fork receipt. The child session has fresh operational state and
+only immutable, bounded conversation references; context compilation rechecks the current
+owner/configuration/policy/workspace-authority boundary before using them. Inspect the receipt and
+new session before admitting work.
+
+For a portable owner-readable transcript rather than an administrative evidence bundle:
+
+```sh
+mealyctl --home "$HOME/.mealy" session export SESSION_ID --format json \
+  --output ./session.json
+mealyctl --home "$HOME/.mealy" session export SESSION_ID --format html \
+  --output ./session.html
+```
+
+The client verifies the response digest and format and creates a new mode-`0600` file without
+following symlinks or replacing an existing path. The export is a bounded read-only projection,
+not replay or recovery material. It deliberately preserves owner-visible message text verbatim,
+so a secret pasted into chat remains in the export. Use the separate immutable administrative
+`export` command for complete/scoped evidence publication.
+
 ## Backup and restore verification
 
 Create a complete immutable backup:
@@ -895,9 +924,12 @@ and assert the query plan uses that index. Schema 16 adds bounded, digest-bound 
 manifest bundles plus sparse artifact/compaction/memory provenance. It leaves legacy row-per-item
 manifests in place and replayable instead of performing an eager multi-gigabyte rewrite. Provider
 requests and validation JSON continue to use compatibility-preserving envelope compression.
-Schema 17 adds the reconstructible owner-title projection and immutable exact-bound session
-checkpoints. Migration creates no title for existing sessions; their deterministic derived titles
-remain unchanged until the owner renames them.
+Schema 17 adds the reconstructible owner-title projection, immutable exact-bound session
+checkpoints, immutable root/parent lineage, duplicate-safe fork command receipts, and bounded
+fork-context references. Migration creates root-lineage rows for existing sessions but no owner
+title; their deterministic derived titles remain unchanged until the owner renames them. Transcript
+exports require no canonical export table: they are bounded coherent read-only projections from
+the existing session, turn, attempt, artifact, lineage, and timeline evidence.
 
 There is no in-place downgrade and an older binary must never open the newer database. For a
 package-managed rollback, inspect the exact automatic snapshot and compare its manifest SHA-256

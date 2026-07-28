@@ -2,7 +2,8 @@
 
 Concrete adapters for application ports. The SQLite adapter owns migrations 1–17, WAL/foreign-key
 durability, every canonical transaction, journal/timeline/outbox projections, fencing/recovery,
-memory/FTS, validation/delegation, extension/channel evidence, and operational inspection. File
+session metadata/checkpoints/lineage/forks, bounded transcript snapshots, memory/FTS,
+validation/delegation, extension/channel evidence, and operational inspection. File
 adapters provide content-addressed artifacts, encrypted complete backups, complete/scoped exports,
 forensics, secret brokerage, and safe GC. Process adapters provide Bubblewrap tool and extension
 workers with exact executable/runtime identity.

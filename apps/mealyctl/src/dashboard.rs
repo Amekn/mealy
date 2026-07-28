@@ -1,6 +1,9 @@
 //! Ephemeral least-authority loopback operations dashboard.
 
-use super::{CliError, authorized, load_connection, valid_memory_workspace_identity};
+use super::{
+    CliError, MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES, authorized, load_connection,
+    read_bounded_success_body, server_error, valid_memory_workspace_identity,
+};
 use axum::{
     Json, Router,
     extract::{
@@ -13,8 +16,10 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::{
-    EXTENSION_POLICY_VERSION, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES, ScheduleDefinition,
-    sha256_digest, valid_session_metadata, validate_schedule_definition,
+    EXTENSION_POLICY_VERSION, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS, ScheduleDefinition,
+    sha256_digest, valid_fork_idempotency_key, valid_session_metadata,
+    validate_schedule_definition,
 };
 use mealy_domain::{
     ApprovalId, AttemptId, ContextManifestId, EffectId, EventId, ExtensionFilesystemAccess,
@@ -28,18 +33,19 @@ use mealy_protocol::{
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse, DeliveryMode,
     DoctorResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
     EnableExtensionRequest, ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest,
-    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, InputAdmissionResponse,
-    LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
-    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
-    ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
+    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest,
+    InputAdmissionResponse, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
+    MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
+    MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand,
+    MemoryStatusResponse, MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest,
+    ProposeMemoryRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+    ResolveApprovalRequest, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
+    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
     ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
-    SetMemoryPinRequest, SubmitInputRequest, TaskCancellationReceipt, TaskResponse, TaskStatus,
-    TimelinePageResponse, UpdateSessionTitleRequest,
+    SessionCheckpointsResponse, SessionForkResponse, SessionStatusResponse, SessionTitleResponse,
+    SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest, SubmitInputRequest,
+    TaskCancellationReceipt, TaskResponse, TaskStatus, TimelinePageResponse,
+    UpdateSessionTitleRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -142,6 +148,14 @@ struct DashboardCreateSessionCheckpointRequest {
     api_version: String,
     expected_revision: u64,
     label: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardForkSessionRequest {
+    api_version: String,
+    idempotency_key: String,
+    checkpoint_id: String,
 }
 
 #[derive(Deserialize)]
@@ -470,6 +484,11 @@ pub(crate) async fn run(
             "/api/sessions/{session_id}/checkpoints",
             get(session_checkpoints).post(create_session_checkpoint),
         )
+        .route("/api/sessions/{session_id}/forks", post(fork_session))
+        .route(
+            "/api/sessions/{session_id}/exports/{format}",
+            get(session_transcript_export),
+        )
         .route(
             "/api/sessions/{session_id}/timeline",
             get(conversation_timeline),
@@ -747,6 +766,279 @@ async fn create_session_checkpoint(
         Err(()) => dashboard_connection_error(),
     };
     secure_response(response, &state)
+}
+
+async fn fork_session(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    request: Result<Json<DashboardForkSessionRequest>, JsonRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_mutation(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Json(request)) = request else {
+        return secure_response(invalid_dashboard_json(), &state);
+    };
+    let Ok(checkpoint_id) = request.checkpoint_id.parse::<SessionCheckpointId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    if !valid_api_version(&request.api_version)
+        || !valid_fork_idempotency_key(&request.idempotency_key)
+    {
+        return secure_response(invalid_dashboard_command(), &state);
+    }
+    let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let checkpoint_id = checkpoint_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/forks");
+            let command = ForkSessionRequest {
+                api_version: API_VERSION.to_owned(),
+                idempotency_key: request.idempotency_key,
+                checkpoint_id: checkpoint_id.clone(),
+            };
+            match post_to_daemon::<_, SessionForkResponse>(
+                &state.client,
+                &connection,
+                &path,
+                &command,
+            )
+            .await
+            {
+                Ok(response)
+                    if valid_session_fork_response(&response, &session_id, &checkpoint_id) =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("session fork"),
+                Err(error) => dashboard_backend_error(&error, "session fork"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn session_transcript_export(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath((session_id, format)): RoutePath<(String, String)>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let (media_type, extension) = match format.as_str() {
+        "json" => (
+            "application/vnd.mealy.session-transcript+json; charset=utf-8",
+            "json",
+        ),
+        "html" => ("text/html; charset=utf-8", "html"),
+        _ => return secure_response(invalid_dashboard_identifier(), &state),
+    };
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(detail_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/exports/{extension}");
+            match fetch_session_transcript_bytes(
+                &state.client,
+                &connection,
+                &path,
+                &session_id,
+                extension,
+                media_type,
+            )
+            .await
+            {
+                Ok((bytes, digest)) => {
+                    let disposition =
+                        format!("attachment; filename=\"mealy-session-{session_id}.{extension}\"");
+                    let Ok(content_type) = HeaderValue::from_str(media_type) else {
+                        return secure_response(
+                            dashboard_protocol_error("session transcript export"),
+                            &state,
+                        );
+                    };
+                    let Ok(content_disposition) = HeaderValue::from_str(&disposition) else {
+                        return secure_response(
+                            dashboard_protocol_error("session transcript export"),
+                            &state,
+                        );
+                    };
+                    let Ok(content_digest) = HeaderValue::from_str(&digest) else {
+                        return secure_response(
+                            dashboard_protocol_error("session transcript export"),
+                            &state,
+                        );
+                    };
+                    let mut response = bytes.into_response();
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_TYPE, content_type);
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_DISPOSITION, content_disposition);
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-mealy-content-sha256"),
+                        content_digest,
+                    );
+                    response
+                }
+                Err(error) => dashboard_backend_error(&error, "session transcript export"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    let mut response = secure_response(response, &state);
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        ),
+    );
+    response
+}
+
+async fn fetch_session_transcript_bytes(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+    expected_session_id: &str,
+    extension: &str,
+    media_type: &str,
+) -> Result<(Vec<u8>, String), CliError> {
+    let response = authorized(
+        client.get(format!("{}{path}", connection.base_url)),
+        connection,
+    )
+    .send()
+    .await?;
+    if !response.status().is_success() {
+        return Err(server_error(response).await);
+    }
+    let expected_disposition =
+        format!("attachment; filename=\"mealy-session-{expected_session_id}.{extension}\"");
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let disposition = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok());
+    let digest = response
+        .headers()
+        .get("x-mealy-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| mealy_application::is_sha256_digest(value))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CliError::Protocol("dashboard transcript response omitted its digest".to_owned())
+        })?;
+    if content_type != Some(media_type) || disposition != Some(&expected_disposition) {
+        return Err(CliError::Protocol(
+            "dashboard transcript response metadata is invalid".to_owned(),
+        ));
+    }
+    let bytes =
+        read_bounded_success_body(response, MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES).await?;
+    if sha256_digest(&bytes) != digest {
+        return Err(CliError::Protocol(
+            "dashboard transcript response digest mismatch".to_owned(),
+        ));
+    }
+    match extension {
+        "json" => validate_dashboard_session_transcript_json(&bytes, expected_session_id)?,
+        "html" => validate_dashboard_session_transcript_html(&bytes, expected_session_id)?,
+        _ => {
+            return Err(CliError::Protocol(
+                "dashboard transcript format is invalid".to_owned(),
+            ));
+        }
+    }
+    Ok((bytes, digest))
+}
+
+fn validate_dashboard_session_transcript_json(
+    bytes: &[u8],
+    expected_session_id: &str,
+) -> Result<(), CliError> {
+    let export = serde_json::from_slice::<SessionTranscriptExport>(bytes)?;
+    let maximum_turns = u64::try_from(SESSION_TRANSCRIPT_MAXIMUM_TURNS)
+        .map_err(|_| CliError::Protocol("transcript turn bound exceeds u64".to_owned()))?;
+    let included_turns = u64::try_from(export.turns.len())
+        .map_err(|_| CliError::Protocol("transcript turn count exceeds u64".to_owned()))?;
+    let content_bytes = export.turns.iter().try_fold(0_u64, |total, turn| {
+        if sha256_digest(turn.user.content.as_bytes()) != turn.user.content_digest
+            || sha256_digest(turn.assistant.content.as_bytes()) != turn.assistant.content_digest
+            || u64::try_from(turn.user.content.len()).ok() != Some(turn.user.byte_length)
+            || u64::try_from(turn.assistant.content.len()).ok() != Some(turn.assistant.byte_length)
+        {
+            return Err(CliError::Protocol(
+                "dashboard transcript message evidence is invalid".to_owned(),
+            ));
+        }
+        total
+            .checked_add(turn.user.byte_length)
+            .and_then(|value| value.checked_add(turn.assistant.byte_length))
+            .ok_or_else(|| CliError::Protocol("transcript content size overflowed".to_owned()))
+    })?;
+    if export.api_version != API_VERSION
+        || export.schema_version != "mealy.session-transcript.v1"
+        || export.session_id != expected_session_id
+        || export.bounds.maximum_turns != maximum_turns
+        || export.bounds.maximum_content_bytes != SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
+        || export.turns.len() > SESSION_TRANSCRIPT_MAXIMUM_TURNS
+        || export.bounds.omitted_turns.checked_add(included_turns)
+            != Some(export.bounds.total_eligible_turns)
+        || export.bounds.included_content_bytes != content_bytes
+        || content_bytes > SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
+    {
+        return Err(CliError::Protocol(
+            "dashboard transcript JSON envelope is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_dashboard_session_transcript_html(
+    bytes: &[u8],
+    expected_session_id: &str,
+) -> Result<(), CliError> {
+    const INERT_CSP_META: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">";
+    let html = std::str::from_utf8(bytes)
+        .map_err(|_| CliError::Protocol("dashboard transcript HTML is not UTF-8".to_owned()))?;
+    let lowercase = html.to_ascii_lowercase();
+    if !html.starts_with("<!doctype html>")
+        || !html.ends_with("</html>\n")
+        || !html.contains("mealy.session-transcript.v1")
+        || !html.contains(expected_session_id)
+        || !html.contains(INERT_CSP_META)
+        || [
+            "<script", "<style", "<link", "<img", "<iframe", "<object", "<embed", "<form", "<base",
+            "<area", "<audio", "<video", "<source", "<track", "<svg", "<math", "<a ", "<a>",
+            "<a\n", "<a\t",
+        ]
+        .iter()
+        .any(|needle| lowercase.contains(needle))
+    {
+        return Err(CliError::Protocol(
+            "dashboard transcript HTML is not inert".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2731,6 +3023,25 @@ fn valid_session_checkpoint_response(
             .checked_add(1)
             .is_some_and(|revision| revision == checkpoint.revision)
         && checkpoint.created_at_ms >= 0
+}
+
+fn valid_session_fork_response(
+    response: &SessionForkResponse,
+    source_session_id: &str,
+    source_checkpoint_id: &str,
+) -> bool {
+    valid_api_version(&response.api_version)
+        && response.fork_session_id.parse::<SessionId>().is_ok()
+        && response.root_session_id.parse::<SessionId>().is_ok()
+        && response.source_session_id == source_session_id
+        && response.source_checkpoint_id == source_checkpoint_id
+        && response.referenced_turns <= 32
+        && response.event_id.parse::<EventId>().is_ok()
+        && response
+            .correlation_id
+            .parse::<mealy_domain::CorrelationId>()
+            .is_ok()
+        && response.created_at_ms >= 0
 }
 
 async fn decode_dashboard<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, CliError> {

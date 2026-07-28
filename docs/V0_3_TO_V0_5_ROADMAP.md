@@ -47,6 +47,12 @@ Every slice must preserve the v0.2.1 production contract:
 
 ## v0.3 — daily-use parity
 
+Status update (2026-07-28): the canonical title/search/checkpoint/fork/export workbench boundary is
+implemented across schema 17, daemon API, scriptable CLI, and the thin dashboard adapter. Focused
+storage, API, process, real-provider, artifact-integrity, exact-owner, and browser-boundary tests
+are green. Full-workspace qualification, the full-screen TUI, provider/model experience, and final
+v0.3 release gates remain in progress.
+
 ### Session workbench
 
 - Add deterministic conversation titles immediately, derived from the first
@@ -57,8 +63,8 @@ Every slice must preserve the v0.2.1 production contract:
   dashboard.
 - Add explicit checkpoints that bind the session, source cursor, context epoch,
   canonical turn boundary, provider/config identity, and workspace authority.
-- Add conversation fork from a retained checkpoint. Forking copies referenced
-  conversation evidence into a new context lineage; it does not copy approvals,
+- Add conversation fork from a retained checkpoint. Forking references eligible immutable
+  conversation evidence from a new context lineage; it does not copy approvals,
   active work, effects, leases, mutable child state, or revoked authority.
 - Add bounded JSON and self-contained HTML transcript exports with digests,
   citations, redaction metadata, and no bearer credentials or owner filesystem

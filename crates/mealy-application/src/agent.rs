@@ -5,7 +5,7 @@ use crate::{
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, CompactionId, CorrelationId, EventId, LeaseFence,
-    MessageId, PrincipalId, RunId, SessionId, TaskId, ToolCallId, TurnId,
+    MessageId, PrincipalId, RunId, SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
@@ -193,6 +193,22 @@ pub struct AgentContextSource {
     pub compaction_id: Option<CompactionId>,
 }
 
+/// Exact checkpoint authority that must match a fork's newly compiled context epoch.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkContextBoundary {
+    /// Immutable parent checkpoint.
+    pub checkpoint_id: SessionCheckpointId,
+    /// Configured capability digest captured by the checkpoint.
+    pub config_digest: String,
+    /// Effective policy digest captured by the checkpoint.
+    pub policy_digest: String,
+    /// Provider-neutral workspace authority identity.
+    pub workspace_identity: String,
+    /// Digest binding the exact owner, channel, and workspace.
+    pub workspace_authority_digest: String,
+}
+
 /// Fenced run state loaded at a safe loop boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -231,6 +247,9 @@ pub struct AgentRunSnapshot {
     pub context_epoch: Option<ContextEpoch>,
     /// Ordered, authorized context sources.
     pub context_sources: Vec<AgentContextSource>,
+    /// Parent-checkpoint authority required before fork references may enter a model request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_context_boundary: Option<ForkContextBoundary>,
     /// Current prepared/completed attempt.
     pub current_attempt_id: Option<AttemptId>,
     /// Committed normalized result for the current completed attempt.

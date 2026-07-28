@@ -4,7 +4,8 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_api::{
-    ApiBackend, ArtifactContent, AuthenticatedIdentity, BackendError, SignedWebhookEnvelope,
+    ApiBackend, ArtifactContent, AuthenticatedIdentity, BackendError, SessionTranscriptContent,
+    SessionTranscriptFormat, SignedWebhookEnvelope,
 };
 use mealy_application::{
     AdmitInputCommand, AgentEvidenceStore, AgentExecutionStore, AgentStoreError,
@@ -21,30 +22,32 @@ use mealy_application::{
     ExtensionDispatchRequest, ExtensionGrant, ExtensionHost, ExtensionHostError,
     ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
     ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
-    ExtensionStoreError, ExtensionView, IdGenerator, InputAdmissionLimits, InputAdmissionOutcome,
-    InputAdmissionReceipt, InstallExtensionCommit, MEMORY_POLICY_VERSION, MemorySearchQuery,
-    MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider, OperationalSnapshot,
-    OperationalStore, OperationalStoreError, OwnershipContext, ProviderCapabilities,
-    ProviderFallbackPolicy, ProviderLocality, ProviderPricing, ProviderRouteCandidate,
-    ProviderRoutingPolicy, ReconcileEffectOutcomeCommit, RegisterDiscordChannelCommit,
-    RegisterTelegramChannelCommit, RegisterWebhookChannelCommit, RequestTaskCancellationCommit,
-    ReserveWebhookDeliveryCommit, ResolveApprovalCommit, RevokeDiscordChannelCommit,
-    RevokeExtensionCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
-    ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
-    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionCheckpointView,
-    SessionSearchQuery, SessionStoreError, SessionUseCaseError, SessionWorkbenchStoreError,
-    SessionWorkbenchUseCaseError, StageExtensionManifestCommit, TaskControlAction,
-    TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
-    TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
-    TransitionScheduleCommit, UpdateSessionTitleCommand, ValidationStore,
+    ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
+    InputAdmissionOutcome, InputAdmissionReceipt, InstallExtensionCommit, MEMORY_POLICY_VERSION,
+    MemorySearchQuery, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
+    OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
+    ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
+    ProviderRouteCandidate, ProviderRoutingPolicy, ReconcileEffectOutcomeCommit,
+    RegisterDiscordChannelCommit, RegisterTelegramChannelCommit, RegisterWebhookChannelCommit,
+    RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit, ResolveApprovalCommit,
+    RevokeDiscordChannelCommit, RevokeExtensionCommit, RevokeTelegramChannelCommit,
+    RevokeWebhookChannelCommit, ScheduleDefinition, ScheduleRunStatus, ScheduleRunView,
+    ScheduleStatus, ScheduleStore, ScheduleStoreError, ScheduleTransition, ScheduleView,
+    SessionCheckpointView, SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot,
+    SessionTranscriptStoreError, SessionTranscriptTurn, SessionUseCaseError,
+    SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, StageExtensionManifestCommit,
+    TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
+    TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
+    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionTitleCommand, ValidationStore,
     WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION,
     WebhookChannelBindingView, WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError,
     admit_input, canonical_arguments_digest, compaction_source_event_digest, create_session,
-    create_session_checkpoint, extension_grant_digest, inspect_extension_manifest,
-    next_schedule_occurrence_ms, query_session_checkpoints, query_session_status, query_sessions,
-    query_timeline, route_provider, search_sessions, sha256_digest, update_session_title,
-    validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
-    webhook_input_dedupe_key, webhook_signature_digest,
+    create_session_checkpoint, extension_grant_digest, fork_session, inspect_extension_manifest,
+    next_schedule_occurrence_ms, query_session_checkpoints, query_session_status,
+    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
+    sha256_digest, update_session_title, validate_webhook_binding_fields,
+    validate_webhook_timestamp, verify_webhook_signature, webhook_input_dedupe_key,
+    webhook_signature_digest,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, ChannelBindingId,
@@ -53,8 +56,8 @@ use mealy_domain::{
     ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
     ExtensionStatus, MemoryCategory, MemoryConfidence, MemoryId, MemoryMetadata, MemoryNamespace,
     MemoryPromotionAuthorization, MemoryProvenance, MemoryRetention, MemoryRevisionId,
-    MemorySensitivity, PrincipalId, ScheduleId, SessionId, TaskId, ValidationMethod,
-    ValidationOutcome,
+    MemorySensitivity, PrincipalId, ScheduleId, SessionCheckpointId, SessionId, TaskId,
+    ValidationMethod, ValidationOutcome,
 };
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
@@ -65,6 +68,8 @@ use mealy_infrastructure::{
 };
 
 const BUBBLEWRAP_PATH: &str = "/usr/bin/bwrap";
+const SESSION_TRANSCRIPT_SCHEMA_VERSION: &str = "mealy.session-transcript.v1";
+const SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES: usize = 32 * 1024 * 1024;
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageBucketResponse,
     AdminUsageReportResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt, ApprovalResponse,
@@ -83,11 +88,11 @@ use mealy_protocol::{
     EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionFilesystemAccessCommand,
     ExtensionGrantResponse, ExtensionInvocationResponse, ExtensionInvocationStatusResponse,
     ExtensionLifecycleRequest, ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
-    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, GarbageCollectionResponse,
-    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
-    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
+    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest,
+    GarbageCollectionResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand, MemoryIndexRebuildResponse,
+    MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
+    MemoryRetentionCommand, MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
     MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse, MissedRunPolicyCommand,
     OperationalFailureResponse, PendingApprovalsResponse, PromoteMemoryRequest,
     ProposeMemoryRequest, ProviderEndpointStatusResponse, RebuildMemoryIndexRequest,
@@ -97,18 +102,23 @@ use mealy_protocol::{
     ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
     ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
     ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionSearchHitResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse, SessionsResponse,
-    SetMemoryPinRequest, SignedWebhookInputRequest, StageExtensionManifestRequest,
-    SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
-    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
-    TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
-    TelegramChannelStatusResponse, TelegramChannelsResponse, TimelineCursor, TimelineEvent,
-    TimelinePageResponse, UpdateSessionTitleRequest, ValidationMethodResponse,
-    ValidationOutcomeResponse, VerifyBackupRequest, WebhookChannelResponse,
-    WebhookChannelStatusResponse, WebhookChannelsResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionSearchHitResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
+    SessionTranscriptAssistantMessageResponse, SessionTranscriptBoundsResponse,
+    SessionTranscriptCitationResponse, SessionTranscriptExport, SessionTranscriptLineageResponse,
+    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
+    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
+    SignedWebhookInputRequest, StageExtensionManifestRequest, SubmitInputRequest,
+    SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt, TaskControlReceipt,
+    TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse,
+    TaskValidationResponse, TelegramChannelResponse, TelegramChannelStatusResponse,
+    TelegramChannelsResponse, TimelineCursor, TimelineEvent, TimelinePageResponse,
+    UpdateSessionTitleRequest, ValidationMethodResponse, ValidationOutcomeResponse,
+    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelStatusResponse,
+    WebhookChannelsResponse,
 };
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -1113,6 +1123,82 @@ impl ApiBackend for RuntimeBackend {
             api_version: API_VERSION.to_owned(),
             session_id: session_id.to_string(),
             checkpoints,
+        })
+    }
+
+    fn fork_session(
+        &self,
+        identity: AuthenticatedIdentity,
+        source_session_id: String,
+        request: ForkSessionRequest,
+    ) -> Result<SessionForkResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let source_session_id = parse_session(&source_session_id)?;
+        let checkpoint_id = parse_session_checkpoint(&request.checkpoint_id)?;
+        let receipt = fork_session(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            ForkSessionCommand {
+                source_session_id,
+                checkpoint_id,
+                ownership,
+                idempotency_key: request.idempotency_key,
+            },
+        )
+        .map_err(map_session_workbench_error)?;
+        Ok(SessionForkResponse {
+            api_version: API_VERSION.to_owned(),
+            fork_session_id: receipt.fork_session_id.to_string(),
+            root_session_id: receipt.root_session_id.to_string(),
+            source_session_id: receipt.source_session_id.to_string(),
+            source_checkpoint_id: receipt.source_checkpoint_id.to_string(),
+            referenced_turns: receipt.referenced_turns,
+            event_id: receipt.event_id.to_string(),
+            correlation_id: receipt.correlation_id.to_string(),
+            created_at_ms: epoch_milliseconds(receipt.created_at)?,
+            duplicate: receipt.duplicate,
+        })
+    }
+
+    fn session_transcript_export(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        format: SessionTranscriptFormat,
+    ) -> Result<SessionTranscriptContent, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let snapshot = query_session_transcript(&*self.read()?, session_id, ownership)
+            .map_err(|error| map_session_transcript_error(&error))?;
+        let model = session_transcript_export_model(snapshot, &self.artifacts)?;
+        let extension = match format {
+            SessionTranscriptFormat::Json => "json",
+            SessionTranscriptFormat::Html => "html",
+        };
+        let (media_type, bytes) = match format {
+            SessionTranscriptFormat::Json => {
+                let mut bytes =
+                    serde_json::to_vec_pretty(&model).map_err(|_| BackendError::Internal)?;
+                bytes.push(b'\n');
+                (
+                    "application/vnd.mealy.session-transcript+json; charset=utf-8".to_owned(),
+                    bytes,
+                )
+            }
+            SessionTranscriptFormat::Html => (
+                "text/html; charset=utf-8".to_owned(),
+                render_session_transcript_html(&model)?.into_bytes(),
+            ),
+        };
+        if bytes.len() > SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES {
+            return Err(BackendError::Internal);
+        }
+        Ok(SessionTranscriptContent {
+            media_type,
+            filename: format!("mealy-session-{session_id}.{extension}"),
+            digest: sha256_digest(&bytes),
+            bytes,
         })
     }
 
@@ -3650,6 +3736,11 @@ fn parse_session(value: &str) -> Result<SessionId, BackendError> {
         .map_err(|_| BackendError::InvalidRequest("invalid session ID".to_owned()))
 }
 
+fn parse_session_checkpoint(value: &str) -> Result<SessionCheckpointId, BackendError> {
+    SessionCheckpointId::from_str(value)
+        .map_err(|_| BackendError::InvalidRequest("invalid session checkpoint ID".to_owned()))
+}
+
 fn parse_delegation(value: &str) -> Result<DelegationId, BackendError> {
     DelegationId::from_str(value)
         .map_err(|_| BackendError::InvalidRequest("invalid delegation ID".to_owned()))
@@ -4210,6 +4301,295 @@ fn epoch_milliseconds(time: SystemTime) -> Result<i64, BackendError> {
     i64::try_from(duration.as_millis()).map_err(|_| BackendError::Internal)
 }
 
+fn session_transcript_export_model(
+    snapshot: SessionTranscriptSnapshot,
+    artifacts: &FileArtifactBlobStore,
+) -> Result<SessionTranscriptExport, BackendError> {
+    let turns = snapshot
+        .turns
+        .into_iter()
+        .map(|turn| session_transcript_turn_response(turn, artifacts))
+        .collect::<Result<Vec<_>, BackendError>>()?;
+    let maximum_turns = u64::try_from(mealy_application::SESSION_TRANSCRIPT_MAXIMUM_TURNS)
+        .map_err(|_| BackendError::Internal)?;
+    Ok(SessionTranscriptExport {
+        api_version: API_VERSION.to_owned(),
+        schema_version: SESSION_TRANSCRIPT_SCHEMA_VERSION.to_owned(),
+        session_id: snapshot.session_id.to_string(),
+        title: snapshot.title,
+        title_source: snapshot.title_source,
+        status: snapshot.status,
+        revision: snapshot.revision,
+        created_at_ms: epoch_milliseconds(snapshot.created_at)?,
+        updated_at_ms: epoch_milliseconds(snapshot.updated_at)?,
+        high_watermark: TimelineCursor(snapshot.high_watermark.0),
+        lineage: SessionTranscriptLineageResponse {
+            root_session_id: snapshot.lineage.root_session_id.to_string(),
+            parent_session_id: snapshot
+                .lineage
+                .parent_session_id
+                .map(|value| value.to_string()),
+            parent_checkpoint_id: snapshot
+                .lineage
+                .parent_checkpoint_id
+                .map(|value| value.to_string()),
+            parent_checkpoint_cursor: snapshot
+                .lineage
+                .parent_checkpoint_cursor
+                .map(|value| TimelineCursor(value.0)),
+            fork_event_id: snapshot
+                .lineage
+                .fork_event_id
+                .map(|value| value.to_string()),
+        },
+        bounds: SessionTranscriptBoundsResponse {
+            maximum_turns,
+            maximum_content_bytes: mealy_application::SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+            total_eligible_turns: snapshot.total_eligible_turns,
+            omitted_turns: snapshot.omitted_turns,
+            included_content_bytes: snapshot.included_content_bytes,
+            oldest_included_sequence: snapshot.oldest_included_sequence,
+        },
+        redaction: SessionTranscriptRedactionResponse {
+            policy: "owner_visible_verbatim_v1".to_owned(),
+            transcript_content_verbatim: true,
+            automatic_secret_redaction_applied: false,
+            excluded_categories: vec![
+                "daemon_credential_store_values".to_owned(),
+                "connection_bearer_credential".to_owned(),
+                "private_artifact_storage_paths".to_owned(),
+                "provider_request_envelopes".to_owned(),
+                "tool_effect_operational_state".to_owned(),
+            ],
+            warning: "Message text is exported verbatim and can contain sensitive text supplied \
+                      by the owner; review it before sharing."
+                .to_owned(),
+        },
+        turns,
+    })
+}
+
+fn session_transcript_turn_response(
+    turn: SessionTranscriptTurn,
+    artifacts: &FileArtifactBlobStore,
+) -> Result<SessionTranscriptTurnResponse, BackendError> {
+    let (content, storage, artifact_id) = match (
+        turn.assistant.content_inline,
+        turn.assistant.content_artifact,
+    ) {
+        (Some(content), None) => (content, "inline".to_owned(), None),
+        (None, Some(descriptor)) => {
+            let artifact_id = descriptor.metadata().artifact_id.to_string();
+            let (_, committed_blob) = descriptor.into_parts();
+            let bytes = artifacts
+                .read(&committed_blob)
+                .map_err(|error| map_artifact_blob_error(&error))?;
+            let content = String::from_utf8(bytes).map_err(|_| BackendError::Internal)?;
+            (content, "artifact".to_owned(), Some(artifact_id))
+        }
+        _ => return Err(BackendError::Internal),
+    };
+    if u64::try_from(content.len()).ok() != Some(turn.assistant.byte_length)
+        || sha256_digest(content.as_bytes()) != turn.assistant.content_digest
+    {
+        return Err(BackendError::Internal);
+    }
+    Ok(SessionTranscriptTurnResponse {
+        sequence: turn.sequence,
+        turn_id: turn.turn_id.to_string(),
+        task_id: turn.task_id.to_string(),
+        run_id: turn.run_id.to_string(),
+        context_epoch_id: turn.context_epoch_id.to_string(),
+        provider_id: turn.provider_id,
+        model_id: turn.model_id,
+        user: SessionTranscriptUserMessageResponse {
+            inbox_entry_id: turn.user.inbox_entry_id.to_string(),
+            content: turn.user.content,
+            content_digest: turn.user.content_digest,
+            byte_length: turn.user.byte_length,
+            accepted_at_ms: epoch_milliseconds(turn.user.accepted_at)?,
+            citation: SessionTranscriptCitationResponse {
+                event_id: turn.user.admission_event_id.to_string(),
+                cursor: TimelineCursor(turn.user.admission_cursor.0),
+            },
+        },
+        assistant: SessionTranscriptAssistantMessageResponse {
+            message_id: turn.assistant.message_id.to_string(),
+            content,
+            content_digest: turn.assistant.content_digest,
+            byte_length: turn.assistant.byte_length,
+            media_type: turn.assistant.media_type,
+            sensitivity: turn.assistant.sensitivity,
+            storage,
+            artifact_id,
+            created_at_ms: epoch_milliseconds(turn.assistant.created_at)?,
+        },
+        completion: SessionTranscriptCitationResponse {
+            event_id: turn.completion_event_id.to_string(),
+            cursor: TimelineCursor(turn.completion_cursor.0),
+        },
+        completed_at_ms: epoch_milliseconds(turn.completed_at)?,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn render_session_transcript_html(
+    export: &SessionTranscriptExport,
+) -> Result<String, BackendError> {
+    let mut html = String::with_capacity(
+        export
+            .bounds
+            .included_content_bytes
+            .try_into()
+            .unwrap_or(0_usize)
+            .saturating_add(16 * 1024),
+    );
+    html.push_str(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
+         base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">\
+         <title>",
+    );
+    push_html_escaped(&mut html, &export.title);
+    html.push_str(" — Mealy transcript</title></head><body><main><header><h1>");
+    push_html_escaped(&mut html, &export.title);
+    html.push_str(
+        "</h1><p>Mealy canonical session transcript</p></header><section><h2>Snapshot</h2><dl>",
+    );
+    push_html_definition(&mut html, "Schema", &export.schema_version);
+    push_html_definition(&mut html, "Session", &export.session_id);
+    push_html_definition(&mut html, "Title source", &export.title_source);
+    push_html_definition(&mut html, "Status", &export.status);
+    push_html_definition(&mut html, "Root session", &export.lineage.root_session_id);
+    if let Some(value) = &export.lineage.parent_session_id {
+        push_html_definition(&mut html, "Parent session", value);
+    }
+    if let Some(value) = &export.lineage.parent_checkpoint_id {
+        push_html_definition(&mut html, "Parent checkpoint", value);
+    }
+    if let Some(value) = &export.lineage.fork_event_id {
+        push_html_definition(&mut html, "Fork event", value);
+    }
+    write!(
+        html,
+        "<dt>Revision</dt><dd>{}</dd>\
+         <dt>Created (epoch ms)</dt><dd>{}</dd>\
+         <dt>Updated (epoch ms)</dt><dd>{}</dd>\
+         <dt>High watermark</dt><dd>{}</dd>\
+         <dt>Eligible turns</dt><dd>{}</dd>\
+         <dt>Included turns</dt><dd>{}</dd>\
+         <dt>Omitted older turns</dt><dd>{}</dd>\
+         <dt>Included content bytes</dt><dd>{}</dd>",
+        export.revision,
+        export.created_at_ms,
+        export.updated_at_ms,
+        export.high_watermark.0,
+        export.bounds.total_eligible_turns,
+        export.turns.len(),
+        export.bounds.omitted_turns,
+        export.bounds.included_content_bytes,
+    )
+    .map_err(|_| BackendError::Internal)?;
+    html.push_str("</dl></section><section><h2>Conversation</h2>");
+    if export.turns.is_empty() {
+        html.push_str("<p>No successful canonical conversation pairs were present.</p>");
+    }
+    for turn in &export.turns {
+        write!(
+            html,
+            "<article><h3>Turn {}</h3><dl><dt>Turn ID</dt><dd>",
+            turn.sequence
+        )
+        .map_err(|_| BackendError::Internal)?;
+        push_html_escaped(&mut html, &turn.turn_id);
+        html.push_str("</dd><dt>Task ID</dt><dd>");
+        push_html_escaped(&mut html, &turn.task_id);
+        html.push_str("</dd><dt>Run ID</dt><dd>");
+        push_html_escaped(&mut html, &turn.run_id);
+        html.push_str("</dd><dt>Context epoch</dt><dd>");
+        push_html_escaped(&mut html, &turn.context_epoch_id);
+        html.push_str("</dd><dt>Provider</dt><dd>");
+        push_html_escaped(&mut html, &turn.provider_id);
+        html.push_str("</dd><dt>Model</dt><dd>");
+        push_html_escaped(&mut html, &turn.model_id);
+        write!(
+            html,
+            "</dd><dt>Completion cursor</dt><dd>{}</dd><dt>Completion event</dt><dd>",
+            turn.completion.cursor.0
+        )
+        .map_err(|_| BackendError::Internal)?;
+        push_html_escaped(&mut html, &turn.completion.event_id);
+        html.push_str("</dd></dl><section><h4>User</h4><pre>");
+        push_html_escaped(&mut html, &turn.user.content);
+        html.push_str("</pre><dl><dt>Content digest (SHA-256)</dt><dd>");
+        push_html_escaped(&mut html, &turn.user.content_digest);
+        write!(
+            html,
+            "</dd><dt>Bytes</dt><dd>{}</dd><dt>Admission cursor</dt><dd>{}</dd>\
+             <dt>Admission event</dt><dd>",
+            turn.user.byte_length, turn.user.citation.cursor.0
+        )
+        .map_err(|_| BackendError::Internal)?;
+        push_html_escaped(&mut html, &turn.user.citation.event_id);
+        html.push_str("</dd></dl></section><section><h4>Assistant</h4><pre>");
+        push_html_escaped(&mut html, &turn.assistant.content);
+        html.push_str("</pre><dl><dt>Content digest (SHA-256)</dt><dd>");
+        push_html_escaped(&mut html, &turn.assistant.content_digest);
+        write!(
+            html,
+            "</dd><dt>Bytes</dt><dd>{}</dd><dt>Storage</dt><dd>",
+            turn.assistant.byte_length
+        )
+        .map_err(|_| BackendError::Internal)?;
+        push_html_escaped(&mut html, &turn.assistant.storage);
+        if let Some(value) = &turn.assistant.artifact_id {
+            html.push_str("</dd><dt>Artifact ID</dt><dd>");
+            push_html_escaped(&mut html, value);
+        }
+        html.push_str("</dd></dl></section></article>");
+    }
+    html.push_str("</section><section><h2>Redaction disclosure</h2><p>");
+    push_html_escaped(&mut html, &export.redaction.warning);
+    html.push_str(
+        "</p><p>No heuristic secret redaction was applied. Daemon credential stores, the \
+         connection bearer credential, private artifact paths, provider request envelopes, and \
+         tool/effect operational state are outside this transcript projection.</p></section>\
+         <footer><p>This file is a read-only evidence projection. Opening it does not replay or \
+         execute the session.</p></footer></main></body></html>\n",
+    );
+    Ok(html)
+}
+
+fn push_html_definition(output: &mut String, term: &str, value: &str) {
+    output.push_str("<dt>");
+    push_html_escaped(output, term);
+    output.push_str("</dt><dd>");
+    push_html_escaped(output, value);
+    output.push_str("</dd>");
+}
+
+fn push_html_escaped(output: &mut String, value: &str) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            _ => output.push(character),
+        }
+    }
+}
+
+fn map_session_transcript_error(error: &SessionTranscriptStoreError) -> BackendError {
+    match error {
+        SessionTranscriptStoreError::NotFound => BackendError::NotFound,
+        SessionTranscriptStoreError::Unavailable(_) => BackendError::Unavailable,
+        SessionTranscriptStoreError::InvariantViolation(_) => BackendError::Internal,
+    }
+}
+
 fn map_session_error(error: SessionUseCaseError) -> BackendError {
     match error {
         SessionUseCaseError::Store(SessionStoreError::SessionNotFound) => BackendError::NotFound,
@@ -4228,14 +4608,18 @@ fn map_session_error(error: SessionUseCaseError) -> BackendError {
 
 fn map_session_workbench_error(error: SessionWorkbenchUseCaseError) -> BackendError {
     match error {
-        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::SessionNotFound) => {
-            BackendError::NotFound
-        }
+        SessionWorkbenchUseCaseError::Store(
+            SessionWorkbenchStoreError::SessionNotFound
+            | SessionWorkbenchStoreError::CheckpointNotFound,
+        ) => BackendError::NotFound,
         SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::Unauthorized) => {
             BackendError::Unauthorized
         }
         SessionWorkbenchUseCaseError::Store(
-            SessionWorkbenchStoreError::Conflict | SessionWorkbenchStoreError::NotQuiescent,
+            SessionWorkbenchStoreError::Conflict
+            | SessionWorkbenchStoreError::IdempotencyConflict
+            | SessionWorkbenchStoreError::NotQuiescent
+            | SessionWorkbenchStoreError::CheckpointNotRetained,
         ) => BackendError::Conflict,
         SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::Unavailable(_)) => {
             BackendError::Unavailable
@@ -4725,16 +5109,20 @@ mod tests {
     use super::{
         ApiBackend, AuthenticatedIdentity, BackendError, DrainController, KeyedConcurrencyLimiter,
         RuntimeBackend, RuntimeChannelConfig, RuntimeDiscordConfig, RuntimeOperationalConfig,
-        RuntimeTelegramConfig, map_artifact_blob_error, validate_extension_mount_roots,
+        RuntimeTelegramConfig, map_artifact_blob_error, parse_ownership,
+        session_transcript_export_model, validate_extension_mount_roots,
     };
     use crate::{agent::RuntimeModelProvider, store_runtime::RuntimeStore};
     use mealy_application::{
-        ArtifactBlobStore, ArtifactBlobStoreError, ProviderConfig, estimate_tokens, sha256_digest,
+        ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore, ProviderConfig,
+        SessionTranscriptAssistantMessage, SessionTranscriptLineage, SessionTranscriptSnapshot,
+        SessionTranscriptTurn, SessionTranscriptUserMessage, TimelineCursor, estimate_tokens,
+        sha256_digest,
     };
     use mealy_domain::{
         ArtifactId, ChannelBindingId, ContextEpochId, ContextItemId, ContextManifestId,
-        CorrelationId, EventId, InboxEntryId, OutboxId, PrincipalId, RunId, SessionId, TaskId,
-        TurnId,
+        CorrelationId, EventId, InboxEntryId, MessageId, OutboxId, PrincipalId, RunId, SessionId,
+        TaskId, TurnId,
     };
     use mealy_infrastructure::{
         FileArtifactBlobStore, FileChannelSecretStore, FileProviderSecretStore, SqliteStore,
@@ -4747,7 +5135,12 @@ mod tests {
     };
     use rusqlite::params;
     use serde_json::json;
-    use std::{fs, io, path::PathBuf, sync::Arc, time::Duration};
+    use std::{
+        fs, io,
+        path::PathBuf,
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
     use tempfile::TempDir;
 
     const CONTENT: &[u8] = b"verified durable artifact";
@@ -4855,6 +5248,88 @@ mod tests {
             fixture
                 .backend
                 .artifact_content(fixture.identity, fixture.artifact_id.to_string()),
+            Err(BackendError::Internal)
+        );
+    }
+
+    #[test]
+    fn transcript_model_hydrates_artifacts_and_fails_closed_on_blob_corruption() {
+        let fixture = Fixture::new();
+        let ownership = parse_ownership(&fixture.identity).expect("fixture ownership");
+        let descriptor = fixture
+            .backend
+            .read()
+            .expect("runtime reader")
+            .artifact_content_descriptor(ownership, fixture.artifact_id)
+            .expect("authorized transcript artifact");
+        let session_id = SessionId::new();
+        let user_content = "artifact-backed response".to_owned();
+        let snapshot = SessionTranscriptSnapshot {
+            session_id,
+            title: "Artifact transcript".to_owned(),
+            title_source: "owner".to_owned(),
+            status: "active".to_owned(),
+            revision: 3,
+            created_at: SystemTime::UNIX_EPOCH + Duration::from_millis(1),
+            updated_at: SystemTime::UNIX_EPOCH + Duration::from_millis(2),
+            high_watermark: TimelineCursor(9),
+            lineage: SessionTranscriptLineage {
+                root_session_id: session_id,
+                parent_session_id: None,
+                parent_checkpoint_id: None,
+                parent_checkpoint_cursor: None,
+                fork_event_id: None,
+            },
+            total_eligible_turns: 1,
+            omitted_turns: 0,
+            included_content_bytes: u64::try_from(user_content.len() + CONTENT.len())
+                .expect("fixture size"),
+            oldest_included_sequence: Some(1),
+            turns: vec![SessionTranscriptTurn {
+                sequence: 1,
+                turn_id: TurnId::new(),
+                task_id: TaskId::new(),
+                run_id: RunId::new(),
+                context_epoch_id: ContextEpochId::new(),
+                provider_id: "fixture.provider".to_owned(),
+                model_id: "fixture-model".to_owned(),
+                user: SessionTranscriptUserMessage {
+                    inbox_entry_id: InboxEntryId::new(),
+                    content_digest: sha256_digest(user_content.as_bytes()),
+                    byte_length: u64::try_from(user_content.len()).expect("user size"),
+                    content: user_content,
+                    admission_event_id: EventId::new(),
+                    admission_cursor: TimelineCursor(2),
+                    accepted_at: SystemTime::UNIX_EPOCH + Duration::from_millis(1),
+                },
+                assistant: SessionTranscriptAssistantMessage {
+                    message_id: MessageId::new(),
+                    content_inline: None,
+                    content_artifact: Some(descriptor),
+                    content_digest: sha256_digest(CONTENT),
+                    byte_length: u64::try_from(CONTENT.len()).expect("artifact size"),
+                    media_type: "text/plain".to_owned(),
+                    sensitivity: "private".to_owned(),
+                    created_at: SystemTime::UNIX_EPOCH + Duration::from_millis(2),
+                },
+                completion_event_id: EventId::new(),
+                completion_cursor: TimelineCursor(9),
+                completed_at: SystemTime::UNIX_EPOCH + Duration::from_millis(2),
+            }],
+        };
+        let export = session_transcript_export_model(snapshot.clone(), &fixture.backend.artifacts)
+            .expect("hydrate transcript artifact");
+        assert_eq!(export.turns[0].assistant.content.as_bytes(), CONTENT);
+        assert_eq!(export.turns[0].assistant.storage, "artifact");
+        let expected_artifact_id = fixture.artifact_id.to_string();
+        assert_eq!(
+            export.turns[0].assistant.artifact_id.as_deref(),
+            Some(expected_artifact_id.as_str())
+        );
+
+        fs::write(&fixture.blob_path, b"tampered content").expect("tamper transcript blob");
+        assert_eq!(
+            session_transcript_export_model(snapshot, &fixture.backend.artifacts),
             Err(BackendError::Internal)
         );
     }

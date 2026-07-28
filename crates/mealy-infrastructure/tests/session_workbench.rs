@@ -1,12 +1,13 @@
 //! Cross-crate proof for canonical owner titles and immutable session checkpoints.
 
 use mealy_application::{
-    AdmitInputCommand, CreateSessionCheckpointCommand, InputAdmissionLimits, OwnershipContext,
-    SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, UpdateSessionTitleCommand,
-    admit_input, create_session, create_session_checkpoint, query_session_checkpoints,
-    query_sessions, update_session_title,
+    AdmitInputCommand, CreateSessionCheckpointCommand, ForkSessionCommand, InputAdmissionLimits,
+    OwnershipContext, SessionTranscriptStoreError, SessionWorkbenchStoreError,
+    SessionWorkbenchUseCaseError, UpdateSessionTitleCommand, admit_input, create_session,
+    create_session_checkpoint, fork_session, query_session_checkpoints, query_session_status,
+    query_session_transcript, query_sessions, update_session_title,
 };
-use mealy_domain::{ChannelBindingId, DeliveryMode, PrincipalId};
+use mealy_domain::{ChannelBindingId, DeliveryMode, PrincipalId, SessionCheckpointId, SessionId};
 use mealy_infrastructure::SqliteStore;
 use mealy_testkit::{TestClock, TestIdGenerator};
 
@@ -180,4 +181,130 @@ fn workbench_metadata_rejects_controls_bidi_padding_and_oversize_values() {
         .expect_err("unsafe title must fail");
         assert_eq!(error, SessionWorkbenchUseCaseError::InvalidMetadata);
     }
+}
+
+#[test]
+fn empty_checkpoint_fork_is_fresh_duplicate_safe_and_exact_owner_bound() {
+    let clock = TestClock::new(NOW_MS);
+    let ids = TestIdGenerator::new(NOW_MS.cast_unsigned());
+    let ownership = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+    let foreign = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+    let mut store = SqliteStore::open_in_memory(NOW_MS).expect("open store");
+    let source_session =
+        create_session(&mut store, &clock, &ids, ownership).expect("create source session");
+    let first_checkpoint = create_session_checkpoint(
+        &mut store,
+        &clock,
+        &ids,
+        CreateSessionCheckpointCommand {
+            session_id: source_session,
+            ownership,
+            expected_revision: 0,
+            label: Some("Fork base".to_owned()),
+        },
+    )
+    .expect("checkpoint source");
+    let command = ForkSessionCommand {
+        source_session_id: source_session,
+        checkpoint_id: first_checkpoint.checkpoint_id,
+        ownership,
+        idempotency_key: "fork:empty:1".to_owned(),
+    };
+    let created = fork_session(&mut store, &clock, &ids, command.clone()).expect("fork session");
+    assert!(!created.duplicate);
+    assert_eq!(created.root_session_id, source_session);
+    assert_eq!(created.source_session_id, source_session);
+    assert_eq!(created.referenced_turns, 0);
+    let status = query_session_status(&store, created.fork_session_id, ownership)
+        .expect("fresh fork status");
+    assert_eq!(status.revision, 0);
+    assert_eq!(status.pending_inputs, 0);
+    assert!(status.active_turn_id.is_none());
+    assert_empty_transcript_lineage(
+        &store,
+        source_session,
+        created.fork_session_id,
+        first_checkpoint.checkpoint_id,
+        ownership,
+        foreign,
+    );
+
+    let duplicate = fork_session(&mut store, &clock, &ids, command).expect("replay fork command");
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.fork_session_id, created.fork_session_id);
+    assert_eq!(duplicate.event_id, created.event_id);
+
+    let second_checkpoint = create_session_checkpoint(
+        &mut store,
+        &clock,
+        &ids,
+        CreateSessionCheckpointCommand {
+            session_id: source_session,
+            ownership,
+            expected_revision: 1,
+            label: None,
+        },
+    )
+    .expect("second checkpoint");
+    let conflict = fork_session(
+        &mut store,
+        &clock,
+        &ids,
+        ForkSessionCommand {
+            source_session_id: source_session,
+            checkpoint_id: second_checkpoint.checkpoint_id,
+            ownership,
+            idempotency_key: "fork:empty:1".to_owned(),
+        },
+    )
+    .expect_err("same command key cannot select another checkpoint");
+    assert!(matches!(
+        conflict,
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::IdempotencyConflict)
+    ));
+    let unauthorized = fork_session(
+        &mut store,
+        &clock,
+        &ids,
+        ForkSessionCommand {
+            source_session_id: source_session,
+            checkpoint_id: first_checkpoint.checkpoint_id,
+            ownership: foreign,
+            idempotency_key: "fork:foreign:1".to_owned(),
+        },
+    )
+    .expect_err("foreign owner cannot fork");
+    assert!(matches!(
+        unauthorized,
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::Unauthorized)
+    ));
+}
+
+fn assert_empty_transcript_lineage(
+    store: &SqliteStore,
+    source_session: SessionId,
+    fork_session: SessionId,
+    checkpoint_id: SessionCheckpointId,
+    ownership: OwnershipContext,
+    foreign: OwnershipContext,
+) {
+    let source_export = query_session_transcript(store, source_session, ownership)
+        .expect("empty source transcript");
+    assert_eq!(source_export.lineage.root_session_id, source_session);
+    assert!(source_export.lineage.parent_checkpoint_id.is_none());
+    assert!(source_export.turns.is_empty());
+    assert_eq!(source_export.total_eligible_turns, 0);
+    let fork_export =
+        query_session_transcript(store, fork_session, ownership).expect("empty fork transcript");
+    assert_eq!(fork_export.lineage.root_session_id, source_session);
+    assert_eq!(fork_export.lineage.parent_session_id, Some(source_session));
+    assert_eq!(
+        fork_export.lineage.parent_checkpoint_id,
+        Some(checkpoint_id)
+    );
+    assert!(fork_export.turns.is_empty());
+    assert_eq!(
+        query_session_transcript(store, source_session, foreign),
+        Err(SessionTranscriptStoreError::NotFound)
+    );
 }
