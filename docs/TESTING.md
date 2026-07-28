@@ -173,9 +173,12 @@ JSON Schema resolution, required task support, invalid arguments, digest drift, 
 grants.
 
 `apps/mealyctl/tests/mcp_configuration.rs` crosses the stopped-home client boundary. It proves
-read-only listing, approval-before-execution/mutation, exact selected-tool publication,
-disable/re-enable/revoke semantics, live tool-set verification, and retained configuration
-history. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable` scenario in
+read-only listing, approval-before-execution/mutation, exact selected-tool/static-resource/prompt
+publication, disable/re-enable/revoke semantics, live complete-catalog verification, and retained
+configuration history. Infrastructure HTTP fixtures additionally prove paginated
+tool/resource/resource-template/prompt discovery, exact resource reads, prompt argument fencing,
+untrusted-evidence normalization, authority-bound durable descriptors, and fail-closed catalog
+drift. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable` scenario in
 `apps/mealyd/tests/real_provider.rs` starts the real daemon, advertises the exact model-visible MCP
 schema, executes a sandboxed call, requires an `mcp://` citation, removes the installed executable,
 and still verifies recorded-only replay with zero provider or tool calls. Maintenance tests prove

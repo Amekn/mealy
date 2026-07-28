@@ -174,7 +174,7 @@ fn complete_toolset_drift_and_executable_tampering_remove_authority() {
     assert_eq!(
         load_mcp_read_tools(home.path(), Path::new(BUBBLEWRAP), &launcher(), &[drift])
             .expect_err("drift must fail"),
-        McpHostError::ToolsetDrift
+        McpHostError::InventoryDrift
     );
 
     let valid = install_fixture(home.path(), "good", &["add"]);

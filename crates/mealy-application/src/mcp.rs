@@ -9,6 +9,14 @@ use url::Url;
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Maximum owner-reviewed tools exposed from one configured MCP server.
 pub const MCP_MAXIMUM_TOOLS_PER_SERVER: usize = 64;
+/// Maximum resources retained in one complete remote catalog.
+pub const MCP_MAXIMUM_RESOURCES_PER_SERVER: usize = 256;
+/// Maximum resource templates retained in one complete remote catalog.
+pub const MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER: usize = 128;
+/// Maximum prompts retained in one complete remote catalog.
+pub const MCP_MAXIMUM_PROMPTS_PER_SERVER: usize = 64;
+/// Maximum combined owner-selected tools, resources, and prompts exposed by one HTTP server.
+pub const MCP_MAXIMUM_HTTP_GRANTS_PER_SERVER: usize = 64;
 /// Maximum direct, non-secret process arguments for one configured MCP server.
 pub const MCP_MAXIMUM_ARGUMENTS: usize = 64;
 /// Maximum canonical bytes retained for one advertised MCP tool definition.
@@ -22,6 +30,8 @@ const MCP_MAXIMUM_ARGUMENT_BYTES: usize = 4_096;
 const MCP_MAXIMUM_ARGUMENT_TOTAL_BYTES: usize = 32 * 1024;
 const MCP_MAXIMUM_OUTPUT_BYTES: u64 = 1024 * 1024;
 const MCP_MAXIMUM_TOOL_ARGUMENT_BYTES: usize = 64 * 1024;
+const MCP_MAXIMUM_RESOURCE_URI_BYTES: usize = 4_096;
+const MCP_MAXIMUM_PROMPT_ARGUMENTS: usize = 64;
 const MCP_MAXIMUM_TIMEOUT_MS: u64 = 60_000;
 const MCP_MINIMUM_TIMEOUT_MS: u64 = 100;
 
@@ -125,6 +135,233 @@ impl McpToolGrant {
             || !(1..=MCP_MAXIMUM_OUTPUT_BYTES).contains(&self.maximum_output_bytes)
         {
             return Err(McpConfigError::InvalidToolGrant);
+        }
+        Ok(())
+    }
+}
+
+/// One exact server-advertised resource selected for bounded read access.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpResourceGrant {
+    definition: Value,
+    definition_digest: String,
+    timeout_ms: u64,
+    maximum_output_bytes: u64,
+}
+
+impl McpResourceGrant {
+    /// Constructs a grant from one freshly discovered exact resource definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] when the definition or execution bounds are invalid.
+    pub fn new(
+        definition: Value,
+        timeout_ms: u64,
+        maximum_output_bytes: u64,
+    ) -> Result<Self, McpConfigError> {
+        let definition_digest = mcp_resource_definition_digest(&definition)?;
+        let grant = Self {
+            definition,
+            definition_digest,
+            timeout_ms,
+            maximum_output_bytes,
+        };
+        grant.validate()?;
+        Ok(grant)
+    }
+
+    /// Exact server-advertised resource definition.
+    #[must_use]
+    pub const fn definition(&self) -> &Value {
+        &self.definition
+    }
+
+    /// SHA-256 of the exact canonical resource definition.
+    #[must_use]
+    pub fn definition_digest(&self) -> &str {
+        &self.definition_digest
+    }
+
+    /// Exact server-local resource URI.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if trusted code calls this accessor on a value that bypassed `validate`.
+    #[must_use]
+    pub fn uri(&self) -> &str {
+        self.definition
+            .get("uri")
+            .and_then(Value::as_str)
+            .expect("validated MCP resource grant always has a URI")
+    }
+
+    /// Bounded untrusted description for model-facing tool metadata.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        self.definition
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("Reads one owner-reviewed MCP resource as untrusted evidence")
+    }
+
+    /// Per-call wall-clock ceiling.
+    #[must_use]
+    pub const fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+
+    /// Maximum normalized terminal result bytes.
+    #[must_use]
+    pub const fn maximum_output_bytes(&self) -> u64 {
+        self.maximum_output_bytes
+    }
+
+    fn validate(&self) -> Result<(), McpConfigError> {
+        inspect_mcp_resource_definition(&self.definition)?;
+        if mcp_resource_definition_digest(&self.definition)? != self.definition_digest
+            || !(MCP_MINIMUM_TIMEOUT_MS..=MCP_MAXIMUM_TIMEOUT_MS).contains(&self.timeout_ms)
+            || !(1..=MCP_MAXIMUM_OUTPUT_BYTES).contains(&self.maximum_output_bytes)
+        {
+            return Err(McpConfigError::InvalidResourceGrant);
+        }
+        Ok(())
+    }
+}
+
+/// One exact server-advertised prompt selected for bounded retrieval.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpPromptGrant {
+    definition: Value,
+    definition_digest: String,
+    timeout_ms: u64,
+    maximum_output_bytes: u64,
+}
+
+impl McpPromptGrant {
+    /// Constructs a grant from one freshly discovered exact prompt definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] when the definition or execution bounds are invalid.
+    pub fn new(
+        definition: Value,
+        timeout_ms: u64,
+        maximum_output_bytes: u64,
+    ) -> Result<Self, McpConfigError> {
+        let definition_digest = mcp_prompt_definition_digest(&definition)?;
+        let grant = Self {
+            definition,
+            definition_digest,
+            timeout_ms,
+            maximum_output_bytes,
+        };
+        grant.validate()?;
+        Ok(grant)
+    }
+
+    /// Exact server-advertised prompt definition.
+    #[must_use]
+    pub const fn definition(&self) -> &Value {
+        &self.definition
+    }
+
+    /// SHA-256 of the exact canonical prompt definition.
+    #[must_use]
+    pub fn definition_digest(&self) -> &str {
+        &self.definition_digest
+    }
+
+    /// Exact server-local prompt name.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if trusted code calls this accessor on a value that bypassed `validate`.
+    #[must_use]
+    pub fn remote_name(&self) -> &str {
+        self.definition
+            .get("name")
+            .and_then(Value::as_str)
+            .expect("validated MCP prompt grant always has a name")
+    }
+
+    /// Bounded untrusted description for model-facing tool metadata.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        self.definition
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("Retrieves one owner-reviewed MCP prompt as untrusted evidence")
+    }
+
+    /// Exact generated object schema for the prompt's string arguments.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if trusted code calls this accessor on a value that bypassed `validate`.
+    #[must_use]
+    pub fn input_schema(&self) -> Value {
+        let mut properties = serde_json::Map::new();
+        let mut required = Vec::new();
+        for argument in self
+            .definition
+            .get("arguments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let name = argument["name"]
+                .as_str()
+                .expect("validated MCP prompt argument always has a name");
+            let mut schema = serde_json::Map::from_iter([(
+                "type".to_owned(),
+                Value::String("string".to_owned()),
+            )]);
+            if let Some(description) = argument.get("description").and_then(Value::as_str) {
+                schema.insert(
+                    "description".to_owned(),
+                    Value::String(description.to_owned()),
+                );
+            }
+            properties.insert(name.to_owned(), Value::Object(schema));
+            if argument
+                .get("required")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                required.push(Value::String(name.to_owned()));
+            }
+        }
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties,
+            "required": required,
+            "description": self.description(),
+        })
+    }
+
+    /// Per-call wall-clock ceiling.
+    #[must_use]
+    pub const fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+    }
+
+    /// Maximum normalized terminal result bytes.
+    #[must_use]
+    pub const fn maximum_output_bytes(&self) -> u64 {
+        self.maximum_output_bytes
+    }
+
+    fn validate(&self) -> Result<(), McpConfigError> {
+        inspect_mcp_prompt_definition(&self.definition)?;
+        if mcp_prompt_definition_digest(&self.definition)? != self.definition_digest
+            || !(MCP_MINIMUM_TIMEOUT_MS..=MCP_MAXIMUM_TIMEOUT_MS).contains(&self.timeout_ms)
+            || !(1..=MCP_MAXIMUM_OUTPUT_BYTES).contains(&self.maximum_output_bytes)
+        {
+            return Err(McpConfigError::InvalidPromptGrant);
         }
         Ok(())
     }
@@ -387,9 +624,14 @@ pub struct McpHttpServerConfig {
     endpoint: String,
     #[serde(default)]
     authentication: McpHttpAuthentication,
-    toolset_digest: String,
+    catalog_digest: String,
     enabled: bool,
+    #[serde(default)]
     tools: Vec<McpToolGrant>,
+    #[serde(default)]
+    resources: Vec<McpResourceGrant>,
+    #[serde(default)]
+    prompts: Vec<McpPromptGrant>,
 }
 
 impl McpHttpServerConfig {
@@ -399,22 +641,29 @@ impl McpHttpServerConfig {
     ///
     /// Returns [`McpConfigError`] for an unsafe endpoint, identity, credential reference,
     /// discovery digest, grant, ordering, or bound.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         server_id: String,
         endpoint: String,
         authentication: McpHttpAuthentication,
-        toolset_digest: String,
+        catalog_digest: String,
         enabled: bool,
         mut tools: Vec<McpToolGrant>,
+        mut resources: Vec<McpResourceGrant>,
+        mut prompts: Vec<McpPromptGrant>,
     ) -> Result<Self, McpConfigError> {
         tools.sort_by(|left, right| left.remote_name().cmp(right.remote_name()));
+        resources.sort_by(|left, right| left.uri().cmp(right.uri()));
+        prompts.sort_by(|left, right| left.remote_name().cmp(right.remote_name()));
         let config = Self {
             server_id,
             endpoint,
             authentication,
-            toolset_digest,
+            catalog_digest,
             enabled,
             tools,
+            resources,
+            prompts,
         };
         config.validate()?;
         Ok(config)
@@ -438,10 +687,10 @@ impl McpHttpServerConfig {
         &self.authentication
     }
 
-    /// SHA-256 binding the negotiated revision and complete advertised tool list.
+    /// SHA-256 binding the negotiated revision and complete advertised HTTP MCP catalog.
     #[must_use]
-    pub fn toolset_digest(&self) -> &str {
-        &self.toolset_digest
+    pub fn catalog_digest(&self) -> &str {
+        &self.catalog_digest
     }
 
     /// Whether this server is activated for new context epochs.
@@ -456,6 +705,18 @@ impl McpHttpServerConfig {
         &self.tools
     }
 
+    /// Exact owner-reviewed resource grants in URI order.
+    #[must_use]
+    pub fn resources(&self) -> &[McpResourceGrant] {
+        &self.resources
+    }
+
+    /// Exact owner-reviewed prompt grants in remote-name order.
+    #[must_use]
+    pub fn prompts(&self) -> &[McpPromptGrant] {
+        &self.prompts
+    }
+
     /// Returns an enabled/disabled copy while preserving exact reviewed evidence.
     #[must_use]
     pub fn with_enabled(&self, enabled: bool) -> Self {
@@ -467,7 +728,19 @@ impl McpHttpServerConfig {
     /// Model-visible collision-resistant identity for one granted remote name.
     #[must_use]
     pub fn exposed_tool_id(&self, remote_name: &str) -> String {
-        format!("mcp.{}.{}", self.server_id, remote_name)
+        format!("mcp.{}.tool.{}", self.server_id, remote_name)
+    }
+
+    /// Model-visible collision-resistant identity for one selected exact resource.
+    #[must_use]
+    pub fn exposed_resource_tool_id(&self, definition_digest: &str) -> String {
+        format!("mcp.{}.resource.{}", self.server_id, definition_digest)
+    }
+
+    /// Model-visible identity for one selected prompt.
+    #[must_use]
+    pub fn exposed_prompt_tool_id(&self, remote_name: &str) -> String {
+        format!("mcp.{}.prompt.{}", self.server_id, remote_name)
     }
 
     /// Canonical endpoint origin used for exact egress authority.
@@ -516,18 +789,41 @@ impl McpHttpServerConfig {
     /// Returns [`McpConfigError`] for malformed or non-canonical state.
     pub fn validate(&self) -> Result<(), McpConfigError> {
         if self.endpoint_config().validate().is_err()
-            || !crate::is_sha256_digest(&self.toolset_digest)
-            || self.tools.is_empty()
-            || self.tools.len() > MCP_MAXIMUM_TOOLS_PER_SERVER
+            || !crate::is_sha256_digest(&self.catalog_digest)
+            || self
+                .tools
+                .len()
+                .saturating_add(self.resources.len())
+                .saturating_add(self.prompts.len())
+                == 0
+            || self
+                .tools
+                .len()
+                .saturating_add(self.resources.len())
+                .saturating_add(self.prompts.len())
+                > MCP_MAXIMUM_HTTP_GRANTS_PER_SERVER
         {
             return Err(McpConfigError::InvalidServer);
         }
-        let mut names = BTreeSet::new();
+        let mut exposed_ids = BTreeSet::new();
         for tool in &self.tools {
             tool.validate()?;
-            if !names.insert(tool.remote_name())
-                || self.exposed_tool_id(tool.remote_name()).len() > 128
-            {
+            let exposed_id = self.exposed_tool_id(tool.remote_name());
+            if exposed_id.len() > 128 || !exposed_ids.insert(exposed_id) {
+                return Err(McpConfigError::InvalidServer);
+            }
+        }
+        for resource in &self.resources {
+            resource.validate()?;
+            let exposed_id = self.exposed_resource_tool_id(resource.definition_digest());
+            if exposed_id.len() > 128 || !exposed_ids.insert(exposed_id) {
+                return Err(McpConfigError::InvalidServer);
+            }
+        }
+        for prompt in &self.prompts {
+            prompt.validate()?;
+            let exposed_id = self.exposed_prompt_tool_id(prompt.remote_name());
+            if exposed_id.len() > 128 || !exposed_ids.insert(exposed_id) {
                 return Err(McpConfigError::InvalidServer);
             }
         }
@@ -535,6 +831,14 @@ impl McpHttpServerConfig {
             .tools
             .windows(2)
             .all(|window| window[0].remote_name() < window[1].remote_name())
+            || !self
+                .resources
+                .windows(2)
+                .all(|window| window[0].uri() < window[1].uri())
+            || !self
+                .prompts
+                .windows(2)
+                .all(|window| window[0].remote_name() < window[1].remote_name())
         {
             return Err(McpConfigError::InvalidServer);
         }
@@ -647,6 +951,210 @@ impl McpServerDiscovery {
     }
 }
 
+/// Exact validated projection of one advertised resource, template, or prompt definition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpCatalogItemInspection {
+    /// Exact full server definition.
+    pub definition: Value,
+    /// Canonical definition digest.
+    pub definition_digest: String,
+}
+
+/// Bounded complete Streamable HTTP MCP catalog discovered in one initialized session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpHttpCatalogDiscovery {
+    /// Exact negotiated protocol revision.
+    pub protocol_version: String,
+    /// Bounded server implementation metadata returned at initialization.
+    pub server_info: Value,
+    /// Exact negotiated tools capability object, when advertised.
+    pub tools_capability: Option<Value>,
+    /// Exact negotiated resources capability object, when advertised.
+    pub resources_capability: Option<Value>,
+    /// Exact negotiated prompts capability object, when advertised.
+    pub prompts_capability: Option<Value>,
+    /// Complete validated tools in remote-name order.
+    pub tools: Vec<McpToolInspection>,
+    /// Complete validated exact resources in URI order.
+    pub resources: Vec<McpCatalogItemInspection>,
+    /// Complete validated resource templates in URI-template order.
+    pub resource_templates: Vec<McpCatalogItemInspection>,
+    /// Complete validated prompts in remote-name order.
+    pub prompts: Vec<McpCatalogItemInspection>,
+}
+
+impl McpHttpCatalogDiscovery {
+    /// Validates negotiated capabilities, all paginated inventories, definition digests, bounds,
+    /// uniqueness, and canonical ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] when catalog evidence is malformed or oversized.
+    pub fn validate(&self) -> Result<(), McpConfigError> {
+        if self.protocol_version != MCP_PROTOCOL_VERSION
+            || !self.server_info.is_object()
+            || serde_json::to_vec(&self.server_info)
+                .map_err(|_| McpConfigError::InvalidDiscovery)?
+                .len()
+                > 64 * 1024
+            || self
+                .tools_capability
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+            || self
+                .resources_capability
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+            || self
+                .prompts_capability
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+            || serde_json::to_vec(&json!({
+                "tools": self.tools_capability,
+                "resources": self.resources_capability,
+                "prompts": self.prompts_capability,
+            }))
+            .map_err(|_| McpConfigError::InvalidDiscovery)?
+            .len()
+                > 16 * 1024
+            || self.tools_capability.is_none()
+                && self.resources_capability.is_none()
+                && self.prompts_capability.is_none()
+            || self.tools_capability.is_none() && !self.tools.is_empty()
+            || self.resources_capability.is_none()
+                && (!self.resources.is_empty() || !self.resource_templates.is_empty())
+            || self.prompts_capability.is_none() && !self.prompts.is_empty()
+            || self.tools.len() > MCP_MAXIMUM_TOOLS_PER_SERVER
+            || self.resources.len() > MCP_MAXIMUM_RESOURCES_PER_SERVER
+            || self.resource_templates.len() > MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER
+            || self.prompts.len() > MCP_MAXIMUM_PROMPTS_PER_SERVER
+        {
+            return Err(McpConfigError::InvalidDiscovery);
+        }
+        validate_catalog_items(
+            &self.tools,
+            |definition| inspect_mcp_tool_definition(definition).map(|item| item.name),
+            mcp_tool_definition_digest,
+        )?;
+        validate_catalog_items(
+            &self.resources,
+            |definition| inspect_mcp_resource_definition(definition),
+            mcp_resource_definition_digest,
+        )?;
+        validate_catalog_items(
+            &self.resource_templates,
+            |definition| inspect_mcp_resource_template_definition(definition),
+            mcp_resource_template_definition_digest,
+        )?;
+        validate_catalog_items(
+            &self.prompts,
+            |definition| inspect_mcp_prompt_definition(definition),
+            mcp_prompt_definition_digest,
+        )?;
+        Ok(())
+    }
+
+    /// Finds one exact remote tool definition.
+    #[must_use]
+    pub fn tool(&self, remote_name: &str) -> Option<&McpToolInspection> {
+        self.tools
+            .iter()
+            .find(|tool| tool.definition.get("name").and_then(Value::as_str) == Some(remote_name))
+    }
+
+    /// Finds one exact resource definition by URI.
+    #[must_use]
+    pub fn resource(&self, uri: &str) -> Option<&McpCatalogItemInspection> {
+        self.resources
+            .iter()
+            .find(|resource| resource.definition.get("uri").and_then(Value::as_str) == Some(uri))
+    }
+
+    /// Finds one exact prompt definition by remote name.
+    #[must_use]
+    pub fn prompt(&self, remote_name: &str) -> Option<&McpCatalogItemInspection> {
+        self.prompts.iter().find(|prompt| {
+            prompt.definition.get("name").and_then(Value::as_str) == Some(remote_name)
+        })
+    }
+
+    /// Digests the negotiated capability declarations and all complete canonical inventories.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] when discovery evidence is invalid.
+    pub fn catalog_digest(&self) -> Result<String, McpConfigError> {
+        self.validate()?;
+        Ok(sha256_digest(
+            json!({
+                "contractVersion": "mealy.mcp-http-catalog.v1",
+                "protocolVersion": self.protocol_version,
+                "capabilities": {
+                    "tools": self.tools_capability,
+                    "resources": self.resources_capability,
+                    "prompts": self.prompts_capability,
+                },
+                "tools": self.tools,
+                "resources": self.resources,
+                "resourceTemplates": self.resource_templates,
+                "prompts": self.prompts,
+            })
+            .to_string()
+            .as_bytes(),
+        ))
+    }
+}
+
+fn validate_catalog_items<'a, T, F, D>(
+    items: &'a [T],
+    inspect: F,
+    digest: D,
+) -> Result<(), McpConfigError>
+where
+    T: CatalogInspection,
+    F: Fn(&'a Value) -> Result<&'a str, McpConfigError>,
+    D: Fn(&Value) -> Result<String, McpConfigError>,
+{
+    let mut prior = None;
+    for item in items {
+        let key = inspect(item.definition())?;
+        if digest(item.definition())? != item.definition_digest()
+            || prior.is_some_and(|prior_key| prior_key >= key)
+        {
+            return Err(McpConfigError::InvalidDiscovery);
+        }
+        prior = Some(key);
+    }
+    Ok(())
+}
+
+trait CatalogInspection {
+    fn definition(&self) -> &Value;
+    fn definition_digest(&self) -> &str;
+}
+
+impl CatalogInspection for McpToolInspection {
+    fn definition(&self) -> &Value {
+        &self.definition
+    }
+
+    fn definition_digest(&self) -> &str {
+        &self.definition_digest
+    }
+}
+
+impl CatalogInspection for McpCatalogItemInspection {
+    fn definition(&self) -> &Value {
+        &self.definition
+    }
+
+    fn definition_digest(&self) -> &str {
+        &self.definition_digest
+    }
+}
+
 struct InspectedDefinition<'a> {
     name: &'a str,
 }
@@ -710,6 +1218,196 @@ fn inspect_mcp_tool_definition(
     Ok(InspectedDefinition { name })
 }
 
+/// Computes the canonical complete digest of one exact MCP resource definition.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for malformed or oversized resource metadata.
+pub fn mcp_resource_definition_digest(definition: &Value) -> Result<String, McpConfigError> {
+    inspect_mcp_resource_definition(definition)?;
+    canonical_catalog_definition_digest(definition, McpConfigError::InvalidResourceDefinition)
+}
+
+fn inspect_mcp_resource_definition(definition: &Value) -> Result<&str, McpConfigError> {
+    let object = definition
+        .as_object()
+        .ok_or(McpConfigError::InvalidResourceDefinition)?;
+    let uri = object
+        .get("uri")
+        .and_then(Value::as_str)
+        .filter(|uri| valid_resource_uri(uri))
+        .ok_or(McpConfigError::InvalidResourceDefinition)?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| valid_mcp_name(name, 128))
+        .ok_or(McpConfigError::InvalidResourceDefinition)?;
+    if name.is_empty()
+        || !valid_catalog_metadata(object)
+        || object
+            .get("size")
+            .is_some_and(|size| size.as_u64().is_none())
+    {
+        return Err(McpConfigError::InvalidResourceDefinition);
+    }
+    Ok(uri)
+}
+
+/// Computes the canonical complete digest of one advertised MCP resource template.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for malformed or oversized template metadata.
+pub fn mcp_resource_template_definition_digest(
+    definition: &Value,
+) -> Result<String, McpConfigError> {
+    inspect_mcp_resource_template_definition(definition)?;
+    canonical_catalog_definition_digest(
+        definition,
+        McpConfigError::InvalidResourceTemplateDefinition,
+    )
+}
+
+fn inspect_mcp_resource_template_definition(definition: &Value) -> Result<&str, McpConfigError> {
+    let object = definition
+        .as_object()
+        .ok_or(McpConfigError::InvalidResourceTemplateDefinition)?;
+    let uri_template = object
+        .get("uriTemplate")
+        .and_then(Value::as_str)
+        .filter(|template| {
+            !template.is_empty()
+                && template.len() <= MCP_MAXIMUM_RESOURCE_URI_BYTES
+                && template.trim() == *template
+                && !template.chars().any(char::is_control)
+                && template.contains(':')
+                && balanced_template_braces(template)
+        })
+        .ok_or(McpConfigError::InvalidResourceTemplateDefinition)?;
+    if object
+        .get("name")
+        .and_then(Value::as_str)
+        .is_none_or(|name| !valid_mcp_name(name, 128))
+        || !valid_catalog_metadata(object)
+    {
+        return Err(McpConfigError::InvalidResourceTemplateDefinition);
+    }
+    Ok(uri_template)
+}
+
+/// Computes the canonical complete digest of one exact MCP prompt definition.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for malformed or oversized prompt metadata.
+pub fn mcp_prompt_definition_digest(definition: &Value) -> Result<String, McpConfigError> {
+    inspect_mcp_prompt_definition(definition)?;
+    canonical_catalog_definition_digest(definition, McpConfigError::InvalidPromptDefinition)
+}
+
+fn inspect_mcp_prompt_definition(definition: &Value) -> Result<&str, McpConfigError> {
+    let object = definition
+        .as_object()
+        .ok_or(McpConfigError::InvalidPromptDefinition)?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| valid_mcp_name(name, 64))
+        .ok_or(McpConfigError::InvalidPromptDefinition)?;
+    if !valid_catalog_metadata(object) {
+        return Err(McpConfigError::InvalidPromptDefinition);
+    }
+    let arguments = object
+        .get("arguments")
+        .map(|arguments| {
+            arguments
+                .as_array()
+                .filter(|arguments| arguments.len() <= MCP_MAXIMUM_PROMPT_ARGUMENTS)
+                .ok_or(McpConfigError::InvalidPromptDefinition)
+        })
+        .transpose()?
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut argument_names = BTreeSet::new();
+    for argument in arguments {
+        let argument = argument
+            .as_object()
+            .ok_or(McpConfigError::InvalidPromptDefinition)?;
+        let argument_name = argument
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|argument_name| valid_mcp_name(argument_name, 64))
+            .ok_or(McpConfigError::InvalidPromptDefinition)?;
+        if !argument_names.insert(argument_name)
+            || argument.get("description").is_some_and(|description| {
+                description
+                    .as_str()
+                    .is_none_or(|value| !valid_bounded_text(value, 4_096))
+            })
+            || argument
+                .get("required")
+                .is_some_and(|required| !required.is_boolean())
+        {
+            return Err(McpConfigError::InvalidPromptDefinition);
+        }
+    }
+    Ok(name)
+}
+
+fn canonical_catalog_definition_digest(
+    definition: &Value,
+    error: McpConfigError,
+) -> Result<String, McpConfigError> {
+    let bytes = serde_json::to_vec(definition).map_err(|_| error)?;
+    if bytes.len() > MCP_MAXIMUM_DEFINITION_BYTES {
+        return Err(error);
+    }
+    Ok(sha256_digest(&bytes))
+}
+
+fn valid_catalog_metadata(object: &serde_json::Map<String, Value>) -> bool {
+    serde_json::to_vec(object).is_ok_and(|bytes| bytes.len() <= MCP_MAXIMUM_DEFINITION_BYTES)
+        && ["title", "description", "mimeType"]
+            .into_iter()
+            .all(|field| {
+                object.get(field).is_none_or(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|text| valid_bounded_text(text, 4_096))
+                })
+            })
+}
+
+fn valid_bounded_text(value: &str, maximum: usize) -> bool {
+    value.len() <= maximum && !value.contains('\0')
+}
+
+fn valid_resource_uri(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > MCP_MAXIMUM_RESOURCE_URI_BYTES
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        return false;
+    }
+    Url::parse(value).is_ok_and(|uri| {
+        uri.as_str() == value && uri.username().is_empty() && uri.password().is_none()
+    })
+}
+
+fn balanced_template_braces(value: &str) -> bool {
+    let mut depth = 0_u8;
+    for character in value.chars() {
+        match character {
+            '{' if depth == 0 => depth = 1,
+            '}' if depth == 1 => depth = 0,
+            '{' | '}' => return false,
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
 /// Validates one exact model-proposed argument object against the pinned MCP JSON Schema.
 ///
 /// # Errors
@@ -736,6 +1434,36 @@ pub fn validate_mcp_tool_arguments(
     })?;
     validator.validate(arguments).map_err(|error| {
         ReadToolError::InvalidArguments(format!("MCP input schema rejected arguments: {error}"))
+    })
+}
+
+/// Validates prompt argument strings against the exact advertised required/optional argument set.
+///
+/// # Errors
+///
+/// Returns [`ReadToolError::InvalidArguments`] before any remote request is sent.
+pub fn validate_mcp_prompt_arguments(
+    grant: &McpPromptGrant,
+    arguments: &Value,
+) -> Result<(), ReadToolError> {
+    if !arguments.is_object() {
+        return Err(ReadToolError::InvalidArguments(
+            "MCP prompt arguments must be a JSON object".to_owned(),
+        ));
+    }
+    let serialized = serde_json::to_vec(arguments)
+        .map_err(|_| ReadToolError::InvalidArguments("arguments are not JSON".to_owned()))?;
+    if serialized.len() > MCP_MAXIMUM_TOOL_ARGUMENT_BYTES {
+        return Err(ReadToolError::InvalidArguments(
+            "MCP prompt arguments exceed the hard byte bound".to_owned(),
+        ));
+    }
+    let schema = grant.input_schema();
+    let validator = jsonschema::validator_for(&schema).map_err(|_| {
+        ReadToolError::Unavailable("pinned MCP prompt schema is no longer valid".to_owned())
+    })?;
+    validator.validate(arguments).map_err(|error| {
+        ReadToolError::InvalidArguments(format!("MCP prompt schema rejected arguments: {error}"))
     })
 }
 
@@ -849,7 +1577,7 @@ pub fn mcp_http_read_tool_descriptor(
                 .authentication()
                 .credential()
                 .map(ProviderCredentialReference::capability_reference),
-            "serverToolsetDigest": server.toolset_digest(),
+            "serverCatalogDigest": server.catalog_digest(),
             "toolDefinitionDigest": grant.definition_digest(),
         })
         .to_string()
@@ -875,17 +1603,185 @@ pub fn mcp_http_read_tool_descriptor(
         effect_class: "read_only".to_owned(),
         risk_class: "medium".to_owned(),
         required_capability: format!(
-            "mcp.http.invoke:{}:{}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
+            "mcp.http.invoke:{}:tool.{}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
             server.server_id(),
             grant.remote_name()
         ),
         timeout: Duration::from_millis(grant.timeout_ms()),
         maximum_output_bytes: grant.maximum_output_bytes(),
-        conflict_key_template: format!("mcp://{}/{}", server.server_id(), grant.remote_name()),
+        conflict_key_template: format!("mcp://{}/tool.{}", server.server_id(), grant.remote_name()),
         recovery: "retry".to_owned(),
     };
     descriptor.descriptor_digest = descriptor.computed_descriptor_digest()?;
     Ok(descriptor)
+}
+
+/// Builds the immutable read descriptor for one exact owner-selected HTTP MCP resource.
+///
+/// # Errors
+///
+/// Returns a descriptor evidence error when canonical material cannot be represented.
+pub fn mcp_http_resource_read_descriptor(
+    server: &McpHttpServerConfig,
+    grant: &McpResourceGrant,
+) -> Result<ReadToolDescriptor, crate::ToolDescriptorEvidenceError> {
+    let input_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": grant.description(),
+    });
+    let output_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "serverId": {"type": "string"},
+            "resourceUri": {"type": "string"},
+            "definitionDigest": {"type": "string"},
+            "sourceLocator": {"type": "string"},
+            "contents": {"type": "array", "items": {"type": "object"}}
+        },
+        "required": ["serverId", "resourceUri", "definitionDigest", "sourceLocator", "contents"]
+    });
+    let schema_digest = sha256_digest(input_schema.to_string().as_bytes());
+    let transport_identity_digest =
+        http_catalog_item_identity_digest(server, "resource", grant.definition_digest());
+    let authority_digest = http_server_authority_digest(server)?;
+    let operation_id = format!("resource.{}", grant.definition_digest());
+    let mut descriptor = ReadToolDescriptor {
+        tool_id: server.exposed_resource_tool_id(grant.definition_digest()),
+        version: format!(
+            "{}+{}",
+            MCP_PROTOCOL_VERSION,
+            &transport_identity_digest[..16]
+        ),
+        input_schema,
+        output_schema,
+        descriptor_digest: String::new(),
+        schema_digest,
+        effect_class: "read_only".to_owned(),
+        risk_class: "medium".to_owned(),
+        required_capability: format!(
+            "mcp.http.invoke:{}:{operation_id}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
+            server.server_id(),
+        ),
+        timeout: Duration::from_millis(grant.timeout_ms()),
+        maximum_output_bytes: grant.maximum_output_bytes(),
+        conflict_key_template: format!(
+            "mcp://{}/resource.{}",
+            server.server_id(),
+            grant.definition_digest()
+        ),
+        recovery: "retry".to_owned(),
+    };
+    descriptor.descriptor_digest = descriptor.computed_descriptor_digest()?;
+    Ok(descriptor)
+}
+
+/// Builds the immutable read descriptor for one owner-selected HTTP MCP prompt.
+///
+/// Returned prompt messages remain ordinary untrusted tool evidence and are never elevated into
+/// hidden or system instructions.
+///
+/// # Errors
+///
+/// Returns a descriptor evidence error when canonical material cannot be represented.
+pub fn mcp_http_prompt_read_descriptor(
+    server: &McpHttpServerConfig,
+    grant: &McpPromptGrant,
+) -> Result<ReadToolDescriptor, crate::ToolDescriptorEvidenceError> {
+    let input_schema = grant.input_schema();
+    let output_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "serverId": {"type": "string"},
+            "promptName": {"type": "string"},
+            "definitionDigest": {"type": "string"},
+            "sourceLocator": {"type": "string"},
+            "description": {"type": ["string", "null"]},
+            "messages": {"type": "array", "items": {"type": "object"}},
+            "trust": {"const": "untrusted_tool_evidence"}
+        },
+        "required": [
+            "serverId",
+            "promptName",
+            "definitionDigest",
+            "sourceLocator",
+            "description",
+            "messages",
+            "trust"
+        ]
+    });
+    let schema_digest = sha256_digest(input_schema.to_string().as_bytes());
+    let transport_identity_digest =
+        http_catalog_item_identity_digest(server, "prompt", grant.definition_digest());
+    let authority_digest = http_server_authority_digest(server)?;
+    let operation_id = format!("prompt.{}", grant.remote_name());
+    let mut descriptor = ReadToolDescriptor {
+        tool_id: server.exposed_prompt_tool_id(grant.remote_name()),
+        version: format!(
+            "{}+{}",
+            MCP_PROTOCOL_VERSION,
+            &transport_identity_digest[..16]
+        ),
+        input_schema,
+        output_schema,
+        descriptor_digest: String::new(),
+        schema_digest,
+        effect_class: "read_only".to_owned(),
+        risk_class: "medium".to_owned(),
+        required_capability: format!(
+            "mcp.http.invoke:{}:{operation_id}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
+            server.server_id(),
+        ),
+        timeout: Duration::from_millis(grant.timeout_ms()),
+        maximum_output_bytes: grant.maximum_output_bytes(),
+        conflict_key_template: format!(
+            "mcp://{}/prompt.{}",
+            server.server_id(),
+            grant.remote_name()
+        ),
+        recovery: "retry".to_owned(),
+    };
+    descriptor.descriptor_digest = descriptor.computed_descriptor_digest()?;
+    Ok(descriptor)
+}
+
+fn http_catalog_item_identity_digest(
+    server: &McpHttpServerConfig,
+    kind: &str,
+    definition_digest: &str,
+) -> String {
+    sha256_digest(
+        json!({
+            "contractVersion": "mealy.mcp-streamable-http-catalog-item.v1",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverId": server.server_id(),
+            "endpoint": server.endpoint(),
+            "authenticationReference": server
+                .authentication()
+                .credential()
+                .map(ProviderCredentialReference::capability_reference),
+            "serverCatalogDigest": server.catalog_digest(),
+            "kind": kind,
+            "definitionDigest": definition_digest,
+        })
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+fn http_server_authority_digest(
+    server: &McpHttpServerConfig,
+) -> Result<String, crate::ToolDescriptorEvidenceError> {
+    let network_destination = server
+        .capability_network_destination()
+        .map_err(|_| crate::ToolDescriptorEvidenceError::DescriptorDigestMismatch)?;
+    Ok(mcp_http_authority_digest(
+        &network_destination,
+        server.capability_secret_reference().as_deref(),
+    ))
 }
 
 /// Digests one exact non-secret Streamable HTTP authority tuple.
@@ -924,8 +1820,14 @@ fn contains_external_schema_reference(value: &Value) -> bool {
 }
 
 fn valid_mcp_name(value: &str, maximum: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= maximum
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    let last = value.as_bytes()[value.len() - 1];
+    value.len() <= maximum
+        && first.is_ascii_alphanumeric()
+        && last.is_ascii_alphanumeric()
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
@@ -954,9 +1856,24 @@ pub enum McpConfigError {
     /// Tool grant bounds or definition binding are invalid.
     #[error("MCP tool grant is invalid")]
     InvalidToolGrant,
+    /// Resource grant bounds or definition binding are invalid.
+    #[error("MCP resource grant is invalid")]
+    InvalidResourceGrant,
+    /// Prompt grant bounds or definition binding are invalid.
+    #[error("MCP prompt grant is invalid")]
+    InvalidPromptGrant,
     /// Advertised tool definition is malformed, oversized, or unsupported.
     #[error("MCP tool definition is invalid")]
     InvalidToolDefinition,
+    /// Advertised resource definition is malformed or oversized.
+    #[error("MCP resource definition is invalid")]
+    InvalidResourceDefinition,
+    /// Advertised resource template definition is malformed or oversized.
+    #[error("MCP resource template definition is invalid")]
+    InvalidResourceTemplateDefinition,
+    /// Advertised prompt definition is malformed or oversized.
+    #[error("MCP prompt definition is invalid")]
+    InvalidPromptDefinition,
     /// Input/output JSON Schema is invalid or attempts external resolution.
     #[error("MCP tool JSON Schema is invalid or not self-contained")]
     InvalidToolSchema,
@@ -1018,9 +1935,13 @@ pub fn validate_mcp_http_server_set(
 #[cfg(test)]
 mod tests {
     use super::{
-        MCP_PROTOCOL_VERSION, McpHttpAuthentication, McpHttpServerConfig, McpServerConfig,
-        McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_http_read_tool_descriptor,
-        mcp_read_tool_descriptor, validate_mcp_http_server_set, validate_mcp_tool_arguments,
+        MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpHttpAuthentication,
+        McpHttpCatalogDiscovery, McpHttpServerConfig, McpPromptGrant, McpResourceGrant,
+        McpServerConfig, McpServerDiscovery, McpToolGrant, McpToolInspection,
+        mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
+        mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
+        mcp_resource_template_definition_digest, validate_mcp_http_server_set,
+        validate_mcp_prompt_arguments, validate_mcp_tool_arguments,
     };
     use crate::ProviderCredentialReference;
     use serde_json::json;
@@ -1104,6 +2025,8 @@ mod tests {
             discovery.toolset_digest().expect("toolset digest"),
             true,
             vec![grant.clone()],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("HTTP server");
         assert_eq!(
@@ -1113,11 +2036,11 @@ mod tests {
         assert!(validate_mcp_http_server_set(&[], std::slice::from_ref(&server)).is_ok());
         let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
         descriptor.validate_evidence().expect("descriptor evidence");
-        assert_eq!(descriptor.tool_id, "mcp.remote.lookup");
+        assert_eq!(descriptor.tool_id, "mcp.remote.tool.lookup");
         assert!(
             descriptor
                 .required_capability
-                .starts_with("mcp.http.invoke:remote:lookup:sha256:")
+                .starts_with("mcp.http.invoke:remote:tool.lookup:sha256:")
         );
         assert!(
             descriptor
@@ -1155,6 +2078,8 @@ mod tests {
                     "a".repeat(64),
                     true,
                     vec![grant.clone()],
+                    Vec::new(),
+                    Vec::new(),
                 )
                 .is_err(),
                 "{endpoint} unexpectedly passed"
@@ -1168,8 +2093,94 @@ mod tests {
                 "a".repeat(64),
                 true,
                 vec![grant],
+                Vec::new(),
+                Vec::new(),
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn http_catalog_pins_resources_templates_and_prompts_with_distinct_descriptors() {
+        let resource_definition = json!({
+            "uri": "fixture://docs/readme",
+            "name": "readme",
+            "description": "Documentation",
+            "mimeType": "text/markdown"
+        });
+        let template_definition = json!({
+            "uriTemplate": "fixture://docs/{name}",
+            "name": "document"
+        });
+        let prompt_definition = json!({
+            "name": "review",
+            "description": "Review one topic",
+            "arguments": [{"name": "topic", "required": true}]
+        });
+        let resource = McpResourceGrant::new(resource_definition.clone(), 5_000, 64 * 1_024)
+            .expect("resource");
+        let prompt =
+            McpPromptGrant::new(prompt_definition.clone(), 5_000, 64 * 1_024).expect("prompt");
+        let discovery = McpHttpCatalogDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "catalog", "version": "1"}),
+            tools_capability: None,
+            resources_capability: Some(json!({})),
+            prompts_capability: Some(json!({})),
+            tools: Vec::new(),
+            resources: vec![McpCatalogItemInspection {
+                definition: resource_definition,
+                definition_digest: resource.definition_digest().to_owned(),
+            }],
+            resource_templates: vec![McpCatalogItemInspection {
+                definition: template_definition.clone(),
+                definition_digest: mcp_resource_template_definition_digest(&template_definition)
+                    .expect("template digest"),
+            }],
+            prompts: vec![McpCatalogItemInspection {
+                definition: prompt_definition,
+                definition_digest: prompt.definition_digest().to_owned(),
+            }],
+        };
+        let server = McpHttpServerConfig::new(
+            "catalog".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::None,
+            discovery.catalog_digest().expect("catalog digest"),
+            true,
+            Vec::new(),
+            vec![resource.clone()],
+            vec![prompt.clone()],
+        )
+        .expect("server");
+        let resource_descriptor =
+            mcp_http_resource_read_descriptor(&server, &resource).expect("resource descriptor");
+        let prompt_descriptor =
+            mcp_http_prompt_read_descriptor(&server, &prompt).expect("prompt descriptor");
+        resource_descriptor
+            .validate_evidence()
+            .expect("resource evidence");
+        prompt_descriptor
+            .validate_evidence()
+            .expect("prompt evidence");
+        assert!(
+            resource_descriptor
+                .tool_id
+                .starts_with("mcp.catalog.resource.")
+        );
+        assert_eq!(prompt_descriptor.tool_id, "mcp.catalog.prompt.review");
+        assert!(validate_mcp_prompt_arguments(&prompt, &json!({"topic": "alpha"})).is_ok());
+        assert!(validate_mcp_prompt_arguments(&prompt, &json!({})).is_err());
+        assert!(validate_mcp_prompt_arguments(&prompt, &json!({"topic": 7})).is_err());
+
+        let mut changed = discovery;
+        changed.prompts[0].definition["description"] = json!("drifted");
+        changed.prompts[0].definition_digest =
+            mcp_prompt_definition_digest(&changed.prompts[0].definition)
+                .expect("changed prompt digest");
+        assert_ne!(
+            changed.catalog_digest().expect("changed digest"),
+            server.catalog_digest()
         );
     }
 

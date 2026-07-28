@@ -5028,6 +5028,8 @@ mod tests {
             "a".repeat(64),
             true,
             vec![grant.clone()],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("server");
         let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");

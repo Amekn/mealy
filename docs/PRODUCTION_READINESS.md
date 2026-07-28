@@ -446,17 +446,22 @@ submission, uploads, unbounded/owner-path downloads, persistent sessions, a pers
 mode, non-x86 release evidence, and effect/approval semantics remain open; Mealy does not describe
 this subset as arbitrary browser control.
 
-MCP acceptance is complete for the first least-authority local tool subset, but not for the full
-competitive row. Linux can inspect and activate native ELF stdio servers speaking exact revision
+MCP acceptance is complete for the least-authority local tool subset and the first two governed
+Streamable HTTP slices, but not for the full competitive row. Linux can inspect and activate
+native ELF stdio servers speaking exact revision
 `2025-11-25`; it pins executable bytes, direct non-secret arguments, the complete paginated tool
 set, and each selected full definition/schema. Startup and every call repeat discovery in a fresh
 empty-environment, no-network Bubblewrap process with no home/workspace/secrets and hard protocol,
 resource, time, cancellation, and output bounds. Model-visible calls are cited and durable;
 recorded replay remains complete after executable removal. Stopped-daemon list/enable/disable/revoke,
 safe mode, configuration history, complete backup/restore, and cross-schema rollback are
-process-tested. HTTP transport, resources/prompts, server credential delegation/OAuth, intentional
-workspace mounts, effectful MCP tools, long-lived session health, and non-Linux enforcement remain
-open before the broader MCP gate is passed.
+process-tested. Streamable HTTP now adds canonical endpoint and bearer-reference authority,
+redirect/proxy-free DNS-pinned fresh sessions, complete tool/resource/resource-template/prompt
+catalog pinning, exact selected static-resource reads, and prompt retrieval normalized as cited
+untrusted evidence. Process fixtures cover selection, per-call revalidation, drift, revocation, and
+execution-free replay. Resource-template expansion/subscriptions, OAuth, intentional workspace
+mounts, effectful MCP tools, resumable GET, long-lived session health, and non-Linux enforcement
+remain open before the broader MCP gate is passed.
 
 Delegation acceptance is complete for bounded serial child work. The provider-visible
 `agent.delegate` operation validates a self-contained objective, instructions, one-to-eight

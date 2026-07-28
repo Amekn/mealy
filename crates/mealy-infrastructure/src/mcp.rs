@@ -1,9 +1,15 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mealy_application::{
-    CancellationProbe, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpHttpAuthentication,
-    McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig, McpServerDiscovery, McpToolGrant,
-    McpToolInspection, ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput,
-    mcp_http_read_tool_descriptor, mcp_read_tool_descriptor, mcp_tool_definition_digest,
-    sha256_digest, validate_mcp_tool_arguments,
+    CancellationProbe, MCP_MAXIMUM_PROMPTS_PER_SERVER, MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER,
+    MCP_MAXIMUM_RESOURCES_PER_SERVER, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION,
+    McpCatalogItemInspection, McpHttpAuthentication, McpHttpCatalogDiscovery,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant, McpResourceGrant, McpServerConfig,
+    McpServerDiscovery, McpToolGrant, McpToolInspection, ReadOnlyTool, ReadToolDescriptor,
+    ReadToolError, ReadToolOutput, mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
+    mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
+    mcp_resource_definition_digest, mcp_resource_template_definition_digest,
+    mcp_tool_definition_digest, sha256_digest, validate_mcp_prompt_arguments,
+    validate_mcp_tool_arguments,
 };
 use reqwest::{
     StatusCode,
@@ -134,7 +140,7 @@ pub fn load_mcp_read_tools(
 pub fn discover_mcp_http_server(
     server: &McpHttpServerConfig,
     credential: Option<Zeroizing<String>>,
-) -> Result<McpServerDiscovery, McpHostError> {
+) -> Result<McpHttpCatalogDiscovery, McpHostError> {
     let endpoint = McpHttpEndpoint::new(&server.endpoint_config(), credential.map(Arc::new))?;
     let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
     verify_http_discovery(server, &discovery)?;
@@ -143,8 +149,9 @@ pub fn discover_mcp_http_server(
 
 /// Performs one fresh owner-requested discovery against an uninstalled Streamable HTTP endpoint.
 ///
-/// The returned inventory remains untrusted until the owner selects exact tools and persists the
-/// resulting complete definition/toolset digests in [`McpHttpServerConfig`].
+/// The returned inventory remains untrusted until the owner selects exact tools, resources, or
+/// prompts and persists the resulting complete catalog and definition digests in
+/// [`McpHttpServerConfig`].
 ///
 /// # Errors
 ///
@@ -153,7 +160,7 @@ pub fn discover_mcp_http_server(
 pub fn inspect_mcp_http_endpoint(
     config: &McpHttpEndpointConfig,
     credential: Option<Zeroizing<String>>,
-) -> Result<McpServerDiscovery, McpHostError> {
+) -> Result<McpHttpCatalogDiscovery, McpHostError> {
     McpHttpEndpoint::new(config, credential.map(Arc::new))?
         .discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)
 }
@@ -188,20 +195,34 @@ pub fn load_mcp_http_read_tools(
         let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
         verify_http_discovery(server, &discovery)?;
         for grant in server.tools() {
-            result.push(McpHttpReadTool::new(
+            result.push(McpHttpReadTool::Tool(McpHttpToolRead::new(
                 Arc::clone(&endpoint),
                 server.clone(),
                 grant.clone(),
-            )?);
+            )?));
+        }
+        for grant in server.resources() {
+            result.push(McpHttpReadTool::Resource(McpHttpResourceRead::new(
+                Arc::clone(&endpoint),
+                server.clone(),
+                grant.clone(),
+            )?));
+        }
+        for grant in server.prompts() {
+            result.push(McpHttpReadTool::Prompt(McpHttpPromptRead::new(
+                Arc::clone(&endpoint),
+                server.clone(),
+                grant.clone(),
+            )?));
         }
     }
     if !credentials.is_empty() {
         return Err(McpHostError::InvalidConfiguration);
     }
-    result.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
+    result.sort_by(|left, right| left.descriptor().tool_id.cmp(&right.descriptor().tool_id));
     if result
         .windows(2)
-        .any(|window| window[0].descriptor.tool_id == window[1].descriptor.tool_id)
+        .any(|window| window[0].descriptor().tool_id == window[1].descriptor().tool_id)
     {
         return Err(McpHostError::InvalidConfiguration);
     }
@@ -210,12 +231,12 @@ pub fn load_mcp_http_read_tools(
 
 fn verify_http_discovery(
     server: &McpHttpServerConfig,
-    discovery: &McpServerDiscovery,
+    discovery: &McpHttpCatalogDiscovery,
 ) -> Result<(), McpHostError> {
     if discovery
-        .toolset_digest()
+        .catalog_digest()
         .map_err(|_| McpHostError::InvalidProtocol)?
-        != server.toolset_digest()
+        != server.catalog_digest()
         || server.tools().iter().any(|grant| {
             discovery
                 .tool(grant.remote_name())
@@ -224,21 +245,84 @@ fn verify_http_discovery(
                         || discovered.definition != *grant.definition()
                 })
         })
+        || server.resources().iter().any(|grant| {
+            discovery.resource(grant.uri()).is_none_or(|discovered| {
+                discovered.definition_digest != grant.definition_digest()
+                    || discovered.definition != *grant.definition()
+            })
+        })
+        || server.prompts().iter().any(|grant| {
+            discovery
+                .prompt(grant.remote_name())
+                .is_none_or(|discovered| {
+                    discovered.definition_digest != grant.definition_digest()
+                        || discovered.definition != *grant.definition()
+                })
+        })
     {
-        return Err(McpHostError::ToolsetDrift);
+        return Err(McpHostError::InventoryDrift);
     }
     Ok(())
 }
 
-/// One model-visible read-only tool backed by a fresh Streamable HTTP MCP session per call.
-pub struct McpHttpReadTool {
+/// One model-visible governed HTTP MCP catalog operation.
+pub enum McpHttpReadTool {
+    /// Invoke one exact schema-pinned read-only remote tool.
+    Tool(McpHttpToolRead),
+    /// Read one exact owner-selected remote resource URI.
+    Resource(McpHttpResourceRead),
+    /// Retrieve one exact owner-selected prompt as untrusted evidence.
+    Prompt(McpHttpPromptRead),
+}
+
+impl std::fmt::Debug for McpHttpReadTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpHttpReadTool")
+            .field("tool_id", &self.descriptor().tool_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReadOnlyTool for McpHttpReadTool {
+    fn descriptor(&self) -> ReadToolDescriptor {
+        match self {
+            Self::Tool(tool) => tool.descriptor(),
+            Self::Resource(tool) => tool.descriptor(),
+            Self::Prompt(tool) => tool.descriptor(),
+        }
+    }
+
+    fn validate_arguments(&self, arguments: &Value) -> Result<(), ReadToolError> {
+        match self {
+            Self::Tool(tool) => tool.validate_arguments(arguments),
+            Self::Resource(tool) => tool.validate_arguments(arguments),
+            Self::Prompt(tool) => tool.validate_arguments(arguments),
+        }
+    }
+
+    fn execute(
+        &self,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<ReadToolOutput, ReadToolError> {
+        match self {
+            Self::Tool(tool) => tool.execute(arguments, cancellation),
+            Self::Resource(tool) => tool.execute(arguments, cancellation),
+            Self::Prompt(tool) => tool.execute(arguments, cancellation),
+        }
+    }
+}
+
+/// One exact HTTP MCP read-only tool invocation.
+pub struct McpHttpToolRead {
     endpoint: Arc<McpHttpEndpoint>,
     server: McpHttpServerConfig,
     grant: McpToolGrant,
     descriptor: ReadToolDescriptor,
 }
 
-impl std::fmt::Debug for McpHttpReadTool {
+impl std::fmt::Debug for McpHttpToolRead {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("McpHttpReadTool")
@@ -252,7 +336,7 @@ impl std::fmt::Debug for McpHttpReadTool {
     }
 }
 
-impl McpHttpReadTool {
+impl McpHttpToolRead {
     fn new(
         endpoint: Arc<McpHttpEndpoint>,
         server: McpHttpServerConfig,
@@ -272,7 +356,7 @@ impl McpHttpReadTool {
     }
 }
 
-impl ReadOnlyTool for McpHttpReadTool {
+impl ReadOnlyTool for McpHttpToolRead {
     fn descriptor(&self) -> ReadToolDescriptor {
         self.descriptor.clone()
     }
@@ -317,6 +401,159 @@ impl ReadOnlyTool for McpHttpReadTool {
             ),
         })
     }
+}
+
+/// One exact HTTP MCP resource read exposed as ordinary untrusted evidence.
+pub struct McpHttpResourceRead {
+    endpoint: Arc<McpHttpEndpoint>,
+    server: McpHttpServerConfig,
+    grant: McpResourceGrant,
+    descriptor: ReadToolDescriptor,
+}
+
+impl McpHttpResourceRead {
+    fn new(
+        endpoint: Arc<McpHttpEndpoint>,
+        server: McpHttpServerConfig,
+        grant: McpResourceGrant,
+    ) -> Result<Self, McpHostError> {
+        let descriptor = mcp_http_resource_read_descriptor(&server, &grant)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        descriptor
+            .validate_evidence()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        Ok(Self {
+            endpoint,
+            server,
+            grant,
+            descriptor,
+        })
+    }
+}
+
+impl ReadOnlyTool for McpHttpResourceRead {
+    fn descriptor(&self) -> ReadToolDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn validate_arguments(&self, arguments: &Value) -> Result<(), ReadToolError> {
+        if arguments.as_object().is_some_and(serde_json::Map::is_empty) {
+            Ok(())
+        } else {
+            Err(ReadToolError::InvalidArguments(
+                "MCP resource reads accept an empty object".to_owned(),
+            ))
+        }
+    }
+
+    fn execute(
+        &self,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<ReadToolOutput, ReadToolError> {
+        self.validate_arguments(arguments)?;
+        let output = self
+            .endpoint
+            .read_resource(
+                &self.server,
+                &self.grant,
+                cancellation,
+                Duration::from_millis(self.grant.timeout_ms()),
+            )
+            .map_err(|error| map_read_error(error, self.grant.maximum_output_bytes()))?;
+        bounded_catalog_output(
+            &output,
+            self.grant.maximum_output_bytes(),
+            format!(
+                "mcp://{}/resource/{}",
+                self.server.server_id(),
+                self.grant.definition_digest()
+            ),
+        )
+    }
+}
+
+/// One exact HTTP MCP prompt retrieval exposed as ordinary untrusted evidence.
+pub struct McpHttpPromptRead {
+    endpoint: Arc<McpHttpEndpoint>,
+    server: McpHttpServerConfig,
+    grant: McpPromptGrant,
+    descriptor: ReadToolDescriptor,
+}
+
+impl McpHttpPromptRead {
+    fn new(
+        endpoint: Arc<McpHttpEndpoint>,
+        server: McpHttpServerConfig,
+        grant: McpPromptGrant,
+    ) -> Result<Self, McpHostError> {
+        let descriptor = mcp_http_prompt_read_descriptor(&server, &grant)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        descriptor
+            .validate_evidence()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        Ok(Self {
+            endpoint,
+            server,
+            grant,
+            descriptor,
+        })
+    }
+}
+
+impl ReadOnlyTool for McpHttpPromptRead {
+    fn descriptor(&self) -> ReadToolDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn validate_arguments(&self, arguments: &Value) -> Result<(), ReadToolError> {
+        validate_mcp_prompt_arguments(&self.grant, arguments)
+    }
+
+    fn execute(
+        &self,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<ReadToolOutput, ReadToolError> {
+        self.validate_arguments(arguments)?;
+        let output = self
+            .endpoint
+            .get_prompt(
+                &self.server,
+                &self.grant,
+                arguments,
+                cancellation,
+                Duration::from_millis(self.grant.timeout_ms()),
+            )
+            .map_err(|error| map_read_error(error, self.grant.maximum_output_bytes()))?;
+        bounded_catalog_output(
+            &output,
+            self.grant.maximum_output_bytes(),
+            format!(
+                "mcp://{}/prompt/{}",
+                self.server.server_id(),
+                self.grant.remote_name()
+            ),
+        )
+    }
+}
+
+fn bounded_catalog_output(
+    output: &Value,
+    maximum: u64,
+    source_locator: String,
+) -> Result<ReadToolOutput, ReadToolError> {
+    let bytes = serde_json::to_vec(&output)
+        .map_err(|_| ReadToolError::Unavailable("MCP result normalization failed".to_owned()))?;
+    let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    if actual > maximum {
+        return Err(ReadToolError::OutputTooLarge { actual, maximum });
+    }
+    Ok(ReadToolOutput {
+        media_type: "application/json".to_owned(),
+        bytes,
+        source_locator,
+    })
 }
 
 struct McpHttpEndpoint {
@@ -385,10 +622,10 @@ impl McpHttpEndpoint {
         &self,
         cancellation: &dyn CancellationProbe,
         timeout: Duration,
-    ) -> Result<McpServerDiscovery, McpHostError> {
+    ) -> Result<McpHttpCatalogDiscovery, McpHostError> {
         let started = Instant::now();
-        let session = self.initialize(cancellation, timeout)?;
-        let discovery = self.discover_tools(&session, cancellation, started, timeout);
+        let session = self.initialize(cancellation, started, timeout)?;
+        let discovery = self.discover_catalog(&session, cancellation, started, timeout);
         self.close(&session);
         discovery
     }
@@ -402,9 +639,9 @@ impl McpHttpEndpoint {
         timeout: Duration,
     ) -> Result<Value, McpHostError> {
         let started = Instant::now();
-        let session = self.initialize(cancellation, timeout)?;
+        let session = self.initialize(cancellation, started, timeout)?;
         let result = (|| {
-            let discovery = self.discover_tools(&session, cancellation, started, timeout)?;
+            let discovery = self.discover_catalog(&session, cancellation, started, timeout)?;
             verify_http_discovery(server, &discovery)?;
             let remaining = timeout
                 .checked_sub(started.elapsed())
@@ -423,11 +660,74 @@ impl McpHttpEndpoint {
         result
     }
 
+    fn read_resource(
+        &self,
+        server: &McpHttpServerConfig,
+        grant: &McpResourceGrant,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<Value, McpHostError> {
+        let started = Instant::now();
+        let session = self.initialize(cancellation, started, timeout)?;
+        let result = (|| {
+            let discovery = self.discover_catalog(&session, cancellation, started, timeout)?;
+            verify_http_discovery(server, &discovery)?;
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            let result = self.request(
+                &session,
+                20_000,
+                "resources/read",
+                &json!({"uri": grant.uri()}),
+                cancellation,
+                remaining,
+            )?;
+            normalize_resource_result(&result, server.server_id(), grant)
+        })();
+        self.close(&session);
+        result
+    }
+
+    fn get_prompt(
+        &self,
+        server: &McpHttpServerConfig,
+        grant: &McpPromptGrant,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<Value, McpHostError> {
+        let started = Instant::now();
+        let session = self.initialize(cancellation, started, timeout)?;
+        let result = (|| {
+            let discovery = self.discover_catalog(&session, cancellation, started, timeout)?;
+            verify_http_discovery(server, &discovery)?;
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            let result = self.request(
+                &session,
+                30_000,
+                "prompts/get",
+                &json!({"name": grant.remote_name(), "arguments": arguments}),
+                cancellation,
+                remaining,
+            )?;
+            normalize_prompt_result(&result, server.server_id(), grant)
+        })();
+        self.close(&session);
+        result
+    }
+
     fn initialize(
         &self,
         cancellation: &dyn CancellationProbe,
+        started: Instant,
         timeout: Duration,
     ) -> Result<McpHttpSession, McpHostError> {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .ok_or(McpHostError::TimedOut)?;
         let (initialized, headers) = self.post_request(
             None,
             1,
@@ -443,26 +743,8 @@ impl McpHttpEndpoint {
                 }
             }),
             cancellation,
-            timeout,
+            remaining,
         )?;
-        let protocol_version = initialized
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .filter(|version| *version == MCP_PROTOCOL_VERSION)
-            .ok_or(McpHostError::InvalidProtocol)?
-            .to_owned();
-        if !initialized
-            .get("capabilities")
-            .and_then(|capabilities| capabilities.get("tools"))
-            .is_some_and(Value::is_object)
-        {
-            return Err(McpHostError::InvalidProtocol);
-        }
-        let server_info = initialized
-            .get("serverInfo")
-            .filter(|value| value.is_object())
-            .cloned()
-            .ok_or(McpHostError::InvalidProtocol)?;
         let session_id = headers
             .get(&MCP_SESSION_ID_HEADER)
             .map(|value| {
@@ -478,13 +760,61 @@ impl McpHttpEndpoint {
                     .ok_or(McpHostError::InvalidProtocol)
             })
             .transpose()?;
-        let session = McpHttpSession {
-            session_id,
-            protocol_version,
-            server_info,
+        let parsed = (|| {
+            let protocol_version = initialized
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .filter(|version| *version == MCP_PROTOCOL_VERSION)
+                .ok_or(McpHostError::InvalidProtocol)?
+                .to_owned();
+            let capabilities = initialized
+                .get("capabilities")
+                .and_then(Value::as_object)
+                .ok_or(McpHostError::InvalidProtocol)?;
+            let tools_capability = capabilities.get("tools").cloned();
+            let resources_capability = capabilities.get("resources").cloned();
+            let prompts_capability = capabilities.get("prompts").cloned();
+            if [
+                &tools_capability,
+                &resources_capability,
+                &prompts_capability,
+            ]
+            .into_iter()
+            .flatten()
+            .any(|capability| !capability.is_object())
+                || tools_capability.is_none()
+                    && resources_capability.is_none()
+                    && prompts_capability.is_none()
+            {
+                return Err(McpHostError::InvalidProtocol);
+            }
+            let server_info = initialized
+                .get("serverInfo")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or(McpHostError::InvalidProtocol)?;
+            Ok(McpHttpSession {
+                session_id: session_id.clone(),
+                protocol_version,
+                server_info,
+                tools_capability,
+                resources_capability,
+                prompts_capability,
+            })
+        })();
+        let session = match parsed {
+            Ok(session) => session,
+            Err(error) => {
+                self.close_session_id(session_id.as_ref().map(|value| value.as_str()));
+                return Err(error);
+            }
+        };
+        let Some(remaining) = timeout.checked_sub(started.elapsed()) else {
+            self.close(&session);
+            return Err(McpHostError::TimedOut);
         };
         if let Err(error) =
-            self.post_notification(&session, "notifications/initialized", None, timeout)
+            self.post_notification(&session, "notifications/initialized", None, remaining)
         {
             self.close(&session);
             return Err(error);
@@ -492,37 +822,149 @@ impl McpHttpEndpoint {
         Ok(session)
     }
 
-    fn discover_tools(
+    fn discover_catalog(
         &self,
         session: &McpHttpSession,
         cancellation: &dyn CancellationProbe,
         started: Instant,
         timeout: Duration,
-    ) -> Result<McpServerDiscovery, McpHostError> {
+    ) -> Result<McpHttpCatalogDiscovery, McpHostError> {
+        let tools = if session.tools_capability.is_some() {
+            self.discover_inventory(
+                session,
+                cancellation,
+                started,
+                timeout,
+                InventoryRequest {
+                    method: "tools/list",
+                    response_field: "tools",
+                    key_field: "name",
+                    maximum: MCP_MAXIMUM_TOOLS_PER_SERVER,
+                    base_id: 100,
+                    digest: mcp_tool_definition_digest,
+                },
+            )?
+            .into_iter()
+            .map(|item| McpToolInspection {
+                definition: item.definition,
+                definition_digest: item.definition_digest,
+            })
+            .collect()
+        } else {
+            Vec::new()
+        };
+        let resources = if session.resources_capability.is_some() {
+            self.discover_inventory(
+                session,
+                cancellation,
+                started,
+                timeout,
+                InventoryRequest {
+                    method: "resources/list",
+                    response_field: "resources",
+                    key_field: "uri",
+                    maximum: MCP_MAXIMUM_RESOURCES_PER_SERVER,
+                    base_id: 1_000,
+                    digest: mcp_resource_definition_digest,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+        let resource_templates = if session.resources_capability.is_some() {
+            self.discover_inventory(
+                session,
+                cancellation,
+                started,
+                timeout,
+                InventoryRequest {
+                    method: "resources/templates/list",
+                    response_field: "resourceTemplates",
+                    key_field: "uriTemplate",
+                    maximum: MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER,
+                    base_id: 2_000,
+                    digest: mcp_resource_template_definition_digest,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+        let prompts = if session.prompts_capability.is_some() {
+            self.discover_inventory(
+                session,
+                cancellation,
+                started,
+                timeout,
+                InventoryRequest {
+                    method: "prompts/list",
+                    response_field: "prompts",
+                    key_field: "name",
+                    maximum: MCP_MAXIMUM_PROMPTS_PER_SERVER,
+                    base_id: 3_000,
+                    digest: mcp_prompt_definition_digest,
+                },
+            )?
+        } else {
+            Vec::new()
+        };
+        let discovery = McpHttpCatalogDiscovery {
+            protocol_version: session.protocol_version.clone(),
+            server_info: session.server_info.clone(),
+            tools_capability: session.tools_capability.clone(),
+            resources_capability: session.resources_capability.clone(),
+            prompts_capability: session.prompts_capability.clone(),
+            tools,
+            resources,
+            resource_templates,
+            prompts,
+        };
+        discovery
+            .validate()
+            .map_err(|_| McpHostError::InvalidProtocol)?;
+        Ok(discovery)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn discover_inventory(
+        &self,
+        session: &McpHttpSession,
+        cancellation: &dyn CancellationProbe,
+        started: Instant,
+        timeout: Duration,
+        request: InventoryRequest,
+    ) -> Result<Vec<McpCatalogItemInspection>, McpHostError> {
         let mut cursor = None;
         let mut seen_cursors = BTreeSet::new();
-        let mut tools = Vec::new();
+        let mut items = Vec::new();
         for page in 0..MCP_MAXIMUM_LIST_PAGES {
             let remaining = timeout
                 .checked_sub(started.elapsed())
                 .ok_or(McpHostError::TimedOut)?;
-            let id = u64::try_from(page).unwrap_or(u64::MAX).saturating_add(2);
+            let id = request
+                .base_id
+                .saturating_add(u64::try_from(page).unwrap_or(u64::MAX));
             let params = cursor
                 .as_ref()
                 .map_or_else(|| json!({}), |value| json!({"cursor": value}));
-            let listed =
-                self.request(session, id, "tools/list", &params, cancellation, remaining)?;
-            let page_tools = listed
-                .get("tools")
+            let listed = self.request(
+                session,
+                id,
+                request.method,
+                &params,
+                cancellation,
+                remaining,
+            )?;
+            let page_items = listed
+                .get(request.response_field)
                 .and_then(Value::as_array)
                 .ok_or(McpHostError::InvalidProtocol)?;
-            if tools.len().saturating_add(page_tools.len()) > MCP_MAXIMUM_TOOLS_PER_SERVER {
+            if items.len().saturating_add(page_items.len()) > request.maximum {
                 return Err(McpHostError::OutputLimitExceeded);
             }
-            for definition in page_tools {
-                tools.push(McpToolInspection {
+            for definition in page_items {
+                items.push(McpCatalogItemInspection {
                     definition: definition.clone(),
-                    definition_digest: mcp_tool_definition_digest(definition)
+                    definition_digest: (request.digest)(definition)
                         .map_err(|_| McpHostError::InvalidProtocol)?,
                 });
             }
@@ -547,20 +989,12 @@ impl McpHttpEndpoint {
                 return Err(McpHostError::InvalidProtocol);
             }
         }
-        tools.sort_by(|left, right| {
-            left.definition["name"]
+        items.sort_by(|left, right| {
+            left.definition[request.key_field]
                 .as_str()
-                .cmp(&right.definition["name"].as_str())
+                .cmp(&right.definition[request.key_field].as_str())
         });
-        let discovery = McpServerDiscovery {
-            protocol_version: session.protocol_version.clone(),
-            server_info: session.server_info.clone(),
-            tools,
-        };
-        discovery
-            .validate()
-            .map_err(|_| McpHostError::InvalidProtocol)?;
-        Ok(discovery)
+        Ok(items)
     }
 
     fn request(
@@ -595,7 +1029,12 @@ impl McpHttpEndpoint {
             "params": params,
         });
         let response = self
-            .request_builder(self.client()?.post(self.endpoint.clone()), session)?
+            .request_builder(
+                self.client()?.post(self.endpoint.clone()),
+                session
+                    .and_then(|session| session.session_id.as_ref())
+                    .map(|value| value.as_str()),
+            )?
             .header(ACCEPT, "application/json, text/event-stream")
             .json(&request)
             .timeout(timeout)
@@ -624,7 +1063,10 @@ impl McpHttpEndpoint {
             message.insert("params".to_owned(), params);
         }
         let response = self
-            .request_builder(self.client()?.post(self.endpoint.clone()), Some(session))?
+            .request_builder(
+                self.client()?.post(self.endpoint.clone()),
+                session.session_id.as_ref().map(|value| value.as_str()),
+            )?
             .header(ACCEPT, "application/json, text/event-stream")
             .json(&Value::Object(message))
             .timeout(timeout)
@@ -641,15 +1083,15 @@ impl McpHttpEndpoint {
     fn request_builder(
         &self,
         mut request: reqwest::blocking::RequestBuilder,
-        session: Option<&McpHttpSession>,
+        session_id: Option<&str>,
     ) -> Result<reqwest::blocking::RequestBuilder, McpHostError> {
         request = request
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json, text/event-stream")
             .header(ORIGIN, self.endpoint.origin().ascii_serialization())
             .header(&MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION);
-        if let Some(session_id) = session.and_then(|session| session.session_id.as_deref()) {
-            let mut header = HeaderValue::from_str(session_id.as_str())
+        if let Some(session_id) = session_id {
+            let mut header = HeaderValue::from_str(session_id)
                 .map_err(|_| McpHostError::InvalidConfiguration)?;
             header.set_sensitive(true);
             request = request.header(&MCP_SESSION_ID_HEADER, header);
@@ -669,13 +1111,18 @@ impl McpHttpEndpoint {
     }
 
     fn close(&self, session: &McpHttpSession) {
-        if session.session_id.is_none() {
+        self.close_session_id(session.session_id.as_ref().map(|value| value.as_str()));
+    }
+
+    fn close_session_id(&self, session_id: Option<&str>) {
+        let Some(session_id) = session_id else {
             return;
-        }
+        };
         let Ok(client) = self.client() else {
             return;
         };
-        let Ok(request) = self.request_builder(client.delete(self.endpoint.clone()), Some(session))
+        let Ok(request) =
+            self.request_builder(client.delete(self.endpoint.clone()), Some(session_id))
         else {
             return;
         };
@@ -707,6 +1154,19 @@ struct McpHttpSession {
     session_id: Option<Zeroizing<String>>,
     protocol_version: String,
     server_info: Value,
+    tools_capability: Option<Value>,
+    resources_capability: Option<Value>,
+    prompts_capability: Option<Value>,
+}
+
+#[derive(Clone, Copy)]
+struct InventoryRequest {
+    method: &'static str,
+    response_field: &'static str,
+    key_field: &'static str,
+    maximum: usize,
+    base_id: u64,
+    digest: fn(&Value) -> Result<String, mealy_application::McpConfigError>,
 }
 
 fn map_http_error(error: &reqwest::Error) -> McpHostError {
@@ -813,8 +1273,14 @@ fn jsonrpc_result(message: &Value, expected_id: u64) -> Result<Option<Value>, Mc
             "notifications/message" | "notifications/progress" | "notifications/cancelled"
         ) {
             Ok(None)
-        } else if method == "notifications/tools/list_changed" {
-            Err(McpHostError::ToolsetDrift)
+        } else if matches!(
+            method,
+            "notifications/tools/list_changed"
+                | "notifications/resources/list_changed"
+                | "notifications/prompts/list_changed"
+                | "notifications/resources/updated"
+        ) {
+            Err(McpHostError::InventoryDrift)
         } else {
             Err(McpHostError::InvalidProtocol)
         };
@@ -831,6 +1297,153 @@ fn jsonrpc_result(message: &Value, expected_id: u64) -> Result<Option<Value>, Mc
     Err(remote_error(object.get("error"))?)
 }
 
+fn normalize_resource_result(
+    result: &Value,
+    server_id: &str,
+    grant: &McpResourceGrant,
+) -> Result<Value, McpHostError> {
+    let contents = result
+        .get("contents")
+        .and_then(Value::as_array)
+        .filter(|contents| !contents.is_empty() && contents.len() <= 64)
+        .ok_or(McpHostError::InvalidProtocol)?;
+    let mut normalized = Vec::with_capacity(contents.len());
+    for content in contents {
+        let object = content.as_object().ok_or(McpHostError::InvalidProtocol)?;
+        if object.get("uri").and_then(Value::as_str) != Some(grant.uri()) {
+            return Err(McpHostError::InvalidProtocol);
+        }
+        validate_resource_content(object)?;
+        let mut item =
+            serde_json::Map::from_iter([("uri".to_owned(), Value::String(grant.uri().to_owned()))]);
+        if let Some(mime_type) = object.get("mimeType") {
+            item.insert("mimeType".to_owned(), mime_type.clone());
+        }
+        if let Some(text) = object.get("text") {
+            item.insert("text".to_owned(), text.clone());
+        }
+        if let Some(blob) = object.get("blob") {
+            item.insert("blob".to_owned(), blob.clone());
+        }
+        normalized.push(Value::Object(item));
+    }
+    Ok(json!({
+        "serverId": server_id,
+        "resourceUri": grant.uri(),
+        "definitionDigest": grant.definition_digest(),
+        "sourceLocator": format!("mcp://{server_id}/resource/{}", grant.definition_digest()),
+        "contents": normalized,
+    }))
+}
+
+fn normalize_prompt_result(
+    result: &Value,
+    server_id: &str,
+    grant: &McpPromptGrant,
+) -> Result<Value, McpHostError> {
+    let description = result
+        .get("description")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|text| text.len() <= 4_096 && !text.contains('\0'))
+                .map(str::to_owned)
+                .ok_or(McpHostError::InvalidProtocol)
+        })
+        .transpose()?;
+    let messages = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| !messages.is_empty() && messages.len() <= 128)
+        .ok_or(McpHostError::InvalidProtocol)?;
+    let mut normalized = Vec::with_capacity(messages.len());
+    for message in messages {
+        let object = message.as_object().ok_or(McpHostError::InvalidProtocol)?;
+        let role = object
+            .get("role")
+            .and_then(Value::as_str)
+            .filter(|role| matches!(*role, "user" | "assistant"))
+            .ok_or(McpHostError::InvalidProtocol)?;
+        let content = object.get("content").ok_or(McpHostError::InvalidProtocol)?;
+        validate_prompt_content_block(content)?;
+        normalized.push(json!({"role": role, "content": content}));
+    }
+    Ok(json!({
+        "serverId": server_id,
+        "promptName": grant.remote_name(),
+        "definitionDigest": grant.definition_digest(),
+        "sourceLocator": format!("mcp://{server_id}/prompt/{}", grant.remote_name()),
+        "description": description,
+        "messages": normalized,
+        "trust": "untrusted_tool_evidence",
+    }))
+}
+
+fn validate_resource_content(object: &serde_json::Map<String, Value>) -> Result<(), McpHostError> {
+    if object.get("mimeType").is_some_and(|mime_type| {
+        mime_type
+            .as_str()
+            .is_none_or(|value| value.is_empty() || value.len() > 256 || value.contains('\0'))
+    }) {
+        return Err(McpHostError::InvalidProtocol);
+    }
+    match (
+        object.get("text").and_then(Value::as_str),
+        object.get("blob").and_then(Value::as_str),
+    ) {
+        (Some(_), None) => Ok(()),
+        (None, Some(blob)) if BASE64_STANDARD.decode(blob).is_ok() => Ok(()),
+        _ => Err(McpHostError::InvalidProtocol),
+    }
+}
+
+fn validate_prompt_content_block(content: &Value) -> Result<(), McpHostError> {
+    let object = content.as_object().ok_or(McpHostError::InvalidProtocol)?;
+    match object.get("type").and_then(Value::as_str) {
+        Some("text") => object
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|_| ())
+            .ok_or(McpHostError::InvalidProtocol),
+        Some("image" | "audio") => {
+            let data = object
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or(McpHostError::InvalidProtocol)?;
+            let mime_type = object
+                .get("mimeType")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 256 && !value.contains('\0'))
+                .ok_or(McpHostError::InvalidProtocol)?;
+            if !mime_type.contains('/') || BASE64_STANDARD.decode(data).is_err() {
+                return Err(McpHostError::InvalidProtocol);
+            }
+            Ok(())
+        }
+        Some("resource") => {
+            let resource = object
+                .get("resource")
+                .and_then(Value::as_object)
+                .ok_or(McpHostError::InvalidProtocol)?;
+            if resource
+                .get("uri")
+                .and_then(Value::as_str)
+                .is_none_or(|uri| uri.is_empty() || uri.len() > 4_096 || uri.contains('\0'))
+            {
+                return Err(McpHostError::InvalidProtocol);
+            }
+            validate_resource_content(resource)
+        }
+        Some("resource_link") => object
+            .get("uri")
+            .and_then(Value::as_str)
+            .filter(|uri| !uri.is_empty() && uri.len() <= 4_096 && !uri.contains('\0'))
+            .map(|_| ())
+            .ok_or(McpHostError::InvalidProtocol),
+        _ => Err(McpHostError::InvalidProtocol),
+    }
+}
+
 fn verify_discovery(
     server: &McpServerConfig,
     discovery: &McpServerDiscovery,
@@ -840,16 +1453,16 @@ fn verify_discovery(
         .map_err(|_| McpHostError::InvalidProtocol)?
         != server.toolset_digest()
     {
-        return Err(McpHostError::ToolsetDrift);
+        return Err(McpHostError::InventoryDrift);
     }
     for grant in server.tools() {
         let Some(discovered) = discovery.tool(grant.remote_name()) else {
-            return Err(McpHostError::ToolsetDrift);
+            return Err(McpHostError::InventoryDrift);
         };
         if discovered.definition_digest != grant.definition_digest()
             || discovered.definition != *grant.definition()
         {
-            return Err(McpHostError::ToolsetDrift);
+            return Err(McpHostError::InventoryDrift);
         }
     }
     Ok(())
@@ -954,8 +1567,8 @@ fn map_read_error(error: McpHostError, maximum: u64) -> ReadToolError {
         McpHostError::IdentityMismatch => {
             ReadToolError::Unavailable("MCP executable identity changed".to_owned())
         }
-        McpHostError::ToolsetDrift => {
-            ReadToolError::Unavailable("MCP advertised tool set changed".to_owned())
+        McpHostError::InventoryDrift => {
+            ReadToolError::Unavailable("MCP advertised inventory changed".to_owned())
         }
         McpHostError::InvalidConfiguration
         | McpHostError::UnsupportedHost(_)
@@ -1435,7 +2048,7 @@ impl McpSession {
                         .and_then(Value::as_str)
                         .ok_or(McpHostError::InvalidProtocol)?;
                     if method == "notifications/tools/list_changed" {
-                        return Err(McpHostError::ToolsetDrift);
+                        return Err(McpHostError::InventoryDrift);
                     }
                     if !matches!(
                         method,
@@ -1864,9 +2477,9 @@ pub enum McpHostError {
     /// Initialization, JSON-RPC, pagination, capability, schema, or result framing is invalid.
     #[error("MCP protocol response is invalid")]
     InvalidProtocol,
-    /// Complete advertised tool-set evidence no longer matches owner review.
-    #[error("MCP advertised tool set changed")]
-    ToolsetDrift,
+    /// Complete advertised tool/catalog evidence no longer matches owner review.
+    #[error("MCP advertised inventory changed")]
+    InventoryDrift,
     /// Request exceeded its hard wall-clock limit.
     #[error("MCP request timed out")]
     TimedOut,
@@ -1904,8 +2517,9 @@ mod tests {
         read_bounded_line,
     };
     use mealy_application::{
-        MCP_PROTOCOL_VERSION, McpHttpAuthentication, McpHttpEndpointConfig, McpHttpServerConfig,
-        McpServerDiscovery, McpToolGrant, McpToolInspection, ReadOnlyTool,
+        MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpHttpAuthentication,
+        McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant,
+        McpResourceGrant, McpToolGrant, McpToolInspection, ReadOnlyTool,
     };
     use serde_json::{Value, json};
     use std::{
@@ -1972,7 +2586,7 @@ mod tests {
                 b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
                 7
             ),
-            Err(McpHostError::ToolsetDrift)
+            Err(McpHostError::InventoryDrift)
         ));
     }
 
@@ -1989,13 +2603,19 @@ mod tests {
             }
         });
         let grant = McpToolGrant::new(definition.clone(), 5_000, 64 * 1024).expect("grant");
-        let expected = McpServerDiscovery {
+        let expected = McpHttpCatalogDiscovery {
             protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
             server_info: json!({"name": "http-fixture", "version": "1"}),
+            tools_capability: Some(json!({})),
+            resources_capability: None,
+            prompts_capability: None,
             tools: vec![McpToolInspection {
                 definition: definition.clone(),
                 definition_digest: grant.definition_digest().to_owned(),
             }],
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
         };
         let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
             http_json_response(
@@ -2016,7 +2636,7 @@ mod tests {
                 "id: tools-1\ndata: {}\n\n",
                 json!({
                     "jsonrpc": "2.0",
-                    "id": 2,
+                    "id": 100,
                     "result": {"tools": [definition]}
                 })
             )),
@@ -2031,9 +2651,11 @@ mod tests {
                     secret_id: "mcp-http-fixture".to_owned(),
                 },
             },
-            expected.toolset_digest().expect("toolset digest"),
+            expected.catalog_digest().expect("catalog digest"),
             true,
             vec![grant],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("HTTP config");
         let discovery = discover_mcp_http_server(
@@ -2084,13 +2706,19 @@ mod tests {
             }
         });
         let grant = McpToolGrant::new(definition.clone(), 5_000, 64 * 1024).expect("grant");
-        let discovery = McpServerDiscovery {
+        let discovery = McpHttpCatalogDiscovery {
             protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
             server_info: json!({"name": "http-fixture", "version": "1"}),
+            tools_capability: Some(json!({})),
+            resources_capability: None,
+            prompts_capability: None,
             tools: vec![McpToolInspection {
                 definition: definition.clone(),
                 definition_digest: grant.definition_digest().to_owned(),
             }],
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
         };
         let initialize = |session: &'static str| {
             http_json_response(
@@ -2112,7 +2740,7 @@ mod tests {
                 "200 OK",
                 &json!({
                     "jsonrpc": "2.0",
-                    "id": 2,
+                    "id": 100,
                     "result": {"tools": [definition.clone()]}
                 }),
                 None,
@@ -2154,9 +2782,11 @@ mod tests {
                     secret_id: "mcp-http-fixture".to_owned(),
                 },
             },
-            discovery.toolset_digest().expect("toolset digest"),
+            discovery.catalog_digest().expect("catalog digest"),
             true,
             vec![grant],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("HTTP config");
         let credentials = BTreeMap::from([(
@@ -2185,6 +2815,191 @@ mod tests {
                 .contains("mcp-session-id: call-session")
         );
         assert!(!requests[7].contains("load-session"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn streamable_http_resources_and_prompts_are_catalog_pinned_untrusted_evidence() {
+        let resource_definition = json!({
+            "uri": "fixture://docs/readme",
+            "name": "readme",
+            "description": "One bounded documentation resource",
+            "mimeType": "text/markdown"
+        });
+        let template_definition = json!({
+            "uriTemplate": "fixture://docs/{name}",
+            "name": "document",
+            "description": "Documentation template",
+            "mimeType": "text/markdown"
+        });
+        let prompt_definition = json!({
+            "name": "review",
+            "description": "Returns an untrusted review prompt",
+            "arguments": [
+                {"name": "topic", "description": "Review topic", "required": true}
+            ]
+        });
+        let resource_grant = McpResourceGrant::new(resource_definition.clone(), 5_000, 64 * 1_024)
+            .expect("resource grant");
+        let prompt_grant = McpPromptGrant::new(prompt_definition.clone(), 5_000, 64 * 1_024)
+            .expect("prompt grant");
+        let discovery = McpHttpCatalogDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "catalog-fixture", "version": "1"}),
+            tools_capability: None,
+            resources_capability: Some(json!({"subscribe": false, "listChanged": true})),
+            prompts_capability: Some(json!({"listChanged": true})),
+            tools: Vec::new(),
+            resources: vec![McpCatalogItemInspection {
+                definition: resource_definition.clone(),
+                definition_digest: resource_grant.definition_digest().to_owned(),
+            }],
+            resource_templates: vec![McpCatalogItemInspection {
+                definition: template_definition.clone(),
+                definition_digest: mealy_application::mcp_resource_template_definition_digest(
+                    &template_definition,
+                )
+                .expect("template digest"),
+            }],
+            prompts: vec![McpCatalogItemInspection {
+                definition: prompt_definition.clone(),
+                definition_digest: prompt_grant.definition_digest().to_owned(),
+            }],
+        };
+        let initialize = |session: &str| {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {
+                            "resources": {"subscribe": false, "listChanged": true},
+                            "prompts": {"listChanged": true}
+                        },
+                        "serverInfo": {"name": "catalog-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", session)),
+            )
+        };
+        let accepted =
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let deleted =
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let catalog_responses = |session: &str| {
+            vec![
+                initialize(session),
+                accepted.clone(),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1_000,
+                        "result": {"resources": [resource_definition.clone()]}
+                    }),
+                    None,
+                ),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 2_000,
+                        "result": {"resourceTemplates": [template_definition.clone()]}
+                    }),
+                    None,
+                ),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 3_000,
+                        "result": {"prompts": [prompt_definition.clone()]}
+                    }),
+                    None,
+                ),
+            ]
+        };
+        let mut responses = catalog_responses("load-session");
+        responses.push(deleted.clone());
+        responses.extend(catalog_responses("resource-session"));
+        responses.push(http_json_response(
+            "200 OK",
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 20_000,
+                "result": {
+                    "contents": [{
+                        "uri": "fixture://docs/readme",
+                        "mimeType": "text/markdown",
+                        "text": "# Untrusted fixture"
+                    }]
+                }
+            }),
+            None,
+        ));
+        responses.push(deleted.clone());
+        responses.extend(catalog_responses("prompt-session"));
+        responses.push(http_json_response(
+            "200 OK",
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 30_000,
+                "result": {
+                    "description": "Fixture prompt result",
+                    "messages": [{
+                        "role": "user",
+                        "content": {"type": "text", "text": "Review alpha"}
+                    }]
+                }
+            }),
+            None,
+        ));
+        responses.push(deleted);
+        let (endpoint, requests, server_thread) = spawn_http_fixture(responses);
+        let config = McpHttpServerConfig::new(
+            "catalog".to_owned(),
+            endpoint,
+            McpHttpAuthentication::None,
+            discovery.catalog_digest().expect("catalog digest"),
+            true,
+            Vec::new(),
+            vec![resource_grant],
+            vec![prompt_grant],
+        )
+        .expect("catalog config");
+        let loaded =
+            load_mcp_http_read_tools(&[config], BTreeMap::new()).expect("load catalog operations");
+        assert_eq!(loaded.len(), 2);
+        let resource = loaded
+            .iter()
+            .find(|tool| tool.descriptor().tool_id.contains(".resource."))
+            .expect("resource operation");
+        let resource_output = resource
+            .execute(&json!({}), &NeverCancelled)
+            .expect("read resource");
+        let resource_json: Value =
+            serde_json::from_slice(&resource_output.bytes).expect("resource JSON");
+        assert_eq!(resource_json["contents"][0]["text"], "# Untrusted fixture");
+
+        let prompt = loaded
+            .iter()
+            .find(|tool| tool.descriptor().tool_id == "mcp.catalog.prompt.review")
+            .expect("prompt operation");
+        let prompt_output = prompt
+            .execute(&json!({"topic": "alpha"}), &NeverCancelled)
+            .expect("get prompt");
+        let prompt_json: Value = serde_json::from_slice(&prompt_output.bytes).expect("prompt JSON");
+        assert_eq!(prompt_json["trust"], "untrusted_tool_evidence");
+        assert_eq!(prompt_json["messages"][0]["role"], "user");
+
+        server_thread.join().expect("catalog fixture server");
+        let requests = requests.lock().expect("catalog requests");
+        assert_eq!(requests.len(), 20);
+        assert!(requests[11].contains("\"method\":\"resources/read\""));
+        assert!(requests[18].contains("\"method\":\"prompts/get\""));
+        assert!(requests[18].contains("\"arguments\":{\"topic\":\"alpha\"}"));
     }
 
     #[test]
@@ -2229,6 +3044,8 @@ mod tests {
             "a".repeat(64),
             true,
             vec![grant],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("protected config");
         assert!(matches!(
@@ -2258,7 +3075,7 @@ mod tests {
                 "200 OK",
                 &json!({
                     "jsonrpc": "2.0",
-                    "id": 2,
+                    "id": 100,
                     "result": {"notTools": []}
                 }),
                 None,

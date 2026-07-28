@@ -2,12 +2,15 @@
 
 Status: Accepted (2026-07-29)
 
+Implementation status: transport, complete catalog pinning, exact static-resource reads, and exact
+prompt retrieval are implemented. Resource-template invocation/subscriptions, resumable GET,
+OAuth, health, and effectful calls remain subsequent slices.
+
 ## Context
 
-Mealy already supports schema-pinned, read-only MCP tools from digest-pinned
-local executables inside a fresh Bubblewrap stdio sandbox. That boundary does
-not cover remote Streamable HTTP servers, OAuth, resources, prompts, or tools
-with external effects.
+At the start of this decision, Mealy supported schema-pinned, read-only MCP tools from
+digest-pinned local executables inside a fresh Bubblewrap stdio sandbox. That boundary did not
+cover remote Streamable HTTP servers, OAuth, resources, prompts, or tools with external effects.
 
 The stable MCP revision implemented by Mealy remains `2025-11-25`. A
 `2026-07-28` release candidate exists, but release-candidate semantics are not

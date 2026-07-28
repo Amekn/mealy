@@ -32,7 +32,7 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Built-in compiled adapter | Trusted code, reviewed with the daemon |
 | Third-party extension | Untrusted native code confined to its host process and grants |
 | Local MCP stdio server | Untrusted owner-selected native code confined to a fresh read-only sandbox and exact schema/tool-set grant |
-| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/tool-set grant and bounded fresh session |
+| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
@@ -149,7 +149,7 @@ tools, workspaces, network, processes, secrets, extensions, or delegation to the
 
 ### Malicious or changed MCP server gains ambient authority
 
-Controls: all transports require explicit selected tool names. Native stdio inspection and
+Controls: all transports require explicit selected authority. Native stdio inspection and
 activation require an exact canonical ELF and installation publishes owner-private
 content-addressed bytes. The negotiated protocol,
 complete paginated advertised tool set, each selected full definition, self-contained input/output
@@ -165,14 +165,19 @@ persisted, and replayed without execution. The server still sees arguments delib
 it, and the host kernel remains the native-code isolation boundary.
 
 Streamable HTTP grants instead pin one canonical HTTPS endpoint (or literal-loopback HTTP), the
-exact opaque credential reference, protocol, complete inventory, and definitions. The destination
+exact opaque credential reference, protocol, negotiated capability declarations, complete
+tool/resource/resource-template/prompt inventory, and definitions. The owner selects exact tools,
+static resource URIs, and prompt names. Resource reads accept no dynamic URI; prompt inputs are
+restricted to the advertised string arguments and returned messages are tagged/cited as untrusted
+tool evidence, never hidden or system instructions. The destination
 and credential reference are cryptographically bound into the durable descriptor and immutable run
 ceiling. Resolution rejects mixed/private/reserved answers and pins accepted addresses; proxies and
 redirects are disabled. Required Origin/media/protocol/session headers are bounded, bearer and
 session values are sensitive zeroizing memory only, and every startup verification or call uses a
 fresh session. JSON/SSE parsers reject unsolicited server requests, inventory-change notifications,
-invalid correlation, unbounded events, schema drift, and malformed results. This first slice does
-not grant OAuth, resources/prompts, resumable GET, or effectful HTTP calls.
+invalid correlation, unbounded events, catalog drift, and malformed results. The implemented slice
+does not grant OAuth, resource-template expansion/subscriptions, resumable GET, or effectful HTTP
+calls.
 
 ### Parent model delegates hidden context or excess authority
 
@@ -508,7 +513,7 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
 - Provider payload and child environment tests prove secret minimization.
 - Extension-host crash and malicious-request fixtures cannot stop or bypass the daemon.
 - MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
-  SSRF/redirect/credential/session confinement, framing and output bounds, complete-toolset
+  SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
   executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.
 - The pinned real Headless Shell gate proves fresh-profile/CDP identity, rendering, safe exact-link
   same-origin navigation, exact form-free button activation plus submit-button denial, native

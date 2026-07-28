@@ -9608,10 +9608,11 @@ pub(super) fn invariant(message: impl Into<String>) -> AgentStoreError {
 
 #[cfg(test)]
 mod mcp_http_capability_tests {
-    use super::mcp_descriptor_authority_within_capability_ceiling;
+    use super::{mcp_descriptor_authority_within_capability_ceiling, valid_mcp_descriptor};
     use mealy_application::{
-        McpHttpAuthentication, McpHttpServerConfig, McpToolGrant, ProviderCredentialReference,
-        mcp_http_read_tool_descriptor,
+        McpHttpAuthentication, McpHttpServerConfig, McpPromptGrant, McpResourceGrant, McpToolGrant,
+        ProviderCredentialReference, mcp_http_prompt_read_descriptor,
+        mcp_http_read_tool_descriptor, mcp_http_resource_read_descriptor,
     };
     use mealy_domain::CapabilityGrant;
     use serde_json::json;
@@ -9643,6 +9644,8 @@ mod mcp_http_capability_tests {
             "a".repeat(64),
             true,
             vec![grant.clone()],
+            Vec::new(),
+            Vec::new(),
         )
         .expect("server");
         let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
@@ -9662,6 +9665,39 @@ mod mcp_http_capability_tests {
             &descriptor,
             &changed
         ));
+
+        let resource = McpResourceGrant::new(
+            json!({"uri": "fixture://docs/readme", "name": "readme"}),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("resource");
+        let prompt = McpPromptGrant::new(
+            json!({
+                "name": "review",
+                "arguments": [{"name": "topic", "required": true}]
+            }),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("prompt");
+        let catalog_server = McpHttpServerConfig::new(
+            "catalog".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::None,
+            "b".repeat(64),
+            true,
+            Vec::new(),
+            vec![resource.clone()],
+            vec![prompt.clone()],
+        )
+        .expect("catalog server");
+        let resource_descriptor =
+            mcp_http_resource_read_descriptor(&catalog_server, &resource).expect("resource");
+        let prompt_descriptor =
+            mcp_http_prompt_read_descriptor(&catalog_server, &prompt).expect("prompt");
+        assert!(valid_mcp_descriptor(&resource_descriptor));
+        assert!(valid_mcp_descriptor(&prompt_descriptor));
         changed = exact;
         changed.network_destinations =
             BTreeSet::from(["origin:https://other.example.test".to_owned()]);

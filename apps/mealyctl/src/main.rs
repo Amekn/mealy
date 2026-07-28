@@ -13,13 +13,14 @@ use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
     BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpHttpAuthentication,
-    McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig, McpServerDiscovery, McpToolGrant,
-    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
-    ProviderRequest, ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
-    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
-    default_daemon_config_document, is_sha256_digest, sha256_digest, valid_provider_secret_id,
-    valid_session_metadata, validate_discord_snowflake, validate_mcp_http_server_set,
-    validate_mcp_server_set, validate_provider_base_url, validate_provider_chain,
+    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant,
+    McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolGrant, MessageRole,
+    ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference, ProviderRequest,
+    ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
+    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
+    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
+    validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
     AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
@@ -1271,6 +1272,12 @@ struct McpHttpOptions {
     /// Exact reviewed remote tool name; repeat for add.
     #[arg(long = "allow-tool")]
     allow_tools: Vec<String>,
+    /// Exact reviewed remote resource URI; repeat for add.
+    #[arg(long = "allow-resource")]
+    allow_resources: Vec<String>,
+    /// Exact reviewed remote prompt name; repeat for add.
+    #[arg(long = "allow-prompt")]
+    allow_prompts: Vec<String>,
     /// Hard total timeout for initialization, re-discovery, and one call.
     #[arg(long)]
     timeout_ms: Option<u64>,
@@ -11532,7 +11539,7 @@ struct McpHttpInspectionResponse {
     endpoint: String,
     authentication: McpHttpAuthentication,
     transport: &'static str,
-    discovery: McpServerDiscovery,
+    discovery: McpHttpCatalogDiscovery,
 }
 
 #[derive(Serialize)]
@@ -11544,7 +11551,9 @@ struct McpHttpConfigurationResponse {
     endpoint: String,
     authentication: McpHttpAuthentication,
     exposed_tool_ids: Vec<String>,
-    toolset_digest: String,
+    exposed_resource_tool_ids: Vec<String>,
+    exposed_prompt_tool_ids: Vec<String>,
+    catalog_digest: String,
     configuration_path: String,
     replaced_configuration_copy: String,
     restart_required: bool,
@@ -11967,6 +11976,8 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
         McpHttpAction::Inspect
             if options.endpoint.is_some()
                 && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
                 && options.timeout_ms.is_none()
                 && options.maximum_output_bytes.is_none()
                 && !options.approve =>
@@ -11985,6 +11996,8 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
             options.bearer_secret_id.as_deref(),
             credential_environment,
             &options.allow_tools,
+            &options.allow_resources,
+            &options.allow_prompts,
             options.timeout_ms.unwrap_or(30_000),
             options.maximum_output_bytes.unwrap_or(262_144),
             options.approve,
@@ -12007,6 +12020,8 @@ fn valid_mcp_http_lifecycle_options(options: &McpHttpOptions) -> bool {
         && options.bearer_secret_id.is_none()
         && options.bearer_credential_env.is_none()
         && options.allow_tools.is_empty()
+        && options.allow_resources.is_empty()
+        && options.allow_prompts.is_empty()
         && options.timeout_ms.is_none()
         && options.maximum_output_bytes.is_none()
 }
@@ -15258,7 +15273,7 @@ fn inspect_mcp_http_server(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn configure_mcp_http_add(
     home: &Path,
     server_id: &str,
@@ -15266,6 +15281,8 @@ fn configure_mcp_http_add(
     bearer_secret_id: Option<&str>,
     bearer_credential_env: &str,
     allow_tools: &[String],
+    allow_resources: &[String],
+    allow_prompts: &[String],
     timeout_ms: u64,
     maximum_output_bytes: u64,
     approve: bool,
@@ -15273,12 +15290,29 @@ fn configure_mcp_http_add(
     if !approve {
         return Err(CliError::ApprovalRequired);
     }
-    if allow_tools.is_empty() || allow_tools.len() > 64 {
+    if allow_tools
+        .len()
+        .saturating_add(allow_resources.len())
+        .saturating_add(allow_prompts.len())
+        == 0
+        || allow_tools
+            .len()
+            .saturating_add(allow_resources.len())
+            .saturating_add(allow_prompts.len())
+            > 64
+    {
         return Err(CliError::InvalidMcpConfiguration);
     }
-    let mut selected = allow_tools.to_vec();
-    selected.sort();
-    if selected.windows(2).any(|window| window[0] == window[1]) {
+    let mut selected_tools = allow_tools.to_vec();
+    let mut selected_resources = allow_resources.to_vec();
+    let mut selected_prompts = allow_prompts.to_vec();
+    selected_tools.sort();
+    selected_resources.sort();
+    selected_prompts.sort();
+    if [&selected_tools, &selected_resources, &selected_prompts]
+        .into_iter()
+        .any(|selected| selected.windows(2).any(|window| window[0] == window[1]))
+    {
         return Err(CliError::InvalidMcpConfiguration);
     }
     let authentication = mcp_http_authentication(bearer_secret_id);
@@ -15325,7 +15359,7 @@ fn configure_mcp_http_add(
         .as_ref()
         .map(|credential| Zeroizing::new(credential.as_str().to_owned()));
     let discovery = inspect_mcp_http_endpoint(&proposal, credential)?;
-    let grants = selected
+    let grants = selected_tools
         .iter()
         .map(|name| {
             let tool = discovery
@@ -15335,15 +15369,41 @@ fn configure_mcp_http_add(
                 .map_err(|_| CliError::InvalidMcpConfiguration)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let resource_grants = selected_resources
+        .iter()
+        .map(|uri| {
+            let resource = discovery
+                .resource(uri)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpResourceGrant::new(
+                resource.definition.clone(),
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let prompt_grants = selected_prompts
+        .iter()
+        .map(|name| {
+            let prompt = discovery
+                .prompt(name)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpPromptGrant::new(prompt.definition.clone(), timeout_ms, maximum_output_bytes)
+                .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let server = McpHttpServerConfig::new(
         server_id.to_owned(),
         endpoint.to_owned(),
         authentication,
         discovery
-            .toolset_digest()
+            .catalog_digest()
             .map_err(|_| CliError::InvalidMcpConfiguration)?,
         true,
         grants,
+        resource_grants,
+        prompt_grants,
     )
     .map_err(|_| CliError::InvalidMcpConfiguration)?;
     http_servers.push(server.clone());
@@ -15383,7 +15443,7 @@ fn list_mcp_servers(home: &Path) -> Result<(), CliError> {
     print_json(McpServersConfigurationResponse {
         servers,
         http_servers,
-        activation_note: "Only enabled servers whose endpoint/executable and complete live toolset reproduce every pin are exposed after daemon restart.",
+        activation_note: "Only enabled servers whose endpoint/executable and complete live tool or catalog evidence reproduce every pin are exposed after daemon restart.",
     })
 }
 
@@ -15817,7 +15877,17 @@ fn publish_mcp_http_configuration(
             .iter()
             .map(|tool| server.exposed_tool_id(tool.remote_name()))
             .collect(),
-        toolset_digest: server.toolset_digest().to_owned(),
+        exposed_resource_tool_ids: server
+            .resources()
+            .iter()
+            .map(|resource| server.exposed_resource_tool_id(resource.definition_digest()))
+            .collect(),
+        exposed_prompt_tool_ids: server
+            .prompts()
+            .iter()
+            .map(|prompt| server.exposed_prompt_tool_id(prompt.remote_name()))
+            .collect(),
+        catalog_digest: server.catalog_digest().to_owned(),
         configuration_path: current.display().to_string(),
         replaced_configuration_copy: replaced.display().to_string(),
         restart_required: true,

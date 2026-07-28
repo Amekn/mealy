@@ -629,7 +629,7 @@ fn valid_mcp_tool_id(tool_id: &str) -> bool {
     !server_id.is_empty()
         && server_id.len() <= 32
         && !remote_name.is_empty()
-        && remote_name.len() <= 64
+        && remote_name.len() <= 96
         && tool_id.len() <= 128
         && tool_id
             .bytes()
@@ -851,7 +851,7 @@ mod tests {
                 .is_ok()
         );
         let valid_http_mcp = CapabilityGrant {
-            tools: BTreeSet::from(["mcp.remote.lookup".to_owned()]),
+            tools: BTreeSet::from(["mcp.remote.tool.lookup".to_owned()]),
             effect_classes: BTreeSet::from([EffectClass::ReadOnly]),
             network_destinations: BTreeSet::from(["origin:https://mcp.example.test".to_owned()]),
             secret_references: BTreeSet::from(["broker:mcp-remote".to_owned()]),

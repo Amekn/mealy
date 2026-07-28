@@ -1312,13 +1312,14 @@ exports, backups, isolated restore verification, activation, and cross-schema ro
 re-verify every configured MCP executable. `--safe-mode` launches none of them. If one prevents a
 normal startup, keep the daemon stopped, run `mcp-list`, disable or revoke that server, and restart.
 
-## Add a remote Streamable HTTP MCP tool
+## Add a remote Streamable HTTP MCP capability
 
-Mealy can expose owner-selected read-only tools from an MCP Streamable HTTP endpoint using the
-stable `2025-11-25` protocol. This is a separate authority from generic web access. Production
+Mealy can expose owner-selected read-only tools, exact resource URIs, and prompts from an MCP
+Streamable HTTP endpoint using the stable `2025-11-25` protocol. This is a separate authority from
+generic web access. Production
 endpoints must use canonical HTTPS; literal-loopback HTTP is permitted for a server on the same
 machine. Redirects, proxies, userinfo, query/fragment-bearing endpoints, ambiguous/private DNS
-answers, unsolicited server requests, and live tool-set changes fail closed.
+answers, unsolicited server requests, and live catalog changes fail closed.
 
 For a credentialless server, inspect its complete inventory without changing configuration:
 
@@ -1338,7 +1339,8 @@ export MCP_HTTP_BEARER_TOKEN
   --bearer-secret-id mcp.remote-tools
 ```
 
-Review every returned definition and schema, drain Mealy, then install only the named tools:
+Review every returned tool, resource, resource-template, and prompt definition, drain Mealy, then
+install only the exact operations you intend to expose. Repeat any selection flag as needed:
 
 ```sh
 "$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
@@ -1346,6 +1348,8 @@ Review every returned definition and schema, drain Mealy, then install only the 
   remote-tools https://mcp.example.com/mcp \
   --bearer-secret-id mcp.remote-tools \
   --allow-tool search \
+  --allow-resource 'docs://project/readme' \
+  --allow-prompt review \
   --timeout-ms 30000 \
   --maximum-output-bytes 262144 \
   --approve
@@ -1357,8 +1361,11 @@ unset MCP_HTTP_BEARER_TOKEN
 `mcp-http add` repeats discovery before importing the bearer token into the owner-private broker.
 Configuration retains only `broker:mcp.remote-tools`. Startup and every invocation open a fresh
 session, initialize, send the required protocol/origin/media headers, rediscover the complete
-paginated tool inventory, compare all retained pins, validate arguments, and only then call the
-selected tool. The exact endpoint destination and opaque credential reference are bound into the
+paginated tool/resource/resource-template/prompt catalog, compare all retained pins, validate
+arguments, and only then perform the selected read. Resource grants call only the exact selected
+URI. Prompt grants accept only the advertised string arguments, and returned prompt messages are
+tagged `untrusted_tool_evidence`; Mealy never inserts them as hidden or system instructions. The
+exact endpoint destination and opaque credential reference are bound into the
 durable descriptor and immutable run capability ceiling. JSON and SSE responses share hard byte,
 message, event-ID, timeout, schema, and normalized-result bounds. Recorded replay never contacts
 the server.
@@ -1374,8 +1381,11 @@ Disable or revoke a server while Mealy is stopped:
 
 Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
 credential and an exact live inventory match before publishing authority. OAuth authorization,
-MCP resources/prompts, resumable GET streams, and effectful MCP tools remain planned v0.4 slices
-and are not implied by bearer support.
+resource-template expansion/subscriptions, resumable GET streams, and effectful MCP tools remain
+planned v0.4 slices and are not implied by bearer support. See the stable MCP
+[resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and
+[schema](https://modelcontextprotocol.io/specification/2025-11-25/schema) references for the
+wire-level objects Mealy validates.
 
 ## Grant a read-only workspace
 

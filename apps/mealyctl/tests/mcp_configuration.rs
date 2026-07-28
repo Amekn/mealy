@@ -210,7 +210,10 @@ fn mcp_http_inspect_and_add_pin_one_live_reviewed_toolset() {
     );
     let response: Value = serde_json::from_slice(&added.stdout).expect("add response");
     assert_eq!(response["operation"], "installed_and_enabled");
-    assert_eq!(response["exposedToolIds"], json!(["mcp.remote.lookup"]));
+    assert_eq!(
+        response["exposedToolIds"],
+        json!(["mcp.remote.tool.lookup"])
+    );
     assert_eq!(
         read_config(home.path())["mcpHttpServers"][0]["endpoint"],
         endpoint
@@ -221,6 +224,90 @@ fn mcp_http_inspect_and_add_pin_one_live_reviewed_toolset() {
             .is_none()
     );
     server.join().expect("HTTP fixture server");
+}
+
+#[test]
+fn mcp_http_add_selects_exact_resources_and_prompts_from_the_complete_catalog() {
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::create_dir(home.path().join("config-history")).expect("configuration history");
+    fs::write(
+        home.path().join("config.json"),
+        serde_json::to_vec_pretty(&default_config()).expect("config bytes"),
+    )
+    .expect("write config");
+    let resource = json!({
+        "uri": "fixture://docs/readme",
+        "name": "readme",
+        "description": "One exact documentation resource",
+        "mimeType": "text/markdown"
+    });
+    let prompt = json!({
+        "name": "review",
+        "description": "One exact prompt",
+        "arguments": [{"name": "topic", "required": true}]
+    });
+    let (endpoint, server) = spawn_http_catalog_fixture(resource.clone(), prompt.clone(), 2);
+    let inspected = command(
+        home.path(),
+        &["mcp-http", "inspect", "catalog", endpoint.as_str()],
+    );
+    assert!(
+        inspected.status.success(),
+        "HTTP catalog inspect failed: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let response: Value = serde_json::from_slice(&inspected.stdout).expect("inspect response");
+    assert_eq!(
+        response["discovery"]["resources"][0]["definition"],
+        resource
+    );
+    assert_eq!(response["discovery"]["prompts"][0]["definition"], prompt);
+
+    let added = command(
+        home.path(),
+        &[
+            "mcp-http",
+            "add",
+            "catalog",
+            endpoint.as_str(),
+            "--allow-resource",
+            "fixture://docs/readme",
+            "--allow-prompt",
+            "review",
+            "--approve",
+        ],
+    );
+    assert!(
+        added.status.success(),
+        "HTTP catalog add failed: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let response: Value = serde_json::from_slice(&added.stdout).expect("add response");
+    assert_eq!(response["exposedToolIds"], json!([]));
+    assert_eq!(
+        response["exposedPromptToolIds"],
+        json!(["mcp.catalog.prompt.review"])
+    );
+    assert!(
+        response["exposedResourceToolIds"][0]
+            .as_str()
+            .is_some_and(|value| value.starts_with("mcp.catalog.resource."))
+    );
+    assert!(
+        response["catalogDigest"]
+            .as_str()
+            .is_some_and(|digest| digest.len() == 64)
+    );
+    let config = read_config(home.path());
+    assert_eq!(
+        config["mcpHttpServers"][0]["resources"][0]["definition"]["uri"],
+        "fixture://docs/readme"
+    );
+    assert_eq!(
+        config["mcpHttpServers"][0]["prompts"][0]["definition"]["name"],
+        "review"
+    );
+    server.join().expect("HTTP catalog fixture server");
 }
 
 fn fixture_config() -> McpServerConfig {
@@ -286,6 +373,8 @@ fn fixture_http_config() -> McpHttpServerConfig {
         discovery.toolset_digest().expect("toolset digest"),
         true,
         vec![grant],
+        Vec::new(),
+        Vec::new(),
     )
     .expect("HTTP server")
 }
@@ -315,7 +404,7 @@ fn spawn_http_fixture(definition: Value, discoveries: usize) -> (String, thread:
                     "200 OK",
                     &json!({
                         "jsonrpc": "2.0",
-                        "id": 2,
+                        "id": 100,
                         "result": {"tools": [definition.clone()]}
                     }),
                     None,
@@ -329,6 +418,76 @@ fn spawn_http_fixture(definition: Value, discoveries: usize) -> (String, thread:
                 stream
                     .write_all(response.as_bytes())
                     .expect("write fixture response");
+            }
+        }
+    });
+    (format!("http://{address}/mcp"), server)
+}
+
+fn spawn_http_catalog_fixture(
+    resource: Value,
+    prompt: Value,
+    discoveries: usize,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP catalog fixture");
+    let address = listener.local_addr().expect("catalog fixture address");
+    let server = thread::spawn(move || {
+        for _ in 0..discoveries {
+            let responses = [
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "protocolVersion": MCP_PROTOCOL_VERSION,
+                            "capabilities": {
+                                "resources": {"subscribe": false},
+                                "prompts": {}
+                            },
+                            "serverInfo": {"name": "cli-catalog-fixture", "version": "1"}
+                        }
+                    }),
+                    Some(("MCP-Session-Id", "cli-catalog-session")),
+                ),
+                "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_owned(),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 1_000,
+                        "result": {"resources": [resource.clone()]}
+                    }),
+                    None,
+                ),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 2_000,
+                        "result": {"resourceTemplates": []}
+                    }),
+                    None,
+                ),
+                http_json_response(
+                    "200 OK",
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": 3_000,
+                        "result": {"prompts": [prompt.clone()]}
+                    }),
+                    None,
+                ),
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_owned(),
+            ];
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept catalog fixture request");
+                read_http_request(&mut stream);
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write catalog fixture response");
             }
         }
     });

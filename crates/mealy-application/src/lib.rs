@@ -170,11 +170,17 @@ pub use fixture_write::{
 };
 pub use mcp::{
     MCP_MAXIMUM_ARGUMENTS, MCP_MAXIMUM_DEFINITION_BYTES, MCP_MAXIMUM_HTTP_ENDPOINT_BYTES,
-    MCP_MAXIMUM_SERVERS, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpConfigError,
-    McpHttpAuthentication, McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig,
+    MCP_MAXIMUM_HTTP_GRANTS_PER_SERVER, MCP_MAXIMUM_PROMPTS_PER_SERVER,
+    MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER, MCP_MAXIMUM_RESOURCES_PER_SERVER,
+    MCP_MAXIMUM_SERVERS, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION,
+    McpCatalogItemInspection, McpConfigError, McpHttpAuthentication, McpHttpCatalogDiscovery,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant, McpResourceGrant, McpServerConfig,
     McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_http_authority_digest,
-    mcp_http_read_tool_descriptor, mcp_read_tool_descriptor, mcp_tool_definition_digest,
-    validate_mcp_http_server_set, validate_mcp_server_set, validate_mcp_tool_arguments,
+    mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
+    mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
+    mcp_resource_definition_digest, mcp_resource_template_definition_digest,
+    mcp_tool_definition_digest, validate_mcp_http_server_set, validate_mcp_prompt_arguments,
+    validate_mcp_server_set, validate_mcp_tool_arguments,
 };
 pub use memory::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,
