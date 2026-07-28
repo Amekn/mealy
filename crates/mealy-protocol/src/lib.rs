@@ -113,6 +113,102 @@ pub struct CreateSessionResponse {
     pub session_id: String,
 }
 
+/// Revision-fenced request to set one canonical owner session title.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSessionTitleRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Revision observed before the update.
+    pub expected_revision: u64,
+    /// Bounded terminal-safe owner title.
+    pub title: String,
+}
+
+/// Committed canonical owner-title update.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTitleResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Updated session.
+    pub session_id: String,
+    /// Canonical owner title.
+    pub title: String,
+    /// Stable source spelling.
+    pub title_source: String,
+    /// Revision after the update.
+    pub revision: u64,
+    /// Immutable journal event.
+    pub event_id: String,
+    /// UTC commit time in epoch milliseconds.
+    pub updated_at_ms: i64,
+}
+
+/// Revision-fenced request to create one immutable session checkpoint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSessionCheckpointRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Revision observed before checkpoint creation.
+    pub expected_revision: u64,
+    /// Optional bounded owner label.
+    pub label: Option<String>,
+}
+
+/// Exact-bound immutable session checkpoint.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCheckpointResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Immutable checkpoint ID.
+    pub checkpoint_id: String,
+    /// Owning session.
+    pub session_id: String,
+    /// Timeline high watermark before checkpoint creation.
+    pub source_cursor: TimelineCursor,
+    /// Latest completed canonical turn, when one exists.
+    pub source_turn_id: Option<String>,
+    /// Exact context epoch, when initialized.
+    pub context_epoch_id: Option<String>,
+    /// Session revision captured by the checkpoint.
+    pub source_session_revision: u64,
+    /// Context configuration digest, when initialized.
+    pub config_digest: Option<String>,
+    /// Context policy digest, when initialized.
+    pub policy_digest: Option<String>,
+    /// Provider-neutral workspace identity, when initialized.
+    pub workspace_identity: Option<String>,
+    /// Owner/channel/workspace authority digest.
+    pub workspace_authority_digest: String,
+    /// Provider used by the source turn's latest attempt.
+    pub provider_id: Option<String>,
+    /// Model used by the source turn's latest attempt.
+    pub model_id: Option<String>,
+    /// Optional owner label.
+    pub label: Option<String>,
+    /// Immutable creation event.
+    pub event_id: String,
+    /// Session revision after checkpoint creation.
+    pub revision: u64,
+    /// UTC creation time in epoch milliseconds.
+    pub created_at_ms: i64,
+}
+
+/// Bounded newest-first checkpoint list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCheckpointsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Owning session.
+    pub session_id: String,
+    /// Immutable checkpoints.
+    pub checkpoints: Vec<SessionCheckpointResponse>,
+}
+
 /// Authenticated, idempotent request to submit one input.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -180,6 +276,9 @@ pub struct SessionSummaryResponse {
     /// Bounded display title; older compatible daemons deserialize as `New conversation`.
     #[serde(default = "default_session_title")]
     pub title: String,
+    /// Stable title source; older compatible daemons deserialize as `derived`.
+    #[serde(default = "default_session_title_source")]
+    pub title_source: String,
     /// Stable lifecycle spelling.
     pub status: String,
     /// Canonical optimistic-concurrency revision.
@@ -213,6 +312,9 @@ pub struct SessionSearchHitResponse {
     /// Bounded display title; older compatible daemons deserialize as `New conversation`.
     #[serde(default = "default_session_title")]
     pub session_title: String,
+    /// Stable title source; older compatible daemons deserialize as `derived`.
+    #[serde(default = "default_session_title_source")]
+    pub session_title_source: String,
     /// Canonical turn identity.
     pub turn_id: String,
     /// Canonical task identity accepted by task inspection commands.
@@ -243,6 +345,10 @@ pub struct SessionSearchResponse {
 
 fn default_session_title() -> String {
     "New conversation".to_owned()
+}
+
+fn default_session_title_source() -> String {
+    "derived".to_owned()
 }
 
 /// Stable transport projection of one task.
@@ -2745,6 +2851,7 @@ mod tests {
         }))
         .expect("deserialize older additive response");
         assert_eq!(summary.title, "New conversation");
+        assert_eq!(summary.title_source, "derived");
 
         let value = serde_json::to_value(summary).expect("serialize titled response");
         assert_eq!(value["title"], "New conversation");

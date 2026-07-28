@@ -59,7 +59,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         .expect("provider secret");
 
     downgrade_fixture_to_v13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 16, SystemTime::now())
+    let migration = create_pre_migration_backup(&home, &database, 13, 17, SystemTime::now())
         .expect("migration backup");
     let migration_name = migration
         .path
@@ -74,7 +74,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     };
     let sbom = prepare_sbom(root.path(), &repository, target);
     let old_package = build_package(root.path(), &repository, &sbom, target, 13, "old");
-    let new_package = build_package(root.path(), &repository, &sbom, target, 16, "new");
+    let new_package = build_package(root.path(), &repository, &sbom, target, 17, "new");
     let prefix = root.path().join("prefix");
     run_success(
         Command::new(repository.join("packaging/install.sh"))
@@ -91,7 +91,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         "install schema-13 package",
     );
 
-    drop(SqliteStore::open(&database, 2).expect("migrate active home to schema 16"));
+    drop(SqliteStore::open(&database, 2).expect("migrate active home to schema 17"));
     run_success(
         Command::new(repository.join("packaging/install.sh"))
             .env("MEALY_TEST_REAL_MEALYCTL", env!("CARGO_BIN_EXE_mealyctl"))
@@ -104,7 +104,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
             .arg(&prefix)
             .arg("--home")
             .arg(&home),
-        "install schema-16 package",
+        "install schema-17 package",
     );
     fs::write(
         home.join("newer-only.txt"),
@@ -115,10 +115,10 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     let manager = prefix.join("share/mealy-manager.sh");
     let denied = rollback_command(&manager, &prefix, &home, migration_name, &"0".repeat(64));
     assert!(!denied.status.success());
-    assert_eq!(package_schema(&prefix), 16);
+    assert_eq!(package_schema(&prefix), 17);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("schema after compensated denial"),
-        Some(16)
+        Some(17)
     );
     assert!(home.join("newer-only.txt").is_file());
 
@@ -159,7 +159,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     assert_eq!(
         inspect_existing_schema_version(&preserved.join("mealy.sqlite3"))
             .expect("preserved migrated schema"),
-        Some(16)
+        Some(17)
     );
 }
 
@@ -177,7 +177,7 @@ fn downgrade_fixture_to_v13(database: &Path) {
              DROP TABLE discord_channel_health;
              DROP TABLE discord_channel_cursor;
              DROP TABLE discord_channel_binding;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate schema 13");

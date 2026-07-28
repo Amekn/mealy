@@ -921,6 +921,24 @@ into a Telegram, Discord, or webhook session even when the principal is the same
 filtered before content matching. Resume a hit with `chat --session-id SESSION_ID` and inspect its
 task/timeline through the returned IDs.
 
+Give an important conversation a stable name and capture a safe boundary after its work settles:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session rename \
+  SESSION_ID "Release planning"
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session checkpoint create \
+  SESSION_ID --label "Before provider comparison"
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session checkpoint list \
+  SESSION_ID --limit 20
+```
+
+The convenience form reads the latest revision before each mutation. Use
+`--expected-revision REVISION` in automation so a concurrent change fails visibly. A checkpoint is
+not a copy of running work or a reusable approval: it is immutable evidence binding the settled
+timeline cursor, completed turn, context/configuration/workspace authority, and provider/model
+identity. Pending input, an active turn, or a failed/cancelled latest turn must settle or be
+handled before capture.
+
 The same concise workflow is scriptable outside the REPL:
 
 ```sh

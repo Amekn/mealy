@@ -62,6 +62,8 @@ Mealy exists to close that integration gap. It is not intended to win by accumul
 - **Principal**: an authenticated user, service, or runtime identity.
 - **Channel binding**: the verified mapping from a channel identity to a Mealy principal.
 - **Session**: an ordered conversation boundary and durable input inbox.
+- **Checkpoint**: immutable evidence binding a quiescent session revision and timeline boundary to
+  its exact context, provider, configuration, and workspace authority identities.
 - **Task**: a user-visible unit of work with success criteria and a lifecycle.
 - **Turn**: one admitted input and the agent work it triggers.
 - **Run**: one agent's execution for a task or delegated subtask.
@@ -113,6 +115,13 @@ These rules apply to every implementation phase.
 - **TASK-015:** Parent/child run lineage, delegated input, capability inheritance, and terminal outcome MUST be durable.
 - **TASK-016:** Delegation MUST pass a bounded, explicit context package. Child agents MUST NOT inherit the parent's full history, credentials, workspace, or permissions implicitly.
 - **TASK-017:** Cancellation MUST be cooperative first and forceful after a configured grace period. The resulting partial or unknown state MUST be recorded.
+- **TASK-018:** Every session MUST expose one bounded terminal-safe effective title. Owner title
+  changes MUST be revision fenced and journaled; a derived fallback MUST be deterministic and MUST
+  NOT require a provider call or canonical mutation.
+- **TASK-019:** A session checkpoint MUST be immutable, owner authorized, and created only at a
+  quiescent canonical turn boundary. It MUST bind the source cursor, session revision, context
+  epoch, configuration/policy, workspace authority, and provider/model evidence without copying
+  approvals, effects, active work, or authority.
 
 ### 6.3 Scheduler and concurrency
 

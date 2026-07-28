@@ -3,8 +3,8 @@ use mealy_domain::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
     ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
     ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
-    MemoryRevisionId, MessageId, OutboxId, RunId, SessionId, TaskId, ToolCallId, TurnId,
-    ValidationId, WorkerId,
+    MemoryRevisionId, MessageId, OutboxId, RunId, SessionCheckpointId, SessionId, TaskId,
+    ToolCallId, TurnId, ValidationId, WorkerId,
 };
 use std::time::SystemTime;
 
@@ -29,6 +29,10 @@ impl IdGenerator for SystemIdGenerator {
 
     fn generate_session_id(&self) -> SessionId {
         SessionId::new()
+    }
+
+    fn generate_session_checkpoint_id(&self) -> SessionCheckpointId {
+        SessionCheckpointId::new()
     }
 
     fn generate_inbox_entry_id(&self) -> InboxEntryId {

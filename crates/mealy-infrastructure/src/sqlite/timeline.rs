@@ -3,6 +3,7 @@ use mealy_application::{
     OwnershipContext, SessionSearchHitView, SessionSearchQuery, SessionStatusView,
     SessionSummaryView, TimelineCursor, TimelineEvent, TimelinePage, TimelineQuery, TimelineStore,
     TimelineStoreError, derive_session_title, session_search_excerpt, sha256_digest,
+    valid_session_metadata,
 };
 use mealy_domain::SessionId;
 use rusqlite::{OptionalExtension, params};
@@ -19,7 +20,7 @@ impl TimelineStore for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT session.id, \
+                "SELECT session.id, metadata.owner_title, \
                         (SELECT inbox.content FROM session_inbox inbox \
                          WHERE inbox.session_id = session.id \
                          ORDER BY inbox.sequence ASC LIMIT 1), \
@@ -27,7 +28,9 @@ impl TimelineStore for SqliteStore {
                         (SELECT COUNT(*) FROM session_inbox inbox \
                          WHERE inbox.session_id = session.id AND inbox.state = 'pending'), \
                         session.active_turn_id, session.created_at_ms, session.updated_at_ms \
-                 FROM session WHERE principal_id = ?1 AND channel_binding_id = ?2 \
+                 FROM session LEFT JOIN session_metadata metadata \
+                   ON metadata.session_id = session.id \
+                 WHERE principal_id = ?1 AND channel_binding_id = ?2 \
                  ORDER BY updated_at_ms DESC, id DESC LIMIT ?3",
             )
             .map_err(map_sqlite_error)?;
@@ -42,12 +45,13 @@ impl TimelineStore for SqliteStore {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
                         row.get::<_, i64>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                         row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             )
@@ -55,6 +59,7 @@ impl TimelineStore for SqliteStore {
             .map(|row| {
                 let (
                     session_id,
+                    owner_title,
                     first_input,
                     status,
                     revision,
@@ -66,9 +71,22 @@ impl TimelineStore for SqliteStore {
                 if !matches!(status.as_str(), "active" | "paused" | "closed") {
                     return Err(invariant("session status is invalid"));
                 }
+                if owner_title
+                    .as_deref()
+                    .is_some_and(|title| !valid_session_metadata(title))
+                {
+                    return Err(invariant("session owner title is invalid"));
+                }
+                let title_source = if owner_title.is_some() {
+                    "owner"
+                } else {
+                    "derived"
+                };
                 Ok(SessionSummaryView {
                     session_id: parse_id(&session_id, "session ID")?,
-                    title: derive_session_title(first_input.as_deref()),
+                    title: owner_title
+                        .unwrap_or_else(|| derive_session_title(first_input.as_deref())),
+                    title_source: title_source.to_owned(),
                     status,
                     revision: nonnegative_u64(revision, "session revision")?,
                     pending_inputs: nonnegative_u64(pending_inputs, "pending input count")?,
@@ -100,7 +118,7 @@ impl TimelineStore for SqliteStore {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT session.id, \
+                "SELECT session.id, metadata.owner_title, \
                         (SELECT first_inbox.content FROM session_inbox first_inbox \
                          WHERE first_inbox.session_id = session.id \
                          ORDER BY first_inbox.sequence ASC LIMIT 1), \
@@ -108,6 +126,7 @@ impl TimelineStore for SqliteStore {
                         final_message.content_digest, turn.created_at_ms \
                  FROM turn \
                  JOIN session ON session.id = turn.session_id \
+                 LEFT JOIN session_metadata metadata ON metadata.session_id = session.id \
                  JOIN session_inbox inbox ON inbox.inbox_entry_id = turn.inbox_entry_id \
                  JOIN run_loop_state loop ON loop.run_id = turn.run_id \
                  LEFT JOIN message final_message ON final_message.id = loop.final_message_id \
@@ -128,56 +147,21 @@ impl TimelineStore for SqliteStore {
                     limit,
                 ],
                 |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, i64>(7)?,
-                    ))
+                    Ok(StoredSessionSearchHit {
+                        session_id: row.get(0)?,
+                        owner_title: row.get(1)?,
+                        first_input: row.get(2)?,
+                        turn_id: row.get(3)?,
+                        task_id: row.get(4)?,
+                        user_content: row.get(5)?,
+                        assistant_content: row.get(6)?,
+                        assistant_content_digest: row.get(7)?,
+                        created_at_ms: row.get(8)?,
+                    })
                 },
             )
             .map_err(map_sqlite_error)?
-            .map(|row| {
-                let (
-                    session_id,
-                    first_input,
-                    turn_id,
-                    task_id,
-                    user_content,
-                    assistant_content,
-                    assistant_content_digest,
-                    created_at_ms,
-                ) = row.map_err(map_sqlite_error)?;
-                if assistant_content.as_ref().is_some_and(|content| {
-                    assistant_content_digest
-                        .as_ref()
-                        .is_none_or(|digest| sha256_digest(content.as_bytes()) != *digest)
-                }) {
-                    return Err(invariant("stored searchable assistant content is invalid"));
-                }
-                let user_excerpt = session_search_excerpt(&user_content, &query.query);
-                let assistant_excerpt = assistant_content
-                    .as_deref()
-                    .and_then(|content| session_search_excerpt(content, &query.query));
-                if user_excerpt.is_none() && assistant_excerpt.is_none() {
-                    return Err(invariant("session search row does not contain its query"));
-                }
-                Ok(SessionSearchHitView {
-                    session_id: parse_id(&session_id, "session ID")?,
-                    session_title: derive_session_title(first_input.as_deref()),
-                    turn_id: parse_id(&turn_id, "turn ID")?,
-                    task_id: parse_id(&task_id, "task ID")?,
-                    user_excerpt,
-                    user_content_digest: sha256_digest(user_content.as_bytes()),
-                    assistant_excerpt,
-                    assistant_content_digest,
-                    created_at: system_time(created_at_ms)?,
-                })
-            })
+            .map(|row| row.map_err(map_sqlite_error)?.into_view(&query.query))
             .collect()
     }
 
@@ -358,6 +342,64 @@ struct StoredTimelineEvent {
     payload_json: String,
 }
 
+struct StoredSessionSearchHit {
+    session_id: String,
+    owner_title: Option<String>,
+    first_input: Option<String>,
+    turn_id: String,
+    task_id: String,
+    user_content: String,
+    assistant_content: Option<String>,
+    assistant_content_digest: Option<String>,
+    created_at_ms: i64,
+}
+
+impl StoredSessionSearchHit {
+    fn into_view(self, query: &str) -> Result<SessionSearchHitView, TimelineStoreError> {
+        if self.assistant_content.as_ref().is_some_and(|content| {
+            self.assistant_content_digest
+                .as_ref()
+                .is_none_or(|digest| sha256_digest(content.as_bytes()) != *digest)
+        }) {
+            return Err(invariant("stored searchable assistant content is invalid"));
+        }
+        let user_excerpt = session_search_excerpt(&self.user_content, query);
+        let assistant_excerpt = self
+            .assistant_content
+            .as_deref()
+            .and_then(|content| session_search_excerpt(content, query));
+        if user_excerpt.is_none() && assistant_excerpt.is_none() {
+            return Err(invariant("session search row does not contain its query"));
+        }
+        if self
+            .owner_title
+            .as_deref()
+            .is_some_and(|title| !valid_session_metadata(title))
+        {
+            return Err(invariant("session owner title is invalid"));
+        }
+        let session_title_source = if self.owner_title.is_some() {
+            "owner"
+        } else {
+            "derived"
+        };
+        Ok(SessionSearchHitView {
+            session_id: parse_id(&self.session_id, "session ID")?,
+            session_title: self
+                .owner_title
+                .unwrap_or_else(|| derive_session_title(self.first_input.as_deref())),
+            session_title_source: session_title_source.to_owned(),
+            turn_id: parse_id(&self.turn_id, "turn ID")?,
+            task_id: parse_id(&self.task_id, "task ID")?,
+            user_excerpt,
+            user_content_digest: sha256_digest(self.user_content.as_bytes()),
+            assistant_excerpt,
+            assistant_content_digest: self.assistant_content_digest,
+            created_at: system_time(self.created_at_ms)?,
+        })
+    }
+}
+
 impl StoredTimelineEvent {
     fn try_into_event(self) -> Result<TimelineEvent, TimelineStoreError> {
         Ok(TimelineEvent {
@@ -404,7 +446,7 @@ fn authorize(
     }
 }
 
-fn high_watermark(
+pub(super) fn high_watermark(
     connection: &rusqlite::Connection,
     session_id: SessionId,
 ) -> Result<TimelineCursor, TimelineStoreError> {

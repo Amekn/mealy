@@ -80,6 +80,8 @@ pub struct SessionSummaryView {
     pub session_id: SessionId,
     /// Bounded display title derived from the first canonical owner input.
     pub title: String,
+    /// Stable title source: `owner` or `derived`.
+    pub title_source: String,
     /// Stable lifecycle spelling.
     pub status: String,
     /// Canonical optimistic-concurrency revision.
@@ -121,6 +123,8 @@ pub struct SessionSearchHitView {
     pub session_id: SessionId,
     /// Bounded display title derived from the first canonical owner input.
     pub session_title: String,
+    /// Stable session-title source: `owner` or `derived`.
+    pub session_title_source: String,
     /// Canonical turn identity.
     pub turn_id: TurnId,
     /// Canonical root task identity.

@@ -3050,7 +3050,7 @@ mod tests {
                  DROP TABLE discord_channel_health;
                  DROP TABLE discord_channel_cursor;
                  DROP TABLE discord_channel_binding;
-                 DELETE FROM schema_version WHERE version IN (14, 15, 16);
+                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
@@ -3059,7 +3059,7 @@ mod tests {
             inspect_existing_schema_version(&database).expect("inspect"),
             Some(13)
         );
-        let report = create_pre_migration_backup(home.path(), &database, 13, 16, SystemTime::now())
+        let report = create_pre_migration_backup(home.path(), &database, 13, 17, SystemTime::now())
             .expect("migration backup");
         let snapshot = rusqlite::Connection::open(report.path.join("state.sqlite3"))
             .expect("open migration snapshot");
@@ -3188,13 +3188,13 @@ mod tests {
                  DROP TABLE discord_channel_health;
                  DROP TABLE discord_channel_cursor;
                  DROP TABLE discord_channel_binding;
-                 DELETE FROM schema_version WHERE version IN (14, 15, 16);
+                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
         drop(connection);
         let migration =
-            create_pre_migration_backup(home.path(), &database, 13, 16, SystemTime::now())
+            create_pre_migration_backup(home.path(), &database, 13, 17, SystemTime::now())
                 .expect("migration backup");
         let migration_name = migration
             .path
@@ -3202,7 +3202,7 @@ mod tests {
             .and_then(|value| value.to_str())
             .expect("migration backup name")
             .to_owned();
-        drop(SqliteStore::open(&database, 2).expect("migrate active database to v16"));
+        drop(SqliteStore::open(&database, 2).expect("migrate active database to v17"));
         fs::write(
             home.path().join("newer-only.txt"),
             b"must remain in preserved migrated home",
@@ -3222,7 +3222,7 @@ mod tests {
         ));
         assert_eq!(
             inspect_existing_schema_version(&database).expect("active schema after denial"),
-            Some(16)
+            Some(17)
         );
         assert!(home.path().join("newer-only.txt").is_file());
 
@@ -3231,12 +3231,12 @@ mod tests {
             &migration_name,
             &migration.manifest_digest,
             13,
-            16,
+            17,
             SystemTime::now(),
         )
         .expect("activate migration backup");
         assert_eq!(activated.from_schema_version, 13);
-        assert_eq!(activated.to_schema_version, 16);
+        assert_eq!(activated.to_schema_version, 17);
         assert_eq!(activated.artifact_count, 1);
         assert_eq!(
             fs::read(home.path().join(&mcp_relative_path)).expect("restored MCP executable"),
@@ -3258,7 +3258,7 @@ mod tests {
         assert_eq!(
             inspect_existing_schema_version(&activated.preserved_home.join("mealy.sqlite3"))
                 .expect("preserved schema"),
-            Some(16)
+            Some(17)
         );
         assert!(activated.preserved_home.join("newer-only.txt").is_file());
         assert!(!home.path().join("newer-only.txt").exists());

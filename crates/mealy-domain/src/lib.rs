@@ -37,7 +37,7 @@ pub use id::{
     ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
     ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
     MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, ScheduleId, ScheduleRunId,
-    SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
+    SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
 };
 pub use memory::{
     MemoryCategory, MemoryConfidence, MemoryError, MemoryMetadata, MemoryNamespace,

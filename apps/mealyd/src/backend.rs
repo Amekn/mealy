@@ -13,11 +13,11 @@ use mealy_application::{
     CapabilityRequirement, Clock, CommitCompaction, CompactionStore, CompactionStoreError,
     CompactionView, CompleteExtensionInvocationCommit, CompleteWebhookDeliveryCommit,
     ContextDisposition, ContextManifestEvidence, ContextManifestEvidenceStore,
-    ContextManifestEvidenceStoreError, CreateScheduleCommit, DelegationStore,
-    DisableExtensionCommit, DiscordChannelBindingView, DiscordChannelStatus, DiscordChannelStore,
-    DiscordChannelStoreError, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION, EffectAttemptState,
-    EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError, EffectLedgerView,
-    EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
+    ContextManifestEvidenceStoreError, CreateScheduleCommit, CreateSessionCheckpointCommand,
+    DelegationStore, DisableExtensionCommit, DiscordChannelBindingView, DiscordChannelStatus,
+    DiscordChannelStore, DiscordChannelStoreError, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION,
+    EffectAttemptState, EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError,
+    EffectLedgerView, EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
     ExtensionDispatchRequest, ExtensionGrant, ExtensionHost, ExtensionHostError,
     ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
     ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
@@ -31,18 +31,20 @@ use mealy_application::{
     ReserveWebhookDeliveryCommit, ResolveApprovalCommit, RevokeDiscordChannelCommit,
     RevokeExtensionCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
     ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
-    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionSearchQuery, SessionStoreError,
-    SessionUseCaseError, StageExtensionManifestCommit, TaskControlAction, TaskControlCommit,
-    TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
+    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionCheckpointView,
+    SessionSearchQuery, SessionStoreError, SessionUseCaseError, SessionWorkbenchStoreError,
+    SessionWorkbenchUseCaseError, StageExtensionManifestCommit, TaskControlAction,
+    TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
     TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
-    TransitionScheduleCommit, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
-    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
-    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
-    canonical_arguments_digest, compaction_source_event_digest, create_session,
-    extension_grant_digest, inspect_extension_manifest, next_schedule_occurrence_ms,
-    query_session_status, query_sessions, query_timeline, route_provider, search_sessions,
-    sha256_digest, validate_webhook_binding_fields, validate_webhook_timestamp,
-    verify_webhook_signature, webhook_input_dedupe_key, webhook_signature_digest,
+    TransitionScheduleCommit, UpdateSessionTitleCommand, ValidationStore,
+    WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION,
+    WebhookChannelBindingView, WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError,
+    admit_input, canonical_arguments_digest, compaction_source_event_digest, create_session,
+    create_session_checkpoint, extension_grant_digest, inspect_extension_manifest,
+    next_schedule_occurrence_ms, query_session_checkpoints, query_session_status, query_sessions,
+    query_timeline, route_provider, search_sessions, sha256_digest, update_session_title,
+    validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
+    webhook_input_dedupe_key, webhook_signature_digest,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, ChannelBindingId,
@@ -71,37 +73,40 @@ use mealy_protocol::{
     ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
     ContextMemoryEvidenceResponse, ContextMemorySourceCitationResponse, ControlTaskRequest,
     CorrectMemoryRequest, CreateBackupRequest, CreateCompactionRequest,
-    CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest, CreateSessionResponse,
-    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
-    DaemonRunStatusResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
-    DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
-    DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
-    EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
-    EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
-    ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
-    ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
-    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand, ExtensionResponse,
-    ExtensionStatusResponse, ExtensionsResponse, GarbageCollectionResponse, InputAdmissionResponse,
-    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand,
-    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
-    MemoryResponse, MemoryRetentionCommand, MemoryRevisionResponse, MemorySearchHitResponse,
-    MemorySearchResponse, MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse,
-    MissedRunPolicyCommand, OperationalFailureResponse, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderEndpointStatusResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeTelegramChannelRequest,
-    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, SandboxProfileResponse,
-    SandboxProfileStatusResponse, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
-    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
-    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionSearchHitResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse, SessionsResponse,
+    CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
+    CreateSessionCheckpointRequest, CreateSessionResponse, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DaemonRunStatusResponse,
+    DelegationResponse, DelegationsResponse, DiscordChannelResponse, DiscordChannelStatusResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EffectAttemptResponse, EffectAttemptStatusResponse, EffectOutcomeEvidenceResponse,
+    EffectOutcomeResponse, EffectReconciliationReceipt, EffectResponse, EffectStatusResponse,
+    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionFilesystemAccessCommand,
+    ExtensionGrantResponse, ExtensionInvocationResponse, ExtensionInvocationStatusResponse,
+    ExtensionLifecycleRequest, ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
+    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, GarbageCollectionResponse,
+    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
+    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
+    MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse, MissedRunPolicyCommand,
+    OperationalFailureResponse, PendingApprovalsResponse, PromoteMemoryRequest,
+    ProposeMemoryRequest, ProviderEndpointStatusResponse, RebuildMemoryIndexRequest,
+    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
+    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
+    RunGarbageCollectionRequest, SandboxProfileResponse, SandboxProfileStatusResponse,
+    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
+    ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
+    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionSearchHitResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, SignedWebhookInputRequest, StageExtensionManifestRequest,
     SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
     TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
     TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
     TelegramChannelStatusResponse, TelegramChannelsResponse, TimelineCursor, TimelineEvent,
-    TimelinePageResponse, ValidationMethodResponse, ValidationOutcomeResponse, VerifyBackupRequest,
-    WebhookChannelResponse, WebhookChannelStatusResponse, WebhookChannelsResponse,
+    TimelinePageResponse, UpdateSessionTitleRequest, ValidationMethodResponse,
+    ValidationOutcomeResponse, VerifyBackupRequest, WebhookChannelResponse,
+    WebhookChannelStatusResponse, WebhookChannelsResponse,
 };
 use serde::Deserialize;
 use std::{
@@ -982,6 +987,7 @@ impl ApiBackend for RuntimeBackend {
                 Ok(SessionSummaryResponse {
                     session_id: session.session_id.to_string(),
                     title: session.title,
+                    title_source: session.title_source,
                     status: session.status,
                     revision: session.revision,
                     pending_inputs: session.pending_inputs,
@@ -1018,6 +1024,7 @@ impl ApiBackend for RuntimeBackend {
             Ok(SessionSearchHitResponse {
                 session_id: hit.session_id.to_string(),
                 session_title: hit.session_title,
+                session_title_source: hit.session_title_source,
                 turn_id: hit.turn_id.to_string(),
                 task_id: hit.task_id.to_string(),
                 user_excerpt: hit.user_excerpt,
@@ -1032,6 +1039,80 @@ impl ApiBackend for RuntimeBackend {
             api_version: API_VERSION.to_owned(),
             query,
             hits,
+        })
+    }
+
+    fn update_session_title(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        request: UpdateSessionTitleRequest,
+    ) -> Result<SessionTitleResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let receipt = update_session_title(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            UpdateSessionTitleCommand {
+                session_id,
+                ownership,
+                expected_revision: request.expected_revision,
+                title: request.title,
+            },
+        )
+        .map_err(map_session_workbench_error)?;
+        Ok(SessionTitleResponse {
+            api_version: API_VERSION.to_owned(),
+            session_id: receipt.session_id.to_string(),
+            title: receipt.title,
+            title_source: "owner".to_owned(),
+            revision: receipt.revision,
+            event_id: receipt.event_id.to_string(),
+            updated_at_ms: epoch_milliseconds(receipt.updated_at)?,
+        })
+    }
+
+    fn create_session_checkpoint(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        request: CreateSessionCheckpointRequest,
+    ) -> Result<SessionCheckpointResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let view = create_session_checkpoint(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            CreateSessionCheckpointCommand {
+                session_id,
+                ownership,
+                expected_revision: request.expected_revision,
+                label: request.label,
+            },
+        )
+        .map_err(map_session_workbench_error)?;
+        session_checkpoint_response(view)
+    }
+
+    fn session_checkpoints(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        limit: usize,
+    ) -> Result<SessionCheckpointsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let checkpoints = query_session_checkpoints(&*self.read()?, session_id, ownership, limit)
+            .map_err(map_session_workbench_error)?
+            .into_iter()
+            .map(session_checkpoint_response)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SessionCheckpointsResponse {
+            api_version: API_VERSION.to_owned(),
+            session_id: session_id.to_string(),
+            checkpoints,
         })
     }
 
@@ -3716,6 +3797,30 @@ fn schedule_run_response(view: ScheduleRunView) -> ScheduleRunResponse {
     }
 }
 
+fn session_checkpoint_response(
+    view: SessionCheckpointView,
+) -> Result<SessionCheckpointResponse, BackendError> {
+    Ok(SessionCheckpointResponse {
+        api_version: API_VERSION.to_owned(),
+        checkpoint_id: view.checkpoint_id.to_string(),
+        session_id: view.session_id.to_string(),
+        source_cursor: TimelineCursor(view.source_cursor),
+        source_turn_id: view.source_turn_id.map(|id| id.to_string()),
+        context_epoch_id: view.context_epoch_id.map(|id| id.to_string()),
+        source_session_revision: view.source_session_revision,
+        config_digest: view.config_digest,
+        policy_digest: view.policy_digest,
+        workspace_identity: view.workspace_identity,
+        workspace_authority_digest: view.workspace_authority_digest,
+        provider_id: view.provider_id,
+        model_id: view.model_id,
+        label: view.label,
+        event_id: view.event_id.to_string(),
+        revision: view.revision,
+        created_at_ms: epoch_milliseconds(view.created_at)?,
+    })
+}
+
 fn approval_response(view: ApprovalRequestView) -> Result<ApprovalResponse, BackendError> {
     let subject = view.subject;
     Ok(ApprovalResponse {
@@ -4115,6 +4220,27 @@ fn map_session_error(error: SessionUseCaseError) -> BackendError {
         SessionUseCaseError::Store(SessionStoreError::Backpressure) => BackendError::Busy,
         SessionUseCaseError::Store(SessionStoreError::Unavailable(_)) => BackendError::Unavailable,
         SessionUseCaseError::Store(SessionStoreError::InvariantViolation(_)) => {
+            BackendError::Internal
+        }
+        other => BackendError::InvalidRequest(other.to_string()),
+    }
+}
+
+fn map_session_workbench_error(error: SessionWorkbenchUseCaseError) -> BackendError {
+    match error {
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::SessionNotFound) => {
+            BackendError::NotFound
+        }
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::Unauthorized) => {
+            BackendError::Unauthorized
+        }
+        SessionWorkbenchUseCaseError::Store(
+            SessionWorkbenchStoreError::Conflict | SessionWorkbenchStoreError::NotQuiescent,
+        ) => BackendError::Conflict,
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::Unavailable(_)) => {
+            BackendError::Unavailable
+        }
+        SessionWorkbenchUseCaseError::Store(SessionWorkbenchStoreError::InvariantViolation(_)) => {
             BackendError::Internal
         }
         other => BackendError::InvalidRequest(other.to_string()),

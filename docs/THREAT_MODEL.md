@@ -230,7 +230,7 @@ exact loopback Origin rather than accepting an Origin-less request. A restrictiv
 bodies, canonical UUID route parsing, bounded timelines/evidence, and separate one-at-a-time
 snapshot, timeline, detail, and command permits limit compromise. Every daemon body is streamed
 under an 8 MiB ceiling before decode. The adapter exposes only a
-hard-coded snapshot, session create/input, timeline, exact approval-resolution, cooperative
+hard-coded snapshot, session create/title/checkpoint/input, timeline, exact approval-resolution, cooperative
 task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost inspection, effect/attempt inspection,
 unknown-effect reconciliation, and exact
 schedule-create/detail/run-history/pause/resume/cancel plus fixed governed-memory
@@ -263,6 +263,23 @@ by UTC completion day, and rejects residual reservations, unbalanced status tota
 buckets, or non-exact browser integers. The per-task adapter distinguishes used from reserved
 microunits. Neither view labels configured provider-neutral microunits as an invoice or infers
 unsupported upstream billing axes. Financial reconciliation still requires the provider's records.
+
+### Session metadata or checkpoint is used to smuggle control or inherited authority
+
+Controls: fallback titles are local deterministic projections and never provider output. Owner
+titles and checkpoint labels are exact-binding, revision-fenced commands capped at 160 UTF-8 bytes
+and 72 Unicode scalar values; controls, bidirectional overrides, zero-width direction controls,
+padding, and malformed stored values fail closed before terminal or web rendering. Every accepted
+rename appends private journal evidence atomically with the projection.
+
+A checkpoint is created only with an empty durable inbox, no active turn, and no newer
+failed/cancelled canonical turn. Its source cursor is captured before its own event and binds the
+source session revision, completed turn, immutable context epoch, configuration/policy digests,
+workspace identity and owner/channel/workspace authority digest, and provider/model evidence.
+Rows are immutable and exact-owner queries are bounded. They contain no bearer, credential,
+approval grant, effect permission, lease, reservation, mutable run, pending input, or child state.
+Future fork construction must re-authorize referenced conversation evidence and cannot interpret
+a checkpoint as inherited authority.
 
 ### Subscription bridge steals a session or exposes ambient client tools
 

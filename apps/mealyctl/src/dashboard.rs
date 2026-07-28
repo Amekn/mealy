@@ -14,30 +14,32 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::{
     EXTENSION_POLICY_VERSION, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES, ScheduleDefinition,
-    sha256_digest, validate_schedule_definition,
+    sha256_digest, valid_session_metadata, validate_schedule_definition,
 };
 use mealy_domain::{
     ApprovalId, AttemptId, ContextManifestId, EffectId, EventId, ExtensionFilesystemAccess,
     ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId, MemoryId, MemoryRevisionId,
-    PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionId, TaskId, ValidationId,
+    PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId, SessionId, TaskId,
+    ValidationId,
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, AdminUsageReportResponse, ApprovalDecisionCommand,
     ApprovalResolutionReceipt, CancelTaskRequest, CorrectMemoryRequest, CreateScheduleRequest,
-    CreateSessionRequest, CreateSessionResponse, DeliveryMode, DoctorResponse,
-    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
-    ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest, ExtensionResponse,
-    ExtensionStatusResponse, ExtensionsResponse, InputAdmissionResponse, LocalConnectionInfo,
-    MemoriesResponse, MemoryCategoryCommand, MemoryLifecycleRequest,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse, DeliveryMode,
+    DoctorResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+    EnableExtensionRequest, ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest,
+    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, InputAdmissionResponse,
+    LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand, MemoryLifecycleRequest,
     MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
     MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
     MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
     ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
     ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
     ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
-    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionStatusResponse,
-    SessionsResponse, SetMemoryPinRequest, SubmitInputRequest, TaskCancellationReceipt,
-    TaskResponse, TaskStatus, TimelinePageResponse,
+    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
+    SetMemoryPinRequest, SubmitInputRequest, TaskCancellationReceipt, TaskResponse, TaskStatus,
+    TimelinePageResponse, UpdateSessionTitleRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -124,6 +126,22 @@ struct DashboardConversation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DashboardCreateSessionRequest {
     api_version: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardUpdateSessionTitleRequest {
+    api_version: String,
+    expected_revision: u64,
+    title: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardCreateSessionCheckpointRequest {
+    api_version: String,
+    expected_revision: u64,
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -445,6 +463,14 @@ pub(crate) async fn run(
         .route("/api/snapshot", get(snapshot))
         .route("/api/sessions", post(create_session))
         .route(
+            "/api/sessions/{session_id}/title",
+            post(update_session_title),
+        )
+        .route(
+            "/api/sessions/{session_id}/checkpoints",
+            get(session_checkpoints).post(create_session_checkpoint),
+        )
+        .route(
             "/api/sessions/{session_id}/timeline",
             get(conversation_timeline),
         )
@@ -599,6 +625,174 @@ async fn create_session(
                 }
                 Ok(_) => dashboard_protocol_error("session creation"),
                 Err(error) => dashboard_backend_error(&error, "session creation"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn update_session_title(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    request: Result<Json<DashboardUpdateSessionTitleRequest>, JsonRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_mutation(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Json(request)) = request else {
+        return secure_response(invalid_dashboard_json(), &state);
+    };
+    if !valid_api_version(&request.api_version) || !valid_session_metadata(&request.title) {
+        return secure_response(invalid_dashboard_command(), &state);
+    }
+    let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}");
+            let command = UpdateSessionTitleRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision: request.expected_revision,
+                title: request.title.clone(),
+            };
+            match patch_to_daemon::<_, SessionTitleResponse>(
+                &state.client,
+                &connection,
+                &path,
+                &command,
+            )
+            .await
+            {
+                Ok(response)
+                    if valid_api_version(&response.api_version)
+                        && response.session_id == session_id
+                        && response.title == request.title
+                        && response.title_source == "owner"
+                        && request.expected_revision.checked_add(1) == Some(response.revision)
+                        && response.event_id.parse::<EventId>().is_ok() =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("session title update"),
+                Err(error) => dashboard_backend_error(&error, "session title update"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn create_session_checkpoint(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    request: Result<Json<DashboardCreateSessionCheckpointRequest>, JsonRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_mutation(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Json(request)) = request else {
+        return secure_response(invalid_dashboard_json(), &state);
+    };
+    if !valid_api_version(&request.api_version)
+        || request
+            .label
+            .as_deref()
+            .is_some_and(|label| !valid_session_metadata(label))
+    {
+        return secure_response(invalid_dashboard_command(), &state);
+    }
+    let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/checkpoints");
+            let command = CreateSessionCheckpointRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision: request.expected_revision,
+                label: request.label.clone(),
+            };
+            match post_to_daemon::<_, SessionCheckpointResponse>(
+                &state.client,
+                &connection,
+                &path,
+                &command,
+            )
+            .await
+            {
+                Ok(response)
+                    if valid_session_checkpoint_response(&response, &session_id)
+                        && response.source_session_revision == request.expected_revision
+                        && request.expected_revision.checked_add(1) == Some(response.revision)
+                        && response.label == request.label =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("session checkpoint creation"),
+                Err(error) => dashboard_backend_error(&error, "session checkpoint creation"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardCheckpointListParameters {
+    limit: Option<usize>,
+}
+
+async fn session_checkpoints(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    parameters: Result<Query<DashboardCheckpointListParameters>, QueryRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Query(parameters)) = parameters else {
+        return secure_response(invalid_dashboard_query(), &state);
+    };
+    let limit = parameters.limit.unwrap_or(20);
+    if !(1..=100).contains(&limit) {
+        return secure_response(invalid_dashboard_query(), &state);
+    }
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/checkpoints?limit={limit}");
+            match fetch::<SessionCheckpointsResponse>(&state.client, &connection, &path).await {
+                Ok(response)
+                    if valid_api_version(&response.api_version)
+                        && response.session_id == session_id
+                        && response.checkpoints.iter().all(|checkpoint| {
+                            valid_session_checkpoint_response(checkpoint, &session_id)
+                        }) =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("session checkpoint list"),
+                Err(error) => dashboard_backend_error(&error, "session checkpoint list"),
             }
         }
         Err(()) => dashboard_connection_error(),
@@ -2459,6 +2653,84 @@ async fn post_to_daemon<Q: Serialize + ?Sized, T: DeserializeOwned>(
     .send()
     .await?;
     decode_dashboard(response).await
+}
+
+async fn patch_to_daemon<Q: Serialize + ?Sized, T: DeserializeOwned>(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+    command: &Q,
+) -> Result<T, CliError> {
+    let response = authorized(
+        client.patch(format!("{}{path}", connection.base_url)),
+        connection,
+    )
+    .json(command)
+    .send()
+    .await?;
+    decode_dashboard(response).await
+}
+
+fn valid_session_checkpoint_response(
+    checkpoint: &SessionCheckpointResponse,
+    session_id: &str,
+) -> bool {
+    let context_complete = checkpoint.context_epoch_id.is_some()
+        && checkpoint.config_digest.is_some()
+        && checkpoint.policy_digest.is_some()
+        && checkpoint.workspace_identity.is_some();
+    let context_absent = checkpoint.context_epoch_id.is_none()
+        && checkpoint.config_digest.is_none()
+        && checkpoint.policy_digest.is_none()
+        && checkpoint.workspace_identity.is_none();
+    valid_api_version(&checkpoint.api_version)
+        && checkpoint
+            .checkpoint_id
+            .parse::<SessionCheckpointId>()
+            .is_ok()
+        && checkpoint.session_id == session_id
+        && checkpoint.source_cursor.0 > 0
+        && checkpoint
+            .source_turn_id
+            .as_deref()
+            .is_none_or(|id| id.parse::<mealy_domain::TurnId>().is_ok())
+        && checkpoint
+            .context_epoch_id
+            .as_deref()
+            .is_none_or(|id| id.parse::<mealy_domain::ContextEpochId>().is_ok())
+        && (context_complete || context_absent)
+        && checkpoint
+            .config_digest
+            .as_deref()
+            .is_none_or(valid_sha256_digest)
+        && checkpoint
+            .policy_digest
+            .as_deref()
+            .is_none_or(valid_sha256_digest)
+        && checkpoint
+            .workspace_identity
+            .as_ref()
+            .is_none_or(|identity| !identity.is_empty() && identity.len() <= 2_048)
+        && valid_sha256_digest(&checkpoint.workspace_authority_digest)
+        && (checkpoint.provider_id.is_some() == checkpoint.model_id.is_some())
+        && checkpoint
+            .provider_id
+            .as_ref()
+            .is_none_or(|value| !value.is_empty() && value.len() <= 128)
+        && checkpoint
+            .model_id
+            .as_ref()
+            .is_none_or(|value| !value.is_empty() && value.len() <= 128)
+        && checkpoint
+            .label
+            .as_deref()
+            .is_none_or(valid_session_metadata)
+        && checkpoint.event_id.parse::<EventId>().is_ok()
+        && checkpoint
+            .source_session_revision
+            .checked_add(1)
+            .is_some_and(|revision| revision == checkpoint.revision)
+        && checkpoint.created_at_ms >= 0
 }
 
 async fn decode_dashboard<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, CliError> {
