@@ -1,6 +1,6 @@
 # Product operations benchmark: Mealy and the reference agent systems
 
-Status: researched baseline with v0.2.0 integration and delivery-state follow-up
+Status: researched baseline with v0.2.1 completion recheck
 
 Observed: 2026-07-24 (Pacific/Auckland)
 
@@ -44,25 +44,25 @@ remain the supported alternatives.
 This is not a retroactive change to the matrix observed before implementation.
 The exact integrated v0.2.0 daemon completed its 24-hour soak and provider
 gates, but its tag was rejected before publication by a release-only Debian
-metadata warning. The corrected exact v0.2.1 daemon has now completed two
-byte-identical builds, native-package lifecycles, protected observed-commit CI,
-and its own 86,425.487-second soak. The owner-controlled production signing
-identity remains configured and clean-install tested. Protected report
-promotion, final provider acceptance, and a published qualifying tag remain
-delivery gates.
+metadata warning. Corrected v0.2.1 subsequently completed two byte-identical
+builds, native-package lifecycles, protected observed-commit CI, its own
+86,425.487-second soak, exact free/custom-provider acceptance, immutable
+attested publication, public rootless installation, and signed APT, DNF, and
+Pacman acceptance. The implementation and delivery findings are now closed;
+the original matrix remains the pre-implementation baseline.
 Exact generated-service removal is now plan-first and composed into owner-local
 uninstall. Installed two-release failure injection now activates a checksum-valid
 but deliberately unready newer package under the real owner service, proves the
 preserved old helper verifies candidate bytes without executing its broken
 client, and requires automatic rollback plus health, `doctor`, backup, and
 durable-task preservation. Those operations are protected-source and installed-package
-qualified; ordinary-user availability still depends on the first qualifying public tag.
+qualified and are now ordinary-user available in the qualifying public v0.2.1 tag.
 
-Delivery-state recheck through 2026-07-28: Mealy v0.1.0 is a public,
+Delivery-state recheck through 2026-07-28: Mealy v0.1.0 was the first public,
 immutable stable GitHub release whose exact tag workflow passed native
 packaging, attestations, and public archive installation. That release predates
 the signed APT/DNF/Pacman repository and guided-onboarding stack audited here.
-No stable tag has yet deployed the new repository artifact. The exact v0.1.1
+The exact v0.1.1
 candidate completed its 24-hour soak, protected main CI, and reviewed free-model
 OpenRouter run, but release run `30071875207` failed before publication because
 its native-package fixture placed a persistent service home below `/tmp`. No
@@ -83,7 +83,14 @@ subsequently passed reproducible builds, protected observed-commit CI, exact
 archive/Debian/RPM/Arch installed lifecycles, and an 86,425.487-second soak
 with 19,248 turns, 48 hard restarts, 53 interrupted-provider recoveries,
 integrity `ok`, and zero residue. Qualifying protected evidence promotion,
-live acceptance, and publication remain.
+exact free-OpenRouter and private-endpoint acceptance, immutable publication,
+and public rootless/native-package installation then passed at release commit
+`b8e9d8576f228fd43a523ad38704a86b4630b115`. The tag workflow deployed signed
+repositories but retained a red first verifier attempt caused by a manifest
+publication race. Protected remediation and dedicated post-publication
+acceptance subsequently verified the exact signed/attested repository and
+installed v0.2.1 through APT on Ubuntu x86-64 and Debian ARM64, DNF on Fedora
+x86-64/ARM64, and Pacman on Arch x86-64.
 These observations update delivery state without rewriting what the competitor
 audit originally measured.
 
@@ -95,12 +102,13 @@ easiest end-user harnesses: setup was fragmented across expert commands, the
 verified installer stopped before a working service, lifecycle operations were
 incomplete, and no short first-five-minute path organized the experience.
 
-The v0.2.0 candidate source closes those verified orchestration gaps, and its
-exact daemon has passed the long-duration and private-provider gates. The
-largest remaining gap is delivery: its report must merge through protected CI,
-then pass reviewed free-model and public multi-distribution acceptance and
-publish immutable attested artifacts. The currently public v0.1.0 release
-still predates this experience.
+The v0.2.1 production release closes those verified orchestration and delivery
+gaps. Its exact promoted daemon passed the long-duration gate; the release
+commit passed protected CI and reviewed live providers; immutable attested
+assets, the guided clean-host journey, and signed multi-distribution
+repositories are public and accepted. The ten-outcome completion proof is
+recorded in
+[ONBOARDING_COMPLETION_AUDIT_2026-07-24.md](ONBOARDING_COMPLETION_AUDIT_2026-07-24.md).
 
 OpenClaw, Hermes, OpenCode, Codex, Pi, and Claude Code all make the first useful
 conversation the organizing product outcome. Vercel AI SDK and Eve are
@@ -160,6 +168,33 @@ provider acceptance.
 Release dates were rechecked from each repository's public GitHub Releases API
 at 2026-07-24T15:37:00+12:00. They indicate active maintenance, not release
 quality by themselves.
+
+### Upstream movement recheck
+
+The sources were rechecked on 2026-07-28 before declaring the remediation
+complete. Every comparator had moved since the pinned baseline, so the original
+commit links above remain the reproducible evidence for the detailed
+point-in-time findings. Current primary-source documentation and default-branch
+behavior still exhibit the same relevant product patterns: one first-run entry
+point, provider/account guidance, durable return paths, diagnostics, and
+install-aware maintenance. The movement check was:
+
+| System | Default-branch commit on 2026-07-28 | Latest repository release signal |
+|---|---|---|
+| OpenClaw | [`01f6ad67d52a79ed71adb798ebbfc6bc6f9b8c21`](https://github.com/openclaw/openclaw/tree/01f6ad67d52a79ed71adb798ebbfc6bc6f9b8c21) | `v2026.7.1`, 2026-07-13 |
+| Hermes Agent | [`0ae299734553e05d59ea9dc1242f904a3c788e60`](https://github.com/NousResearch/hermes-agent/tree/0ae299734553e05d59ea9dc1242f904a3c788e60) | `v2026.7.20`, 2026-07-20 |
+| OpenCode | [`172d08cb981248023c82f5b9d138763b27d69783`](https://github.com/anomalyco/opencode/tree/172d08cb981248023c82f5b9d138763b27d69783) | `v1.18.7`, 2026-07-27 |
+| Codex | [`2494d939cfb33f95cbce61ac7283193861960577`](https://github.com/openai/codex/tree/2494d939cfb33f95cbce61ac7283193861960577) | `rust-v0.145.0`, 2026-07-21 |
+| Vercel AI SDK | [`29a7a58cdc6124219135d73971bdc1e6b5ad3ad2`](https://github.com/vercel/ai/tree/29a7a58cdc6124219135d73971bdc1e6b5ad3ad2) | `@ai-sdk/workflow-harness@1.0.46`, 2026-07-28 |
+| Eve | [`f736533db49fe282678b3a964e7773a51c2bdf9f`](https://github.com/vercel/eve/tree/f736533db49fe282678b3a964e7773a51c2bdf9f) | `eve@0.27.8`, 2026-07-27 |
+| Pi | [`c820aa26fe0907e053e881a957722693fc094c9c`](https://github.com/earendil-works/pi/tree/c820aa26fe0907e053e881a957722693fc094c9c) | `v0.82.1`, 2026-07-25 |
+| Claude Code | [`7ef6eec9d9ba84ea6f233f26c45f1df5c5991843`](https://github.com/anthropics/claude-code/tree/7ef6eec9d9ba84ea6f233f26c45f1df5c5991843) | `v2.1.220`, 2026-07-25 |
+
+For Codex, the current official manual was also refreshed locally rather than
+relying on remembered behavior. It still documents ChatGPT-subscription or API
+key authentication, device-code login for headless hosts, cached credentials,
+and a bare `codex` TUI entry point. Other current-behavior checks used the
+projects' official documentation and repositories.
 
 The original unlicensed mirror remains pinned at
 `a371abbe75ffa0d0a3c92290e2bbf56a7ef54367`. Its own README calls it a backup
@@ -567,7 +602,23 @@ the ordinary user journey is incomplete; **No** = no comparable product path;
 | Public cross-platform/distro CI | Linux-focused | Yes | Yes | Yes | Yes | Partial | Partial | Not publicly evidenced |
 | Public staged/attested release | Yes for v0.1.0; onboarding/repositories pending | Partial | Partial | Partial | Partial | SLSA npm | Checksums/staged | Not publicly evidenced |
 
+This matrix intentionally remains the observed pre-remediation baseline. It
+must not be read as the current v0.2.1 product state. The completion audit
+proves the current Mealy overlay requirement by requirement: attested no-Rust
+installation; one guided entry point; free, subscription, local, custom, and
+advanced API choices; bounded probing; enabled owner service; first useful
+chat; cold-process durable resume; one-command diagnostics; state-preserving
+update/rollback; and short version-matched documentation. Signed APT, DNF, and
+Pacman repositories plus rootless archives are now public. Mealy still marks a
+single remote-script install as partial by design: initial trust remains
+inspect-before-privilege and attestation-verified rather than reducing the
+command count by executing an unauthenticated downloaded script.
+
 ## Prioritized Mealy remediation
+
+This section preserves the implementation plan derived from the baseline.
+P0-P2 are complete in v0.2.1; P3 remains optional daily-use polish rather than
+an onboarding-completion gate.
 
 ### P0 — preserve the v0.1.1 outcome and public tag
 
