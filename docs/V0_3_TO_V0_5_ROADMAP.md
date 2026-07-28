@@ -283,9 +283,12 @@ capability contracts, filesystem/network/secret/process requests, and governed-t
 Exact out-of-band root inspection, dual-threshold next-version rotation, and schema 24 canonical
 root/snapshot evidence are also implemented. Acceptance re-verifies against the active root and
 prior head inside one write transaction and survives migration/reopen without allowing stale
-writes, rollback, or equivocation. Stopped-home CLI commands, bounded mirror transport, durable
-release/package evidence, package download/inspection, staged activation, installed-withdrawal
-handling, and rollback remain later slices; metadata acceptance grants no runtime authority.
+writes, rollback, or equivocation. A stopped-home `registry` CLI now exposes bounded no-follow root
+inspection/bootstrap/rotation, snapshot inspection/acceptance, and status with explicit approval,
+live-daemon exclusion, exact-schema refusal, idempotent replay, and real process/SQLite tests.
+Bounded mirror transport, durable release/package evidence, package download/inspection, staged
+activation, installed-withdrawal handling, and rollback remain later slices; metadata acceptance
+grants no runtime authority.
 
 ### Memory and automation
 

@@ -41,10 +41,15 @@ substitution, withdrawal, incompatibility, missing dependencies, and authority w
 bootstrap accepts only exact owner-supplied out-of-band JSON; rotation requires the exact next
 version under both old and new key thresholds. Schema 24 retains immutable exact root/snapshot
 bytes and monotonic heads, repeats verification inside the SQLite write transaction, rejects stale
-writers, and survives reopen, migration, integrity, backup, and rollback tests. Stopped-home CLI
-commands, bounded mirror transport, durable release/package evidence, package fetch/inspection,
-staged activation, installed-withdrawal handling, and rollback are still open v0.5 work and
-therefore are not marked covered here.
+writers, and survives reopen, migration, integrity, backup, and rollback tests. The stopped-home
+`registry` CLI now provides no-mutation root/snapshot inspection, explicit-approved root
+bootstrap/rotation and snapshot acceptance, and durable status. It accepts only bounded no-follow
+files, excludes a running daemon, refuses database initialization or implicit schema migration,
+keeps exact replays idempotent, and reports no network or package authority. Process tests prove
+those controls across the real executable and SQLite restart boundary. Bounded mirror transport,
+durable release/package evidence, package fetch/inspection, staged activation,
+installed-withdrawal handling, and rollback are still open v0.5 work and therefore are not marked
+covered here.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

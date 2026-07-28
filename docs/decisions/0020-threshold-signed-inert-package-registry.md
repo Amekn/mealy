@@ -64,10 +64,14 @@ Mealy introduces a versioned registry contract in independent, inert layers.
    inside the write transaction, repeats verification, and rejects stale writers, rollback, root
    regression, and same-version equivocation across process restart. Replaying the exact
    already-active rotation envelope is current-threshold verified and idempotent.
-10. Stopped-home CLI commands, mirror transport, download resumption, release/package evidence,
-   package publication tooling, staged activation, withdrawal propagation to installed revisions,
-   and rollback orchestration remain later slices. Durable metadata acceptance still performs no
-   network request or package execution and grants no runtime authority.
+10. The stopped-home CLI accepts only bounded no-follow root/rotation/snapshot files, requires
+    explicit approval for durable changes, takes the daemon's exclusive home lock, and refuses
+    database creation or implicit migration. It exposes root/snapshot inspection, root
+    bootstrap/rotation, status, and monotonic snapshot acceptance while withholding key bodies and
+    signed payloads from summary output. Mirror transport, download resumption, release/package
+    evidence, package publication tooling, staged activation, withdrawal propagation to installed
+    revisions, and rollback orchestration remain later slices. Durable metadata acceptance still
+    performs no network request or package execution and grants no runtime authority.
 
 ## Consequences
 

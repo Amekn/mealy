@@ -15,16 +15,20 @@ use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, ImageGenerationConfig, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    BrowserConfig, CancellationProbe, ImageGenerationConfig, InspectedRegistrySnapshot,
+    InspectedRegistryTrustRoot, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
     MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
     MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
     McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
     McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
-    ProviderCredentialReference, ProviderRequest, ProviderResponse,
+    ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryError,
+    RegistryMetadataStore, RegistryMetadataStoreError, RegistrySnapshotState, RegistryUseCaseError,
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
-    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, accept_registry_snapshot,
+    bootstrap_registry_trust_root, default_daemon_config_document,
+    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
+    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
     validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
     validate_provider_base_url, validate_provider_chain,
 };
@@ -35,15 +39,16 @@ use mealy_domain::{
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage,
+    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage, LATEST_SCHEMA_VERSION,
     MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
-    McpOAuthTokenError, ProviderSecretStoreError, SubscriptionCliProvider, SubscriptionCliSettings,
-    activate_backup, activate_migration_backup, browser_worker_main, discover_mcp_http_server,
-    discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
-    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
-    inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
-    media_worker_main, prepare_mcp_oauth_authorization, probe_browser_bundle_product,
-    publish_browser_bundle, publish_skill_package, verify_browser_runtime_installation,
+    McpOAuthTokenError, ProviderSecretStoreError, SqliteStore, StoreError, SubscriptionCliProvider,
+    SubscriptionCliSettings, activate_backup, activate_migration_backup, browser_worker_main,
+    discover_mcp_http_server, discover_mcp_oauth_metadata, discover_mcp_stdio_server,
+    exchange_mcp_oauth_authorization_code, inspect_browser_bundle, inspect_existing_schema_version,
+    inspect_mcp_http_endpoint, inspect_skill_package, inspect_subscription_cli_executable,
+    is_trusted_system_executable, mcp_stdio_launcher_main, media_worker_main,
+    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
+    publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -139,6 +144,9 @@ const MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAXIMUM_TIMELINE_SSE_EVENT_BYTES: usize = MAXIMUM_DAEMON_RESPONSE_BYTES;
 const MAXIMUM_CONNECTION_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_EXTENSION_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAXIMUM_REGISTRY_ROOT_BYTES: u64 = 128 * 1024;
+const MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES: u64 = 256 * 1024;
+const MAXIMUM_REGISTRY_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_SERVER_ERROR_CODE_BYTES: usize = 64;
 const MAXIMUM_SERVER_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
@@ -231,6 +239,17 @@ struct BrowserArguments {
     command: BrowserNamespace,
 }
 
+#[derive(Debug, Parser)]
+#[command(version, about = "Signed inert registry trust administration")]
+struct RegistryArguments {
+    /// Private Mealy state directory containing the canonical database.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Registry trust metadata namespace.
+    #[command(subcommand)]
+    command: RegistryNamespace,
+}
+
 #[derive(Debug, Subcommand)]
 enum McpHttpNamespace {
     /// Inspect or change governed Streamable HTTP MCP authority.
@@ -247,6 +266,16 @@ enum MediaNamespace {
 enum BrowserNamespace {
     /// Inspect or change separately governed transactional browser authority.
     Browser(BrowserOptions),
+}
+
+#[derive(Debug, Subcommand)]
+enum RegistryNamespace {
+    /// Inspect or advance signed inert registry trust metadata while stopped.
+    Registry {
+        /// Signed registry metadata operation.
+        #[command(subcommand)]
+        command: Box<RegistryCommand>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -1963,6 +1992,60 @@ enum SkillCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum RegistryCommand {
+    /// Verify one owner-supplied out-of-band trust root without changing the Mealy home.
+    RootInspect {
+        /// Exact no-follow trust-root JSON file obtained through an authenticated path.
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Bootstrap one owner-approved out-of-band trust root into canonical stopped-home state.
+    RootAdd {
+        /// Exact no-follow trust-root JSON file already reviewed with `root-inspect`.
+        #[arg(long)]
+        root: PathBuf,
+        /// Confirm the initial trust decision.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Verify and activate one exact next-version root signed by old and new thresholds.
+    RootRotate {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow dual-threshold signed rotation envelope.
+        #[arg(long)]
+        envelope: PathBuf,
+        /// Confirm the trust-root transition.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Inspect the active root and accepted snapshot anti-rollback fence.
+    Status {
+        /// Stable configured registry identity.
+        registry_id: String,
+    },
+    /// Verify one signed snapshot against canonical state without accepting it.
+    SnapshotInspect {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow threshold-signed snapshot envelope.
+        #[arg(long)]
+        envelope: PathBuf,
+    },
+    /// Verify and atomically accept one owner-approved monotonic snapshot.
+    SnapshotAccept {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow snapshot envelope already reviewed with `snapshot-inspect`.
+        #[arg(long)]
+        envelope: PathBuf,
+        /// Confirm advancement of the durable anti-rollback fence.
+        #[arg(long)]
+        approve: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ChannelCommand {
     /// Create a signed external-subject binding and dedicated durable session.
     Create {
@@ -2687,10 +2770,14 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <BrowserNamespace as clap::Subcommand>::augment_subcommands(
-        <MediaNamespace as clap::Subcommand>::augment_subcommands(
-            <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-                <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+    <RegistryNamespace as clap::Subcommand>::augment_subcommands(
+        <BrowserNamespace as clap::Subcommand>::augment_subcommands(
+            <MediaNamespace as clap::Subcommand>::augment_subcommands(
+                <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+                    <LifecycleCommand as clap::Subcommand>::augment_subcommands(
+                        Arguments::command(),
+                    ),
+                ),
             ),
         ),
     )
@@ -2819,6 +2906,25 @@ fn browser_invocation(arguments: &[OsString]) -> bool {
             continue;
         }
         return argument == "browser";
+    }
+    false
+}
+
+fn registry_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "registry";
     }
     false
 }
@@ -3799,6 +3905,12 @@ async fn run() -> Result<(), CliError> {
         return tokio::task::block_in_place(|| {
             run_mcp_http_config_operation(&arguments.home, &options)
         });
+    }
+    if registry_invocation(&raw_arguments) {
+        let mut arguments = RegistryArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let RegistryNamespace::Registry { command } = arguments.command;
+        return tokio::task::block_in_place(|| run_registry_operation(&arguments.home, &command));
     }
     if lifecycle_invocation(&raw_arguments) {
         let mut arguments = LifecycleArguments::parse_from(raw_arguments);
@@ -12899,6 +13011,277 @@ fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliErr
     }
 }
 
+fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), CliError> {
+    match command {
+        RegistryCommand::RootInspect { root } => {
+            let now_ms = registry_now_ms()?;
+            let root = inspect_initial_registry_trust_root(
+                &read_registry_metadata(root, MAXIMUM_REGISTRY_ROOT_BYTES)?,
+                now_ms,
+            )?;
+            print_json(registry_root_response("root_verified", &root))
+        }
+        RegistryCommand::RootAdd { root, approve } => {
+            require_registry_approval(*approve)?;
+            let now_ms = registry_now_ms()?;
+            let root_bytes = read_registry_metadata(root, MAXIMUM_REGISTRY_ROOT_BYTES)?;
+            let inspected = inspect_initial_registry_trust_root(&root_bytes, now_ms)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let mut store = open_registry_write_store(&home, now_ms)?;
+            let state = bootstrap_registry_trust_root(&mut store, &root_bytes, now_ms)?;
+            if state != inspected.state() {
+                return Err(CliError::RegistryStateDrift);
+            }
+            print_json(registry_root_response("root_active", &inspected))
+        }
+        RegistryCommand::RootRotate {
+            registry_id,
+            envelope,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            validate_registry_id(registry_id)?;
+            let now_ms = registry_now_ms()?;
+            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let mut store = open_registry_write_store(&home, now_ms)?;
+            let state = rotate_registry_trust_root(&mut store, registry_id, &envelope, now_ms)?;
+            let active = store
+                .registry_trust_root(registry_id)?
+                .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+            if active.state() != state {
+                return Err(CliError::RegistryStateDrift);
+            }
+            print_json(registry_root_response("root_active", &active))
+        }
+        RegistryCommand::Status { registry_id } => {
+            validate_registry_id(registry_id)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let store = open_registry_read_store(&home)?;
+            let root = store
+                .registry_trust_root(registry_id)?
+                .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+            let snapshot = store.registry_snapshot_state(registry_id)?;
+            print_json(RegistryStatusResponse {
+                registry_id: registry_id.clone(),
+                root: RegistryRootSummary::from(&root),
+                snapshot,
+                network_access: false,
+                package_authority: false,
+            })
+        }
+        RegistryCommand::SnapshotInspect {
+            registry_id,
+            envelope,
+        } => {
+            validate_registry_id(registry_id)?;
+            let now_ms = registry_now_ms()?;
+            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let store = open_registry_read_store(&home)?;
+            let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+            print_json(registry_snapshot_response("snapshot_verified", &inspected))
+        }
+        RegistryCommand::SnapshotAccept {
+            registry_id,
+            envelope,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            validate_registry_id(registry_id)?;
+            let now_ms = registry_now_ms()?;
+            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let mut store = open_registry_write_store(&home, now_ms)?;
+            let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+            let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
+            if state != inspected.state {
+                return Err(CliError::RegistryStateDrift);
+            }
+            print_json(registry_snapshot_response("snapshot_active", &inspected))
+        }
+    }
+}
+
+fn require_registry_approval(approve: bool) -> Result<(), CliError> {
+    if approve {
+        Ok(())
+    } else {
+        Err(CliError::RegistryApprovalRequired)
+    }
+}
+
+fn validate_registry_id(registry_id: &str) -> Result<(), CliError> {
+    if !registry_id.is_empty()
+        && registry_id.len() <= 255
+        && registry_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(CliError::InvalidRegistryIdentifier)
+    }
+}
+
+fn read_registry_metadata(path: &Path, maximum: u64) -> Result<Vec<u8>, CliError> {
+    let bytes = lifecycle::read_bounded_regular_file(path, maximum)
+        .map_err(|_| CliError::InvalidRegistryMetadata)?;
+    if bytes.is_empty() {
+        return Err(CliError::InvalidRegistryMetadata);
+    }
+    Ok(bytes)
+}
+
+fn registry_now_ms() -> Result<i64, CliError> {
+    i64::try_from(unix_timestamp_millis()?).map_err(|_| CliError::InvalidRegistryMetadata)
+}
+
+fn supported_registry_schema_version() -> Result<u64, CliError> {
+    u64::try_from(LATEST_SCHEMA_VERSION).map_err(|_| CliError::InvalidRegistryMetadata)
+}
+
+fn open_registry_write_store(home: &Path, now_ms: i64) -> Result<SqliteStore, CliError> {
+    let database = home.join("mealy.sqlite3");
+    let supported = supported_registry_schema_version()?;
+    match inspect_existing_schema_version(&database)? {
+        Some(found) if found == supported => {}
+        Some(found) => {
+            return Err(CliError::RegistrySchemaNotReady { found, supported });
+        }
+        None => return Err(CliError::RegistryDatabaseNotFound),
+    }
+    SqliteStore::open(&database, now_ms).map_err(CliError::RegistryStore)
+}
+
+fn open_registry_read_store(home: &Path) -> Result<SqliteStore, CliError> {
+    let database = home.join("mealy.sqlite3");
+    let supported = supported_registry_schema_version()?;
+    match inspect_existing_schema_version(&database)? {
+        Some(found) if found == supported => {}
+        Some(found) => {
+            return Err(CliError::RegistrySchemaNotReady { found, supported });
+        }
+        None => return Err(CliError::RegistryDatabaseNotFound),
+    }
+    SqliteStore::open_reader(&database).map_err(CliError::RegistryStore)
+}
+
+fn inspect_snapshot_against_store(
+    store: &SqliteStore,
+    registry_id: &str,
+    envelope: &[u8],
+    now_ms: i64,
+) -> Result<InspectedRegistrySnapshot, CliError> {
+    let root = store
+        .registry_trust_root(registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let previous = store.registry_snapshot_state(registry_id)?;
+    inspect_registry_snapshot(envelope, &root.trust_root, previous.as_ref(), now_ms)
+        .map_err(Into::into)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryRootSummary {
+    registry_id: String,
+    root_version: u64,
+    root_digest: String,
+    threshold: u16,
+    key_ids: Vec<String>,
+    expires_at_ms: i64,
+}
+
+impl From<&InspectedRegistryTrustRoot> for RegistryRootSummary {
+    fn from(root: &InspectedRegistryTrustRoot) -> Self {
+        Self {
+            registry_id: root.trust_root.registry_id.clone(),
+            root_version: root.trust_root.root_version,
+            root_digest: root.root_digest.clone(),
+            threshold: root.trust_root.threshold,
+            key_ids: root
+                .trust_root
+                .keys
+                .iter()
+                .map(|key| key.key_id.clone())
+                .collect(),
+            expires_at_ms: root.trust_root.expires_at_ms,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryRootResponse {
+    operation: &'static str,
+    root: RegistryRootSummary,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_root_response(
+    operation: &'static str,
+    root: &InspectedRegistryTrustRoot,
+) -> RegistryRootResponse {
+    RegistryRootResponse {
+        operation,
+        root: RegistryRootSummary::from(root),
+        network_access: false,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistrySnapshotResponse {
+    operation: &'static str,
+    state: RegistrySnapshotState,
+    payload_digest: String,
+    generated_at_ms: i64,
+    publisher_count: usize,
+    target_count: usize,
+    withdrawn_target_count: usize,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_snapshot_response(
+    operation: &'static str,
+    snapshot: &InspectedRegistrySnapshot,
+) -> RegistrySnapshotResponse {
+    RegistrySnapshotResponse {
+        operation,
+        state: snapshot.state.clone(),
+        payload_digest: snapshot.payload_digest.clone(),
+        generated_at_ms: snapshot.snapshot.generated_at_ms,
+        publisher_count: snapshot.snapshot.publishers.len(),
+        target_count: snapshot.snapshot.targets.len(),
+        withdrawn_target_count: snapshot
+            .snapshot
+            .targets
+            .iter()
+            .filter(|target| target.withdrawal.is_some())
+            .count(),
+        network_access: false,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryStatusResponse {
+    registry_id: String,
+    root: RegistryRootSummary,
+    snapshot: Option<RegistrySnapshotState>,
+    network_access: bool,
+    package_authority: bool,
+}
+
 fn install_skill(
     home: &Path,
     manifest_path: &Path,
@@ -18888,6 +19271,45 @@ enum CliError {
     /// High-risk configuration activation omitted explicit owner approval.
     #[error("high-risk configuration activation requires --approve")]
     ApprovalRequired,
+    /// Registry trust or anti-rollback state mutation omitted explicit owner approval.
+    #[error("registry trust metadata activation requires --approve")]
+    RegistryApprovalRequired,
+    /// Owner-selected registry metadata was absent, redirected, oversized, or malformed.
+    #[error("registry metadata must be a nonempty bounded no-follow regular file")]
+    InvalidRegistryMetadata,
+    /// Owner-selected registry identity was empty, oversized, or non-canonical.
+    #[error(
+        "registry identity must be 1 through 255 ASCII letters, digits, dots, underscores, colons, or hyphens"
+    )]
+    InvalidRegistryIdentifier,
+    /// Registry metadata commands require an initialized canonical database.
+    #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
+    RegistryDatabaseNotFound,
+    /// Registry metadata commands must not implicitly migrate an existing canonical database.
+    #[error(
+        "registry metadata requires canonical schema {supported}, but this stopped home has schema {found}; start the matching Mealy daemon to run its backup-protected migration, stop it, and retry"
+    )]
+    RegistrySchemaNotReady {
+        /// Existing schema revision.
+        found: u64,
+        /// Exact schema revision supported by this binary.
+        supported: u64,
+    },
+    /// Canonical registry state differed from the exact verified result.
+    #[error("canonical registry metadata changed unexpectedly; no further action was attempted")]
+    RegistryStateDrift,
+    /// Cryptographic or semantic registry metadata verification failed.
+    #[error(transparent)]
+    RegistryVerification(#[from] RegistryError),
+    /// Registry use-case verification or atomic persistence failed.
+    #[error(transparent)]
+    RegistryUseCase(#[from] RegistryUseCaseError),
+    /// Canonical registry metadata lookup failed.
+    #[error(transparent)]
+    RegistryMetadataStore(#[from] RegistryMetadataStoreError),
+    /// Canonical `SQLite` storage could not be opened safely.
+    #[error("canonical registry store could not be opened safely: {0}")]
+    RegistryStore(#[source] StoreError),
     /// Guided setup input is missing, malformed, unbounded, or inconsistent with its provider.
     #[error("guided setup input is invalid; rerun `mealyctl setup --help`")]
     InvalidSetupInput,
@@ -19110,25 +19532,26 @@ mod tests {
         MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
         MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
         MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
-        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
-        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
-        SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
-        TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
-        configure_provider_image_generation, configure_workspace_grant, decode,
-        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
-        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
-        normalize_openrouter_display_name, observe_discord_pair_messages,
-        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
-        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
-        prepare_local_image_attachment, prepare_local_text_attachment,
-        provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
-        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
-        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
-        valid_daemon_config_keys, validate_anthropic_probe_envelope,
-        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
-        validate_provider_probe_envelope, validate_provider_probe_stream,
-        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
+        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, RegistryArguments,
+        RegistryCommand, RegistryNamespace, ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS,
+        ScheduleCommand, ServiceCommand, SessionCommand, SessionExportFormatArgument,
+        SessionProviderCommand, SetupProviderArgument, SkillCommand, TelegramPairChat,
+        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
+        browser_invocation, chat_usage_line, configure_provider_image_generation,
+        configure_workspace_grant, decode, generate_discord_pair_challenge,
+        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
+        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
+        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
+        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
+        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
+        provider_switch_recovery_route, registry_invocation,
+        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
+        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
+        telegram_pair_api_url, update_recovery_route, valid_daemon_config_keys,
+        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
+        validate_discord_pair_base_url, validate_provider_probe_envelope,
+        validate_provider_probe_stream, validate_session_transcript_html,
+        validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -19896,6 +20319,42 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn registry_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("registry"),
+            OsString::from("snapshot-accept"),
+            OsString::from("dev.mealy.registry"),
+            OsString::from("--envelope"),
+            OsString::from("/tmp/snapshot.json"),
+            OsString::from("--approve"),
+        ];
+        assert!(registry_invocation(&arguments));
+        assert!(!registry_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            RegistryArguments::try_parse_from(arguments).expect("separate registry command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::SnapshotAccept {
+                        registry_id,
+                        envelope,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && envelope == Path::new("/tmp/snapshot.json")
+                )
+        ));
     }
 
     #[test]

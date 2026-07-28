@@ -38,6 +38,7 @@ public command cannot be added or removed without updating this reference.
 | `compaction` | Create or inspect cited derived session compactions. |
 | `extension` | Install, grant, invoke, upgrade, disable, or revoke isolated extensions. |
 | `skill` | Inspect and manage stopped-home data-only skill bundles. |
+| `registry` | Inspect and advance signed inert registry trust metadata while stopped. |
 | `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
 | `health` | Check daemon liveness. |
@@ -64,6 +65,64 @@ public command cannot be added or removed without updating this reference.
 | `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
 | `browser` | Explicitly activate or disable separately governed one-shot browser transactions. |
 | `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
+
+## Signed registry trust metadata
+
+The v0.5 registry operator surface is deliberately local-file-only. First obtain an initial root
+through an independently authenticated out-of-band path, retain its expected digest outside the
+registry, and inspect the exact file without changing the Mealy home:
+
+```sh
+mealyctl registry root-inspect --root ./mealy-registry-root.json
+```
+
+Review `registryId`, `rootVersion`, `rootDigest`, `threshold`, every `keyId`, and the expiry. Mealy
+can verify the root's internal structure but cannot decide whether the first key set belongs to
+the registry you intended. After the matching Mealy daemon has initialized the current canonical
+schema and is stopped, make that explicit trust decision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry root-add \
+  --root ./mealy-registry-root.json --approve
+
+mealyctl --home "$HOME/.mealy" registry status dev.mealy.registry
+```
+
+`root-add` refuses to initialize or migrate the canonical database. A prior release must first run
+its normal backup-protected daemon migration. All state-dependent registry commands acquire the
+same stopped-home lock as the daemon, so they fail while `mealyd` owns the home.
+
+Root rotation accepts only an exact next-version envelope that independently satisfies the active
+old threshold and the candidate new threshold:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry root-rotate dev.mealy.registry \
+  --envelope ./mealy-registry-root-rotation.json --approve
+```
+
+Inspect a threshold-signed snapshot against the active root and durable anti-rollback fence before
+accepting that same no-follow file:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-inspect dev.mealy.registry \
+  --envelope ./mealy-registry-snapshot.json
+
+mealyctl --home "$HOME/.mealy" registry snapshot-accept dev.mealy.registry \
+  --envelope ./mealy-registry-snapshot.json --approve
+```
+
+Exact root-rotation and snapshot replays are idempotent. Lower snapshot versions, different bytes
+at an accepted version, expired metadata, wrong registry identities, missing signature thresholds,
+and post-rotation root regression fail closed. Root files are capped at 128 KiB, rotation
+envelopes at 256 KiB, and snapshot envelopes at 4 MiB; all are opened as nonempty no-follow regular
+files. Output includes only key IDs and summary counts, not public-key bodies or signed metadata
+payloads.
+
+These commands perform no DNS lookup, HTTP request, mirror discovery, package download,
+extraction, install, staging, activation, or permission grant. Accepted metadata is inert durable
+evidence only. SSRF-resistant mirror transport, signed release/package retrieval, full package
+inspection, permission-diff staging, and withdrawal-aware install/rollback are separate later
+v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

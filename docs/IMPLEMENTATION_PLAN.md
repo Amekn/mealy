@@ -274,12 +274,20 @@ repeats cryptographic verification, and rejects stale commits, rollback, root re
 same-version equivocation. Migration, complete infrastructure, integrity, and migration-backup
 tests cover the additive schema.
 
-The next slices must add stopped-home CLI lifecycle commands, SSRF-resistant bounded mirror
-transport, durable release/package evidence, exact archive download and existing package
-inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade and
-rollback transactions, public registry publication tooling, and package/upgrade/recovery
-qualification. [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the
-boundary.
+The third slice exposes this boundary through `mealyctl registry`. Root and snapshot inspection,
+explicit root bootstrap/rotation, status, and explicit snapshot acceptance operate on bounded
+no-follow files. Mutations require `--approve`; every canonical-state command takes the stopped
+daemon home lock; existing stores must already match schema 24 so the CLI cannot bypass the normal
+backup-protected migration path. Process tests cross real executable and SQLite boundaries,
+restart/replay, rollback, dual-threshold rotation, symlink rejection, live-daemon exclusion, and
+old-schema refusal. The output omits key bodies and metadata payloads and declares that neither
+network nor package authority was used.
+
+The next slices must add SSRF-resistant bounded mirror transport, durable release/package
+evidence, exact archive download and existing package inspection, permission-diff install/stage
+commands, installed-withdrawal policy, upgrade and rollback transactions, public registry
+publication tooling, and package/upgrade/recovery qualification.
+[ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard
 

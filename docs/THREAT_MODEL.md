@@ -613,9 +613,13 @@ skill/extension inspector and present an exact permission diff; an old grant is 
 An initial root is exact out-of-band owner input. A rotation envelope must satisfy both current and
 candidate thresholds and advance exactly one version. Schema 24 stores immutable exact root and
 snapshot bytes plus monotonic heads; acceptance reloads the active root and prior fence and repeats
-verification inside one immediate transaction. Bounded mirror transport, stopped-home CLI
-lifecycle, durable package evidence, and withdrawal propagation to installed packages remain
-explicit follow-on boundaries and are not yet claimed.
+verification inside one immediate transaction. The stopped-home CLI reads only bounded nonempty
+no-follow regular files, requires separate approval for root/snapshot state changes, excludes a
+live daemon with the canonical home lock, and refuses to create or migrate the database. Summary
+output withholds public-key bodies and signed payloads. It has no network path and grants no
+package authority. Bounded mirror transport, durable package evidence, permission-diff staging,
+and withdrawal propagation to installed packages remain explicit follow-on boundaries and are not
+yet claimed.
 
 ### A staging asset substitutes a different release daemon
 
