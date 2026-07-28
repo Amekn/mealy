@@ -711,7 +711,7 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
     wait_for_occurrences(
         &mut terminal,
         &mut rendered,
-        SECOND_SESSION_ID.as_bytes(),
+        b"Choose a conversation [1-2], or q to cancel: ",
         1,
         Duration::from_secs(1),
     );

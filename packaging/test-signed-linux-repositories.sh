@@ -232,9 +232,15 @@ if MEALY_REPOSITORY_ALLOW_TEST_URL=false "$builder" \
 fi
 grep -Fq 'must be an absolute HTTPS URL' "$temporary/rejected-url.stderr"
 
-wrong_fingerprint=${fingerprint/A/B}
-if [[ $wrong_fingerprint == "$fingerprint" ]]; then
-  wrong_fingerprint=${fingerprint/B/A}
+replacement=0
+if [[ ${fingerprint:0:1} == 0 ]]; then
+  replacement=1
+fi
+wrong_fingerprint=$replacement${fingerprint:1}
+if [[ ! $wrong_fingerprint =~ ^[0-9A-F]{40}$ ||
+  $wrong_fingerprint == "$fingerprint" ]]; then
+  echo "fixture could not construct a distinct signing fingerprint" >&2
+  exit 70
 fi
 if MEALY_REPOSITORY_ALLOW_TEST_URL=true "$builder" \
   "$version" "$assets" "$temporary/rejected-key" file:///repository \
