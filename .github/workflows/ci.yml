@@ -112,6 +112,7 @@ jobs:
             scripts/generate-third-party-licenses.sh
             scripts/install-public-linux-repository.sh
             scripts/installed-package-smoke.sh
+            scripts/installed-provider-switch-smoke.sh
             scripts/installed-update-rollback-smoke.sh
             scripts/installed-arch-smoke.sh
             scripts/installed-deb-smoke.sh

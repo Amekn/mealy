@@ -305,6 +305,7 @@ jobs:
             "$(command -v cargo-about)" third-party-licenses.html
       - name: Build reproducible release archive
         env:
+          MEALY_PROVIDER_SWITCH_SMOKE_ALLOW_HOST: 'true'
           MEALY_SYSTEMD_SMOKE_ALLOW_HOST: 'true'
         shell: bash
         run: |
@@ -382,6 +383,8 @@ jobs:
           sudo dpkg --install \
             "dist/mealy_${debian_version}_${debian_architecture}.deb" >/dev/null
           scripts/systemd-service-smoke.sh \
+            /usr/lib/mealy/release/bin/mealyd /usr/lib/mealy/release/bin/mealyctl
+          scripts/installed-provider-switch-smoke.sh \
             /usr/lib/mealy/release/bin/mealyd /usr/lib/mealy/release/bin/mealyctl
           sudo dpkg --purge mealy >/dev/null
           package_installed=false
@@ -877,6 +880,7 @@ jobs:
           (cd downloaded && sha256sum --check --strict "$checksums")
       - name: Exercise the public rootless bootstrap through first chat
         env:
+          MEALY_PROVIDER_SWITCH_SMOKE_ALLOW_HOST: 'true'
           MEALY_SYSTEMD_SMOKE_ALLOW_HOST: 'true'
         shell: bash
         run: |
@@ -900,6 +904,8 @@ jobs:
           test "$("$temporary/prefix/bin/mealyd" --version)" = "mealyd $version"
           test "$("$temporary/prefix/bin/mealyctl" --version)" = "mealyctl $version"
           scripts/systemd-service-smoke.sh \
+            "$temporary/prefix/bin/mealyd" "$temporary/prefix/bin/mealyctl"
+          scripts/installed-provider-switch-smoke.sh \
             "$temporary/prefix/bin/mealyd" "$temporary/prefix/bin/mealyctl"
           "$temporary/prefix/share/mealy-manager.sh" uninstall \
             --prefix "$temporary/prefix" --home "$temporary/home" >/dev/null
