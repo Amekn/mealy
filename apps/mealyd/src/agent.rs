@@ -1962,7 +1962,19 @@ fn prepare_next_model(
     } else {
         Vec::new()
     };
-    let configured_capabilities = provider.capabilities_for_retry(snapshot.usage.used_retries);
+    let configured_candidates = provider.route_candidates();
+    let configured_capabilities = if let Some(selection) = &snapshot.provider_selection {
+        configured_candidates
+            .iter()
+            .find(|candidate| {
+                candidate.capabilities.provider_id == selection.provider_id
+                    && candidate.capabilities.model_id == selection.model_id
+            })
+            .map(|candidate| candidate.capabilities.clone())
+            .ok_or("turn provider selection is not present in the configured route")?
+    } else {
+        provider.capabilities_for_retry(snapshot.usage.used_retries)
+    };
     let (mut baseline, baseline_version, declared_tool_ids, workspace_access, validation_policy) =
         if delegated {
             (
@@ -2206,6 +2218,7 @@ fn prepare_next_model(
     let configured_capability_digest = sha256_digest(
         serde_json::json!({
             "providers": provider.policy_capabilities(),
+            "turnProviderSelection": snapshot.provider_selection,
             "toolDescriptorDigests": active_tool_descriptor_digests,
             "workspaceIds": active_workspace_ids,
             "webEnabled": web_enabled,
@@ -2245,7 +2258,10 @@ fn prepare_next_model(
             agent_profile: serde_json::json!({
                 "schemaVersion": "mealy.agent-profile.v1",
                 "role": snapshot.agent_role,
-                "providerPolicy": provider.preferred_provider_ids(0),
+                "providerPolicy": snapshot.provider_selection.as_ref().map_or_else(
+                    || provider.preferred_provider_ids(0),
+                    |selection| vec![selection.provider_id.clone()],
+                ),
                 "tools": declared_tool_ids,
                 "workspaceAccess": workspace_access,
                 "memoryAccess": if delegated {
@@ -2367,7 +2383,20 @@ fn prepare_next_model(
         (Vec::new(), Vec::new(), "general-assistant.v1")
     };
     let tool_schema_set_digest = sha256_digest(serde_json::to_string(&schema_digests)?.as_bytes());
-    let fallback_policy = provider.fallback_policy();
+    let fallback_policy = if snapshot.provider_selection.is_some() {
+        ProviderFallbackPolicy::Disabled
+    } else {
+        provider.fallback_policy()
+    };
+    let route_candidates = configured_candidates.into_iter().filter(|candidate| {
+        snapshot
+            .provider_selection
+            .as_ref()
+            .is_none_or(|selection| {
+                candidate.capabilities.provider_id == selection.provider_id
+                    && candidate.capabilities.model_id == selection.model_id
+            })
+    });
     let route = route_provider(
         &ProviderRoutingPolicy {
             required_input_modalities: BTreeSet::from(["text".to_owned()]),
@@ -2388,10 +2417,13 @@ fn prepare_next_model(
             maximum_output_microunits_per_million_tokens: u64::MAX,
             maximum_latency_ms: snapshot.limits.provider_timeout_ms,
             minimum_trust_tier: 10,
-            preferred_provider_ids: provider.preferred_provider_ids(snapshot.usage.used_retries),
+            preferred_provider_ids: snapshot.provider_selection.as_ref().map_or_else(
+                || provider.preferred_provider_ids(snapshot.usage.used_retries),
+                |selection| vec![selection.provider_id.clone()],
+            ),
             fallback: fallback_policy,
         },
-        provider.route_candidates(),
+        route_candidates,
     )?;
     let capabilities = route.primary.capabilities.clone();
     let routing_decision = serde_json::json!({

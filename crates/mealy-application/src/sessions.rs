@@ -1,4 +1,4 @@
-use crate::{Clock, IdGenerator};
+use crate::{Clock, IdGenerator, ProviderSelection, ProviderSelectionPreference};
 use mealy_domain::{
     ChannelBindingId, CorrelationId, DeliveryMode, EventId, InboxEntryId, OutboxId, PrincipalId,
     SessionId,
@@ -43,6 +43,8 @@ pub struct SessionCreationCommit {
     pub session_id: SessionId,
     /// Authenticated owner and channel binding.
     pub ownership: OwnershipContext,
+    /// Optional exact configured default for future new turns.
+    pub provider_selection: Option<ProviderSelection>,
     /// Immutable `session.created` journal-event identifier.
     pub event_id: EventId,
     /// Correlates the command and its journal fact.
@@ -66,6 +68,8 @@ pub struct InputAdmissionCommit {
     pub dedupe_key: String,
     /// Bounded input content.
     pub content: String,
+    /// Atomic provider/model resolution requested for this input.
+    pub provider_selection: ProviderSelectionPreference,
     /// Maximum pending inbox records permitted after this admission.
     pub maximum_pending_inputs: u64,
     /// Immutable `input.accepted` journal-event identifier.
@@ -89,6 +93,10 @@ pub struct InputAdmissionReceipt {
     pub inbox_sequence: u64,
     /// Ordering behavior bound to the idempotency key.
     pub delivery_mode: DeliveryMode,
+    /// Exact provider/model pinned for the future turn, or `None` for automatic routing.
+    pub provider_selection: Option<ProviderSelection>,
+    /// Stable resolution source: `inherited`, `automatic`, or `exact`.
+    pub provider_selection_source: String,
     /// Journal event created by the original acceptance.
     pub event_id: EventId,
     /// Acknowledgement outbox record created by the original acceptance.
@@ -233,6 +241,8 @@ pub struct AdmitInputCommand {
     pub delivery_mode: DeliveryMode,
     /// User or channel input content.
     pub content: String,
+    /// Provider/model preference resolved atomically with admission.
+    pub provider_selection: ProviderSelectionPreference,
 }
 
 /// Rejected application command.
@@ -263,6 +273,9 @@ pub enum SessionUseCaseError {
     /// A zero queue capacity cannot admit work predictably.
     #[error("input queue capacity must be positive")]
     InvalidQueueCapacity,
+    /// An exact provider or model identity is empty, padded, controlled, or oversized.
+    #[error("provider selection is invalid")]
+    InvalidProviderSelection,
     /// Atomic persistence rejected the command.
     #[error(transparent)]
     Store(#[from] SessionStoreError),
@@ -279,10 +292,32 @@ pub fn create_session(
     ids: &impl IdGenerator,
     ownership: OwnershipContext,
 ) -> Result<SessionId, SessionUseCaseError> {
+    create_session_with_selection(store, clock, ids, ownership, None)
+}
+
+/// Creates a session with an optional exact configured default for future new turns.
+///
+/// # Errors
+///
+/// Returns [`SessionUseCaseError`] if the selection is malformed or atomic persistence fails.
+pub fn create_session_with_selection(
+    store: &mut impl SessionStore,
+    clock: &impl Clock,
+    ids: &impl IdGenerator,
+    ownership: OwnershipContext,
+    provider_selection: Option<ProviderSelection>,
+) -> Result<SessionId, SessionUseCaseError> {
+    if provider_selection
+        .as_ref()
+        .is_some_and(|selection| !selection.is_valid())
+    {
+        return Err(SessionUseCaseError::InvalidProviderSelection);
+    }
     let session_id = ids.generate_session_id();
     store.create_session(SessionCreationCommit {
         session_id,
         ownership,
+        provider_selection,
         event_id: ids.generate_event_id(),
         correlation_id: ids.generate_correlation_id(),
         created_at: clock.now(),
@@ -326,6 +361,9 @@ pub fn admit_input(
     if limits.maximum_pending_inputs() == 0 {
         return Err(SessionUseCaseError::InvalidQueueCapacity);
     }
+    if !command.provider_selection.is_valid() {
+        return Err(SessionUseCaseError::InvalidProviderSelection);
+    }
 
     store
         .admit_input(InputAdmissionCommit {
@@ -335,6 +373,7 @@ pub fn admit_input(
             delivery_mode: command.delivery_mode,
             dedupe_key: command.dedupe_key,
             content: command.content,
+            provider_selection: command.provider_selection,
             maximum_pending_inputs: limits.maximum_pending_inputs(),
             event_id: ids.generate_event_id(),
             outbox_id: ids.generate_outbox_id(),
@@ -351,7 +390,7 @@ mod tests {
         InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
         SessionStoreError, SessionUseCaseError, admit_input, create_session,
     };
-    use crate::{Clock, IdGenerator};
+    use crate::{Clock, IdGenerator, ProviderSelectionPreference};
     use mealy_domain::{
         ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
         ContextItemId, ContextManifestId, CorrelationId, DelegationId, DeliveryMode, EffectId,
@@ -579,6 +618,8 @@ mod tests {
                 inbox_entry_id: commit.inbox_entry_id,
                 inbox_sequence: 1,
                 delivery_mode: commit.delivery_mode,
+                provider_selection: None,
+                provider_selection_source: "inherited".to_owned(),
                 event_id: commit.event_id,
                 outbox_id: commit.outbox_id,
                 correlation_id: commit.correlation_id,
@@ -618,6 +659,7 @@ mod tests {
             dedupe_key: "delivery-1".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "too large".to_owned(),
+            provider_selection: ProviderSelectionPreference::InheritSession,
         };
         let error = admit_input(
             &mut store,
@@ -642,6 +684,7 @@ mod tests {
             dedupe_key: "delivery-1".to_owned(),
             delivery_mode: DeliveryMode::SteerAtBoundary,
             content: "continue with this constraint".to_owned(),
+            provider_selection: ProviderSelectionPreference::InheritSession,
         };
         let outcome = admit_input(
             &mut store,

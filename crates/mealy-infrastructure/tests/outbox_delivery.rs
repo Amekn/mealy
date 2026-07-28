@@ -30,6 +30,7 @@ fn startup_recovers_an_inflight_delivery_under_a_new_exact_owner() {
             dedupe_key: "delivery".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "hello".to_owned(),
+            provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
         },
     )
     .expect("admit input");

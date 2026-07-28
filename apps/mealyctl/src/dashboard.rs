@@ -38,14 +38,15 @@ use mealy_protocol::{
     MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
     MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand,
     MemoryStatusResponse, MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest,
-    ProposeMemoryRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-    ResolveApprovalRequest, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
-    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
+    ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
+    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
+    ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
     ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionStatusResponse, SessionTitleResponse,
-    SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest, SubmitInputRequest,
-    TaskCancellationReceipt, TaskResponse, TaskStatus, TimelinePageResponse,
-    UpdateSessionTitleRequest,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionStatusResponse, SessionTitleResponse, SessionTranscriptExport, SessionsResponse,
+    SetMemoryPinRequest, SubmitInputRequest, TaskCancellationReceipt, TaskResponse, TaskStatus,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -114,6 +115,7 @@ struct DashboardSnapshot {
     status: AdminStatusResponse,
     doctor: DoctorResponse,
     sessions: SessionsResponse,
+    provider_catalog: ProviderCatalogResponse,
     approvals: PendingApprovalsResponse,
     schedules: SchedulesResponse,
     usage: AdminUsageReportResponse,
@@ -125,6 +127,7 @@ struct DashboardConversation {
     api_version: String,
     status: SessionStatusResponse,
     timeline: TimelinePageResponse,
+    provider_selection: SessionProviderSelectionResponse,
     active_task_id: Option<String>,
 }
 
@@ -132,6 +135,7 @@ struct DashboardConversation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DashboardCreateSessionRequest {
     api_version: String,
+    provider_selection: Option<ProviderSelectionCommand>,
 }
 
 #[derive(Deserialize)]
@@ -165,6 +169,15 @@ struct DashboardSubmitInputRequest {
     idempotency_key: String,
     delivery_mode: DeliveryMode,
     content: String,
+    provider_selection: Option<ProviderSelectionCommand>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DashboardUpdateSessionProviderSelectionRequest {
+    api_version: String,
+    expected_revision: u64,
+    provider_selection: ProviderSelectionCommand,
 }
 
 #[derive(Deserialize)]
@@ -481,6 +494,10 @@ pub(crate) async fn run(
             post(update_session_title),
         )
         .route(
+            "/api/sessions/{session_id}/provider-selection",
+            post(update_session_provider_selection),
+        )
+        .route(
             "/api/sessions/{session_id}/checkpoints",
             get(session_checkpoints).post(create_session_checkpoint),
         )
@@ -617,7 +634,12 @@ async fn create_session(
     let Ok(Json(request)) = request else {
         return secure_response(invalid_dashboard_json(), &state);
     };
-    if !valid_api_version(&request.api_version) {
+    if !valid_api_version(&request.api_version)
+        || request
+            .provider_selection
+            .as_ref()
+            .is_some_and(|selection| !valid_provider_selection(selection))
+    {
         return secure_response(invalid_dashboard_command(), &state);
     }
     let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
@@ -627,6 +649,7 @@ async fn create_session(
         Ok(connection) => {
             let command = CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: request.provider_selection,
             };
             match post_to_daemon::<_, CreateSessionResponse>(
                 &state.client,
@@ -701,6 +724,62 @@ async fn update_session_title(
                 }
                 Ok(_) => dashboard_protocol_error("session title update"),
                 Err(error) => dashboard_backend_error(&error, "session title update"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn update_session_provider_selection(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    request: Result<Json<DashboardUpdateSessionProviderSelectionRequest>, JsonRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_mutation(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Json(request)) = request else {
+        return secure_response(invalid_dashboard_json(), &state);
+    };
+    if !valid_api_version(&request.api_version)
+        || !valid_provider_selection(&request.provider_selection)
+    {
+        return secure_response(invalid_dashboard_command(), &state);
+    }
+    let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/provider-selection");
+            let command = UpdateSessionProviderSelectionRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision: request.expected_revision,
+                provider_selection: request.provider_selection.clone(),
+            };
+            match patch_to_daemon::<_, SessionProviderSelectionResponse>(
+                &state.client,
+                &connection,
+                &path,
+                &command,
+            )
+            .await
+            {
+                Ok(response)
+                    if valid_session_provider_selection(&response, &session_id)
+                        && response.provider_selection == request.provider_selection
+                        && request.expected_revision.checked_add(1) == Some(response.revision) =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("session provider-selection update"),
+                Err(error) => dashboard_backend_error(&error, "session provider-selection update"),
             }
         }
         Err(()) => dashboard_connection_error(),
@@ -1128,25 +1207,33 @@ async fn conversation_timeline(
             let after = parameters.after.unwrap_or(0);
             let timeline_path =
                 format!("/v1/sessions/{session_id}/timeline?after={after}&limit={limit}");
+            let provider_selection_path = format!("/v1/sessions/{session_id}/provider-selection");
             let status = fetch::<SessionStatusResponse>(&state.client, &connection, &status_path);
             let timeline =
                 fetch::<TimelinePageResponse>(&state.client, &connection, &timeline_path);
-            match tokio::join!(status, timeline) {
-                (Ok(status), Ok(timeline))
+            let provider_selection = fetch::<SessionProviderSelectionResponse>(
+                &state.client,
+                &connection,
+                &provider_selection_path,
+            );
+            match tokio::join!(status, timeline, provider_selection) {
+                (Ok(status), Ok(timeline), Ok(provider_selection))
                     if valid_api_version(&status.api_version)
                         && valid_api_version(&timeline.api_version)
-                        && status.session_id == session_id =>
+                        && status.session_id == session_id
+                        && valid_session_provider_selection(&provider_selection, &session_id) =>
                 {
                     let active_task_id = active_task_id(&status, &timeline);
                     Json(DashboardConversation {
                         api_version: API_VERSION.to_owned(),
                         status,
                         timeline,
+                        provider_selection,
                         active_task_id,
                     })
                     .into_response()
                 }
-                (Err(error), _) | (_, Err(error)) => {
+                (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
                     dashboard_backend_error(&error, "conversation refresh")
                 }
                 _ => dashboard_protocol_error("conversation refresh"),
@@ -1176,6 +1263,10 @@ async fn submit_session_input(
         || !valid_idempotency_key(&request.idempotency_key)
         || request.content.trim().is_empty()
         || request.content.len() > MAXIMUM_DASHBOARD_INPUT_BYTES
+        || request
+            .provider_selection
+            .as_ref()
+            .is_some_and(|selection| !valid_provider_selection(selection))
     {
         return secure_response(invalid_dashboard_command(), &state);
     }
@@ -1187,6 +1278,7 @@ async fn submit_session_input(
             let session_id = session_id.to_string();
             let command = SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: request.provider_selection,
                 idempotency_key: request.idempotency_key,
                 delivery_mode: request.delivery_mode,
                 content: request.content,
@@ -2766,6 +2858,10 @@ async fn fetch_snapshot(
         fetch::<SessionsResponse>(client, connection, "/v1/sessions?limit=20").await,
         "sessions",
     )?;
+    let provider_catalog = dashboard_snapshot_source(
+        fetch::<ProviderCatalogResponse>(client, connection, "/v1/providers/catalog").await,
+        "provider catalog",
+    )?;
     let approvals = dashboard_snapshot_source(
         fetch::<PendingApprovalsResponse>(client, connection, "/v1/approvals").await,
         "approvals",
@@ -2794,6 +2890,7 @@ async fn fetch_snapshot(
         status,
         doctor,
         sessions,
+        provider_catalog,
         approvals,
         schedules,
         usage,
@@ -2801,12 +2898,30 @@ async fn fetch_snapshot(
     if !valid_api_version(&snapshot.status.api_version)
         || !valid_api_version(&snapshot.doctor.api_version)
         || !valid_api_version(&snapshot.sessions.api_version)
+        || !valid_api_version(&snapshot.provider_catalog.api_version)
         || !valid_api_version(&snapshot.approvals.api_version)
         || !valid_api_version(&snapshot.schedules.api_version)
         || !valid_admin_usage_report(&snapshot.usage, usage_from_ms, usage_to_ms)
     {
         return Err(CliError::Protocol(
             "dashboard source response uses an unsupported API version".to_owned(),
+        ));
+    }
+    if snapshot.provider_catalog.catalog_scope != "configured_route"
+        || snapshot.provider_catalog.routes.is_empty()
+        || snapshot
+            .provider_catalog
+            .routes
+            .iter()
+            .enumerate()
+            .any(|(index, route)| {
+                route.route_ordinal != u64::try_from(index).unwrap_or(u64::MAX)
+                    || route.provider_id.is_empty()
+                    || route.model_id.is_empty()
+            })
+    {
+        return Err(CliError::Protocol(
+            "dashboard provider catalog is invalid or unordered".to_owned(),
         ));
     }
     let mut schedule_ids = BTreeSet::new();
@@ -3149,6 +3264,34 @@ fn valid_dashboard_token(state: &DashboardState, headers: &HeaderMap) -> bool {
 
 fn valid_api_version(value: &str) -> bool {
     value == API_VERSION
+}
+
+fn valid_provider_selection(selection: &ProviderSelectionCommand) -> bool {
+    match selection {
+        ProviderSelectionCommand::Automatic => true,
+        ProviderSelectionCommand::Exact {
+            provider_id,
+            model_id,
+        } => {
+            !provider_id.is_empty()
+                && provider_id.len() <= 128
+                && !model_id.is_empty()
+                && model_id.len() <= 256
+                && !provider_id.chars().any(char::is_control)
+                && !model_id.chars().any(char::is_control)
+        }
+    }
+}
+
+fn valid_session_provider_selection(
+    response: &SessionProviderSelectionResponse,
+    session_id: &str,
+) -> bool {
+    valid_api_version(&response.api_version)
+        && response.session_id == session_id
+        && response.applies_to == "future_new_turns"
+        && response.updated_at_ms >= 0
+        && valid_provider_selection(&response.provider_selection)
 }
 
 fn valid_admin_usage_report(

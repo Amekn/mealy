@@ -13,8 +13,9 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_protocol::{
     API_VERSION, CreateSessionResponse, DeliveryMode, InputAdmissionResponse, LocalConnectionInfo,
-    SessionStatusResponse, SessionSummaryResponse, SessionsResponse, SubmitInputRequest,
-    TimelineCursor, TimelinePageResponse,
+    ProviderCatalogResponse, ProviderCatalogRouteResponse, ProviderSelectionCommand,
+    SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
+    SessionsResponse, SubmitInputRequest, TimelineCursor, TimelinePageResponse,
 };
 use rustix::{
     fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open},
@@ -1087,9 +1088,14 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
     let address = listener.local_addr().expect("control-plane address");
     let app = Router::new()
         .route("/v1/admin/status", get(admin_status))
+        .route("/v1/providers/catalog", get(provider_catalog))
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{session_id}/status", get(session_status))
+        .route(
+            "/v1/sessions/{session_id}/provider-selection",
+            get(session_provider_selection),
+        )
         .route("/v1/sessions/{session_id}/timeline", get(session_timeline))
         .route(
             "/v1/sessions/{session_id}/exports/json",
@@ -1180,6 +1186,45 @@ async fn pending_approvals() -> Json<serde_json::Value> {
     }))
 }
 
+async fn provider_catalog() -> Json<ProviderCatalogResponse> {
+    Json(ProviderCatalogResponse {
+        api_version: API_VERSION.to_owned(),
+        catalog_scope: "configured_route".to_owned(),
+        config_digest: "a".repeat(64),
+        automatic_fallback_enabled: false,
+        routes: vec![ProviderCatalogRouteResponse {
+            route_ordinal: 0,
+            route_role: "primary".to_owned(),
+            protocol: "openai_responses".to_owned(),
+            provider_id: "fixture".to_owned(),
+            model_id: "fixture".to_owned(),
+            input_modalities: vec!["text".to_owned()],
+            tool_calling: true,
+            structured_output: false,
+            reasoning_controls: Vec::new(),
+            streaming: true,
+            residency: "local".to_owned(),
+            local: true,
+            context_tokens: 32_768,
+            maximum_output_tokens: 4_096,
+            input_token_overhead: 2_048,
+            limits_source: "active_configuration".to_owned(),
+            limits_operator_verified: false,
+            input_microunits_per_million_tokens: 0,
+            output_microunits_per_million_tokens: 0,
+            pricing_source: "active_configuration".to_owned(),
+            pricing_verified: false,
+            health: "healthy".to_owned(),
+            estimated_latency_ms: 10,
+            in_flight_requests: 0,
+            maximum_concurrent_requests: 2,
+            requests_in_current_minute: 3,
+            requests_per_minute: 60,
+            selectable: true,
+        }],
+    })
+}
+
 async fn list_sessions(State(state): State<AdmissionState>) -> Json<SessionsResponse> {
     let configured = state
         .picker_sessions
@@ -1228,6 +1273,20 @@ async fn session_status(AxumPath(session_id): AxumPath<String>) -> Json<SessionS
         pending_inputs: 0,
         active_turn_id: None,
         latest_cursor: TimelineCursor(0),
+    })
+}
+
+async fn session_provider_selection(
+    AxumPath(session_id): AxumPath<String>,
+) -> Json<SessionProviderSelectionResponse> {
+    Json(SessionProviderSelectionResponse {
+        api_version: API_VERSION.to_owned(),
+        session_id,
+        provider_selection: ProviderSelectionCommand::Automatic,
+        revision: 1,
+        event_id: None,
+        updated_at_ms: 1_800_000_000_000,
+        applies_to: "future_new_turns".to_owned(),
     })
 }
 
@@ -1315,6 +1374,8 @@ async fn block_admission(
         inbox_entry_id: "019f0000-0000-7000-8000-000000000002".to_owned(),
         inbox_sequence: 1,
         delivery_mode: DeliveryMode::Queue,
+        provider_selection: mealy_protocol::ProviderSelectionCommand::Automatic,
+        provider_selection_source: "inherited".to_owned(),
         event_id: "019f0000-0000-7000-8000-000000000003".to_owned(),
         outbox_id: "019f0000-0000-7000-8000-000000000004".to_owned(),
         accepted_at_ms: 1_800_000_000_000,

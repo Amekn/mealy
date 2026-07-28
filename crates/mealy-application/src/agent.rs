@@ -1,7 +1,7 @@
 use crate::{
     ContextEpoch, ContextManifest, ContextMemoryEvidence, ModelUsage, NormalizedMessage,
     OwnershipContext, ProviderCapabilities, ProviderErrorClass, ProviderOutput, ProviderRequest,
-    ReadToolDescriptor,
+    ProviderSelection, ReadToolDescriptor,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, CompactionId, CorrelationId, EventId, LeaseFence,
@@ -229,6 +229,9 @@ pub struct AgentRunSnapshot {
     pub principal_id: PrincipalId,
     /// Owning authenticated local channel binding.
     pub channel_binding_id: ChannelBindingId,
+    /// Exact configured provider/model pinned when this turn was admitted, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_selection: Option<ProviderSelection>,
     /// Correlation lineage.
     pub correlation_id: CorrelationId,
     /// Current one-based iteration to compile.

@@ -511,7 +511,11 @@
       <article class="panel full conversation-panel">
         <header class="panel-head">
           <div><h3>Conversation</h3><p class="panel-subtitle">Durable input, live evidence, and cooperative task control</p></div>
-          <button id="new-session" class="action primary" type="button">New session</button>
+          <span class="command-actions">
+            <label class="label" for="new-session-provider">New session model</label>
+            <select id="new-session-provider" class="delivery-mode" aria-label="Model for new session"></select>
+            <button id="new-session" class="action primary" type="button">New session</button>
+          </span>
         </header>
         <div class="panel-body conversation-layout">
           <aside class="session-rail" aria-label="Recent conversation sessions">
@@ -527,6 +531,8 @@
                 <button id="fork-session" class="action" type="button" disabled>Fork</button>
                 <button id="export-session-json" class="action" type="button" disabled>Export JSON</button>
                 <button id="export-session-html" class="action" type="button" disabled>Export HTML</button>
+                <select id="session-provider" class="delivery-mode" aria-label="Conversation default model" disabled></select>
+                <button id="apply-session-provider" class="action" type="button" disabled>Set model</button>
               </span>
             </div>
             <div id="timeline" class="timeline" aria-live="polite"><p class="empty">Choose a session to load its durable event timeline.</p></div>
@@ -541,6 +547,8 @@
                     <option value="steer_at_boundary">Steer at safe boundary</option>
                     <option value="interrupt_then_queue">Interrupt, then queue</option>
                   </select>
+                  <label class="label" for="turn-provider">This turn</label>
+                  <select id="turn-provider" class="delivery-mode" disabled></select>
                 </div>
                 <div class="command-actions">
                   <button id="cancel-task" class="action danger" type="button" disabled>Cancel active task</button>
@@ -762,13 +770,17 @@
     const refreshButton = document.getElementById("refresh");
     const errorBanner = document.getElementById("error");
     const newSessionButton = document.getElementById("new-session");
+    const newSessionProvider = document.getElementById("new-session-provider");
     const renameSessionButton = document.getElementById("rename-session");
     const checkpointSessionButton = document.getElementById("checkpoint-session");
     const forkSessionButton = document.getElementById("fork-session");
     const exportSessionJsonButton = document.getElementById("export-session-json");
     const exportSessionHtmlButton = document.getElementById("export-session-html");
+    const sessionProvider = document.getElementById("session-provider");
+    const applySessionProviderButton = document.getElementById("apply-session-provider");
     const promptInput = document.getElementById("prompt");
     const deliveryMode = document.getElementById("delivery-mode");
+    const turnProvider = document.getElementById("turn-provider");
     const sendInputButton = document.getElementById("send-input");
     const cancelTaskButton = document.getElementById("cancel-task");
     const taskUsageIdInput = document.getElementById("task-usage-id");
@@ -833,6 +845,7 @@
     let sessionTitles = new Map();
     let currentSessionRevision = null;
     let currentSessionQuiescent = false;
+    let providerCatalog = [];
     let timelineCursor = 0;
     let timelineEvents = [];
     let activeTaskId = null;
@@ -1238,10 +1251,58 @@
       await loadTaskUsage();
     }
 
-    function updateConversationControls(status) {
+    function providerSelectionFromValue(value, allowInherit) {
+      if (allowInherit && value === "inherit") return null;
+      if (value === "automatic") return { mode: "automatic" };
+      const match = /^route:(\d+)$/.exec(value);
+      if (!match) throw new Error("Choose one configured provider/model route.");
+      const route = providerCatalog[Number(match[1])];
+      if (!route || !route.selectable || typeof route.providerId !== "string" || typeof route.modelId !== "string") {
+        throw new Error("The selected provider/model route is no longer selectable.");
+      }
+      return { mode: "exact", providerId: route.providerId, modelId: route.modelId };
+    }
+
+    function providerValue(selection) {
+      if (!selection || selection.mode === "automatic") return "automatic";
+      if (selection.mode !== "exact") return "automatic";
+      const index = providerCatalog.findIndex(route =>
+        route.providerId === selection.providerId && route.modelId === selection.modelId);
+      return index < 0 ? "automatic" : `route:${index}`;
+    }
+
+    function providerOptions(includeInherit) {
+      const options = [];
+      if (includeInherit) options.push(new Option("Inherit conversation default", "inherit"));
+      options.push(new Option("Automatic compatible route", "automatic"));
+      providerCatalog.forEach((route, index) => {
+        const role = route.routeRole === "primary" ? "primary" : "fallback";
+        const health = route.health || "unknown";
+        const option = new Option(`${route.providerId} / ${route.modelId} · ${role} · ${health}`, `route:${index}`);
+        option.disabled = !route.selectable;
+        options.push(option);
+      });
+      return options;
+    }
+
+    function renderProviderSelectors(catalog) {
+      const previousNew = newSessionProvider.value || "automatic";
+      const previousSession = sessionProvider.value || "automatic";
+      const previousTurn = turnProvider.value || "inherit";
+      providerCatalog = Array.isArray(catalog.routes) ? catalog.routes : [];
+      newSessionProvider.replaceChildren(...providerOptions(false));
+      sessionProvider.replaceChildren(...providerOptions(false));
+      turnProvider.replaceChildren(...providerOptions(true));
+      newSessionProvider.value = Array.from(newSessionProvider.options).some(option => option.value === previousNew) ? previousNew : "automatic";
+      sessionProvider.value = Array.from(sessionProvider.options).some(option => option.value === previousSession) ? previousSession : "automatic";
+      turnProvider.value = Array.from(turnProvider.options).some(option => option.value === previousTurn) ? previousTurn : "inherit";
+    }
+
+    function updateConversationControls(status, providerSelection) {
       const selected = Boolean(selectedSessionId);
       promptInput.disabled = !selected;
       deliveryMode.disabled = !selected;
+      turnProvider.disabled = !selected;
       sendInputButton.disabled = !selected;
       cancelTaskButton.disabled = !selected || !activeTaskId;
       renameSessionButton.disabled = !selected || currentSessionRevision === null;
@@ -1249,6 +1310,8 @@
       forkSessionButton.disabled = !selected;
       exportSessionJsonButton.disabled = !selected;
       exportSessionHtmlButton.disabled = !selected;
+      sessionProvider.disabled = !selected || currentSessionRevision === null;
+      applySessionProviderButton.disabled = !selected || currentSessionRevision === null;
       document.getElementById("conversation-id").textContent = selectedSessionId
         ? (sessionTitles.get(selectedSessionId) || selectedSessionId)
         : "Select or create a session";
@@ -1262,6 +1325,11 @@
         forkSessionButton.disabled = false;
         exportSessionJsonButton.disabled = false;
         exportSessionHtmlButton.disabled = false;
+        sessionProvider.disabled = false;
+        applySessionProviderButton.disabled = false;
+        if (providerSelection && providerSelection.providerSelection) {
+          sessionProvider.value = providerValue(providerSelection.providerSelection);
+        }
         document.getElementById("conversation-state").textContent = `${formatCount(status.pendingInputs)} pending · revision ${formatCount(status.revision)}${status.activeTurnId ? " · active" : ""}`;
       }
     }
@@ -1277,13 +1345,14 @@
         activeTaskId = null;
         currentSessionRevision = null;
         currentSessionQuiescent = false;
+        turnProvider.value = "inherit";
         if (pendingInputCommand) clearCommandKey(pendingInputCommand.scope);
         pendingInputCommand = null;
       }
       document.querySelectorAll(".session-choice").forEach(choice => {
         choice.classList.toggle("selected", choice.dataset.sessionId === selectedSessionId);
       });
-      updateConversationControls(null);
+      updateConversationControls(null, null);
       renderTimeline();
       await refreshConversation(changed);
     }
@@ -1314,7 +1383,7 @@
         if (timelineEvents.length > 500) timelineEvents = timelineEvents.slice(-500);
         if (validSessionId(payload.activeTaskId)) activeTaskId = payload.activeTaskId;
         if (!payload.status || !payload.status.activeTurnId) activeTaskId = null;
-        updateConversationControls(payload.status || null);
+        updateConversationControls(payload.status || null, payload.providerSelection || null);
         renderTimeline();
       } catch (error) {
         showError(error, "The selected conversation is unavailable.");
@@ -1327,7 +1396,10 @@
       newSessionButton.disabled = true;
       clearError();
       try {
-        const response = await postJson("/api/sessions", { apiVersion: "v1" });
+        const response = await postJson("/api/sessions", {
+          apiVersion: "v1",
+          providerSelection: providerSelectionFromValue(newSessionProvider.value, false)
+        });
         if (!validSessionId(response.sessionId)) throw new Error("Session creation returned an invalid identifier");
         await refresh();
         await selectSession(response.sessionId);
@@ -1374,6 +1446,30 @@
         showError(error, "The conversation could not be renamed.");
       } finally {
         renameSessionButton.disabled = !selectedSessionId;
+      }
+    }
+
+    async function applySelectedSessionProvider() {
+      if (!selectedSessionId || currentSessionRevision === null) return;
+      applySessionProviderButton.disabled = true;
+      clearError();
+      try {
+        const providerSelection = providerSelectionFromValue(sessionProvider.value, false);
+        const response = await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/provider-selection`, {
+          apiVersion: "v1",
+          expectedRevision: currentSessionRevision,
+          providerSelection
+        });
+        currentSessionRevision = asNumber(response.revision);
+        sessionProvider.value = providerValue(response.providerSelection);
+        document.getElementById("conversation-state").textContent =
+          `Model default updated · revision ${formatCount(response.revision)} · applies to future turns`;
+        await refresh();
+        await refreshConversation(false);
+      } catch (error) {
+        showError(error, "The conversation model could not be updated.");
+      } finally {
+        applySessionProviderButton.disabled = !selectedSessionId;
       }
     }
 
@@ -1513,12 +1609,16 @@
         showError(new Error("The message exceeds the 16 KiB dashboard limit."), "The message is too large.");
         return;
       }
-      if (!pendingInputCommand || pendingInputCommand.sessionId !== selectedSessionId || pendingInputCommand.content !== content || pendingInputCommand.deliveryMode !== mode) {
+      const providerValueForTurn = turnProvider.value;
+      const providerSelection = providerSelectionFromValue(providerValueForTurn, true);
+      if (!pendingInputCommand || pendingInputCommand.sessionId !== selectedSessionId || pendingInputCommand.content !== content || pendingInputCommand.deliveryMode !== mode || pendingInputCommand.providerValue !== providerValueForTurn) {
         const scope = `input:${selectedSessionId}:${Date.now()}:${content.length}`;
         pendingInputCommand = {
           sessionId: selectedSessionId,
           content,
           deliveryMode: mode,
+          providerValue: providerValueForTurn,
+          providerSelection,
           scope,
           idempotencyKey: commandKey(scope)
         };
@@ -1531,11 +1631,13 @@
           apiVersion: "v1",
           idempotencyKey: pendingInputCommand.idempotencyKey,
           deliveryMode: pendingInputCommand.deliveryMode,
-          content: pendingInputCommand.content
+          content: pendingInputCommand.content,
+          providerSelection: pendingInputCommand.providerSelection
         });
         clearCommandKey(pendingInputCommand.scope);
         pendingInputCommand = null;
         promptInput.value = "";
+        turnProvider.value = "inherit";
         sendInputButton.textContent = "Send";
         await refreshConversation(false);
         await refresh();
@@ -2661,6 +2763,7 @@
           : "mealy://assistant/no-workspace";
       }
 
+      renderProviderSelectors(snapshot.providerCatalog || {});
       renderProviders(status);
       renderDoctor(doctor);
       renderSessions(snapshot.sessions || {});
@@ -2692,6 +2795,7 @@
     refreshButton.addEventListener("click", refresh);
     newSessionButton.addEventListener("click", () => { void createSession(); });
     renameSessionButton.addEventListener("click", () => { void renameSelectedSession(); });
+    applySessionProviderButton.addEventListener("click", () => { void applySelectedSessionProvider(); });
     checkpointSessionButton.addEventListener("click", () => { void checkpointSelectedSession(); });
     forkSessionButton.addEventListener("click", () => { void forkSelectedSession(); });
     exportSessionJsonButton.addEventListener("click", () => { void downloadSelectedSession("json"); });
@@ -2789,6 +2893,13 @@
     });
     deliveryMode.addEventListener("change", () => {
       if (pendingInputCommand && pendingInputCommand.deliveryMode !== deliveryMode.value) {
+        clearCommandKey(pendingInputCommand.scope);
+        pendingInputCommand = null;
+        sendInputButton.textContent = "Send";
+      }
+    });
+    turnProvider.addEventListener("change", () => {
+      if (pendingInputCommand && pendingInputCommand.providerValue !== turnProvider.value) {
         clearCommandKey(pendingInputCommand.scope);
         pendingInputCommand = null;
         sendInputButton.textContent = "Send";

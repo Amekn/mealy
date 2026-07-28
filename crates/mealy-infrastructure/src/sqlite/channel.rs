@@ -724,6 +724,7 @@ mod tests {
                 dedupe_key: format!("webhook:{binding_id}:delivery-1"),
                 delivery_mode: DeliveryMode::Queue,
                 content: "signed hello".to_owned(),
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
             },
         )
         .expect("admit verified channel input")

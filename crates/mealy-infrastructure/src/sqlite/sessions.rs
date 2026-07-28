@@ -1,7 +1,7 @@
 use super::SqliteStore;
 use mealy_application::{
-    InputAdmissionCommit, InputAdmissionOutcome, InputAdmissionReceipt, SessionCreationCommit,
-    SessionStore, SessionStoreError,
+    InputAdmissionCommit, InputAdmissionOutcome, InputAdmissionReceipt, ProviderSelection,
+    ProviderSelectionPreference, SessionCreationCommit, SessionStore, SessionStoreError,
 };
 use mealy_domain::{DeliveryMode, SessionId};
 use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -10,6 +10,15 @@ use std::{fmt::Display, str::FromStr, time::SystemTime};
 
 impl SessionStore for SqliteStore {
     fn create_session(&mut self, commit: SessionCreationCommit) -> Result<(), SessionStoreError> {
+        if commit
+            .provider_selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_valid())
+        {
+            return Err(invariant(
+                "application supplied an invalid provider selection",
+            ));
+        }
         let created_at_ms = epoch_milliseconds(commit.created_at)?;
         let transaction = self
             .connection
@@ -54,11 +63,38 @@ impl SessionStore for SqliteStore {
                     commit.correlation_id.to_string(),
                     json!({
                         "channel_binding_id": commit.ownership.channel_binding_id(),
+                        "provider_selection": commit.provider_selection.as_ref().map_or_else(
+                            || json!({ "mode": "automatic" }),
+                            |selection| {
+                                json!({
+                                    "mode": "exact",
+                                    "provider_id": selection.provider_id,
+                                    "model_id": selection.model_id,
+                                })
+                            },
+                        ),
                     })
                     .to_string(),
                 ],
             )
             .map_err(map_sqlite_error)?;
+
+        if let Some(selection) = &commit.provider_selection {
+            transaction
+                .execute(
+                    "INSERT INTO session_provider_selection(\
+                        session_id, provider_id, model_id, selection_event_id, updated_at_ms\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        commit.session_id.to_string(),
+                        selection.provider_id,
+                        selection.model_id,
+                        commit.event_id.to_string(),
+                        created_at_ms,
+                    ],
+                )
+                .map_err(map_sqlite_error)?;
+        }
 
         transaction
             .execute(
@@ -95,6 +131,7 @@ impl SessionStore for SqliteStore {
         if let Some(stored) = load_admission(&transaction, commit.session_id, &commit.dedupe_key)? {
             if stored.delivery_mode != commit.delivery_mode.as_str()
                 || stored.content != commit.content
+                || !stored.matches_preference(&commit.provider_selection)
             {
                 return Err(SessionStoreError::IdempotencyConflict);
             }
@@ -121,6 +158,11 @@ impl SessionStore for SqliteStore {
         append_input_journal(&transaction, &commit, inbox_sequence, accepted_at_ms)?;
         append_acknowledgement(&transaction, &commit, inbox_sequence, accepted_at_ms)?;
         let timeline_cursor = admission_cursor(&transaction, &commit.event_id.to_string())?;
+        let (provider_selection, provider_selection_source) = resolved_provider_selection(
+            &transaction,
+            commit.session_id,
+            &commit.provider_selection,
+        )?;
 
         transaction.commit().map_err(map_sqlite_error)?;
         Ok(InputAdmissionOutcome::Accepted(InputAdmissionReceipt {
@@ -128,6 +170,8 @@ impl SessionStore for SqliteStore {
             inbox_entry_id: commit.inbox_entry_id,
             inbox_sequence,
             delivery_mode: commit.delivery_mode,
+            provider_selection,
+            provider_selection_source,
             event_id: commit.event_id,
             outbox_id: commit.outbox_id,
             correlation_id: commit.correlation_id,
@@ -171,11 +215,84 @@ struct StoredAdmission {
     inbox_sequence: i64,
     delivery_mode: String,
     content: String,
+    provider_selection_source: String,
+    selected_provider_id: Option<String>,
+    selected_model_id: Option<String>,
     event_id: String,
     outbox_id: String,
     correlation_id: String,
     accepted_at_ms: i64,
     timeline_cursor: i64,
+}
+
+impl StoredAdmission {
+    fn matches_preference(&self, preference: &ProviderSelectionPreference) -> bool {
+        match preference {
+            ProviderSelectionPreference::InheritSession => {
+                self.provider_selection_source == "inherited"
+            }
+            ProviderSelectionPreference::Automatic => {
+                self.provider_selection_source == "automatic"
+                    && self.selected_provider_id.is_none()
+                    && self.selected_model_id.is_none()
+            }
+            ProviderSelectionPreference::Exact(selection) => {
+                self.provider_selection_source == "exact"
+                    && self.selected_provider_id.as_deref() == Some(&selection.provider_id)
+                    && self.selected_model_id.as_deref() == Some(&selection.model_id)
+            }
+        }
+    }
+}
+
+fn resolved_provider_selection(
+    transaction: &Transaction<'_>,
+    session_id: SessionId,
+    preference: &ProviderSelectionPreference,
+) -> Result<(Option<ProviderSelection>, String), SessionStoreError> {
+    let selection = match preference {
+        ProviderSelectionPreference::InheritSession => transaction
+            .query_row(
+                "SELECT provider_id, model_id FROM session_provider_selection \
+                 WHERE session_id = ?1",
+                [session_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(map_sqlite_error)?
+            .map(|(provider_id, model_id)| selection_from_pair(provider_id, model_id))
+            .transpose()?
+            .flatten(),
+        ProviderSelectionPreference::Automatic => None,
+        ProviderSelectionPreference::Exact(selection) => Some(selection.clone()),
+    };
+    Ok((selection, preference.source().to_owned()))
+}
+
+fn selection_from_pair(
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<Option<ProviderSelection>, SessionStoreError> {
+    match (provider_id, model_id) {
+        (None, None) => Ok(None),
+        (Some(provider_id), Some(model_id)) => {
+            let selection = ProviderSelection {
+                provider_id,
+                model_id,
+            };
+            if selection.is_valid() {
+                Ok(Some(selection))
+            } else {
+                Err(invariant("stored provider selection is invalid"))
+            }
+        }
+        _ => Err(invariant("stored provider selection pair is incomplete")),
+    }
 }
 
 fn load_session(
@@ -207,6 +324,8 @@ fn insert_inbox_and_advance(
     session: &SessionRow,
     accepted_at_ms: i64,
 ) -> Result<u64, SessionStoreError> {
+    let (provider_selection, provider_selection_source) =
+        resolved_provider_selection(transaction, commit.session_id, &commit.provider_selection)?;
     let inbox_sequence = positive_u64(session.next_inbox_sequence, "inbox sequence")?;
     let following_sequence = session
         .next_inbox_sequence
@@ -221,8 +340,9 @@ fn insert_inbox_and_advance(
         .execute(
             "INSERT INTO session_inbox(\
                 inbox_entry_id, session_id, sequence, dedupe_key, delivery_mode, content, \
+                provider_selection_source, selected_provider_id, selected_model_id, \
                 admission_event_id, acknowledgement_outbox_id, correlation_id, accepted_at_ms\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 commit.inbox_entry_id.to_string(),
                 commit.session_id.to_string(),
@@ -230,6 +350,9 @@ fn insert_inbox_and_advance(
                 commit.dedupe_key,
                 commit.delivery_mode.as_str(),
                 commit.content,
+                provider_selection_source,
+                provider_selection.as_ref().map(|value| &value.provider_id),
+                provider_selection.as_ref().map(|value| &value.model_id),
                 commit.event_id.to_string(),
                 commit.outbox_id.to_string(),
                 commit.correlation_id.to_string(),
@@ -288,6 +411,7 @@ fn append_input_journal(
                     "inbox_entry_id": commit.inbox_entry_id,
                     "inbox_sequence": inbox_sequence,
                     "delivery_mode": commit.delivery_mode,
+                    "provider_selection_source": commit.provider_selection.source(),
                 })
                 .to_string(),
             ],
@@ -339,6 +463,11 @@ impl StoredAdmission {
             inbox_entry_id: parse_id(&self.inbox_entry_id, "inbox entry ID")?,
             inbox_sequence: positive_u64(self.inbox_sequence, "inbox sequence")?,
             delivery_mode: parse_delivery_mode(&self.delivery_mode)?,
+            provider_selection: selection_from_pair(
+                self.selected_provider_id,
+                self.selected_model_id,
+            )?,
+            provider_selection_source: self.provider_selection_source,
             event_id: parse_id(&self.event_id, "event ID")?,
             outbox_id: parse_id(&self.outbox_id, "outbox ID")?,
             correlation_id: parse_id(&self.correlation_id, "correlation ID")?,
@@ -356,6 +485,7 @@ fn load_admission(
     transaction
         .query_row(
             "SELECT i.inbox_entry_id, i.sequence, i.delivery_mode, i.content, \
+                    i.provider_selection_source, i.selected_provider_id, i.selected_model_id, \
                     i.admission_event_id, i.acknowledgement_outbox_id, i.correlation_id, \
                     i.accepted_at_ms, te.cursor \
              FROM session_inbox i \
@@ -368,11 +498,14 @@ fn load_admission(
                     inbox_sequence: row.get(1)?,
                     delivery_mode: row.get(2)?,
                     content: row.get(3)?,
-                    event_id: row.get(4)?,
-                    outbox_id: row.get(5)?,
-                    correlation_id: row.get(6)?,
-                    accepted_at_ms: row.get(7)?,
-                    timeline_cursor: row.get(8)?,
+                    provider_selection_source: row.get(4)?,
+                    selected_provider_id: row.get(5)?,
+                    selected_model_id: row.get(6)?,
+                    event_id: row.get(7)?,
+                    outbox_id: row.get(8)?,
+                    correlation_id: row.get(9)?,
+                    accepted_at_ms: row.get(10)?,
+                    timeline_cursor: row.get(11)?,
                 })
             },
         )
@@ -480,8 +613,8 @@ fn invariant(message: impl Into<String>) -> SessionStoreError {
 mod tests {
     use super::SqliteStore;
     use mealy_application::{
-        InputAdmissionCommit, InputAdmissionOutcome, OwnershipContext, SessionCreationCommit,
-        SessionStore, SessionStoreError,
+        InputAdmissionCommit, InputAdmissionOutcome, OwnershipContext, ProviderSelectionPreference,
+        SessionCreationCommit, SessionStore, SessionStoreError,
     };
     use mealy_domain::{
         ChannelBindingId, CorrelationId, DeliveryMode, EventId, InboxEntryId, OutboxId,
@@ -503,6 +636,7 @@ mod tests {
         SessionCreationCommit {
             session_id,
             ownership,
+            provider_selection: None,
             event_id: EventId::new(),
             correlation_id: CorrelationId::new(),
             created_at: now(),
@@ -522,6 +656,7 @@ mod tests {
             delivery_mode: DeliveryMode::Queue,
             dedupe_key: dedupe_key.to_owned(),
             content: content.to_owned(),
+            provider_selection: ProviderSelectionPreference::InheritSession,
             maximum_pending_inputs: 1_024,
             event_id: EventId::new(),
             outbox_id: OutboxId::new(),

@@ -21,10 +21,12 @@ use mealy_protocol::{
     CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
     CreateSessionRequest, CreateSessionResponse, DelegationResponse, DelegationsResponse,
     DeliveryMode, DoctorResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
-    PendingApprovalsResponse, ReadinessResponse, ResolveApprovalRequest, SessionCheckpointResponse,
-    SessionForkResponse, SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport,
-    SubmitInputRequest, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
-    TimelinePageResponse, ValidationMethodResponse, ValidationOutcomeResponse,
+    PendingApprovalsResponse, ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
+    ResolveApprovalRequest, SessionCheckpointResponse, SessionForkResponse,
+    SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
+    SessionTranscriptExport, SubmitInputRequest, TaskCancellationReceipt, TaskReplayResponse,
+    TaskResponse, TaskStatus, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    ValidationMethodResponse, ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -1060,6 +1062,7 @@ async fn subscription_provider_reserves_official_client_input_overhead() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1069,6 +1072,7 @@ async fn subscription_provider_reserves_official_client_input_overhead() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "subscription-overhead-proof".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Return one short response.".to_owned(),
@@ -1182,6 +1186,7 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1191,6 +1196,7 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-process-proof".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Give me one short, truthful response.".to_owned(),
@@ -1394,6 +1400,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1405,6 +1412,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "conversation-continuity-first".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: first_user.to_owned(),
@@ -1432,6 +1440,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "conversation-continuity-second".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: second_user.to_owned(),
@@ -1706,6 +1715,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
         &format!("/v1/sessions/{}/inputs", fork.fork_session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "conversation-continuity-fork-first".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: fork_user.to_owned(),
@@ -1789,6 +1799,7 @@ async fn transcript_export_verifies_oversized_inline_final_messages() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1798,6 +1809,7 @@ async fn transcript_export_verifies_oversized_inline_final_messages() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "artifact-transcript-export".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Return the LARGE-TRANSCRIPT-ARTIFACT fixture.".to_owned(),
@@ -1862,6 +1874,7 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1871,6 +1884,7 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "skill-resource-process-proof".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Read the enabled skill's passive resource and cite it.".to_owned(),
@@ -1958,6 +1972,7 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -1967,6 +1982,7 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "durable-delegation-process-proof".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Use a bounded child to independently assess this delegation request."
@@ -2151,6 +2167,7 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2160,6 +2177,7 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "delegation-parent-cancellation".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Delegate this bounded assessment, then await its result.".to_owned(),
@@ -2273,6 +2291,7 @@ async fn endpoint_dispatch_history_survives_a_daemon_restart_without_assuming_li
             "/v1/sessions",
             &CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
             },
         )
         .await;
@@ -2282,6 +2301,7 @@ async fn endpoint_dispatch_history_survives_a_daemon_restart_without_assuming_li
             &format!("/v1/sessions/{}/inputs", session.session_id),
             &SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
                 idempotency_key: "provider-history-before-restart".to_owned(),
                 delivery_mode: DeliveryMode::Queue,
                 content: "Complete one bounded provider-history turn.".to_owned(),
@@ -2367,6 +2387,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2376,6 +2397,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-workspace-read".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Read the granted project notes and answer from that evidence.".to_owned(),
@@ -2499,6 +2521,7 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2508,6 +2531,7 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-mcp-read".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Use the isolated MCP calculator to add 20 and 22.".to_owned(),
@@ -2609,6 +2633,7 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2618,6 +2643,7 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-browser-snapshot".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Render the authorized page in the isolated browser and cite it.".to_owned(),
@@ -2735,6 +2761,7 @@ async fn explicit_action_creates_one_approved_file_and_replays_without_redispatc
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2744,6 +2771,7 @@ async fn explicit_action_creates_one_approved_file_and_replays_without_redispatc
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-workspace-create".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "/act Create a new approved report in the project workspace.".to_owned(),
@@ -2887,6 +2915,7 @@ async fn explicit_edit_applies_one_digest_pinned_patch_and_replays_without_redis
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -2896,6 +2925,7 @@ async fn explicit_edit_applies_one_digest_pinned_patch_and_replays_without_redis
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-workspace-replace".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "/edit Replace the existing project file using fresh digest evidence."
@@ -3028,6 +3058,7 @@ async fn explicit_manage_moves_one_digest_matched_file_and_replays_without_redis
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -3037,6 +3068,7 @@ async fn explicit_manage_moves_one_digest_matched_file_and_replays_without_redis
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-workspace-manage".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "/manage Move the approved report from drafts into archive.".to_owned(),
@@ -3164,6 +3196,7 @@ async fn explicit_manage_moves_one_digest_matched_file_and_replays_without_redis
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "ordinary-turn-after-workspace-manage".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Summarize the prior result without performing another action.".to_owned(),
@@ -3237,6 +3270,7 @@ async fn explicit_process_runs_one_pinned_command_and_replays_without_redispatch
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -3246,6 +3280,7 @@ async fn explicit_process_runs_one_pinned_command_and_replays_without_redispatch
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-process-run".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "/run Create the requested directory with the configured command.".to_owned(),
@@ -3393,6 +3428,7 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
             "/v1/sessions",
             &CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
             },
         )
         .await;
@@ -3402,6 +3438,7 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
             &format!("/v1/sessions/{}/inputs", session.session_id),
             &SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
                 idempotency_key: "workspace-before-revocation".to_owned(),
                 delivery_mode: DeliveryMode::Queue,
                 content: "Read the granted note and cite it.".to_owned(),
@@ -3472,6 +3509,7 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
             &format!("/v1/sessions/{session_id}/inputs"),
             &SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
                 idempotency_key: "workspace-after-revocation".to_owned(),
                 delivery_mode: DeliveryMode::Queue,
                 content: "Can you still read the previously granted note?".to_owned(),
@@ -3491,6 +3529,7 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
             &format!("/v1/sessions/{session_id}/inputs"),
             &SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
                 idempotency_key: "workspace-after-revocation-followup".to_owned(),
                 delivery_mode: DeliveryMode::Queue,
                 content: "Confirm the revoked context remains unavailable.".to_owned(),
@@ -3589,6 +3628,7 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -3598,6 +3638,7 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-web-read".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Search for current production evidence, fetch it, and cite the source."
@@ -3698,6 +3739,7 @@ async fn transient_provider_failure_is_durably_retried_and_replay_verified() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -3707,6 +3749,7 @@ async fn transient_provider_failure_is_durably_retried_and_replay_verified() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-durable-retry".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Recover from one transient provider failure.".to_owned(),
@@ -3805,6 +3848,7 @@ async fn retry_routes_across_explicit_same_boundary_provider_protocols_with_exac
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -3814,6 +3858,7 @@ async fn retry_routes_across_explicit_same_boundary_provider_protocols_with_exac
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "real-provider-explicit-fallback".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Use the declared fallback to read the granted project notes.".to_owned(),
@@ -3913,6 +3958,222 @@ async fn retry_routes_across_explicit_same_boundary_provider_protocols_with_exac
     assert_eq!(status.provider_endpoints[1].protocol, "anthropic_messages");
     assert_eq!(status.provider_endpoints[1].invocation_count, 2);
     assert!(status.provider_endpoints[1].last_success_at_ms.is_some());
+    primary_server.abort();
+    fallback_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn provider_catalog_and_scoped_selection_are_exact_durable_and_restart_safe() {
+    let primary_state = MockProviderState::with_transient_failures(1);
+    let fallback_state = MockProviderState::default();
+    let (primary_url, primary_server) = spawn_provider(primary_state.clone()).await;
+    let (fallback_url, fallback_server) = spawn_anthropic_provider(fallback_state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_mixed_provider_chain_config(home.path(), &primary_url, &fallback_url);
+    let secrets = FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker");
+    secrets
+        .put("process-proof", "primary-process-secret")
+        .expect("primary secret");
+    secrets
+        .put("process-fallback", "fallback-process-secret")
+        .expect("fallback secret");
+    let client = http_client();
+    let daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+
+    let catalog: ProviderCatalogResponse =
+        authorized_get(&client, &connection, "/v1/providers/catalog").await;
+    assert_eq!(catalog.api_version, API_VERSION);
+    assert_eq!(catalog.catalog_scope, "configured_route");
+    assert!(catalog.automatic_fallback_enabled);
+    assert_eq!(catalog.routes.len(), 2);
+    assert_eq!(catalog.routes[0].route_ordinal, 0);
+    assert_eq!(catalog.routes[0].route_role, "primary");
+    assert_eq!(catalog.routes[0].protocol, "openai_responses");
+    assert_eq!(catalog.routes[0].provider_id, "process-proof.responses");
+    assert_eq!(catalog.routes[0].model_id, "process-proof-model");
+    assert_eq!(catalog.routes[1].route_ordinal, 1);
+    assert_eq!(catalog.routes[1].route_role, "fallback");
+    assert_eq!(catalog.routes[1].protocol, "anthropic_messages");
+    assert_eq!(catalog.routes[1].provider_id, "process-fallback.anthropic");
+    assert_eq!(catalog.routes[1].model_id, "process-fallback-model");
+    assert!(catalog.routes.iter().all(|route| route.selectable));
+    assert!(
+        catalog
+            .routes
+            .iter()
+            .all(|route| !route.pricing_verified && !route.limits_operator_verified)
+    );
+    assert!(
+        catalog
+            .routes
+            .iter()
+            .all(|route| route.pricing_source == "active_configuration")
+    );
+
+    let fallback_selection = ProviderSelectionCommand::Exact {
+        provider_id: "process-fallback.anthropic".to_owned(),
+        model_id: "process-fallback-model".to_owned(),
+    };
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: Some(fallback_selection.clone()),
+        },
+    )
+    .await;
+    let initial: SessionProviderSelectionResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/provider-selection", session.session_id),
+    )
+    .await;
+    assert_eq!(initial.provider_selection, fallback_selection);
+    assert_eq!(initial.revision, 0);
+    assert_eq!(initial.applies_to, "future_new_turns");
+
+    let fallback_admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "selected-fallback-turn".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Complete through the exact selected fallback model.".to_owned(),
+        },
+    )
+    .await;
+    assert_eq!(
+        fallback_admission.provider_selection,
+        ProviderSelectionCommand::Exact {
+            provider_id: "process-fallback.anthropic".to_owned(),
+            model_id: "process-fallback-model".to_owned(),
+        }
+    );
+    assert_eq!(fallback_admission.provider_selection_source, "inherited");
+    let fallback_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        fallback_admission.cursor.0,
+    )
+    .await;
+    let fallback_task = wait_until_terminal(&client, &connection, &fallback_task_id).await;
+    assert_eq!(fallback_task.status, TaskStatus::Succeeded);
+    assert_eq!(primary_state.requests().len(), 0);
+    assert_eq!(fallback_state.requests().len(), 1);
+
+    let status: SessionStatusResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/status", session.session_id),
+    )
+    .await;
+    let automatic: SessionProviderSelectionResponse = authorized_patch(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/provider-selection", session.session_id),
+        &UpdateSessionProviderSelectionRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: status.revision,
+            provider_selection: ProviderSelectionCommand::Automatic,
+        },
+    )
+    .await;
+    assert_eq!(
+        automatic.provider_selection,
+        ProviderSelectionCommand::Automatic
+    );
+    assert_eq!(automatic.revision, status.revision + 1);
+    assert!(automatic.event_id.is_some());
+
+    let primary_selection = ProviderSelectionCommand::Exact {
+        provider_id: "process-proof.responses".to_owned(),
+        model_id: "process-proof-model".to_owned(),
+    };
+    let primary_admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: Some(primary_selection.clone()),
+            idempotency_key: "selected-primary-turn".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Complete through the exact per-turn primary model.".to_owned(),
+        },
+    )
+    .await;
+    assert_eq!(primary_admission.provider_selection, primary_selection);
+    assert_eq!(primary_admission.provider_selection_source, "exact");
+    let primary_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        primary_admission.cursor.0,
+    )
+    .await;
+    let primary_task = wait_until_terminal(&client, &connection, &primary_task_id).await;
+    assert_eq!(primary_task.status, TaskStatus::Succeeded);
+    assert_eq!(primary_task.usage.used_retries, 1);
+    assert_eq!(primary_state.requests().len(), 2);
+    assert_eq!(fallback_state.requests().len(), 1);
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert!(timeline.events.iter().any(|event| {
+        event.event_type == "session.provider_selection_updated"
+            && event.payload["mode"] == "automatic"
+            && event.payload["applies_to"] == "future_new_turns"
+    }));
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "model.attempt.prepared")
+            .map(|event| event.payload["provider_id"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        [
+            "process-fallback.anthropic",
+            "process-proof.responses",
+            "process-proof.responses"
+        ]
+    );
+
+    drop(daemon);
+    let _restarted = Daemon::spawn(home.path(), false);
+    let restarted_connection = wait_until_ready(&client, home.path()).await;
+    let persisted: SessionProviderSelectionResponse = authorized_get(
+        &client,
+        &restarted_connection,
+        &format!("/v1/sessions/{}/provider-selection", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        persisted.provider_selection,
+        ProviderSelectionCommand::Automatic
+    );
+    let restarted_catalog: ProviderCatalogResponse =
+        authorized_get(&client, &restarted_connection, "/v1/providers/catalog").await;
+    assert_eq!(restarted_catalog.routes.len(), 2);
+    let restarted_status: AdminStatusResponse =
+        authorized_get(&client, &restarted_connection, "/v1/admin/status").await;
+    assert_eq!(restarted_status.provider_endpoints[0].invocation_count, 2);
+    assert_eq!(restarted_status.provider_endpoints[1].invocation_count, 1);
+    assert_eq!(primary_state.requests().len(), 2);
+    assert_eq!(fallback_state.requests().len(), 1);
+
     primary_server.abort();
     fallback_server.abort();
 }
@@ -4533,6 +4794,30 @@ async fn authorized_post<T: serde::de::DeserializeOwned>(
         .expect("authorized POST");
     assert_eq!(response.status(), StatusCode::OK);
     response.json().await.expect("valid response JSON")
+}
+
+async fn authorized_patch<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+    body: &impl serde::Serialize,
+) -> T {
+    let response = client
+        .patch(format!("{}{path}", connection.base_url))
+        .bearer_auth(&connection.bearer_token)
+        .json(body)
+        .send()
+        .await
+        .expect("authorized PATCH");
+    let status = response.status();
+    let bytes = response.bytes().await.expect("authorized PATCH body");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "PATCH {path} failed: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).expect("valid response JSON")
 }
 
 fn non_broker_state_contains(path: &Path, needle: &[u8]) -> bool {

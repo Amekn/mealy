@@ -81,11 +81,13 @@ async fn acknowledged_input_is_promoted_exactly_once_after_hard_restart() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
     let command = SubmitInputRequest {
         api_version: API_VERSION.to_owned(),
+        provider_selection: None,
         idempotency_key: "phase-1-crash-window".to_owned(),
         delivery_mode: DeliveryMode::Queue,
         content: "survive acknowledgement-to-promotion crash".to_owned(),

@@ -27,7 +27,8 @@ use mealy_application::{
     MemorySearchQuery, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
     OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
     ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
-    ProviderRouteCandidate, ProviderRoutingPolicy, ReconcileEffectOutcomeCommit,
+    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
+    ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
     RegisterDiscordChannelCommit, RegisterTelegramChannelCommit, RegisterWebhookChannelCommit,
     RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit, ResolveApprovalCommit,
     RevokeDiscordChannelCommit, RevokeExtensionCommit, RevokeTelegramChannelCommit,
@@ -38,14 +39,16 @@ use mealy_application::{
     SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, StageExtensionManifestCommit,
     TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
     TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
-    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionTitleCommand, ValidationStore,
-    WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION,
-    WebhookChannelBindingView, WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError,
-    admit_input, canonical_arguments_digest, compaction_source_event_digest, create_session,
-    create_session_checkpoint, extension_grant_digest, fork_session, inspect_extension_manifest,
-    next_schedule_occurrence_ms, query_session_checkpoints, query_session_status,
-    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
-    sha256_digest, update_session_title, validate_webhook_binding_fields,
+    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
+    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
+    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
+    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    canonical_arguments_digest, compaction_source_event_digest, create_session,
+    create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
+    inspect_extension_manifest, next_schedule_occurrence_ms, query_session_checkpoints,
+    query_session_provider_selection, query_session_status, query_session_transcript,
+    query_sessions, query_timeline, route_provider, search_sessions, sha256_digest,
+    update_session_provider_selection, update_session_title, validate_webhook_binding_fields,
     validate_webhook_timestamp, verify_webhook_signature, webhook_input_dedupe_key,
     webhook_signature_digest,
 };
@@ -79,43 +82,45 @@ use mealy_protocol::{
     ContextMemoryEvidenceResponse, ContextMemorySourceCitationResponse, ControlTaskRequest,
     CorrectMemoryRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
-    CreateSessionCheckpointRequest, CreateSessionResponse, CreateTelegramChannelRequest,
-    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DaemonRunStatusResponse,
-    DelegationResponse, DelegationsResponse, DiscordChannelResponse, DiscordChannelStatusResponse,
-    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
-    EffectAttemptResponse, EffectAttemptStatusResponse, EffectOutcomeEvidenceResponse,
-    EffectOutcomeResponse, EffectReconciliationReceipt, EffectResponse, EffectStatusResponse,
-    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionFilesystemAccessCommand,
-    ExtensionGrantResponse, ExtensionInvocationResponse, ExtensionInvocationStatusResponse,
-    ExtensionLifecycleRequest, ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
-    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest,
-    GarbageCollectionResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand, MemoryIndexRebuildResponse,
-    MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
-    MemoryRetentionCommand, MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
+    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
+    DaemonRunStatusResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
+    DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
+    DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
+    EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
+    EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
+    ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
+    ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
+    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand, ExtensionResponse,
+    ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse,
+    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
+    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
     MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse, MissedRunPolicyCommand,
     OperationalFailureResponse, PendingApprovalsResponse, PromoteMemoryRequest,
-    ProposeMemoryRequest, ProviderEndpointStatusResponse, RebuildMemoryIndexRequest,
+    ProposeMemoryRequest, ProviderCatalogResponse, ProviderCatalogRouteResponse,
+    ProviderEndpointStatusResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
     ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
     RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
     RunGarbageCollectionRequest, SandboxProfileResponse, SandboxProfileStatusResponse,
     ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
     ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
     ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionSearchHitResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
-    SessionTranscriptAssistantMessageResponse, SessionTranscriptBoundsResponse,
-    SessionTranscriptCitationResponse, SessionTranscriptExport, SessionTranscriptLineageResponse,
-    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
-    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
-    SignedWebhookInputRequest, StageExtensionManifestRequest, SubmitInputRequest,
-    SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt, TaskControlReceipt,
-    TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse,
-    TaskValidationResponse, TelegramChannelResponse, TelegramChannelStatusResponse,
-    TelegramChannelsResponse, TimelineCursor, TimelineEvent, TimelinePageResponse,
-    UpdateSessionTitleRequest, ValidationMethodResponse, ValidationOutcomeResponse,
-    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelStatusResponse,
-    WebhookChannelsResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchHitResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
+    SessionTitleResponse, SessionTranscriptAssistantMessageResponse,
+    SessionTranscriptBoundsResponse, SessionTranscriptCitationResponse, SessionTranscriptExport,
+    SessionTranscriptLineageResponse, SessionTranscriptRedactionResponse,
+    SessionTranscriptTurnResponse, SessionTranscriptUserMessageResponse, SessionsResponse,
+    SetMemoryPinRequest, SignedWebhookInputRequest, StageExtensionManifestRequest,
+    SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
+    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
+    TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
+    TelegramChannelStatusResponse, TelegramChannelsResponse, TimelineCursor, TimelineEvent,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+    ValidationMethodResponse, ValidationOutcomeResponse, VerifyBackupRequest,
+    WebhookChannelResponse, WebhookChannelStatusResponse, WebhookChannelsResponse,
 };
 use serde::Deserialize;
 use std::fmt::Write as _;
@@ -272,6 +277,37 @@ impl RuntimeBackend {
 
     fn read(&self) -> Result<RuntimeStoreReadGuard<'_>, BackendError> {
         self.store.read().map_err(|_| BackendError::Internal)
+    }
+
+    fn checked_provider_selection(
+        &self,
+        command: ProviderSelectionCommand,
+    ) -> Result<Option<ProviderSelection>, BackendError> {
+        let selection = match command {
+            ProviderSelectionCommand::Automatic => return Ok(None),
+            ProviderSelectionCommand::Exact {
+                provider_id,
+                model_id,
+            } => ProviderSelection {
+                provider_id,
+                model_id,
+            },
+        };
+        if !selection.is_valid()
+            || !self
+                .provider
+                .policy_capabilities()
+                .iter()
+                .any(|capabilities| {
+                    capabilities.provider_id == selection.provider_id
+                        && capabilities.model_id == selection.model_id
+                })
+        {
+            return Err(BackendError::InvalidRequest(
+                "provider selection must identify an exact configured catalog route".to_owned(),
+            ));
+        }
+        Ok(Some(selection))
     }
 
     fn control_task(
@@ -548,6 +584,89 @@ impl ApiBackend for RuntimeBackend {
             ready_at_ms: snapshot.ready_at_ms,
             completed_at_ms: snapshot.completed_at_ms,
             completion_reason: snapshot.completion_reason,
+        })
+    }
+
+    fn provider_catalog(
+        &self,
+        identity: AuthenticatedIdentity,
+    ) -> Result<ProviderCatalogResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let config_digest = self
+            .read()?
+            .operational_snapshot(ownership)
+            .map_err(map_operational_store_error)?
+            .config_digest;
+        let capabilities = self
+            .provider
+            .policy_capabilities()
+            .into_iter()
+            .map(|capabilities| {
+                (
+                    (
+                        capabilities.provider_id.clone(),
+                        capabilities.model_id.clone(),
+                    ),
+                    capabilities,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let routes = self
+            .provider
+            .endpoint_statuses()
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, status)| {
+                let capabilities = capabilities
+                    .get(&(status.provider_id.clone(), status.model_id.clone()))
+                    .ok_or(BackendError::Internal)?;
+                Ok(ProviderCatalogRouteResponse {
+                    route_ordinal: u64::try_from(ordinal).map_err(|_| BackendError::Internal)?,
+                    route_role: if ordinal == 0 {
+                        "primary".to_owned()
+                    } else {
+                        "fallback".to_owned()
+                    },
+                    protocol: status.protocol,
+                    provider_id: status.provider_id,
+                    model_id: status.model_id,
+                    input_modalities: capabilities.input_modalities.iter().cloned().collect(),
+                    tool_calling: capabilities.tool_calling,
+                    structured_output: capabilities.structured_output,
+                    reasoning_controls: capabilities.reasoning_controls.iter().cloned().collect(),
+                    streaming: capabilities.streaming,
+                    residency: capabilities.residency.clone(),
+                    local: capabilities.local,
+                    context_tokens: capabilities.context_tokens,
+                    maximum_output_tokens: capabilities.maximum_output_tokens,
+                    input_token_overhead: capabilities.input_token_overhead,
+                    limits_source: "active_configuration".to_owned(),
+                    limits_operator_verified: false,
+                    input_microunits_per_million_tokens: capabilities
+                        .pricing
+                        .input_microunits_per_million_tokens,
+                    output_microunits_per_million_tokens: capabilities
+                        .pricing
+                        .output_microunits_per_million_tokens,
+                    pricing_source: "active_configuration".to_owned(),
+                    pricing_verified: false,
+                    health: status.health,
+                    estimated_latency_ms: status.estimated_latency_ms,
+                    in_flight_requests: status.in_flight_requests,
+                    maximum_concurrent_requests: status.maximum_concurrent_requests,
+                    requests_in_current_minute: status.requests_in_current_minute,
+                    requests_per_minute: status.requests_per_minute,
+                    selectable: true,
+                })
+            })
+            .collect::<Result<Vec<_>, BackendError>>()?;
+        Ok(ProviderCatalogResponse {
+            api_version: API_VERSION.to_owned(),
+            catalog_scope: "configured_route".to_owned(),
+            config_digest,
+            automatic_fallback_enabled: self.provider.fallback_policy()
+                == ProviderFallbackPolicy::SameOrHigherTrust,
+            routes,
         })
     }
 
@@ -984,6 +1103,30 @@ impl ApiBackend for RuntimeBackend {
         })
     }
 
+    fn create_session_with_request(
+        &self,
+        identity: AuthenticatedIdentity,
+        request: CreateSessionRequest,
+    ) -> Result<CreateSessionResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let selection = match request.provider_selection {
+            Some(selection) => self.checked_provider_selection(selection)?,
+            None => None,
+        };
+        let session_id = create_session_with_selection(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            ownership,
+            selection,
+        )
+        .map_err(map_session_error)?;
+        Ok(CreateSessionResponse {
+            api_version: API_VERSION.to_owned(),
+            session_id: session_id.to_string(),
+        })
+    }
+
     fn sessions(
         &self,
         identity: AuthenticatedIdentity,
@@ -1081,6 +1224,42 @@ impl ApiBackend for RuntimeBackend {
             event_id: receipt.event_id.to_string(),
             updated_at_ms: epoch_milliseconds(receipt.updated_at)?,
         })
+    }
+
+    fn session_provider_selection(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+    ) -> Result<SessionProviderSelectionResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let view = query_session_provider_selection(&*self.read()?, session_id, ownership)
+            .map_err(|error| map_provider_selection_error(&error))?;
+        session_provider_selection_response(view)
+    }
+
+    fn update_session_provider_selection(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        request: UpdateSessionProviderSelectionRequest,
+    ) -> Result<SessionProviderSelectionResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let selection = self.checked_provider_selection(request.provider_selection)?;
+        let view = update_session_provider_selection(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            UpdateSessionProviderSelectionCommand {
+                session_id,
+                ownership,
+                expected_revision: request.expected_revision,
+                selection,
+            },
+        )
+        .map_err(|error| map_provider_selection_error(&error))?;
+        session_provider_selection_response(view)
     }
 
     fn create_session_checkpoint(
@@ -1210,6 +1389,14 @@ impl ApiBackend for RuntimeBackend {
     ) -> Result<InputAdmissionResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let session_id = parse_session(&session_id)?;
+        let provider_selection = match request.provider_selection {
+            None => ProviderSelectionPreference::InheritSession,
+            Some(ProviderSelectionCommand::Automatic) => ProviderSelectionPreference::Automatic,
+            Some(command) => ProviderSelectionPreference::Exact(
+                self.checked_provider_selection(command)?
+                    .ok_or(BackendError::Internal)?,
+            ),
+        };
         let mut store = self.lock()?;
         let outcome = admit_input(
             &mut *store,
@@ -1222,6 +1409,7 @@ impl ApiBackend for RuntimeBackend {
                 dedupe_key: request.idempotency_key,
                 delivery_mode: request.delivery_mode.into(),
                 content: request.content,
+                provider_selection,
             },
         )
         .map_err(map_session_error)?;
@@ -1232,6 +1420,14 @@ impl ApiBackend for RuntimeBackend {
             inbox_entry_id: receipt.inbox_entry_id.to_string(),
             inbox_sequence: receipt.inbox_sequence,
             delivery_mode: receipt.delivery_mode.into(),
+            provider_selection: receipt.provider_selection.clone().map_or(
+                ProviderSelectionCommand::Automatic,
+                |selection| ProviderSelectionCommand::Exact {
+                    provider_id: selection.provider_id,
+                    model_id: selection.model_id,
+                },
+            ),
+            provider_selection_source: receipt.provider_selection_source.clone(),
             event_id: receipt.event_id.to_string(),
             outbox_id: receipt.outbox_id.to_string(),
             accepted_at_ms: epoch_milliseconds(receipt.accepted_at)?,
@@ -2656,6 +2852,7 @@ impl ApiBackend for RuntimeBackend {
                 dedupe_key,
                 delivery_mode: request.delivery_mode.into(),
                 content: request.content,
+                provider_selection: ProviderSelectionPreference::InheritSession,
             },
         )
         .map_err(map_session_error)?;
@@ -3029,6 +3226,14 @@ fn input_admission_response(
         inbox_entry_id: receipt.inbox_entry_id.to_string(),
         inbox_sequence: receipt.inbox_sequence,
         delivery_mode: receipt.delivery_mode.into(),
+        provider_selection: receipt.provider_selection.clone().map_or(
+            ProviderSelectionCommand::Automatic,
+            |selection| ProviderSelectionCommand::Exact {
+                provider_id: selection.provider_id,
+                model_id: selection.model_id,
+            },
+        ),
+        provider_selection_source: receipt.provider_selection_source.clone(),
         event_id: receipt.event_id.to_string(),
         outbox_id: receipt.outbox_id.to_string(),
         accepted_at_ms: epoch_milliseconds(receipt.accepted_at)?,
@@ -3912,6 +4117,26 @@ fn session_checkpoint_response(
     })
 }
 
+fn session_provider_selection_response(
+    view: mealy_application::SessionProviderSelectionView,
+) -> Result<SessionProviderSelectionResponse, BackendError> {
+    Ok(SessionProviderSelectionResponse {
+        api_version: API_VERSION.to_owned(),
+        session_id: view.session_id.to_string(),
+        provider_selection: view.selection.map_or(
+            ProviderSelectionCommand::Automatic,
+            |selection| ProviderSelectionCommand::Exact {
+                provider_id: selection.provider_id,
+                model_id: selection.model_id,
+            },
+        ),
+        revision: view.revision,
+        event_id: view.event_id.map(|event_id| event_id.to_string()),
+        updated_at_ms: epoch_milliseconds(view.updated_at)?,
+        applies_to: "future_new_turns".to_owned(),
+    })
+}
+
 fn approval_response(view: ApprovalRequestView) -> Result<ApprovalResponse, BackendError> {
     let subject = view.subject;
     Ok(ApprovalResponse {
@@ -4628,6 +4853,29 @@ fn map_session_workbench_error(error: SessionWorkbenchUseCaseError) -> BackendEr
             BackendError::Internal
         }
         other => BackendError::InvalidRequest(other.to_string()),
+    }
+}
+
+fn map_provider_selection_error(error: &ProviderSelectionUseCaseError) -> BackendError {
+    match error {
+        ProviderSelectionUseCaseError::Store(ProviderSelectionStoreError::SessionNotFound) => {
+            BackendError::NotFound
+        }
+        ProviderSelectionUseCaseError::Store(ProviderSelectionStoreError::Unauthorized) => {
+            BackendError::Unauthorized
+        }
+        ProviderSelectionUseCaseError::Store(ProviderSelectionStoreError::Conflict) => {
+            BackendError::Conflict
+        }
+        ProviderSelectionUseCaseError::Store(ProviderSelectionStoreError::Unavailable(_)) => {
+            BackendError::Unavailable
+        }
+        ProviderSelectionUseCaseError::Store(ProviderSelectionStoreError::InvariantViolation(
+            _,
+        )) => BackendError::Internal,
+        ProviderSelectionUseCaseError::InvalidSelection => BackendError::InvalidRequest(
+            "provider selection is empty, padded, controlled, or oversized".to_owned(),
+        ),
     }
 }
 

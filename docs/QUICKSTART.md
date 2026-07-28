@@ -982,7 +982,9 @@ Press `F1` inside the workbench for the complete controls. The common path is `T
 want, arrow keys to navigate, and `Enter` to send composer text. `/` searches canonical transcript
 text; `F2` renames; `F3` checkpoints; `F4` checkpoints and forks; `F6`/`Shift-F6` writes verified
 private JSON/inert HTML; `F7` renders an exact approval digest and targets before accepting `a` or
-`d`. `Ctrl-C` always restores the terminal, including while a local API request is stalled.
+`d`; `F8` opens the active model catalog. In the catalog, `Enter` changes the current
+conversation's default for future turns and `t` pins only the next turn. `Ctrl-C` always restores
+the terminal, including while a local API request is stalled.
 
 Keep `mealyctl chat` for screen readers, line-oriented recovery, and simple terminals. Keep
 `session` subcommands for scripts. Piping `tui` is deliberately rejected before it can create a
@@ -1018,8 +1020,26 @@ accounting facts, not an inferred bill or an estimate of unused context:
 /status
 ```
 
-Switching providers remains a stopped-daemon `config provider` transaction so an active
-conversation cannot silently cross an unreviewed model, credential, price, or residency boundary.
+Inspect and select among exact routes already active in the daemon:
+
+```sh
+"$HOME/.local/bin/mealyctl" provider catalog
+"$HOME/.local/bin/mealyctl" session provider get SESSION_ID
+"$HOME/.local/bin/mealyctl" session provider set SESSION_ID \
+  --provider-id openrouter.responses --model-id vendor/model:free
+"$HOME/.local/bin/mealyctl" session provider set SESSION_ID --automatic
+"$HOME/.local/bin/mealyctl" session send SESSION_ID "Use the local model once." \
+  --provider-id local.responses --model-id local-model
+```
+
+An omitted per-turn choice inherits the conversation default; `--automatic` explicitly uses
+compatible configured routing for that turn. Admission durably pins the resolved provider/model
+before acknowledgement. An exact selection disables implicit fallback for the turn, though
+classified retries may reuse that same endpoint. A default update is revision-fenced, applies only
+to future new turns, and cannot rewrite queued, active, or completed work. Changing the configured
+route set, endpoint, credential, price, or residency boundary still requires the stopped-daemon
+`config provider` transaction until the separately specified plan-first transactional switch is
+implemented and qualified.
 
 Use `mealyctl chat` or the lower-level session commands shown above. A real-provider turn makes one
 bounded request, commits the normalized response and usage, runs deterministic integrity

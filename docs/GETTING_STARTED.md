@@ -106,8 +106,26 @@ structured activity previews, exact approvals, and checkpoint/fork/export contro
 mealyctl tui
 ```
 
-Press `F1` for its complete key map. `mealyctl chat` remains the line-oriented accessibility and
-recovery surface; `session` commands remain the scripting surface.
+Press `F1` for its complete key map. Press `F8` to inspect the exact active model catalog; `Enter`
+sets the current conversation default for future turns and `t` pins only the next turn. The
+dashboard exposes the same new-session, conversation-default, and next-turn choices.
+`mealyctl chat` remains the line-oriented accessibility and recovery surface; `session` commands
+remain the scripting surface.
+
+The same route choices are scriptable:
+
+```sh
+mealyctl provider catalog
+mealyctl session provider get SESSION_ID
+mealyctl session provider set SESSION_ID \
+  --provider-id openrouter.responses --model-id vendor/model:free
+mealyctl session send SESSION_ID "Use the local route for this turn." \
+  --provider-id local.responses --model-id local-model
+```
+
+Only exact routes already active in the daemon can be selected. Exact per-turn selection disables
+implicit fallback for that turn. Changing the configured route set or credentials remains a
+separate stopped-daemon configuration transaction.
 
 Check the installation and service:
 

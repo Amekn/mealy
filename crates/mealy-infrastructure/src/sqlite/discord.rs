@@ -951,6 +951,7 @@ mod tests {
                 dedupe_key: discord_input_dedupe_key(binding_id, &message_id).expect("dedupe key"),
                 delivery_mode: DeliveryMode::Queue,
                 content: "hello from Discord".to_owned(),
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
             },
         )
         .expect("admit Discord input");

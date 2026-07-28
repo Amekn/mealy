@@ -945,6 +945,7 @@ mod tests {
                 dedupe_key: telegram_input_dedupe_key(binding_id, update_id).expect("dedupe key"),
                 delivery_mode: DeliveryMode::Queue,
                 content: "hello from Telegram".to_owned(),
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
             },
         )
         .expect("admit Telegram input");

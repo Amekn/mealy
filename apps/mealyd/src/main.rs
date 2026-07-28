@@ -34,16 +34,17 @@ use mealy_application::{
     IdGenerator, InitialTaskProfile, InputAdmissionLimits, OperationalStore, OutboundDiscordTarget,
     OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome, OutboxDelivery,
     OutboxUseCaseError, OwnershipContext, PromotionDefaults, ProviderCredentialReference,
-    RecordDiscordPollCommit, RecordTelegramPollCommit, ReserveDiscordMessageCommit,
-    ReserveTelegramUpdateCommit, ResolveApprovalCommit, ScheduleClaimOutcome, ScheduleDueDecision,
-    ScheduleOverlapPolicy, ScheduleRunIntent, ScheduleRunStatus, ScheduleStore, SessionStoreError,
-    SessionUseCaseError, TelegramChannelStore, TelegramChannelStoreError, TelegramPollTarget,
-    TelegramUpdateDisposition, TelegramUpdateReservation, WebhookChannelStore,
-    WebhookChannelStoreError, admit_input, canonical_arguments_digest, claim_next_outbox,
-    complete_outbox, discord_input_dedupe_key, exponential_retry_delay, is_sha256_digest,
-    pending_promotion_sessions, plan_due_schedule, promote_next_input, recover_expired_leases,
-    recover_extension_invocations, recover_startup, retry_outbox, sha256_digest, sign_webhook,
-    telegram_input_dedupe_key, validate_discord_snowflake,
+    ProviderSelectionPreference, RecordDiscordPollCommit, RecordTelegramPollCommit,
+    ReserveDiscordMessageCommit, ReserveTelegramUpdateCommit, ResolveApprovalCommit,
+    ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy, ScheduleRunIntent,
+    ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError, TelegramChannelStore,
+    TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
+    TelegramUpdateReservation, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    canonical_arguments_digest, claim_next_outbox, complete_outbox, discord_input_dedupe_key,
+    exponential_retry_delay, is_sha256_digest, pending_promotion_sessions, plan_due_schedule,
+    promote_next_input, recover_expired_leases, recover_extension_invocations, recover_startup,
+    retry_outbox, sha256_digest, sign_webhook, telegram_input_dedupe_key,
+    validate_discord_snowflake,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, CapabilityGrant, CorrelationId, DeliveryMode, EffectClass,
@@ -1323,6 +1324,7 @@ fn drive_schedule_batch(
                         ),
                         delivery_mode: DeliveryMode::Queue,
                         content: schedule.prompt.clone(),
+                        provider_selection: ProviderSelectionPreference::InheritSession,
                     },
                 );
                 match admission {
@@ -1380,7 +1382,8 @@ fn schedule_admission_failure(error: &SessionUseCaseError) -> &'static str {
         | SessionUseCaseError::DedupeKeyTooLarge { .. }
         | SessionUseCaseError::EmptyContent
         | SessionUseCaseError::ContentTooLarge { .. }
-        | SessionUseCaseError::InvalidQueueCapacity => "scheduled_input_invalid",
+        | SessionUseCaseError::InvalidQueueCapacity
+        | SessionUseCaseError::InvalidProviderSelection => "scheduled_input_invalid",
     }
 }
 
@@ -1897,6 +1900,7 @@ fn process_telegram_updates(
                         dedupe_key: telegram_input_dedupe_key(target.binding_id, update_id)?,
                         delivery_mode,
                         content,
+                        provider_selection: ProviderSelectionPreference::InheritSession,
                     },
                 )?;
                 store.complete_telegram_update(CompleteTelegramUpdateCommit {
@@ -2578,6 +2582,7 @@ fn process_discord_messages(
                         dedupe_key: discord_input_dedupe_key(target.binding_id, &message_id)?,
                         delivery_mode,
                         content,
+                        provider_selection: ProviderSelectionPreference::InheritSession,
                     },
                 )?;
                 store.complete_discord_message(CompleteDiscordMessageCommit {

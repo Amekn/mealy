@@ -36,6 +36,18 @@ artifact/compaction/memory provenance. Legacy row-per-item manifests remain repl
 governed-memory deletion/restart, crash recovery, replay, soak-attribution, and retained 3.1 GB
 diagnostics cover the compatibility and contention boundaries.
 
+Schema 18 extends the PROV/REC/DATA/OBS evidence above: the daemon publishes a truthful
+authenticated catalog of only its active configured routes, and session defaults are
+reconstructible revision-fenced projections. New-session and per-turn choices are validated
+against that catalog. Admitted input records contain an immutable automatic/exact selection and
+resolution source, and promotion must copy that exact identity to the turn. Migration backfills
+legacy sessions and work as `automatic`. Exact selection filters routing to one endpoint and
+disables implicit fallback while retaining bounded classified same-endpoint retry. Foreign keys
+and triggers reject partial pairs, cross-session events, post-admission mutation, and inbox/turn
+disagreement. The CLI, TUI, and dashboard consume the same contracts and retain no private routing
+authority. Focused storage, restart, duplicate-admission, API, browser-boundary, terminal, CLI, and
+real-provider tests cover the boundary.
+
 ## Release-one acceptance path
 
 The eleven acceptance steps are crossed by the process suites rather than mocked at the storage

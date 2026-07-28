@@ -26,6 +26,7 @@ mod process_run;
 mod promotion;
 mod provider;
 mod provider_config;
+mod provider_selection;
 mod recovery;
 mod schedule;
 mod scheduler;
@@ -210,12 +211,19 @@ pub use provider::{
     ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy, ProviderLocality,
     ProviderOutput, ProviderPricing, ProviderProgress, ProviderProgressSink, ProviderRequest,
     ProviderResponse, ProviderRouteCandidate, ProviderRoutePlan, ProviderRoutingError,
-    ProviderRoutingPolicy, ProviderToolDefinition, route_provider,
+    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference, ProviderToolDefinition,
+    route_provider,
 };
 pub use provider_config::{
     MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_FALLBACKS, ProviderConfig,
     ProviderConfigError, ProviderCredentialReference, SubscriptionCliClient,
     valid_provider_secret_id, validate_provider_base_url, validate_provider_chain,
+};
+pub use provider_selection::{
+    ProviderSelectionStore, ProviderSelectionStoreError, ProviderSelectionUseCaseError,
+    SessionProviderSelectionView, UpdateSessionProviderSelectionCommand,
+    UpdateSessionProviderSelectionCommit, query_session_provider_selection,
+    update_session_provider_selection,
 };
 pub use recovery::{RecoveryPlan, plan_interrupted_effect};
 pub use schedule::{
@@ -254,6 +262,7 @@ pub use sessions::{
     AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,
     InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
     SessionStoreError, SessionUseCaseError, admit_input, create_session,
+    create_session_with_selection,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,
