@@ -1,10 +1,11 @@
-use super::{SqliteStore, artifact, timeline};
+use super::{SqliteStore, agent::load_input_context_images, artifact, timeline};
 use mealy_application::{
-    ArtifactEvidenceStoreError, OwnershipContext, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
-    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SessionTranscriptAssistantMessage, SessionTranscriptLineage,
-    SessionTranscriptSnapshot, SessionTranscriptStore, SessionTranscriptStoreError,
-    SessionTranscriptTurn, SessionTranscriptUserMessage, TimelineCursor, derive_session_title,
-    is_sha256_digest, sha256_digest, valid_session_metadata,
+    AgentStoreError, ArtifactEvidenceStoreError, OwnershipContext,
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
+    SessionTranscriptAssistantMessage, SessionTranscriptLineage, SessionTranscriptSnapshot,
+    SessionTranscriptStore, SessionTranscriptStoreError, SessionTranscriptTurn,
+    SessionTranscriptUserMessage, TimelineCursor, derive_session_title, is_sha256_digest,
+    sha256_digest, valid_session_metadata,
 };
 use mealy_domain::{ArtifactId, SessionId};
 use rusqlite::{OptionalExtension, params};
@@ -25,7 +26,7 @@ impl SessionTranscriptStore for SqliteStore {
         let mut included_content_bytes = 0_u64;
         let mut previous_sequence = None;
         for row in rows {
-            let turn = row.into_turn(&self.connection, ownership)?;
+            let turn = row.into_turn(&self.connection, session_id, ownership)?;
             if previous_sequence.is_some_and(|previous| previous >= turn.sequence) {
                 return Err(invariant(
                     "transcript turn sequences are not strictly increasing",
@@ -373,6 +374,7 @@ impl StoredTranscriptTurn {
     fn into_turn(
         self,
         connection: &rusqlite::Connection,
+        session_id: SessionId,
         ownership: OwnershipContext,
     ) -> Result<SessionTranscriptTurn, SessionTranscriptStoreError> {
         let user_byte_length = u64::try_from(self.user_content.len())
@@ -414,6 +416,13 @@ impl StoredTranscriptTurn {
                 "assistant artifact metadata does not match its message evidence",
             ));
         }
+        let images = load_input_context_images(
+            connection,
+            &self.inbox_entry_id,
+            &session_id.to_string(),
+            &ownership.principal_id().to_string(),
+        )
+        .map_err(map_agent_image_error)?;
         Ok(SessionTranscriptTurn {
             sequence: positive_u64(self.sequence, "transcript inbox sequence")?,
             turn_id: parse_id(&self.turn_id, "transcript turn ID")?,
@@ -427,6 +436,7 @@ impl StoredTranscriptTurn {
                 content_digest: sha256_digest(self.user_content.as_bytes()),
                 content: self.user_content,
                 byte_length: user_byte_length,
+                images,
                 admission_event_id: parse_id(&self.admission_event_id, "input admission event ID")?,
                 admission_cursor: TimelineCursor(positive_u64(
                     self.admission_cursor,
@@ -466,6 +476,13 @@ fn map_artifact_error(error: ArtifactEvidenceStoreError) -> SessionTranscriptSto
 
 fn map_sqlite_error(error: &rusqlite::Error) -> SessionTranscriptStoreError {
     unavailable(error.to_string())
+}
+
+fn map_agent_image_error(error: AgentStoreError) -> SessionTranscriptStoreError {
+    match error {
+        AgentStoreError::Unavailable(message) => unavailable(message),
+        error => invariant(format!("input image evidence is invalid: {error}")),
+    }
 }
 
 fn parse_id<T>(value: &str, label: &str) -> Result<T, SessionTranscriptStoreError>

@@ -2,7 +2,10 @@ use crate::{
     agent::RuntimeModelProvider,
     store_runtime::{RuntimeStore, RuntimeStoreReadGuard},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use mealy_api::{
     ApiBackend, ArtifactContent, AuthenticatedIdentity, BackendError, SessionTranscriptContent,
     SessionTranscriptFormat, SignedWebhookEnvelope,
@@ -23,11 +26,13 @@ use mealy_application::{
     ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
     ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
     ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
-    InputAdmissionOutcome, InputAdmissionReceipt, InstallExtensionCommit, MEMORY_POLICY_VERSION,
-    MemorySearchQuery, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
-    OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
-    ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
-    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
+    InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit, InstallExtensionCommit,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchQuery, MemorySource,
+    MemoryStore, MemoryStoreError, MemoryView, ModelProvider, OperationalSnapshot,
+    OperationalStore, OperationalStoreError, OwnershipContext, ProviderCapabilities,
+    ProviderFallbackPolicy, ProviderLocality, ProviderPricing, ProviderRouteCandidate,
+    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
     ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
     RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
     RegisterWebhookChannelCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
@@ -44,9 +49,9 @@ use mealy_application::{
     TransitionScheduleCommit, UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand,
     ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM,
     WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView, WebhookChannelStatus,
-    WebhookChannelStore, WebhookChannelStoreError, admit_input, canonical_arguments_digest,
-    compaction_source_event_digest, create_session, create_session_checkpoint,
-    create_session_with_selection, extension_grant_digest, fork_session,
+    WebhookChannelStore, WebhookChannelStoreError, admit_input, admit_input_with_images,
+    canonical_arguments_digest, compaction_source_event_digest, create_session,
+    create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
     inspect_extension_manifest, next_schedule_occurrence_ms, query_session_checkpoints,
     query_session_provider_selection, query_session_status, query_session_transcript,
     query_sessions, query_timeline, route_provider, search_sessions, sha256_digest,
@@ -67,13 +72,14 @@ use mealy_domain::{
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
     FileProviderSecretStore, InstalledExtensionPackage, LinuxBubblewrapExtensionHost,
-    MaintenanceError, ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
+    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError,
+    ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
     create_backup as create_complete_backup, create_complete_export, inspect_extension_package,
     publish_export, verify_backup as verify_complete_backup,
 };
 
 const BUBBLEWRAP_PATH: &str = "/usr/bin/bwrap";
-const SESSION_TRANSCRIPT_SCHEMA_VERSION: &str = "mealy.session-transcript.v1";
+const SESSION_TRANSCRIPT_SCHEMA_VERSION: &str = "mealy.session-transcript.v2";
 const SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES: usize = 32 * 1024 * 1024;
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageBucketResponse,
@@ -113,10 +119,11 @@ use mealy_protocol::{
     SessionSearchHitResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
     SessionTitleResponse, SessionTranscriptAssistantMessageResponse,
     SessionTranscriptBoundsResponse, SessionTranscriptCitationResponse, SessionTranscriptExport,
-    SessionTranscriptLineageResponse, SessionTranscriptRedactionResponse,
-    SessionTranscriptTurnResponse, SessionTranscriptUserMessageResponse, SessionsResponse,
-    SetMemoryPinRequest, SignedWebhookInputRequest, SlackChannelResponse,
-    SlackChannelStatusResponse, SlackChannelsResponse, StageExtensionManifestRequest,
+    SessionTranscriptImageResponse, SessionTranscriptLineageResponse,
+    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
+    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
+    SignedWebhookInputRequest, SlackChannelResponse, SlackChannelStatusResponse,
+    SlackChannelsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
     SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
     TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
     TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
@@ -147,6 +154,7 @@ use zeroize::Zeroizing;
 pub struct RuntimeBackend {
     store: Arc<RuntimeStore>,
     artifacts: Arc<FileArtifactBlobStore>,
+    media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
     channel_secrets: Arc<FileChannelSecretStore>,
     telegram: RuntimeTelegramConfig,
     discord: RuntimeDiscordConfig,
@@ -171,6 +179,8 @@ pub struct RuntimeOperationalConfig {
     pub home: PathBuf,
     /// Minimum physical-erasure age for unreferenced artifacts.
     pub artifact_gc_minimum_age_hours: u64,
+    /// Isolated hostile-image boundary, present only for activated image-capable routes.
+    pub media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
     /// Maximum durable pending input records admitted to one session.
     pub maximum_pending_inputs_per_session: u64,
     /// Maximum simultaneous invocations for one extension identity.
@@ -265,6 +275,7 @@ impl RuntimeBackend {
         Self {
             store,
             artifacts,
+            media_normalizer: operations.media_normalizer,
             channel_secrets,
             telegram: channels.telegram,
             discord: channels.discord,
@@ -1433,6 +1444,11 @@ impl ApiBackend for RuntimeBackend {
             api_version: API_VERSION.to_owned(),
             session_id: receipt.session_id.to_string(),
             inbox_entry_id: receipt.inbox_entry_id.to_string(),
+            image_artifact_ids: receipt
+                .image_artifact_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             inbox_sequence: receipt.inbox_sequence,
             delivery_mode: receipt.delivery_mode.into(),
             provider_selection: receipt.provider_selection.clone().map_or(
@@ -1449,6 +1465,159 @@ impl ApiBackend for RuntimeBackend {
             duplicate: matches!(outcome, InputAdmissionOutcome::Duplicate(_)),
             cursor: TimelineCursor(receipt.timeline_cursor),
         })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn submit_image_input(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        request: SubmitImageInputRequest,
+    ) -> Result<InputAdmissionResponse, BackendError> {
+        if self.safe_mode || !self.admission_open() {
+            return Err(BackendError::Unavailable);
+        }
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let ProviderSelectionCommand::Exact {
+            provider_id,
+            model_id,
+        } = request.provider_selection
+        else {
+            return Err(BackendError::InvalidRequest(
+                "image input requires an exact configured provider/model route".to_owned(),
+            ));
+        };
+        let selection = self
+            .checked_provider_selection(ProviderSelectionCommand::Exact {
+                provider_id,
+                model_id,
+            })?
+            .ok_or(BackendError::Internal)?;
+        if !self
+            .provider
+            .policy_capabilities()
+            .iter()
+            .any(|capabilities| {
+                capabilities.provider_id == selection.provider_id
+                    && capabilities.model_id == selection.model_id
+                    && capabilities.input_modalities.contains("image")
+            })
+        {
+            return Err(BackendError::InvalidRequest(
+                "image input requires an explicitly image-capable provider route".to_owned(),
+            ));
+        }
+        let normalizer = self
+            .media_normalizer
+            .as_ref()
+            .ok_or(BackendError::Unavailable)?;
+        if request.images.is_empty() || request.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+            return Err(BackendError::InvalidRequest(
+                "image input count is outside the supported bound".to_owned(),
+            ));
+        }
+        let maximum_encoded_image_bytes =
+            4_usize.saturating_mul(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES.div_ceil(3));
+        let maximum_encoded_total_bytes =
+            4_usize.saturating_mul(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES.div_ceil(3));
+        let mut encoded_total = 0_usize;
+        let mut source_total = 0_usize;
+        let mut canonical_total = 0_usize;
+        let mut artifact_ids = BTreeSet::new();
+        let mut images = Vec::with_capacity(request.images.len());
+        for submitted in request.images {
+            encoded_total = encoded_total
+                .checked_add(submitted.data_base64.len())
+                .ok_or_else(|| {
+                    BackendError::InvalidRequest("encoded image input is too large".to_owned())
+                })?;
+            let artifact_id = ArtifactId::from_str(&submitted.artifact_id).map_err(|_| {
+                BackendError::InvalidRequest(
+                    "image artifact identity must be a canonical UUIDv7".to_owned(),
+                )
+            })?;
+            if artifact_id.as_uuid().get_version_num() != 7
+                || !artifact_ids.insert(artifact_id)
+                || submitted.data_base64.is_empty()
+                || submitted.data_base64.len() > maximum_encoded_image_bytes
+                || encoded_total > maximum_encoded_total_bytes
+            {
+                return Err(BackendError::InvalidRequest(
+                    "image identity or encoded byte bounds are invalid".to_owned(),
+                ));
+            }
+            let source = BASE64_STANDARD
+                .decode(&submitted.data_base64)
+                .map_err(|_| {
+                    BackendError::InvalidRequest(
+                        "image data must use canonical padded base64".to_owned(),
+                    )
+                })?;
+            if BASE64_STANDARD.encode(&source) != submitted.data_base64
+                || source.is_empty()
+                || source.len() > MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES
+            {
+                return Err(BackendError::InvalidRequest(
+                    "image data must use canonical padded base64 within bounds".to_owned(),
+                ));
+            }
+            source_total = source_total.checked_add(source.len()).ok_or_else(|| {
+                BackendError::InvalidRequest("decoded image input is too large".to_owned())
+            })?;
+            if source_total > MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES {
+                return Err(BackendError::InvalidRequest(
+                    "decoded image input aggregate exceeds its bound".to_owned(),
+                ));
+            }
+            let canonical = normalizer
+                .normalize(&submitted.media_type, &source)
+                .map_err(|error| map_media_normalizer_error(&error))?;
+            canonical_total = canonical_total
+                .checked_add(canonical.bytes().len())
+                .ok_or_else(|| {
+                    BackendError::InvalidRequest(
+                        "canonical image input aggregate is too large".to_owned(),
+                    )
+                })?;
+            if canonical_total > MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES {
+                return Err(BackendError::InvalidRequest(
+                    "canonical image input aggregate exceeds its bound".to_owned(),
+                ));
+            }
+            let blob = self
+                .artifacts
+                .commit(canonical.bytes())
+                .map_err(|error| map_artifact_blob_error(&error))?;
+            images.push(InputImageArtifactCommit {
+                artifact_id,
+                blob,
+                committed_at: self.clock.now(),
+                media_type: canonical.media_type().to_owned(),
+                width: canonical.width(),
+                height: canonical.height(),
+            });
+        }
+        let outcome = admit_input_with_images(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            InputAdmissionLimits::new(256, 1024 * 1024, self.maximum_pending_inputs_per_session),
+            AdmitInputCommand {
+                session_id,
+                ownership,
+                dedupe_key: request.idempotency_key,
+                delivery_mode: request.delivery_mode.into(),
+                content: request.content,
+                provider_selection: ProviderSelectionPreference::Exact(selection),
+            },
+            images,
+        )
+        .map_err(map_session_error)?;
+        input_admission_response(
+            outcome.receipt(),
+            matches!(outcome, InputAdmissionOutcome::Duplicate(_)),
+        )
     }
 
     fn session_status(
@@ -3447,6 +3616,11 @@ fn input_admission_response(
         api_version: API_VERSION.to_owned(),
         session_id: receipt.session_id.to_string(),
         inbox_entry_id: receipt.inbox_entry_id.to_string(),
+        image_artifact_ids: receipt
+            .image_artifact_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         inbox_sequence: receipt.inbox_sequence,
         delivery_mode: receipt.delivery_mode.into(),
         provider_selection: receipt.provider_selection.clone().map_or(
@@ -5238,6 +5412,19 @@ fn session_transcript_turn_response(
             content: turn.user.content,
             content_digest: turn.user.content_digest,
             byte_length: turn.user.byte_length,
+            images: turn
+                .user
+                .images
+                .into_iter()
+                .map(|image| SessionTranscriptImageResponse {
+                    artifact_id: image.artifact_id.to_string(),
+                    media_type: image.media_type,
+                    sha256_digest: image.sha256_digest,
+                    size_bytes: image.size_bytes,
+                    width: image.width,
+                    height: image.height,
+                })
+                .collect(),
             accepted_at_ms: epoch_milliseconds(turn.user.accepted_at)?,
             citation: SessionTranscriptCitationResponse {
                 event_id: turn.user.admission_event_id.to_string(),
@@ -5363,7 +5550,28 @@ fn render_session_transcript_html(
         )
         .map_err(|_| BackendError::Internal)?;
         push_html_escaped(&mut html, &turn.user.citation.event_id);
-        html.push_str("</dd></dl></section><section><h4>Assistant</h4><pre>");
+        html.push_str("</dd></dl>");
+        if !turn.user.images.is_empty() {
+            html.push_str(
+                "<h5>Canonical images (metadata only; binary content deliberately omitted)</h5><ol>",
+            );
+            for image in &turn.user.images {
+                html.push_str("<li><dl><dt>Artifact ID</dt><dd>");
+                push_html_escaped(&mut html, &image.artifact_id);
+                html.push_str("</dd><dt>Media type</dt><dd>");
+                push_html_escaped(&mut html, &image.media_type);
+                html.push_str("</dd><dt>Digest (SHA-256)</dt><dd>");
+                push_html_escaped(&mut html, &image.sha256_digest);
+                write!(
+                    html,
+                    "</dd><dt>Bytes</dt><dd>{}</dd><dt>Dimensions</dt><dd>{} × {}</dd></dl></li>",
+                    image.size_bytes, image.width, image.height
+                )
+                .map_err(|_| BackendError::Internal)?;
+            }
+            html.push_str("</ol>");
+        }
+        html.push_str("</section><section><h4>Assistant</h4><pre>");
         push_html_escaped(&mut html, &turn.assistant.content);
         html.push_str("</pre><dl><dt>Content digest (SHA-256)</dt><dd>");
         push_html_escaped(&mut html, &turn.assistant.content_digest);
@@ -5557,6 +5765,17 @@ fn map_artifact_blob_error(error: &ArtifactBlobStoreError) -> BackendError {
         | ArtifactBlobStoreError::NotFound { .. }
         | ArtifactBlobStoreError::IntegrityMismatch { .. }
         | ArtifactBlobStoreError::UnsafeFileType { .. } => BackendError::Internal,
+    }
+}
+
+fn map_media_normalizer_error(error: &MediaNormalizerError) -> BackendError {
+    match error {
+        MediaNormalizerError::InvalidInput | MediaNormalizerError::ResourceLimitExceeded => {
+            BackendError::InvalidRequest(error.to_string())
+        }
+        MediaNormalizerError::Unavailable | MediaNormalizerError::TimedOut => {
+            BackendError::Unavailable
+        }
     }
 }
 
@@ -5980,14 +6199,15 @@ mod tests {
         ApiBackend, AuthenticatedIdentity, BackendError, DrainController, KeyedConcurrencyLimiter,
         RuntimeBackend, RuntimeChannelConfig, RuntimeDiscordConfig, RuntimeOperationalConfig,
         RuntimeSlackConfig, RuntimeTelegramConfig, map_artifact_blob_error, parse_ownership,
-        session_transcript_export_model, validate_extension_mount_roots,
+        render_session_transcript_html, session_transcript_export_model,
+        validate_extension_mount_roots,
     };
     use crate::{agent::RuntimeModelProvider, store_runtime::RuntimeStore};
     use mealy_application::{
-        ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore, ProviderConfig,
-        SessionTranscriptAssistantMessage, SessionTranscriptLineage, SessionTranscriptSnapshot,
-        SessionTranscriptTurn, SessionTranscriptUserMessage, TimelineCursor, estimate_tokens,
-        sha256_digest,
+        AgentContextImage, ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore,
+        ProviderConfig, SessionTranscriptAssistantMessage, SessionTranscriptLineage,
+        SessionTranscriptSnapshot, SessionTranscriptTurn, SessionTranscriptUserMessage,
+        TimelineCursor, estimate_tokens, sha256_digest,
     };
     use mealy_domain::{
         ArtifactId, ChannelBindingId, ContextEpochId, ContextItemId, ContextManifestId,
@@ -6123,6 +6343,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn transcript_model_hydrates_artifacts_and_fails_closed_on_blob_corruption() {
         let fixture = Fixture::new();
         let ownership = parse_ownership(&fixture.identity).expect("fixture ownership");
@@ -6134,6 +6355,8 @@ mod tests {
             .expect("authorized transcript artifact");
         let session_id = SessionId::new();
         let user_content = "artifact-backed response".to_owned();
+        let input_image_id = ArtifactId::new();
+        let input_image_digest = sha256_digest(b"canonical image bytes");
         let snapshot = SessionTranscriptSnapshot {
             session_id,
             title: "Artifact transcript".to_owned(),
@@ -6168,6 +6391,14 @@ mod tests {
                     content_digest: sha256_digest(user_content.as_bytes()),
                     byte_length: u64::try_from(user_content.len()).expect("user size"),
                     content: user_content,
+                    images: vec![AgentContextImage {
+                        artifact_id: input_image_id,
+                        media_type: "image/png".to_owned(),
+                        sha256_digest: input_image_digest.clone(),
+                        size_bytes: 21,
+                        width: 32,
+                        height: 24,
+                    }],
                     admission_event_id: EventId::new(),
                     admission_cursor: TimelineCursor(2),
                     accepted_at: SystemTime::UNIX_EPOCH + Duration::from_millis(1),
@@ -6191,6 +6422,21 @@ mod tests {
             .expect("hydrate transcript artifact");
         assert_eq!(export.turns[0].assistant.content.as_bytes(), CONTENT);
         assert_eq!(export.turns[0].assistant.storage, "artifact");
+        assert_eq!(export.schema_version, "mealy.session-transcript.v2");
+        assert_eq!(export.turns[0].user.images.len(), 1);
+        assert_eq!(
+            export.turns[0].user.images[0].artifact_id,
+            input_image_id.to_string()
+        );
+        assert_eq!(
+            export.turns[0].user.images[0].sha256_digest,
+            input_image_digest
+        );
+        let html = render_session_transcript_html(&export).expect("render safe image metadata");
+        assert!(html.contains("metadata only; binary content deliberately omitted"));
+        assert!(html.contains(&input_image_id.to_string()));
+        assert!(html.contains(&input_image_digest));
+        assert!(!html.contains("canonical image bytes"));
         let expected_artifact_id = fixture.artifact_id.to_string();
         assert_eq!(
             export.turns[0].assistant.artifact_id.as_deref(),
@@ -6586,6 +6832,7 @@ mod tests {
                     RuntimeOperationalConfig {
                         home: backend_home,
                         artifact_gc_minimum_age_hours: 24,
+                        media_normalizer: None,
                         maximum_pending_inputs_per_session: 1_024,
                         maximum_extension_invocations: 1,
                         enabled_read_tools: vec!["fixture.read".to_owned()],

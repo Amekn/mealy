@@ -42,11 +42,11 @@ use mealy_protocol::{
     SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, SlackChannelResponse, SlackChannelsResponse,
-    StageExtensionManifestRequest, SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt,
-    TaskReplayResponse, TaskResponse, TelegramChannelResponse, TelegramChannelsResponse,
-    TimelineCursor, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    UpdateSessionTitleRequest, VerifyBackupRequest, WebhookChannelResponse,
-    WebhookChannelsResponse,
+    StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
+    WebhookChannelResponse, WebhookChannelsResponse,
 };
 use serde::Deserialize;
 use std::{
@@ -58,6 +58,8 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+
+const MAXIMUM_IMAGE_INPUT_BODY_BYTES: usize = 6 * 1024 * 1024;
 use tokio::sync::{Semaphore, TryAcquireError, watch};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -524,6 +526,21 @@ pub trait ApiBackend: Send + Sync + 'static {
         session_id: String,
         request: SubmitInputRequest,
     ) -> Result<InputAdmissionResponse, BackendError>;
+
+    /// Isolates, normalizes, content-addresses, and durably admits ordered images.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when exact-route authority, hostile media validation,
+    /// authorization, idempotency, or persistence fails.
+    fn submit_image_input(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _request: SubmitImageInputRequest,
+    ) -> Result<InputAdmissionResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
 
     /// Reads authorized current session state.
     ///
@@ -1409,6 +1426,11 @@ fn build_router(
             post(submit_input_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/image-inputs",
+            post(submit_image_input_handler)
+                .layer(DefaultBodyLimit::max(MAXIMUM_IMAGE_INPUT_BODY_BYTES)),
+        )
+        .route(
             "/v1/sessions/{session_id}/status",
             get(session_status_handler),
         )
@@ -2092,6 +2114,21 @@ async fn submit_input_handler(
     require_version(&request.api_version)?;
     let result = run_backend(state, move |backend| {
         backend.submit_input(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn submit_image_input_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<SubmitImageInputRequest>, JsonRejection>,
+) -> Result<Json<InputAdmissionResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.submit_image_input(identity, session_id, request)
     })
     .await?;
     Ok(Json(result))
@@ -3320,8 +3357,8 @@ const fn retryable(error: &BackendError) -> bool {
 mod tests {
     use super::{
         ApiAuth, ApiBackend, ApiConfig, ArtifactContent, AuthenticatedIdentity, BackendError,
-        SessionTranscriptContent, SessionTranscriptFormat, SignedWebhookEnvelope, router,
-        router_with_shutdown,
+        MAXIMUM_IMAGE_INPUT_BODY_BYTES, SessionTranscriptContent, SessionTranscriptFormat,
+        SignedWebhookEnvelope, router, router_with_shutdown,
     };
     use axum::{
         body::{Body, to_bytes},
@@ -4086,6 +4123,7 @@ mod tests {
                 api_version: API_VERSION.to_owned(),
                 session_id: "session-1".to_owned(),
                 inbox_entry_id: "inbox-1".to_owned(),
+                image_artifact_ids: Vec::new(),
                 inbox_sequence: 1,
                 delivery_mode: mealy_protocol::DeliveryMode::Queue,
                 provider_selection: mealy_protocol::ProviderSelectionCommand::Automatic,
@@ -5188,6 +5226,35 @@ mod tests {
             .await
             .expect("response");
         assert_json_error(response, StatusCode::PAYLOAD_TOO_LARGE).await;
+    }
+
+    #[tokio::test]
+    async fn image_input_has_a_bounded_route_specific_transport_limit() {
+        let (app, token) = app();
+        let below_route_limit = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/session-1/image-inputs")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(vec![b'x'; 1024 * 1024 + 1]))
+                    .expect("request below image route limit"),
+            )
+            .await
+            .expect("response below image route limit");
+        assert_json_error(below_route_limit, StatusCode::BAD_REQUEST).await;
+
+        let above_route_limit = app
+            .oneshot(
+                Request::post("/v1/sessions/session-1/image-inputs")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(vec![b'x'; MAXIMUM_IMAGE_INPUT_BODY_BYTES + 1]))
+                    .expect("request above image route limit"),
+            )
+            .await
+            .expect("response above image route limit");
+        assert_json_error(above_route_limit, StatusCode::PAYLOAD_TOO_LARGE).await;
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use crate::{ArtifactContentDescriptor, OwnershipContext, TimelineCursor};
+use crate::{AgentContextImage, ArtifactContentDescriptor, OwnershipContext, TimelineCursor};
 use mealy_domain::{
     ContextEpochId, EventId, InboxEntryId, MessageId, RunId, SessionCheckpointId, SessionId,
     TaskId, TurnId,
@@ -37,6 +37,8 @@ pub struct SessionTranscriptUserMessage {
     pub content_digest: String,
     /// Exact UTF-8 byte count.
     pub byte_length: u64,
+    /// Ordered canonical image evidence; image bytes and private paths are deliberately excluded.
+    pub images: Vec<AgentContextImage>,
     /// Immutable admission journal event.
     pub admission_event_id: EventId,
     /// Timeline cursor of the admission event.

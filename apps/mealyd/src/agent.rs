@@ -16,17 +16,18 @@ use mealy_application::{
     LaunchParallelAgentDelegationCommit, LaunchParallelDelegationChildCommit, LeaseClaimOutcome,
     LeaseConcurrencyLimits, LeaseLimits, MCP_EFFECT_POLICY_VERSION, MarkEffectAttemptRunningCommit,
     McpEffectPolicyGrant, MessageRole, ModelDispatchReceipt, ModelProvider, ModelUsage,
-    OwnershipContext, ParallelAgentDelegationRequest, ParkAgentEffectRunCommit, PolicyDecision,
-    PolicyRequest, PrepareDelegationCommit, PrepareEffectAttemptCommit, ProviderCapabilities,
-    ProviderConfig, ProviderCredentialReference, ProviderError, ProviderErrorClass,
-    ProviderFailureDisposition, ProviderFallbackPolicy, ProviderLocality, ProviderOutput,
-    ProviderPricing, ProviderProgress, ProviderProgressSink, ProviderRequest, ProviderResponse,
-    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderToolDefinition, ReadOnlyTool,
-    ReadToolDescriptor, ReadToolError, ReadToolOutput, RecordAgentEffectObservationCommit,
-    RecordAgentEffectProposalCommit, RecordEffectAttemptOutcomeCommit, RecordEffectProposalCommit,
-    RecordModelFailureCommit, RecordModelProgressCommit, RecordModelResultCommit,
-    RecordReadToolResultCommit, RecordValidationCommit, ResumeAgentEffectRunCommit,
-    RunCompletionStatus, VALIDATION_POLICY_VERSION, ValidationContextDraft, ValidationStore,
+    NormalizedImageInput, OwnershipContext, ParallelAgentDelegationRequest,
+    ParkAgentEffectRunCommit, PolicyDecision, PolicyRequest, PrepareDelegationCommit,
+    PrepareEffectAttemptCommit, ProviderCapabilities, ProviderConfig, ProviderCredentialReference,
+    ProviderError, ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy,
+    ProviderLocality, ProviderOutput, ProviderPricing, ProviderProgress, ProviderProgressSink,
+    ProviderRequest, ProviderResponse, ProviderRouteCandidate, ProviderRoutingPolicy,
+    ProviderToolDefinition, ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput,
+    RecordAgentEffectObservationCommit, RecordAgentEffectProposalCommit,
+    RecordEffectAttemptOutcomeCommit, RecordEffectProposalCommit, RecordModelFailureCommit,
+    RecordModelProgressCommit, RecordModelResultCommit, RecordReadToolResultCommit,
+    RecordValidationCommit, ResumeAgentEffectRunCommit, RunCompletionStatus,
+    VALIDATION_POLICY_VERSION, ValidationContextDraft, ValidationStore,
     agent_delegate_parallel_tool_descriptor, agent_delegate_tool_descriptor, bounded_deadline,
     canonical_arguments_digest, claim_next_work_with_concurrency, compile_context,
     complete_agent_run, complete_run, estimate_tokens, evaluate_mcp_effect_policy, heartbeat_lease,
@@ -1246,7 +1247,47 @@ impl RuntimeModelProvider {
         maximum_concurrent_requests: u32,
         requests_per_minute: u32,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::from_chain_with_image_input(
+            primary,
+            fallbacks,
+            false,
+            provider_secrets,
+            fake_delay,
+            fake_estimated_latency_ms,
+            maximum_concurrent_requests,
+            requests_per_minute,
+        )
+    }
+
+    /// Resolves one provider chain with an explicit all-routes image-input activation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when activation targets a provider without the bounded direct image
+    /// adapter or when any normal provider-chain validation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_chain_with_image_input(
+        primary: &ProviderConfig,
+        fallbacks: &[ProviderConfig],
+        image_input: bool,
+        provider_secrets: Option<&FileProviderSecretStore>,
+        fake_delay: Duration,
+        fake_estimated_latency_ms: u64,
+        maximum_concurrent_requests: u32,
+        requests_per_minute: u32,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         validate_provider_chain(primary, fallbacks)?;
+        if image_input
+            && !std::iter::once(primary).chain(fallbacks).all(|provider| {
+                matches!(
+                    provider,
+                    ProviderConfig::OpenAiResponses { .. }
+                        | ProviderConfig::AnthropicMessages { .. }
+                )
+            })
+        {
+            return Err("image input requires direct OpenAI Responses or Anthropic routes".into());
+        }
         match primary {
             ProviderConfig::BuiltinFixture => Ok(Self::Builtin(BuiltinPhaseTwoProvider::new(
                 fake_delay,
@@ -1262,6 +1303,7 @@ impl RuntimeModelProvider {
                     .map(|config| {
                         Self::build_external_provider(
                             config,
+                            image_input,
                             provider_secrets,
                             maximum_concurrent_requests,
                             requests_per_minute,
@@ -1274,6 +1316,7 @@ impl RuntimeModelProvider {
 
     fn build_external_provider(
         config: &ProviderConfig,
+        image_input: bool,
         provider_secrets: Option<&FileProviderSecretStore>,
         maximum_concurrent_requests: u32,
         requests_per_minute: u32,
@@ -1306,7 +1349,7 @@ impl RuntimeModelProvider {
                         context_tokens: *context_tokens,
                         maximum_output_tokens: *maximum_output_tokens,
                         streaming: *streaming,
-                        image_input: false,
+                        image_input,
                         pricing: ProviderPricing {
                             input_microunits_per_million_tokens:
                                 *input_microunits_per_million_tokens,
@@ -1343,7 +1386,7 @@ impl RuntimeModelProvider {
                         context_tokens: *context_tokens,
                         maximum_output_tokens: *maximum_output_tokens,
                         streaming: *streaming,
-                        image_input: false,
+                        image_input,
                         pricing: ProviderPricing {
                             input_microunits_per_million_tokens:
                                 *input_microunits_per_million_tokens,
@@ -2580,6 +2623,14 @@ fn prepare_next_model(
     } else {
         provider.fallback_policy()
     };
+    let context_has_images = snapshot
+        .context_sources
+        .iter()
+        .any(|source| !source.image_artifacts.is_empty());
+    let mut required_input_modalities = BTreeSet::from(["text".to_owned()]);
+    if context_has_images {
+        required_input_modalities.insert("image".to_owned());
+    }
     let route_candidates = configured_candidates.into_iter().filter(|candidate| {
         snapshot
             .provider_selection
@@ -2591,7 +2642,7 @@ fn prepare_next_model(
     });
     let route = route_provider(
         &ProviderRoutingPolicy {
-            required_input_modalities: BTreeSet::from(["text".to_owned()]),
+            required_input_modalities,
             tool_calling: if provider_tools.is_empty() {
                 CapabilityRequirement::Optional
             } else {
@@ -2821,24 +2872,83 @@ fn hydrate_artifact_sources(
     snapshot: &mealy_application::AgentRunSnapshot,
 ) -> Result<Vec<mealy_application::AgentContextSource>, Box<dyn Error + Send + Sync>> {
     let mut sources = snapshot.context_sources.clone();
+    let ownership = OwnershipContext::new(snapshot.principal_id, snapshot.channel_binding_id);
+    let mut hydrated_image_count = 0_usize;
     for source in &mut sources {
-        let Some(artifact_id) = source.content_artifact_id else {
-            continue;
-        };
-        let descriptor = store
-            .read()
-            .map_err(|_| "agent store lock is poisoned")?
-            .artifact_content_descriptor(
-                OwnershipContext::new(snapshot.principal_id, snapshot.channel_binding_id),
-                artifact_id,
-            )?;
-        if descriptor.metadata().size_bytes > snapshot.limits.maximum_artifact_bytes {
-            return Err("recorded context artifact exceeds the effective run limit".into());
+        if let Some(artifact_id) = source.content_artifact_id {
+            let descriptor = store
+                .read()
+                .map_err(|_| "agent store lock is poisoned")?
+                .artifact_content_descriptor(ownership, artifact_id)?;
+            if descriptor.metadata().size_bytes > snapshot.limits.maximum_artifact_bytes {
+                return Err("recorded context artifact exceeds the effective run limit".into());
+            }
+            let content = String::from_utf8(artifacts.read(descriptor.committed_blob())?)?;
+            source.message.content = format!("{}\n\n{content}", source.message.content);
         }
-        let content = String::from_utf8(artifacts.read(descriptor.committed_blob())?)?;
-        source.message.content = format!("{}\n\n{content}", source.message.content);
+        if source.image_artifacts.is_empty() {
+            continue;
+        }
+        if source.message.role != MessageRole::User || !source.message.images.is_empty() {
+            return Err("recorded context image placement is invalid".into());
+        }
+        let inbox_entry_id = source
+            .source_locator
+            .strip_prefix("inbox://")
+            .filter(|value| !value.is_empty())
+            .ok_or("recorded context images lack an inbox source")?;
+        for evidence in &source.image_artifacts {
+            hydrated_image_count = hydrated_image_count
+                .checked_add(1)
+                .ok_or("recorded context image count overflowed")?;
+            if hydrated_image_count > mealy_application::MAXIMUM_PROVIDER_IMAGE_INPUTS
+                || !evidence.is_valid()
+            {
+                return Err("recorded context image evidence exceeds its bound".into());
+            }
+            let reader = store.read().map_err(|_| "agent store lock is poisoned")?;
+            source.message.images.push(hydrate_context_image(
+                &*reader,
+                artifacts,
+                ownership,
+                inbox_entry_id,
+                evidence,
+            )?);
+        }
     }
     Ok(sources)
+}
+
+fn hydrate_context_image(
+    evidence_store: &impl ArtifactEvidenceStore,
+    artifacts: &FileArtifactBlobStore,
+    ownership: OwnershipContext,
+    inbox_entry_id: &str,
+    evidence: &mealy_application::AgentContextImage,
+) -> Result<NormalizedImageInput, Box<dyn Error + Send + Sync>> {
+    let descriptor = evidence_store.artifact_content_descriptor(ownership, evidence.artifact_id)?;
+    let metadata = descriptor.metadata();
+    if metadata.artifact_id != evidence.artifact_id
+        || metadata.algorithm != mealy_application::SHA256_ALGORITHM
+        || metadata.digest != evidence.sha256_digest
+        || metadata.size_bytes != evidence.size_bytes
+        || metadata.media_type != evidence.media_type
+        || metadata.origin_kind != "session_input"
+        || metadata.origin_id != inbox_entry_id
+        || metadata.producer_kind != "builtin"
+        || metadata.producer_id != "mealyd.media-normalizer.v1"
+        || metadata.sensitivity != "private"
+        || metadata.retention_class != "session_history"
+    {
+        return Err("recorded context image metadata drifted".into());
+    }
+    let bytes = artifacts.read(descriptor.committed_blob())?;
+    let image = NormalizedImageInput::new(evidence.artifact_id, &evidence.media_type, &bytes)?;
+    if image.sha256_digest() != evidence.sha256_digest || image.size_bytes() != evidence.size_bytes
+    {
+        return Err("recorded context image bytes drifted".into());
+    }
+    Ok(image)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -5500,19 +5610,24 @@ fn remaining_deadline_duration(deadline_at_ms: i64, observed_at_ms: i64) -> Dura
 mod tests {
     use super::{
         BuiltinPhaseTwoProvider, DurableCancellationProbe, RuntimeSkillContext,
-        mcp_descriptor_authority_is_present, mcp_effect_outcome_evidence,
+        hydrate_context_image, mcp_descriptor_authority_is_present, mcp_effect_outcome_evidence,
         remaining_deadline_duration,
     };
     use crate::{config::SkillConfig, store_runtime::RuntimeStore};
     use mealy_application::{
-        CancellationProbe, EffectAttemptOutcome, McpHttpAuthentication, McpHttpServerConfig,
-        McpToolGrant, ModelProvider, ProviderCredentialReference, mcp_http_read_tool_descriptor,
-        sha256_digest,
+        AdmitInputCommand, AgentContextImage, ArtifactBlobStore, CancellationProbe, Clock,
+        EffectAttemptOutcome, InputAdmissionLimits, InputImageArtifactCommit,
+        McpHttpAuthentication, McpHttpServerConfig, McpToolGrant, ModelProvider, OwnershipContext,
+        ProviderCredentialReference, ProviderSelectionPreference, admit_input_with_images,
+        create_session, mcp_http_read_tool_descriptor, sha256_digest,
     };
-    use mealy_domain::{CapabilityGrant, EffectClass, RunId};
+    use mealy_domain::{
+        ArtifactId, CapabilityGrant, ChannelBindingId, DeliveryMode, EffectClass, PrincipalId,
+        RunId,
+    };
     use mealy_infrastructure::{
-        McpEffectToolOutput, McpHostError, SqliteStore, inspect_skill_package,
-        publish_skill_package,
+        FileArtifactBlobStore, McpEffectToolOutput, McpHostError, SqliteStore, SystemClock,
+        SystemIdGenerator, inspect_skill_package, publish_skill_package,
     };
     use serde_json::json;
     use std::{
@@ -5670,6 +5785,83 @@ mod tests {
         local_timeout.store(true, Ordering::Release);
         assert!(probe.is_cancelled());
         drop(guard);
+    }
+
+    #[test]
+    fn context_image_hydration_rechecks_owner_metadata_and_blob_bytes() {
+        const CANONICAL_PNG: &[u8] = b"\x89PNG\r\n\x1a\ncanonical-image";
+        let home = tempfile::tempdir().expect("temporary home");
+        let artifacts =
+            FileArtifactBlobStore::new(home.path().join("artifacts"), 2 * 1_024 * 1_024)
+                .expect("artifact store");
+        let blob = artifacts.commit(CANONICAL_PNG).expect("commit image bytes");
+        let ownership = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+        let mut store = SqliteStore::open_in_memory(1).expect("SQLite store");
+        store
+            .register_local_identity(ownership, 1)
+            .expect("register local owner");
+        let session_id = create_session(&mut store, &SystemClock, &SystemIdGenerator, ownership)
+            .expect("create session");
+        let artifact_id = ArtifactId::new();
+        let committed_at = SystemClock.now();
+        let image = InputImageArtifactCommit {
+            artifact_id,
+            blob: blob.clone(),
+            committed_at,
+            media_type: "image/png".to_owned(),
+            width: 32,
+            height: 24,
+        };
+        let outcome = admit_input_with_images(
+            &mut store,
+            &SystemClock,
+            &SystemIdGenerator,
+            InputAdmissionLimits::default(),
+            AdmitInputCommand {
+                session_id,
+                ownership,
+                dedupe_key: "hydration-image".to_owned(),
+                delivery_mode: DeliveryMode::Queue,
+                content: "describe".to_owned(),
+                provider_selection: ProviderSelectionPreference::InheritSession,
+            },
+            vec![image],
+        )
+        .expect("admit image");
+        let inbox_entry_id = outcome.receipt().inbox_entry_id.to_string();
+        let evidence = AgentContextImage {
+            artifact_id,
+            media_type: "image/png".to_owned(),
+            sha256_digest: blob.digest.clone(),
+            size_bytes: blob.size_bytes,
+            width: 32,
+            height: 24,
+        };
+
+        let normalized =
+            hydrate_context_image(&store, &artifacts, ownership, &inbox_entry_id, &evidence)
+                .expect("hydrate owner-authorized canonical image");
+        assert_eq!(normalized.artifact_id(), artifact_id);
+        assert_eq!(
+            normalized.validated_bytes().expect("validated bytes"),
+            CANONICAL_PNG
+        );
+        assert!(
+            hydrate_context_image(&store, &artifacts, ownership, "different-inbox", &evidence,)
+                .is_err(),
+            "origin drift must fail before provider projection"
+        );
+
+        fs::write(
+            home.path().join("artifacts").join(&blob.relative_path),
+            b"tampered",
+        )
+        .expect("tamper fixture blob");
+        assert!(
+            hydrate_context_image(&store, &artifacts, ownership, &inbox_entry_id, &evidence,)
+                .is_err(),
+            "content-addressed byte drift must fail closed"
+        );
     }
 
     #[test]

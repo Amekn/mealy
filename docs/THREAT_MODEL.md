@@ -147,20 +147,35 @@ Controls: the provider-neutral envelope accepts only bounded PNG/JPEG/WebP bytes
 artifact identity, media type, size, and SHA-256 digest, permits images only on authenticated user
 messages, caps count and aggregate bytes, charges a conservative per-image token reservation, and
 revalidates every field before provider serialization. Text-only routes reject image content
-before dispatch. Production configuration keeps image capability disabled until public ingress
-also delegates decoding to a fresh identity-pinned, empty-environment, no-network Bubblewrap
-worker with no home/workspace/secret mount and hard process/protocol limits. The worker performs
-dimension/pixel enforcement and metadata-stripping re-encode; the daemon independently validates
-the complete returned evidence. This process boundary remains mandatory because supported decoder
-release notes acknowledge hostile inputs that can panic decoders. Content-addressed
+before dispatch. Capability defaults off. An approved stopped-daemon transaction can enable it
+only when every configured route is a direct OpenAI Responses or Anthropic Messages route; each
+admission still requires an exact provider/model whose capability contract contains image input.
+The public API has a separate 6 MiB transport ceiling, accepts only canonical padded base64 and
+retry-stable UUIDv7 artifact IDs, and bounds source bytes before decode. The CLI opens only
+no-follow regular allowlisted images outside the Mealy home and never submits a host path.
+
+Public ingress delegates every decode to a fresh identity-pinned, empty-environment, no-network
+Bubblewrap worker with no home/workspace/secret mount and hard process/protocol limits. The worker
+performs dimension/pixel enforcement and metadata-stripping re-encode; the daemon independently
+validates the complete returned evidence. This process boundary remains mandatory because
+supported decoder release notes acknowledge hostile inputs that can panic decoders.
+Content-addressed
 commit-before-link admission is now enforced: the private blob is atomically published first and
 schema 21 links only contiguous ordered artifacts whose owner, session, inbox origin, producer,
 media type, bounds, and access policy match. Admission idempotency binds the exact ordered image
 evidence; SQLite triggers reject later media/artifact/content-metadata/reference mutation; and a
 late acknowledgement failure rolls every canonical link back while age-gated collection retains a
-fresh orphan for recovery. Context hydration, export/replay corruption coverage, and route/client
-activation are still required before public ingress. A magic prefix alone is not accepted as
-public-ingress proof.
+fresh orphan for recovery.
+
+Context-manifest v3 binds each selected image through a sparse artifact link and reserves 8,192
+tokens before dispatch. Trusted hydration rechecks authorization, metadata, digest, and canonical
+bytes; missing, dangling, cross-owner, or corrupt evidence fails the turn rather than silently
+dropping an image. Recorded-only replay compares the exact normalized request and performs no live
+provider or decoder call. Transcript v2 discloses ordered path-free metadata but embeds neither
+private paths nor image bytes. TUI, dashboard, chat-native, and channel visual surfaces stay
+disabled until they have independent hostile-rendering and retry/recovery evidence. A magic prefix
+alone is never accepted as public-ingress proof.
+
 Remote image URLs and provider file IDs are outside the contract, preventing mutable fetches,
 ambient network authority, and provider-retention dependence. See
 [ADR 0017](decisions/0017-content-addressed-bounded-image-input.md).

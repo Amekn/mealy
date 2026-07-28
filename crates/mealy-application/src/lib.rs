@@ -47,16 +47,17 @@ mod workspace_create;
 mod workspace_manage;
 
 pub use agent::{
-    AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
-    AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
-    AgentStoreError, AgentTaskView, AgentUseCaseError, DispatchModelAttemptCommit,
-    DispatchReadToolCommit, FinalMessageCommit, ForkContextBoundary, MAXIMUM_MODEL_PROGRESS_BYTES,
-    MAXIMUM_MODEL_PROGRESS_DELTA_BYTES, MAXIMUM_MODEL_PROGRESS_EVENTS, ModelDispatchReceipt,
-    ModelFailureReceipt, PrepareModelAttemptCommit, PrepareReadToolCommit,
-    RecordModelFailureCommit, RecordModelProgressCommit, RecordModelResultCommit,
-    RecordReadToolResultCommit, RequestTaskCancellationCommit, TaskCancellationCommitReceipt,
-    TaskControlAction, TaskControlCommit, TaskControlCommitReceipt, bounded_deadline,
-    checked_usage_total, provider_retry_delay, validate_tool_result,
+    AgentArtifactCommit, AgentBudgetUsage, AgentContextImage, AgentContextSource,
+    AgentEvidenceStore, AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport,
+    AgentRunSnapshot, AgentStoreError, AgentTaskView, AgentUseCaseError,
+    DispatchModelAttemptCommit, DispatchReadToolCommit, FinalMessageCommit, ForkContextBoundary,
+    MAXIMUM_MODEL_PROGRESS_BYTES, MAXIMUM_MODEL_PROGRESS_DELTA_BYTES,
+    MAXIMUM_MODEL_PROGRESS_EVENTS, ModelDispatchReceipt, ModelFailureReceipt,
+    PrepareModelAttemptCommit, PrepareReadToolCommit, RecordModelFailureCommit,
+    RecordModelProgressCommit, RecordModelResultCommit, RecordReadToolResultCommit,
+    RequestTaskCancellationCommit, TaskCancellationCommitReceipt, TaskControlAction,
+    TaskControlCommit, TaskControlCommitReceipt, bounded_deadline, checked_usage_total,
+    provider_retry_delay, validate_tool_result,
 };
 pub use agent_effect::{
     AGENT_EFFECT_OBSERVATION_CONTRACT_VERSION, AgentEffectInvocation,

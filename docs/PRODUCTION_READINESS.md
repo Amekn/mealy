@@ -510,25 +510,41 @@ one owner-selected no-follow regular file, allowlists UTF-8 text/source extensio
 256 KiB, binds basename/media/size/SHA-256 inside an untrusted frame, withholds the host path, and
 uses ordinary durable delivery/idempotency. Unit, pseudo-terminal, and real-daemon smoke evidence cover symlink,
 invalid UTF-8/NUL, unsupported type, oversize, prompt-shape, and admission boundaries. The broader
-multimodal/media row is still open. A disabled v0.4 provider foundation now defines digest-bound
-PNG/JPEG/WebP envelopes, strict count/byte/token bounds, text-only route rejection, low-detail
-OpenAI Responses translation, Anthropic image-block translation, and restart-sized durable request
-evidence. Its Linux normalizer now performs PNG/JPEG/WebP validation and metadata-stripping
-re-encoding in a fresh identity-pinned, empty-environment, no-network Bubblewrap worker with no
-home/workspace/secret mount, bounded protocol, OS resource limits, panic containment, animation
-rejection, dimension/pixel caps, deterministic downscaling, and independent daemon-side
+multimodal/media row is still open, but the first v0.4 image-input slice is now active through the
+authenticated API and scriptable CLI. It defines digest-bound PNG/JPEG/WebP envelopes, strict
+count/byte/token bounds, text-only route rejection, low-detail OpenAI Responses translation,
+Anthropic image-block translation, and restart-sized durable request evidence. Its Linux
+normalizer performs PNG/JPEG/WebP validation and metadata-stripping re-encoding in a fresh
+identity-pinned, empty-environment, no-network Bubblewrap worker with no home/workspace/secret
+mount, bounded protocol, OS resource limits, panic containment, animation rejection,
+dimension/pixel caps, deterministic downscaling, and independent daemon-side
 signature/header/size/digest verification. Unit and real-namespace tests cover malformed data,
 media mismatch, APNG/animated WebP rejection, metadata removal, oversize denial, deterministic
-output, and successful normalization. Schema 21 now adds commit-before-link admission: canonical
-bytes are published to the private content-addressed store first, then an atomic SQLite transaction
-links at most four ordered owner/session-scoped artifacts to the durable inbox, journal, and
-acknowledgement. Exact retries bind artifact identity, digest, size, media type, and dimensions;
-late transaction failure rolls back every metadata/reference row while a fresh unlinked blob
-remains protected for age-gated collection. Upgrade, reopen, owner-denial, mutation, rollback, and
-real normalizer-to-blob-to-inbox tests cover this boundary. This remains deliberately unavailable
-at user ingress: context-manifest hydration, export/replay evidence, explicit per-route activation,
-image generation, and safe client/channel rendering remain required before image input can be
-enabled. Audio/video are not implemented.
+output, and successful normalization.
+
+Schema 21 provides commit-before-link admission: canonical bytes are published to the private
+content-addressed store first, then an atomic SQLite transaction links at most four ordered
+owner/session-scoped artifacts to the durable inbox, journal, and acknowledgement. Exact retries
+bind artifact identity, digest, size, media type, and dimensions; late transaction failure rolls
+back every metadata/reference row while a fresh unlinked blob remains protected for age-gated
+collection. Context-manifest v3 reserves 8,192 tokens per image, emits one sparse artifact link per
+included image, and requires image-capable routing before reservation. Trusted hydration rechecks
+artifact ownership, metadata, digest, and bytes immediately before serialization. Transcript v2
+exports path-free image evidence without binary content, and recorded-only replay reconstructs and
+validates the exact normalized request without a live provider call.
+
+Public activation is fail-closed: an approved stopped-daemon transaction enables image input only
+when all configured routes are direct OpenAI Responses or Anthropic Messages; each admission still
+requires one exact advertised image-capable provider/model. The route-specific 6 MiB API boundary
+and `session send-image` preserve retry-stable delivery/artifact identities. One real
+daemon/provider process proof covers isolated normalization, duplicate admission, provider
+serialization, schema-v3 context evidence, transcript-v2 export, and zero-redispatch replay.
+Upgrade, reopen, owner-denial, mutation, rollback, corrupt/dangling evidence, local-file, body-limit,
+and configuration-activation tests cover the supporting boundaries.
+
+The broader gate remains open: TUI, dashboard, chat-native, and channel image upload/rendering,
+fork-lineage image projection, separately permissioned image generation, audio, and video are not
+implemented.
 
 ## Required evidence per implementation slice
 

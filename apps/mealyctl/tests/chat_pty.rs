@@ -1372,6 +1372,7 @@ async fn block_admission(
         api_version: API_VERSION.to_owned(),
         session_id: SESSION_ID.to_owned(),
         inbox_entry_id: "019f0000-0000-7000-8000-000000000002".to_owned(),
+        image_artifact_ids: Vec::new(),
         inbox_sequence: 1,
         delivery_mode: DeliveryMode::Queue,
         provider_selection: mealy_protocol::ProviderSelectionCommand::Automatic,

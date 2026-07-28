@@ -51,6 +51,21 @@ JPEG/PNG re-encoding, alpha preservation, metadata removal, APNG and animated-We
 dimension-first rejection, and bounded downscaling. The daemon verifies canonical headers, bytes,
 size, and digest without invoking the image decoder in its own process.
 
+The `real_provider` process suite includes one exact image-bearing turn through the public daemon
+API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
+delivery/artifact identities, verifies an exact duplicate creates no second dispatch, and observes
+canonical JPEG bytes in the captured provider request. It then checks schema-v3 sparse
+context-manifest evidence, transcript-v2 path-free metadata, and recorded-only replay with zero
+live provider redispatches. Corruption units fail closed on missing/dangling media links,
+unauthorized artifacts, metadata drift, and blob digest/byte drift.
+
+`mealy-api` separately proves the image route accepts a body above the ordinary 1 MiB JSON ceiling
+but returns the versioned `payload_too_large` error above its exact 6 MiB transport bound.
+`mealyctl` units reject symlinks, paths below the Mealy home, unsupported extensions, empty and
+oversized images, and retain no host path. Its process configuration test requires explicit
+approval, rejects a non-direct route, persists rollback history, and proves reversible activation
+for a direct provider chain.
+
 GitHub's Ubuntu 24.04 runner enables AppArmor's unprivileged-user-namespace restriction, which can
 make Bubblewrap fail while bringing up its private loopback device with `RTM_NEWADDR: Operation not
 permitted`. The CI and tag workflows install and directly load only Noble's packaged

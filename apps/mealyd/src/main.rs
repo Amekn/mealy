@@ -58,11 +58,11 @@ use mealy_domain::{
 };
 use mealy_infrastructure::{
     BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
-    FileProviderSecretStore, LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore,
-    StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool,
-    browser_worker_main, create_pre_migration_backup, inspect_existing_schema_version,
-    load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main, media_worker_main,
-    preserve_forensic_database,
+    FileProviderSecretStore, LATEST_SCHEMA_VERSION, LinuxBubblewrapMediaNormalizer,
+    ProviderSecretStoreError, SqliteStore, StoreError, SystemClock, SystemIdGenerator, WebReadTool,
+    WorkspaceGrant, WorkspaceReadTool, browser_worker_main, create_pre_migration_backup,
+    inspect_existing_schema_version, load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main,
+    media_worker_main, preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -435,9 +435,21 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     let fake_provider_estimated_latency_ms = arguments.fake_provider_estimated_latency_ms;
     let maximum_provider_requests = daemon_config.maximum_provider_requests();
     let provider_requests_per_minute = daemon_config.provider_requests_per_minute();
+    let image_input_enabled = !arguments.safe_mode && daemon_config.image_input_enabled();
     let provider = Arc::new(
         tokio::task::spawn_blocking(move || {
-            if provider_fallbacks.is_empty() {
+            if image_input_enabled {
+                RuntimeModelProvider::from_chain_with_image_input(
+                    &provider_config,
+                    &provider_fallbacks,
+                    true,
+                    provider_secret_store.as_ref(),
+                    fake_provider_delay,
+                    fake_provider_estimated_latency_ms,
+                    maximum_provider_requests,
+                    provider_requests_per_minute,
+                )
+            } else if provider_fallbacks.is_empty() {
                 RuntimeModelProvider::from_config(
                     &provider_config,
                     provider_secret_store.as_ref(),
@@ -461,6 +473,26 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         .await
         .map_err(|_| "provider initialization worker failed")??,
     );
+    let image_route_active = !arguments.safe_mode
+        && provider
+            .policy_capabilities()
+            .iter()
+            .any(|capabilities| capabilities.input_modalities.contains("image"));
+    let media_normalizer = if image_route_active {
+        let worker_path = std::env::current_exe()?;
+        Some(Arc::new(
+            tokio::task::spawn_blocking(move || {
+                LinuxBubblewrapMediaNormalizer::load(
+                    Path::new("/usr/bin/bwrap"),
+                    worker_path.as_path(),
+                )
+            })
+            .await
+            .map_err(|_| "media normalizer initialization worker failed")??,
+        ))
+    } else {
+        None
+    };
     let workspace_tools = if arguments.safe_mode || daemon_config.workspace_roots().is_empty() {
         Vec::new()
     } else {
@@ -851,6 +883,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         RuntimeOperationalConfig {
             home: arguments.home.clone(),
             artifact_gc_minimum_age_hours: daemon_config.artifact_gc_minimum_age_hours(),
+            media_normalizer,
             maximum_pending_inputs_per_session: daemon_config.maximum_pending_inputs_per_session(),
             maximum_extension_invocations: daemon_config.maximum_extension_invocations(),
             enabled_read_tools,

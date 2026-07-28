@@ -55,6 +55,8 @@ pub struct DaemonConfig {
     provider: ProviderConfig,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     provider_fallbacks: Vec<ProviderConfig>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    image_input_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_roots: Vec<WorkspaceRootConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -250,6 +252,7 @@ impl Default for DaemonConfig {
             concurrency_limits: ConcurrencyLimitsConfig::default(),
             provider: ProviderConfig::default(),
             provider_fallbacks: Vec::new(),
+            image_input_enabled: false,
             workspace_roots: Vec::new(),
             command_tools: Vec::new(),
             web_access: WebAccessConfig::default(),
@@ -333,6 +336,12 @@ impl DaemonConfig {
     #[must_use]
     pub fn provider_fallbacks(&self) -> &[ProviderConfig] {
         &self.provider_fallbacks
+    }
+
+    /// Returns whether every configured direct provider route explicitly accepts image input.
+    #[must_use]
+    pub const fn image_input_enabled(&self) -> bool {
+        self.image_input_enabled
     }
 
     /// Returns explicitly granted workspace roots in deterministic configuration order.
@@ -424,6 +433,16 @@ impl DaemonConfig {
             || self.agent_loop_limits.validate().is_err()
             || !self.concurrency_limits.valid()
             || validate_provider_chain(&self.provider, &self.provider_fallbacks).is_err()
+            || self.image_input_enabled
+                && !std::iter::once(&self.provider)
+                    .chain(&self.provider_fallbacks)
+                    .all(|provider| {
+                        matches!(
+                            provider,
+                            ProviderConfig::OpenAiResponses { .. }
+                                | ProviderConfig::AnthropicMessages { .. }
+                        )
+                    })
             || !valid_workspace_roots(&self.workspace_roots)
             || !valid_command_tools(&self.command_tools)
             || !self.command_tools.is_empty()
@@ -1211,6 +1230,60 @@ mod tests {
         let serialized = serde_json::to_string(&remote).expect("serialize provider config");
         assert!(serialized.contains("openai-primary"));
         assert!(!serialized.contains("Bearer"));
+    }
+
+    #[test]
+    fn image_input_configuration_defaults_off_and_requires_only_direct_routes() {
+        let direct_home = tempfile::tempdir().expect("direct home");
+        let default =
+            load_or_create_daemon_config(direct_home.path()).expect("create default config");
+        assert!(!default.image_input_enabled());
+        let path = direct_home.path().join("config.json");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read direct config"))
+                .expect("direct config JSON");
+        document["provider"] = serde_json::to_value(ProviderConfig::OpenAiResponses {
+            provider_id: "local.responses".to_owned(),
+            base_url: "http://127.0.0.1:11434/v1".to_owned(),
+            model: "local-vision-model".to_owned(),
+            credential: None,
+            residency: "local".to_owned(),
+            context_tokens: 32_768,
+            maximum_output_tokens: 4_096,
+            streaming: true,
+            input_microunits_per_million_tokens: 0,
+            output_microunits_per_million_tokens: 0,
+            estimated_latency_ms: 50,
+        })
+        .expect("direct provider JSON");
+        document["imageInputEnabled"] = json!(true);
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&document).expect("encode direct config"),
+        )
+        .expect("write direct config");
+        assert!(
+            load_or_create_daemon_config(direct_home.path())
+                .expect("load direct image config")
+                .image_input_enabled()
+        );
+
+        let rejected_home = tempfile::tempdir().expect("rejected home");
+        load_or_create_daemon_config(rejected_home.path()).expect("create rejected default");
+        let path = rejected_home.path().join("config.json");
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read rejected config"))
+                .expect("rejected config JSON");
+        document["imageInputEnabled"] = json!(true);
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&document).expect("encode rejected config"),
+        )
+        .expect("write rejected config");
+        assert!(matches!(
+            load_or_create_daemon_config(rejected_home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
     }
 
     #[cfg(target_os = "linux")]

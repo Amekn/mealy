@@ -17,15 +17,17 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::{
     EXTENSION_POLICY_VERSION, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS,
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS, ScheduleDefinition,
-    sha256_digest, valid_fork_idempotency_key, valid_session_metadata,
+    is_sha256_digest, sha256_digest, valid_fork_idempotency_key, valid_session_metadata,
     validate_schedule_definition,
 };
 use mealy_domain::{
-    ApprovalId, AttemptId, ContextManifestId, EffectId, EventId, ExtensionFilesystemAccess,
-    ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId, MemoryId, MemoryRevisionId,
-    PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId, SessionId, TaskId,
-    ValidationId,
+    ApprovalId, ArtifactId, AttemptId, ContextManifestId, EffectId, EventId,
+    ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId,
+    MemoryId, MemoryRevisionId, PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId,
+    SessionId, TaskId, ValidationId,
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, AdminUsageReportResponse, ApprovalDecisionCommand,
@@ -1060,10 +1062,33 @@ fn validate_dashboard_session_transcript_json(
     let included_turns = u64::try_from(export.turns.len())
         .map_err(|_| CliError::Protocol("transcript turn count exceeds u64".to_owned()))?;
     let content_bytes = export.turns.iter().try_fold(0_u64, |total, turn| {
+        let image_bytes = turn.user.images.iter().try_fold(0_u64, |bytes, image| {
+            if image.artifact_id.parse::<ArtifactId>().is_err()
+                || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg")
+                || !is_sha256_digest(&image.sha256_digest)
+                || image.size_bytes == 0
+                || image.size_bytes
+                    > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+                || image.width == 0
+                || image.height == 0
+                || image.width > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+                || image.height > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            {
+                return Err(CliError::Protocol(
+                    "dashboard transcript image evidence is invalid".to_owned(),
+                ));
+            }
+            bytes
+                .checked_add(image.size_bytes)
+                .ok_or_else(|| CliError::Protocol("transcript image size overflowed".to_owned()))
+        })?;
         if sha256_digest(turn.user.content.as_bytes()) != turn.user.content_digest
             || sha256_digest(turn.assistant.content.as_bytes()) != turn.assistant.content_digest
             || u64::try_from(turn.user.content.len()).ok() != Some(turn.user.byte_length)
             || u64::try_from(turn.assistant.content.len()).ok() != Some(turn.assistant.byte_length)
+            || turn.user.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+            || image_bytes
+                > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES).unwrap_or(u64::MAX)
         {
             return Err(CliError::Protocol(
                 "dashboard transcript message evidence is invalid".to_owned(),
@@ -1075,7 +1100,10 @@ fn validate_dashboard_session_transcript_json(
             .ok_or_else(|| CliError::Protocol("transcript content size overflowed".to_owned()))
     })?;
     if export.api_version != API_VERSION
-        || export.schema_version != "mealy.session-transcript.v1"
+        || !matches!(
+            export.schema_version.as_str(),
+            "mealy.session-transcript.v1" | "mealy.session-transcript.v2"
+        )
         || export.session_id != expected_session_id
         || export.bounds.maximum_turns != maximum_turns
         || export.bounds.maximum_content_bytes != SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
@@ -1102,7 +1130,8 @@ fn validate_dashboard_session_transcript_html(
     let lowercase = html.to_ascii_lowercase();
     if !html.starts_with("<!doctype html>")
         || !html.ends_with("</html>\n")
-        || !html.contains("mealy.session-transcript.v1")
+        || !(html.contains("mealy.session-transcript.v1")
+            || html.contains("mealy.session-transcript.v2"))
         || !html.contains(expected_session_id)
         || !html.contains(INERT_CSP_META)
         || [

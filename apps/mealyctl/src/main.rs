@@ -6,13 +6,18 @@ mod lifecycle;
 mod provider_switch;
 mod tui;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpHttpAuthentication,
+    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
     McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
     McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
@@ -24,7 +29,8 @@ use mealy_application::{
     validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
-    AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
+    ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
+    SkillToolRequirement,
 };
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
@@ -67,11 +73,12 @@ use mealy_protocol::{
     SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
-    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest, SubmitInputRequest,
-    TaskBudgetUsage, TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
-    TaskStatus, TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent,
-    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
-    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelsResponse,
+    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
+    SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
+    WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -107,9 +114,10 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 8] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 9] = [
     "browser",
     "commandTools",
+    "imageInputEnabled",
     "mcpHttpServers",
     "mcpServers",
     "providerFallbacks",
@@ -159,6 +167,8 @@ const DISCORD_PAIR_MINIMUM_TIMEOUT_SECONDS: u64 = 30;
 const DISCORD_PAIR_MAXIMUM_TIMEOUT_SECONDS: u64 = 300;
 const USAGE_DAY_MS: i64 = 86_400_000;
 const MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES: u64 = 256 * 1024;
+const MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_LOCAL_ATTACHMENT_PROMPT_BYTES: usize = 16 * 1024;
 const MAXIMUM_LOCAL_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAXIMUM_LOCAL_ATTACHMENT_INPUT_BYTES: usize = 1024 * 1024;
@@ -198,10 +208,53 @@ struct McpHttpArguments {
     command: McpHttpNamespace,
 }
 
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed local media administration")]
+struct MediaArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Media configuration namespace.
+    #[command(subcommand)]
+    command: MediaNamespace,
+}
+
 #[derive(Debug, Subcommand)]
 enum McpHttpNamespace {
     /// Inspect or change governed Streamable HTTP MCP authority.
     McpHttp(Box<McpHttpOptions>),
+}
+
+#[derive(Debug, Subcommand)]
+enum MediaNamespace {
+    /// Inspect or change bounded media capabilities.
+    Media(MediaOptions),
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("image_input_mode")
+        .required(true)
+        .args(["enable", "disable"])
+))]
+struct MediaOptions {
+    /// Capability to configure.
+    action: MediaAction,
+    /// Activate image input for all configured direct OpenAI/Anthropic routes.
+    #[arg(long)]
+    enable: bool,
+    /// Disable image input and return every route to text-only operation.
+    #[arg(long)]
+    disable: bool,
+    /// Confirm this stopped-daemon configuration change.
+    #[arg(long)]
+    approve: bool,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MediaAction {
+    /// Bounded owner-supplied image input.
+    ImageInput,
 }
 
 #[derive(Debug, Subcommand)]
@@ -2406,6 +2459,29 @@ enum SessionCommand {
         #[command(flatten)]
         selection: ProviderSelectionArguments,
     },
+    /// Normalize and durably submit one to four owner-selected local images.
+    SendImage {
+        /// Opaque session ID returned by `session create`.
+        session_id: String,
+        /// One to four existing PNG, JPEG, or WebP files; symlinks are rejected.
+        #[arg(required = true, num_args = 1..=4)]
+        paths: Vec<PathBuf>,
+        /// Instruction accompanying the ordered images.
+        #[arg(long, default_value = "Describe the attached image or images.")]
+        prompt: String,
+        /// Stable delivery key; generated and printed when omitted.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        /// Retry-stable `UUIDv7` artifact IDs, one per path; generated and printed when omitted.
+        #[arg(long = "artifact-id")]
+        artifact_ids: Vec<String>,
+        /// Delivery behavior.
+        #[arg(long, value_enum, default_value_t = DeliveryArgument::Queue)]
+        delivery: DeliveryArgument,
+        /// Required exact image-capable provider/model route.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
+    },
     /// Read current session queue/turn status.
     Status {
         /// Opaque session ID.
@@ -2529,8 +2605,10 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-        <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+    <MediaNamespace as clap::Subcommand>::augment_subcommands(
+        <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+            <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+        ),
     )
     .subcommand_required(false)
     .after_help(
@@ -2619,6 +2697,25 @@ fn mcp_http_invocation(arguments: &[OsString]) -> bool {
             continue;
         }
         return argument == "mcp-http";
+    }
+    false
+}
+
+fn media_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "media";
     }
     false
 }
@@ -3564,6 +3661,20 @@ fn remove_verified_owner_service_if_present(_home: &Path) -> Result<(), CliError
 async fn run() -> Result<(), CliError> {
     let raw_arguments = apply_default_operational_subcommand(std::env::args_os().collect())?;
     let home_override_supplied = cli_home_override_supplied(&raw_arguments);
+    if media_invocation(&raw_arguments) {
+        let mut arguments = MediaArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let MediaNamespace::Media(options) = arguments.command;
+        let MediaOptions {
+            action: MediaAction::ImageInput,
+            enable,
+            disable: _,
+            approve,
+        } = options;
+        return tokio::task::block_in_place(|| {
+            configure_provider_image_input(&arguments.home, enable, approve)
+        });
+    }
     if mcp_http_invocation(&raw_arguments) {
         let mut arguments = McpHttpArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
@@ -8008,6 +8119,37 @@ fn prepare_local_text_attachment(
     Ok(content)
 }
 
+fn prepare_local_image_attachment(
+    home: &Path,
+    path: &Path,
+) -> Result<(&'static str, Vec<u8>), CliError> {
+    let media_type = local_image_attachment_media_type(path)?;
+    let file = open_local_attachment(path)?;
+    let metadata = file.metadata()?;
+    let canonical_path = fs::canonicalize(path)?;
+    let canonical_metadata = fs::metadata(&canonical_path)?;
+    let canonical_home = fs::canonicalize(home)?;
+    if !metadata.is_file()
+        || !same_file_identity(&metadata, &canonical_metadata)
+        || paths_overlap(&canonical_path, &canonical_home)
+        || metadata.len() == 0
+        || metadata.len() > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| CliError::InvalidLocalAttachment)?,
+    );
+    file.take(MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty()
+        || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    Ok((media_type, bytes))
+}
+
 #[cfg(unix)]
 fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -8035,6 +8177,20 @@ fn local_text_attachment_media_type(path: &Path) -> Result<&'static str, CliErro
         "txt" | "text" | "log" | "rs" | "py" | "js" | "ts" | "html" | "css" | "sh" | "sql" => {
             Ok("text/plain; charset=utf-8")
         }
+        _ => Err(CliError::InvalidLocalAttachment),
+    }
+}
+
+fn local_image_attachment_media_type(path: &Path) -> Result<&'static str, CliError> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or(CliError::InvalidLocalAttachment)?;
+    match extension.as_str() {
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "webp" => Ok("image/webp"),
         _ => Err(CliError::InvalidLocalAttachment),
     }
 }
@@ -8111,6 +8267,29 @@ async fn run_session(
         command @ (SessionCommand::Send { .. } | SessionCommand::SendFile { .. }) => {
             run_session_submission(client, home, connection, command).await?;
         }
+        SessionCommand::SendImage {
+            session_id,
+            paths,
+            prompt,
+            idempotency_key,
+            artifact_ids,
+            delivery,
+            selection,
+        } => {
+            run_session_image_submission(
+                client,
+                home,
+                connection,
+                session_id,
+                paths,
+                prompt,
+                idempotency_key,
+                artifact_ids,
+                delivery,
+                selection,
+            )
+            .await?;
+        }
         SessionCommand::Status { session_id } => {
             let response = authorized(
                 client.get(format!(
@@ -8185,6 +8364,93 @@ async fn run_session_submission(
         content,
     };
     print_json(submit_input_with_retry(client, home, connection, &session_id, &request).await?)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session_image_submission(
+    client: &Client,
+    home: &Path,
+    connection: &LocalConnectionInfo,
+    session_id: String,
+    paths: Vec<PathBuf>,
+    prompt: String,
+    idempotency_key: Option<String>,
+    mut artifact_ids: Vec<String>,
+    delivery: DeliveryArgument,
+    selection: ProviderSelectionArguments,
+) -> Result<(), CliError> {
+    if paths.is_empty()
+        || paths.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+        || prompt.is_empty()
+        || prompt.len() > MAXIMUM_LOCAL_ATTACHMENT_PROMPT_BYTES
+        || prompt.trim() != prompt
+        || prompt.chars().any(char::is_control)
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    let Some(provider_selection @ ProviderSelectionCommand::Exact { .. }) =
+        selection.into_selection()?
+    else {
+        return Err(CliError::Protocol(
+            "image input requires --provider-id and --model-id for an exact activated route"
+                .to_owned(),
+        ));
+    };
+    let generated_key = idempotency_key.is_none();
+    let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
+    if generated_key {
+        eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
+    }
+    let generated_artifact_ids = artifact_ids.is_empty();
+    if generated_artifact_ids {
+        artifact_ids = paths
+            .iter()
+            .map(|_| ArtifactId::new().to_string())
+            .collect();
+    }
+    if artifact_ids.len() != paths.len() {
+        return Err(CliError::Protocol(
+            "provide either no --artifact-id values or exactly one UUIDv7 per image path"
+                .to_owned(),
+        ));
+    }
+    let mut seen_artifacts = BTreeSet::new();
+    let mut total_source_bytes = 0_u64;
+    let mut images = Vec::with_capacity(paths.len());
+    for (index, (path, artifact_id)) in paths.iter().zip(&artifact_ids).enumerate() {
+        let parsed = artifact_id
+            .parse::<ArtifactId>()
+            .map_err(|_| CliError::InvalidLocalAttachment)?;
+        if parsed.as_uuid().get_version_num() != 7 || !seen_artifacts.insert(parsed) {
+            return Err(CliError::InvalidLocalAttachment);
+        }
+        let (media_type, bytes) = prepare_local_image_attachment(home, path)?;
+        total_source_bytes = total_source_bytes
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(CliError::InvalidLocalAttachment)?;
+        if total_source_bytes > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES {
+            return Err(CliError::InvalidLocalAttachment);
+        }
+        if generated_artifact_ids {
+            eprintln!("MEALY_IMAGE_ARTIFACT_ID {} {artifact_id}", index + 1);
+        }
+        images.push(SubmittedImageInput {
+            artifact_id: artifact_id.clone(),
+            media_type: media_type.to_owned(),
+            data_base64: BASE64_STANDARD.encode(bytes),
+        });
+    }
+    let request = SubmitImageInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: key,
+        delivery_mode: delivery.into(),
+        content: prompt,
+        provider_selection,
+        images,
+    };
+    print_json(
+        submit_image_input_with_retry(client, home, connection, &session_id, &request).await?,
+    )
 }
 
 async fn create_cli_session(
@@ -9263,6 +9529,7 @@ async fn read_bounded_success_body(
     Ok(body)
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_session_transcript_json(
     bytes: &[u8],
     expected_session_id: &str,
@@ -9273,7 +9540,10 @@ fn validate_session_transcript_json(
     let expected_maximum_turns = u64::try_from(SESSION_TRANSCRIPT_MAXIMUM_TURNS)
         .map_err(|_| CliError::Protocol("session export turn bound exceeds u64".to_owned()))?;
     if export.api_version != API_VERSION
-        || export.schema_version != "mealy.session-transcript.v1"
+        || !matches!(
+            export.schema_version.as_str(),
+            "mealy.session-transcript.v1" | "mealy.session-transcript.v2"
+        )
         || export.session_id != expected_session_id
         || export.session_id.parse::<SessionId>().is_err()
         || !valid_session_metadata(&export.title)
@@ -9322,6 +9592,26 @@ fn validate_session_transcript_json(
     let mut content_bytes = 0_u64;
     let mut previous_sequence = None;
     for turn in &export.turns {
+        let image_bytes = turn.user.images.iter().try_fold(0_u64, |total, image| {
+            if image.artifact_id.parse::<ArtifactId>().is_err()
+                || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg")
+                || !is_sha256_digest(&image.sha256_digest)
+                || image.size_bytes == 0
+                || image.size_bytes
+                    > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+                || image.width == 0
+                || image.height == 0
+                || image.width > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+                || image.height > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            {
+                return Err(CliError::Protocol(
+                    "session JSON export contains invalid image evidence".to_owned(),
+                ));
+            }
+            total
+                .checked_add(image.size_bytes)
+                .ok_or_else(|| CliError::Protocol("session image size overflowed".to_owned()))
+        })?;
         let storage_shape_valid = match turn.assistant.storage.as_str() {
             "inline" => turn.assistant.artifact_id.is_none(),
             "artifact" => turn.assistant.artifact_id.is_some(),
@@ -9340,6 +9630,9 @@ fn validate_session_transcript_json(
             || turn.assistant.media_type != "text/plain; charset=utf-8"
             || turn.assistant.sensitivity != "internal"
             || !storage_shape_valid
+            || turn.user.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+            || image_bytes
+                > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES).unwrap_or(u64::MAX)
         {
             return Err(CliError::Protocol(
                 "session JSON export contains inconsistent turn evidence".to_owned(),
@@ -9374,7 +9667,8 @@ fn validate_session_transcript_html(
     let lowercase = html.to_ascii_lowercase();
     if !html.starts_with("<!doctype html>")
         || !html.ends_with("</html>\n")
-        || !html.contains("mealy.session-transcript.v1")
+        || !(html.contains("mealy.session-transcript.v1")
+            || html.contains("mealy.session-transcript.v2"))
         || !html.contains(expected_session_id)
         || !html.contains(INERT_CSP_META)
         || [
@@ -9723,6 +10017,54 @@ async fn submit_input_with_retry(
             Err(_) if attempt < 4 => {
                 eprintln!(
                     "input admission response was unavailable; retrying with idempotency key {}",
+                    request.idempotency_key
+                );
+            }
+            Err(error) => return Err(CliError::Http(error)),
+        }
+        tokio::time::sleep(Duration::from_millis(100_u64 << attempt)).await;
+        if let Ok(reloaded) = load_connection(home) {
+            connection = reloaded;
+        }
+    }
+    unreachable!("bounded retry loop always returns on its final attempt")
+}
+
+async fn submit_image_input_with_retry(
+    client: &Client,
+    home: &Path,
+    initial_connection: &LocalConnectionInfo,
+    session_id: &str,
+    request: &SubmitImageInputRequest,
+) -> Result<InputAdmissionResponse, CliError> {
+    let mut connection = initial_connection.clone();
+    for attempt in 0_u32..5 {
+        let result = authorized(
+            client.post(format!(
+                "{}/v1/sessions/{session_id}/image-inputs",
+                connection.base_url
+            )),
+            &connection,
+        )
+        .timeout(Duration::from_secs(90))
+        .json(request)
+        .send()
+        .await;
+        match result {
+            Ok(response) if response.status().is_success() => {
+                return decode::<InputAdmissionResponse>(response).await;
+            }
+            Ok(response) if retryable_status(response.status()) && attempt < 4 => {
+                eprintln!(
+                    "image admission returned {}; retrying exact identities with idempotency key {}",
+                    response.status(),
+                    request.idempotency_key
+                );
+            }
+            Ok(response) => return Err(server_error(response).await),
+            Err(_) if attempt < 4 => {
+                eprintln!(
+                    "image admission response was unavailable; retrying exact artifact identities with idempotency key {}",
                     request.idempotency_key
                 );
             }
@@ -11447,6 +11789,17 @@ struct ProviderChainConfigurationResponse {
     fallback_count: usize,
     credential_values_resolved: bool,
     configuration_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderImageInputConfigurationResponse {
+    enabled: bool,
+    provider_ids: Vec<String>,
+    configuration_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    restart_required: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -13585,6 +13938,83 @@ fn list_provider_chain(home: &Path) -> Result<(), CliError> {
         fallbacks,
         credential_values_resolved: false,
         configuration_path: current.display().to_string(),
+    })
+}
+
+fn configure_provider_image_input(
+    home: &Path,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if !valid_daemon_config_keys(object)
+        || DAEMON_CONFIG_KEYS
+            .iter()
+            .any(|key| !object.contains_key(*key))
+        || object.get("formatVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    let primary = serde_json::from_value::<ProviderConfig>(
+        object
+            .get("provider")
+            .cloned()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    let fallbacks = object
+        .get("providerFallbacks")
+        .cloned()
+        .map(serde_json::from_value::<Vec<ProviderConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_provider_chain(&primary, &fallbacks)
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let routes = std::iter::once(&primary)
+        .chain(&fallbacks)
+        .collect::<Vec<_>>();
+    if enabled
+        && !routes.iter().all(|provider| {
+            matches!(
+                provider,
+                ProviderConfig::OpenAiResponses { .. } | ProviderConfig::AnthropicMessages { .. }
+            )
+        })
+    {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if enabled {
+        object.insert("imageInputEnabled".to_owned(), Value::Bool(true));
+    } else {
+        object.remove("imageInputEnabled");
+    }
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let timestamp = unix_timestamp_millis()?;
+    let replaced = home
+        .join("config-history")
+        .join(format!("pre-provider-image-input-{timestamp}.json"));
+    atomic_write_service(&replaced, &current_body)?;
+    atomic_write_service(&current, &updated)?;
+    let provider_ids = routes
+        .into_iter()
+        .filter_map(ProviderConfig::provider_id)
+        .map(str::to_owned)
+        .collect();
+    print_json(ProviderImageInputConfigurationResponse {
+        enabled,
+        provider_ids,
+        configuration_digest: sha256_digest(&updated),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        restart_required: true,
     })
 }
 
@@ -18284,24 +18714,27 @@ mod tests {
         ApprovalCommand, Arguments, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
         CompactionCommand, ConfigCommand, DelegationCommand, DiscordPairMessage, DiscordPairUser,
         EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MemoryCommand,
-        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
-        ProviderSwitchRecoveryRoute, ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS,
-        ScheduleCommand, ServiceCommand, SessionCommand, SessionExportFormatArgument,
-        SessionProviderCommand, SetupProviderArgument, SkillCommand, TelegramPairChat,
-        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
-        chat_usage_line, configure_workspace_grant, decode, generate_discord_pair_challenge,
-        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
-        lifecycle_invocation, load_connection, normalize_openrouter_display_name,
-        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
-        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_text_attachment, provider_switch_recovery_route,
-        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
-        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
-        telegram_pair_api_url, update_recovery_route, validate_anthropic_probe_envelope,
-        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
-        validate_provider_probe_envelope, validate_provider_probe_stream,
-        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
+        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
+        MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
+        MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions,
+        ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
+        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
+        SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
+        TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
+        UpdateRecoveryRoute, chat_usage_line, configure_workspace_grant, decode,
+        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
+        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
+        normalize_openrouter_display_name, observe_discord_pair_messages,
+        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
+        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
+        prepare_local_image_attachment, prepare_local_text_attachment,
+        provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
+        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
+        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
+        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
+        validate_discord_pair_base_url, validate_provider_probe_envelope,
+        validate_provider_probe_stream, validate_session_transcript_html,
+        validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -18961,6 +19394,35 @@ mod tests {
     }
 
     #[test]
+    fn media_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("media"),
+            OsString::from("image-input"),
+            OsString::from("--enable"),
+            OsString::from("--approve"),
+        ];
+        assert!(media_invocation(&arguments));
+        assert!(!media_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            MediaArguments::try_parse_from(arguments).expect("separate media command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            MediaNamespace::Media(options)
+                if matches!(options.action, MediaAction::ImageInput)
+                    && options.enable
+                    && !options.disable
+                    && options.approve
+        ));
+    }
+
+    #[test]
     fn local_text_attachment_is_bounded_digest_framed_path_free_and_no_follow() {
         let home = tempfile::tempdir().expect("daemon home");
         let directory = tempfile::tempdir().expect("attachment directory");
@@ -19010,6 +19472,39 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn local_image_attachment_is_bounded_allowlisted_path_private_and_no_follow() {
+        let home = tempfile::tempdir().expect("daemon home");
+        let directory = tempfile::tempdir().expect("image directory");
+        let image = directory.path().join("source.webp");
+        let source = b"hostile bytes are normalized only by the daemon worker";
+        std::fs::write(&image, source).expect("image fixture");
+        let (media_type, bytes) =
+            prepare_local_image_attachment(home.path(), &image).expect("read bounded source");
+        assert_eq!(media_type, "image/webp");
+        assert_eq!(bytes, source);
+
+        let unsupported = directory.path().join("source.svg");
+        std::fs::write(&unsupported, b"<svg/>").expect("unsupported image");
+        assert!(prepare_local_image_attachment(home.path(), &unsupported).is_err());
+        let oversized = directory.path().join("large.png");
+        std::fs::File::create(&oversized)
+            .expect("oversized image")
+            .set_len(MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES + 1)
+            .expect("oversized length");
+        assert!(prepare_local_image_attachment(home.path(), &oversized).is_err());
+        let private_image = home.path().join("private.png");
+        std::fs::write(&private_image, b"daemon private state").expect("private image");
+        assert!(prepare_local_image_attachment(home.path(), &private_image).is_err());
+
+        #[cfg(unix)]
+        {
+            let redirected = directory.path().join("redirect.png");
+            std::os::unix::fs::symlink(&image, &redirected).expect("image symlink");
+            assert!(prepare_local_image_attachment(home.path(), &redirected).is_err());
         }
     }
 

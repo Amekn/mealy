@@ -3,14 +3,15 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use mealy_application::ProviderSelection;
 use mealy_application::{
-    AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
-    AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
-    AgentStoreError, AgentTaskView, ContextDisposition, ContextEpoch, ContextManifestItem,
-    ContextMemoryEvidence, ContextMemorySourceCitation, ForkContextBoundary, MessageRole,
-    ModelDispatchReceipt, NormalizedMessage, OwnershipContext, PrepareModelAttemptCommit,
-    ProviderCapabilities, ProviderRequest, ProviderResponse, ReadToolDescriptor, estimate_tokens,
-    is_sha256_digest, sha256_digest, validate_context_manifest, validate_fixture_read_arguments,
-    web_url_authorized_by_capabilities,
+    AgentArtifactCommit, AgentBudgetUsage, AgentContextImage, AgentContextSource,
+    AgentEvidenceStore, AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport,
+    AgentRunSnapshot, AgentStoreError, AgentTaskView, ContextDisposition, ContextEpoch,
+    ContextManifestItem, ContextMemoryEvidence, ContextMemorySourceCitation, ForkContextBoundary,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole, ModelDispatchReceipt, NormalizedMessage,
+    OwnershipContext, PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, PrepareModelAttemptCommit,
+    ProviderCapabilities, ProviderRequest, ProviderResponse, ReadToolDescriptor, SHA256_ALGORITHM,
+    estimate_tokens, is_sha256_digest, sha256_digest, validate_context_manifest,
+    validate_fixture_read_arguments, web_url_authorized_by_capabilities,
 };
 use mealy_domain::{
     CapabilityGrant, ChannelBindingId, CompactionId, ContextItemId, CorrelationId, EffectClass,
@@ -1157,6 +1158,12 @@ fn load_context_sources(
             |result| Ok((result.get::<_, String>(0)?, result.get::<_, String>(1)?)),
         )
         .map_err(map_sqlite_error)?;
+    let current_images = load_input_context_images(
+        connection,
+        &inbox_entry_id,
+        &row.session_id,
+        &row.principal_id,
+    )?;
     let current_user = AgentContextSource {
         source_type: "user".to_owned(),
         source_locator: format!("inbox://{inbox_entry_id}"),
@@ -1169,6 +1176,7 @@ fn load_context_sources(
         },
         sensitivity: "private".to_owned(),
         content_artifact_id: None,
+        image_artifacts: current_images.clone(),
         memory_evidence: None,
         compaction_id: None,
     };
@@ -1189,6 +1197,7 @@ fn load_context_sources(
         &row.session_id,
         &row.principal_id,
         compaction_cutoff,
+        MAXIMUM_PROVIDER_IMAGE_INPUTS.saturating_sub(current_images.len()),
     )?;
     sources.push(current_user);
     if let Some(compaction) = compaction {
@@ -1199,6 +1208,145 @@ fn load_context_sources(
     sources.extend(load_read_tool_context_sources(connection, &run_id)?);
     sources.extend(load_effect_context_sources(connection, &run_id)?);
     Ok(sources)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn load_input_context_images(
+    connection: &rusqlite::Connection,
+    inbox_entry_id: &str,
+    session_id: &str,
+    principal_id: &str,
+) -> Result<Vec<AgentContextImage>, AgentStoreError> {
+    let stored_media_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM session_inbox_media WHERE inbox_entry_id = ?1",
+            [inbox_entry_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let expected_access_policy =
+        json!({"principalId": principal_id, "sessionId": session_id}).to_string();
+    let expected_access_policy_digest = sha256_digest(expected_access_policy.as_bytes());
+    let mut statement = connection
+        .prepare(
+            "SELECT media.ordinal, media.artifact_id, media.media_type, media.width, media.height, \
+                    image.blob_algorithm, image.blob_digest, image.principal_id, image.session_id, \
+                    image.media_type, image.origin_kind, image.origin_id, image.producer_kind, \
+                    image.producer_id, image.sensitivity, image.retention_class, \
+                    image.access_policy_json, image.access_policy_digest, blob.size_bytes, \
+                    blob.relative_path \
+             FROM session_inbox_media media \
+             JOIN session_inbox inbox ON inbox.inbox_entry_id = media.inbox_entry_id \
+             JOIN session owner_session ON owner_session.id = inbox.session_id \
+             JOIN artifact image ON image.id = media.artifact_id \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = image.blob_algorithm AND blob.digest = image.blob_digest \
+             WHERE media.inbox_entry_id = ?1 AND inbox.session_id = ?2 \
+               AND owner_session.principal_id = ?3 \
+             ORDER BY media.ordinal",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(params![inbox_entry_id, session_id, principal_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, String>(15)?,
+                row.get::<_, String>(16)?,
+                row.get::<_, String>(17)?,
+                row.get::<_, i64>(18)?,
+                row.get::<_, String>(19)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    if usize::try_from(stored_media_count).ok() != Some(rows.len()) {
+        return Err(invariant(
+            "stored input image context references are incomplete",
+        ));
+    }
+    if rows.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+        return Err(invariant(
+            "stored input image count exceeds the context bound",
+        ));
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(
+            |(
+                expected_ordinal,
+                (
+                    ordinal,
+                    artifact_id,
+                    media_type,
+                    width,
+                    height,
+                    algorithm,
+                    digest,
+                    image_principal_id,
+                    image_session_id,
+                    artifact_media_type,
+                    origin_kind,
+                    origin_id,
+                    producer_kind,
+                    producer_id,
+                    sensitivity,
+                    retention_class,
+                    access_policy,
+                    access_policy_digest,
+                    size_bytes,
+                    relative_path,
+                ),
+            )| {
+                let image = AgentContextImage {
+                    artifact_id: parse_id(&artifact_id, "input image artifact ID")?,
+                    media_type: media_type.clone(),
+                    sha256_digest: digest.clone(),
+                    size_bytes: u64::try_from(size_bytes)
+                        .map_err(|_| invariant("stored input image size is negative"))?,
+                    width: u32::try_from(width)
+                        .map_err(|_| invariant("stored input image width is invalid"))?,
+                    height: u32::try_from(height)
+                        .map_err(|_| invariant("stored input image height is invalid"))?,
+                };
+                if usize::try_from(ordinal).ok() != Some(expected_ordinal)
+                    || !image.is_valid()
+                    || algorithm != SHA256_ALGORITHM
+                    || relative_path != format!("{SHA256_ALGORITHM}/{digest}")
+                    || image_principal_id != principal_id
+                    || image_session_id != session_id
+                    || artifact_media_type != media_type
+                    || origin_kind != "session_input"
+                    || origin_id != inbox_entry_id
+                    || producer_kind != "builtin"
+                    || producer_id != "mealyd.media-normalizer.v1"
+                    || sensitivity != "private"
+                    || retention_class != "session_history"
+                    || access_policy != expected_access_policy
+                    || access_policy_digest != expected_access_policy_digest
+                {
+                    return Err(invariant(
+                        "stored input image context evidence is inconsistent",
+                    ));
+                }
+                Ok(image)
+            },
+        )
+        .collect()
 }
 
 fn load_fork_context_boundary(
@@ -1358,6 +1506,7 @@ fn load_compaction_context_source(
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: Some(compaction_id),
         },
@@ -1372,6 +1521,7 @@ fn load_conversation_context_sources(
     session_id: &str,
     principal_id: &str,
     compaction_cutoff: i64,
+    maximum_image_count: usize,
 ) -> Result<Vec<AgentContextSource>, AgentStoreError> {
     if compaction_cutoff < 0 {
         return Err(invariant("conversation compaction cutoff is negative"));
@@ -1477,6 +1627,21 @@ fn load_conversation_context_sources(
     let remaining_turns = MAXIMUM_CONVERSATION_HISTORY_TURNS
         .saturating_sub(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let remaining_bytes = MAXIMUM_CONVERSATION_HISTORY_BYTES.saturating_sub(own_history_bytes);
+    let mut remaining_image_count = maximum_image_count.min(MAXIMUM_PROVIDER_IMAGE_INPUTS);
+    let mut history_images = HashMap::<String, Vec<AgentContextImage>>::new();
+    let mut history_start_index = 0_usize;
+    for (index, row) in rows.iter().enumerate().rev() {
+        let images = load_input_context_images(connection, &row.0, session_id, principal_id)?;
+        if images.len() > remaining_image_count {
+            // Preserve a chronological suffix. Keeping this turn's text without its images would
+            // change its meaning, while skipping it and then including older turns would create a
+            // non-contiguous conversation projection.
+            history_start_index = index.saturating_add(1);
+            break;
+        }
+        remaining_image_count = remaining_image_count.saturating_sub(images.len());
+        history_images.insert(row.0.clone(), images);
+    }
     let mut sources = load_fork_context_sources(
         connection,
         current_turn_id,
@@ -1487,7 +1652,9 @@ fn load_conversation_context_sources(
         remaining_bytes,
     )?;
     sources.reserve(rows.len().saturating_mul(2));
-    for (inbox_entry_id, user_content, message_id, assistant_content, digest, byte_length) in rows {
+    for (inbox_entry_id, user_content, message_id, assistant_content, digest, byte_length) in
+        rows.into_iter().skip(history_start_index)
+    {
         if byte_length <= 0
             || usize::try_from(byte_length).ok() != Some(assistant_content.len())
             || sha256_digest(assistant_content.as_bytes()) != digest
@@ -1508,6 +1675,7 @@ fn load_conversation_context_sources(
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: history_images.remove(&inbox_entry_id).unwrap_or_default(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1523,6 +1691,7 @@ fn load_conversation_context_sources(
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1651,6 +1820,7 @@ fn load_fork_context_sources(
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1666,6 +1836,7 @@ fn load_fork_context_sources(
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1741,6 +1912,7 @@ fn load_memory_context_sources(
                     },
                     sensitivity,
                     content_artifact_id: None,
+                    image_artifacts: Vec::new(),
                     memory_evidence: Some(ContextMemoryEvidence {
                         memory_id,
                         revision_id,
@@ -1936,6 +2108,7 @@ fn load_read_tool_context_sources(
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1986,6 +2159,7 @@ fn load_effect_context_sources(
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -6190,6 +6364,7 @@ struct ExpectedContextSource {
     artifact_id: Option<String>,
     size_bytes: u64,
     tool_call_id: Option<String>,
+    images: Vec<AgentContextImage>,
 }
 
 #[derive(Debug)]
@@ -6284,7 +6459,7 @@ fn verify_context_manifest(
         };
     if !matches!(
         compiler_version.as_str(),
-        "mealy.context.v1" | "mealy.context.v2"
+        "mealy.context.v1" | "mealy.context.v2" | "mealy.context.v3"
     ) || iteration <= 0
         || u64::try_from(iteration).ok() != Some(attempt.ordinal)
         || provider_residency != attempt.provider_residency
@@ -6395,6 +6570,17 @@ fn verify_context_manifest(
             return Ok(false);
         }
     }
+    let principal_id = connection
+        .query_row(
+            "SELECT principal_id FROM session WHERE id = ?1",
+            [session_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some(principal_id) = principal_id else {
+        return Ok(false);
+    };
 
     let mut expected = vec![ExpectedContextSource {
         source_type: "baseline".to_owned(),
@@ -6405,19 +6591,19 @@ fn verify_context_manifest(
         inline_content: Some(baseline_text),
         artifact_id: None,
         tool_call_id: None,
+        images: Vec::new(),
     }];
-    if compiler_version == "mealy.context.v2" && turn_kind == "canonical" {
-        let principal_id = connection
-            .query_row(
-                "SELECT principal_id FROM session WHERE id = ?1",
-                [session_id.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(map_sqlite_error)?;
-        let Some(principal_id) = principal_id else {
-            return Ok(false);
+    let current_images =
+        match load_input_context_images(connection, &inbox_entry_id, &session_id, &principal_id) {
+            Ok(images) => images,
+            Err(AgentStoreError::InvariantViolation(_)) => return Ok(false),
+            Err(error) => return Err(error),
         };
+    if matches!(
+        compiler_version.as_str(),
+        "mealy.context.v2" | "mealy.context.v3"
+    ) && turn_kind == "canonical"
+    {
         let Some(compaction_cutoff) = replay_compaction_cutoff(
             connection,
             &attempt.context_manifest_id,
@@ -6434,6 +6620,7 @@ fn verify_context_manifest(
             &session_id,
             &principal_id,
             compaction_cutoff,
+            MAXIMUM_PROVIDER_IMAGE_INPUTS.saturating_sub(current_images.len()),
         ) {
             Ok(sources) => sources,
             Err(AgentStoreError::InvariantViolation(_)) => return Ok(false),
@@ -6450,6 +6637,7 @@ fn verify_context_manifest(
         inline_content: Some(user_content),
         artifact_id: None,
         tool_call_id: None,
+        images: current_images,
     });
     let Some(phase_five_sources) = load_replay_phase_five_sources(
         connection,
@@ -6483,6 +6671,7 @@ fn verify_context_manifest(
             artifact_id: tool.output_artifact_id.clone(),
             size_bytes,
             tool_call_id: Some(tool.tool_call_id.clone()),
+            images: Vec::new(),
         });
     }
     for effect in effects.iter().filter(|effect| {
@@ -6499,6 +6688,7 @@ fn verify_context_manifest(
             artifact_id: None,
             size_bytes: u64::try_from(effect.content.len()).unwrap_or(u64::MAX),
             tool_call_id: Some(effect.tool_call_id.clone()),
+            images: Vec::new(),
         });
     }
 
@@ -6561,136 +6751,152 @@ fn verify_context_manifest(
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(map_sqlite_error)?
     };
-    if items.len() != expected.len() {
-        return Ok(false);
-    }
-
     let token_budget = u64::try_from(token_budget).unwrap_or(0);
-    let mut mandatory_tokens_remaining = if compiler_version == "mealy.context.v2" {
-        expected
-            .iter()
-            .filter(|source| source.source_type == "user")
-            .try_fold(0_u64, |total, source| {
-                total.checked_add(
-                    source
-                        .inline_content
-                        .as_deref()
-                        .map_or(u64::MAX, estimate_tokens),
-                )
-            })
-            .unwrap_or(u64::MAX)
+    if compiler_version == "mealy.context.v3" {
+        let Some((included_total, message_count)) = verify_v3_manifest_projection(
+            &items,
+            &expected,
+            &attempt.request.messages,
+            token_budget,
+        ) else {
+            return Ok(false);
+        };
+        if message_count != attempt.request.messages.len()
+            || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
+        {
+            return Ok(false);
+        }
     } else {
-        0
-    };
-    if compiler_version == "mealy.context.v2"
-        && estimate_tokens(
+        if items.len() != expected.len() {
+            return Ok(false);
+        }
+        let mut mandatory_tokens_remaining = if compiler_version == "mealy.context.v2" {
             expected
-                .first()
-                .and_then(|source| source.inline_content.as_deref())
-                .unwrap_or_default(),
-        )
-        .checked_add(mandatory_tokens_remaining)
-        .is_none_or(|required| required > token_budget)
-    {
-        return Ok(false);
-    }
-    let mut included_total = 0_u64;
-    let mut message_index = 0_usize;
-    let mut item_ids = HashSet::new();
-    for (index, (item, source)) in items.iter().zip(&expected).enumerate() {
-        let Some(token_estimate) = u64::try_from(item.token_estimate).ok() else {
-            return Ok(false);
-        };
-        let inline_rendered = source.inline_content.as_ref();
-        if item.ordinal != i64::try_from(index).unwrap_or(i64::MAX)
-            || ContextItemId::from_str(&item.item_id).is_err()
-            || !item_ids.insert(item.item_id.as_str())
-            || item.source_type != source.source_type
-            || item.sensitivity != source.sensitivity
-            || item.source_locator != source.source_locator
-            || item.source_content_digest != source.source_digest
-            || !valid_sha256_digest(&item.source_content_digest)
-            || !valid_sha256_digest(&item.rendered_content_digest)
-            || inline_rendered.is_some_and(|rendered| {
-                sha256_digest(rendered.as_bytes()) != item.rendered_content_digest
-                    || estimate_tokens(rendered) != token_estimate
-            })
-            || item.transformation != "identity"
-        {
-            return Ok(false);
-        }
-        let mandatory = compiler_version == "mealy.context.v2" && source.source_type == "user";
-        let should_include = if compiler_version == "mealy.context.v2" && !mandatory {
-            included_total
-                .checked_add(token_estimate)
-                .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
-                .is_some_and(|candidate| candidate <= token_budget)
+                .iter()
+                .filter(|source| source.source_type == "user")
+                .try_fold(0_u64, |total, source| {
+                    total.checked_add(
+                        source
+                            .inline_content
+                            .as_deref()
+                            .map_or(u64::MAX, estimate_tokens),
+                    )
+                })
+                .unwrap_or(u64::MAX)
         } else {
-            included_total
-                .checked_add(token_estimate)
-                .is_some_and(|candidate| candidate <= token_budget)
+            0
         };
-        let included = item.disposition == "included";
-        if included != should_include
-            || !matches!(item.disposition.as_str(), "included" | "excluded")
-            || item.inclusion_reason
-                != if index == 0 {
-                    "mandatory versioned turn baseline"
-                } else if mandatory {
-                    "mandatory latest authenticated user input"
-                } else if included {
-                    "authorized canonical source within token budget"
-                } else {
-                    "excluded by deterministic token budget"
-                }
-            || item.policy_decision
-                != if index == 0 {
-                    "allow: mandatory baseline"
-                } else if mandatory {
-                    "allow: mandatory owner input"
-                } else if included {
-                    "allow: owner session context"
-                } else {
-                    "exclude: context budget"
-                }
+        if compiler_version == "mealy.context.v2"
+            && estimate_tokens(
+                expected
+                    .first()
+                    .and_then(|source| source.inline_content.as_deref())
+                    .unwrap_or_default(),
+            )
+            .checked_add(mandatory_tokens_remaining)
+            .is_none_or(|required| required > token_budget)
         {
             return Ok(false);
         }
-        if mandatory {
-            mandatory_tokens_remaining = mandatory_tokens_remaining.saturating_sub(token_estimate);
-        }
-        if included {
-            included_total = match included_total.checked_add(token_estimate) {
-                Some(total) => total,
-                None => return Ok(false),
-            };
-            let Some(message) = attempt.request.messages.get(message_index) else {
+        let mut included_total = 0_u64;
+        let mut message_index = 0_usize;
+        let mut item_ids = HashSet::new();
+        for (index, (item, source)) in items.iter().zip(&expected).enumerate() {
+            let Some(token_estimate) = u64::try_from(item.token_estimate).ok() else {
                 return Ok(false);
             };
-            message_index += 1;
-            if !message_role_matches(message, &source.source_type)
-                || message.tool_call_id != source.tool_call_id
-                || sha256_digest(message.content.as_bytes()) != item.rendered_content_digest
-                || estimate_tokens(&message.content) != token_estimate
-                || !verify_manifest_content(item, source, &message.content)
+            let inline_rendered = source.inline_content.as_ref();
+            if item.ordinal != i64::try_from(index).unwrap_or(i64::MAX)
+                || ContextItemId::from_str(&item.item_id).is_err()
+                || !item_ids.insert(item.item_id.as_str())
+                || item.source_type != source.source_type
+                || item.sensitivity != source.sensitivity
+                || item.source_locator != source.source_locator
+                || item.source_content_digest != source.source_digest
+                || !valid_sha256_digest(&item.source_content_digest)
+                || !valid_sha256_digest(&item.rendered_content_digest)
+                || inline_rendered.is_some_and(|rendered| {
+                    sha256_digest(rendered.as_bytes()) != item.rendered_content_digest
+                        || estimate_tokens(rendered) != token_estimate
+                })
+                || item.transformation != "identity"
             {
                 return Ok(false);
             }
-        } else if source.inline_content.is_none()
-            || item.content_text.is_some()
-            || item.content_artifact_id.is_some()
+            let mandatory = compiler_version == "mealy.context.v2" && source.source_type == "user";
+            let should_include = if compiler_version == "mealy.context.v2" && !mandatory {
+                included_total
+                    .checked_add(token_estimate)
+                    .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
+                    .is_some_and(|candidate| candidate <= token_budget)
+            } else {
+                included_total
+                    .checked_add(token_estimate)
+                    .is_some_and(|candidate| candidate <= token_budget)
+            };
+            let included = item.disposition == "included";
+            if included != should_include
+                || !matches!(item.disposition.as_str(), "included" | "excluded")
+                || item.inclusion_reason
+                    != if index == 0 {
+                        "mandatory versioned turn baseline"
+                    } else if mandatory {
+                        "mandatory latest authenticated user input"
+                    } else if included {
+                        "authorized canonical source within token budget"
+                    } else {
+                        "excluded by deterministic token budget"
+                    }
+                || item.policy_decision
+                    != if index == 0 {
+                        "allow: mandatory baseline"
+                    } else if mandatory {
+                        "allow: mandatory owner input"
+                    } else if included {
+                        "allow: owner session context"
+                    } else {
+                        "exclude: context budget"
+                    }
+            {
+                return Ok(false);
+            }
+            if mandatory {
+                mandatory_tokens_remaining =
+                    mandatory_tokens_remaining.saturating_sub(token_estimate);
+            }
+            if included {
+                included_total = match included_total.checked_add(token_estimate) {
+                    Some(total) => total,
+                    None => return Ok(false),
+                };
+                let Some(message) = attempt.request.messages.get(message_index) else {
+                    return Ok(false);
+                };
+                message_index += 1;
+                if !message_role_matches(message, &source.source_type)
+                    || message.tool_call_id != source.tool_call_id
+                    || sha256_digest(message.content.as_bytes()) != item.rendered_content_digest
+                    || estimate_tokens(&message.content) != token_estimate
+                    || !verify_manifest_content(item, source, &message.content)
+                {
+                    return Ok(false);
+                }
+            } else if source.inline_content.is_none()
+                || item.content_text.is_some()
+                || item.content_artifact_id.is_some()
+            {
+                // Excluded artifact content is deliberately absent from SQLite. The blob adapter
+                // verifies its bytes, but this database-only replay cannot recompute the compiler's
+                // rendered digest or token estimate from those bytes, so it must not claim complete
+                // deterministic evidence.
+                return Ok(false);
+            }
+        }
+        if message_index != attempt.request.messages.len()
+            || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
         {
-            // Excluded artifact content is deliberately absent from SQLite. The blob adapter
-            // verifies its bytes, but this database-only replay cannot recompute the compiler's
-            // rendered digest or token estimate from those bytes, so it must not claim complete
-            // deterministic evidence.
             return Ok(false);
         }
-    }
-    if message_index != attempt.request.messages.len()
-        || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
-    {
-        return Ok(false);
     }
     let projection = json!({
         "epochId": epoch_id,
@@ -6813,6 +7019,231 @@ fn message_role_matches(message: &NormalizedMessage, source_type: &str) -> bool 
     )
 }
 
+#[allow(clippy::too_many_lines)]
+fn verify_v3_manifest_projection(
+    items: &[ReplayManifestItem],
+    expected: &[ExpectedContextSource],
+    messages: &[NormalizedMessage],
+    token_budget: u64,
+) -> Option<(u64, usize)> {
+    let expected_item_count = expected.iter().try_fold(0_usize, |total, source| {
+        total.checked_add(1)?.checked_add(source.images.len())
+    })?;
+    if expected.is_empty() || items.len() != expected_item_count {
+        return None;
+    }
+
+    let mut item_cursor = 0_usize;
+    let mut group_tokens = Vec::with_capacity(expected.len());
+    for source in expected {
+        let text_item = items.get(item_cursor)?;
+        let text_tokens = u64::try_from(text_item.token_estimate).ok()?;
+        if source
+            .inline_content
+            .as_deref()
+            .is_some_and(|content| estimate_tokens(content) != text_tokens)
+        {
+            return None;
+        }
+        item_cursor = item_cursor.checked_add(1)?;
+        let mut group_total = text_tokens;
+        for _ in &source.images {
+            let image_item = items.get(item_cursor)?;
+            if u64::try_from(image_item.token_estimate).ok()
+                != Some(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION)
+            {
+                return None;
+            }
+            group_total = group_total.checked_add(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION)?;
+            item_cursor = item_cursor.checked_add(1)?;
+        }
+        group_tokens.push(group_total);
+    }
+    if item_cursor != items.len() {
+        return None;
+    }
+
+    let mandatory_tokens = expected
+        .iter()
+        .zip(&group_tokens)
+        .filter(|(source, _)| source.source_type == "user")
+        .try_fold(0_u64, |total, (_, tokens)| total.checked_add(*tokens))?;
+    let mandatory_images = expected
+        .iter()
+        .filter(|source| source.source_type == "user")
+        .try_fold(0_usize, |total, source| {
+            total.checked_add(source.images.len())
+        })?;
+    if mandatory_images > MAXIMUM_PROVIDER_IMAGE_INPUTS
+        || group_tokens
+            .first()?
+            .checked_add(mandatory_tokens)
+            .is_none_or(|required| required > token_budget)
+    {
+        return None;
+    }
+
+    let mut mandatory_tokens_remaining = mandatory_tokens;
+    let mut mandatory_images_remaining = mandatory_images;
+    let mut included_total = 0_u64;
+    let mut included_images = 0_usize;
+    let mut message_index = 0_usize;
+    let mut item_cursor = 0_usize;
+    let mut item_ids = HashSet::new();
+    for (source_index, (source, group_tokens)) in expected.iter().zip(group_tokens).enumerate() {
+        let text_item = items.get(item_cursor)?;
+        let text_token_estimate = u64::try_from(text_item.token_estimate).ok()?;
+        let mandatory = source.source_type == "user";
+        let image_count = source.images.len();
+        let should_include = if source_index == 0 || mandatory {
+            included_total
+                .checked_add(group_tokens)
+                .is_some_and(|candidate| candidate <= token_budget)
+                && included_images
+                    .checked_add(image_count)
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
+        } else {
+            included_total
+                .checked_add(group_tokens)
+                .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
+                .is_some_and(|candidate| candidate <= token_budget)
+                && included_images
+                    .checked_add(image_count)
+                    .and_then(|candidate| candidate.checked_add(mandatory_images_remaining))
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
+        };
+        let included = text_item.disposition == "included";
+        let rendered_content = source.inline_content.as_deref();
+        if text_item.ordinal != i64::try_from(item_cursor).ok()?
+            || ContextItemId::from_str(&text_item.item_id).is_err()
+            || !item_ids.insert(text_item.item_id.as_str())
+            || text_item.source_type != source.source_type
+            || text_item.sensitivity != source.sensitivity
+            || text_item.source_locator != source.source_locator
+            || text_item.source_content_digest != source.source_digest
+            || !valid_sha256_digest(&text_item.source_content_digest)
+            || !valid_sha256_digest(&text_item.rendered_content_digest)
+            || rendered_content.is_some_and(|content| {
+                sha256_digest(content.as_bytes()) != text_item.rendered_content_digest
+                    || estimate_tokens(content) != text_token_estimate
+            })
+            || text_item.transformation != "identity"
+            || included != should_include
+            || !matches!(text_item.disposition.as_str(), "included" | "excluded")
+            || text_item.inclusion_reason
+                != if source_index == 0 {
+                    "mandatory versioned turn baseline"
+                } else if mandatory {
+                    "mandatory latest authenticated user input"
+                } else if included {
+                    "authorized canonical source within token budget"
+                } else {
+                    "excluded by deterministic token budget"
+                }
+            || text_item.policy_decision
+                != if source_index == 0 {
+                    "allow: mandatory baseline"
+                } else if mandatory {
+                    "allow: mandatory owner input"
+                } else if included {
+                    "allow: owner session context"
+                } else {
+                    "exclude: context budget"
+                }
+        {
+            return None;
+        }
+
+        let message = if included {
+            let message = messages.get(message_index)?;
+            message_index = message_index.checked_add(1)?;
+            if !message_role_matches(message, &source.source_type)
+                || message.tool_call_id != source.tool_call_id
+                || sha256_digest(message.content.as_bytes()) != text_item.rendered_content_digest
+                || estimate_tokens(&message.content) != text_token_estimate
+                || !verify_manifest_content(text_item, source, &message.content)
+                || message.images.len() != source.images.len()
+            {
+                return None;
+            }
+            Some(message)
+        } else {
+            if source.inline_content.is_none()
+                || text_item.content_text.is_some()
+                || text_item.content_artifact_id.is_some()
+            {
+                return None;
+            }
+            None
+        };
+
+        item_cursor = item_cursor.checked_add(1)?;
+        for (image_ordinal, image) in source.images.iter().enumerate() {
+            let item = items.get(item_cursor)?;
+            let provider_image = message.and_then(|message| message.images.get(image_ordinal));
+            let expected_source_type = format!("{}_image", source.source_type);
+            if item.ordinal != i64::try_from(item_cursor).ok()?
+                || ContextItemId::from_str(&item.item_id).is_err()
+                || !item_ids.insert(item.item_id.as_str())
+                || item.source_type != expected_source_type
+                || item.sensitivity != source.sensitivity
+                || item.source_locator != format!("artifact://{}", image.artifact_id)
+                || item.source_content_digest != image.sha256_digest
+                || item.rendered_content_digest != image.sha256_digest
+                || item.token_estimate
+                    != i64::try_from(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION).ok()?
+                || item.transformation != "canonical-image.v1"
+                || (item.disposition == "included") != included
+                || !matches!(item.disposition.as_str(), "included" | "excluded")
+                || item.inclusion_reason
+                    != if mandatory {
+                        "mandatory authenticated user image"
+                    } else if included {
+                        "authorized canonical image within token budget"
+                    } else {
+                        "excluded by deterministic image or token budget"
+                    }
+                || item.policy_decision
+                    != if mandatory {
+                        "allow: mandatory owner image"
+                    } else if included {
+                        "allow: owner session image"
+                    } else {
+                        "exclude: context budget"
+                    }
+                || item.content_text.is_some()
+                || item.content_artifact_id.as_deref()
+                    != included.then_some(image.artifact_id.to_string()).as_deref()
+            {
+                return None;
+            }
+            if let Some(provider_image) = provider_image {
+                if provider_image.artifact_id() != image.artifact_id
+                    || provider_image.media_type() != image.media_type
+                    || provider_image.sha256_digest() != image.sha256_digest
+                    || provider_image.size_bytes() != image.size_bytes
+                    || provider_image.validated_bytes().is_err()
+                {
+                    return None;
+                }
+            } else if included {
+                return None;
+            }
+            item_cursor = item_cursor.checked_add(1)?;
+        }
+
+        if mandatory {
+            mandatory_tokens_remaining = mandatory_tokens_remaining.checked_sub(group_tokens)?;
+            mandatory_images_remaining = mandatory_images_remaining.checked_sub(image_count)?;
+        }
+        if included {
+            included_total = included_total.checked_add(group_tokens)?;
+            included_images = included_images.checked_add(image_count)?;
+        }
+    }
+    (item_cursor == items.len()).then_some((included_total, message_index))
+}
+
 fn verify_manifest_content(
     item: &ReplayManifestItem,
     source: &ExpectedContextSource,
@@ -6859,6 +7290,7 @@ fn expected_inline_context_source(source: AgentContextSource) -> ExpectedContext
         artifact_id: None,
         size_bytes,
         tool_call_id: source.message.tool_call_id,
+        images: source.image_artifacts,
     }
 }
 
@@ -7041,6 +7473,7 @@ fn load_replay_phase_five_sources(
                     inline_content: Some(rendered),
                     artifact_id: None,
                     tool_call_id: None,
+                    images: Vec::new(),
                 });
             }
             "memory" => {
@@ -7133,6 +7566,7 @@ fn load_replay_phase_five_sources(
                     inline_content: Some(rendered),
                     artifact_id: None,
                     tool_call_id: None,
+                    images: Vec::new(),
                 });
             }
             _ => return Ok(None),
@@ -9811,14 +10245,17 @@ mod durable_json_tests {
 #[cfg(test)]
 mod conversation_context_tests {
     use super::{
-        MAXIMUM_CONVERSATION_HISTORY_TURNS, SqliteStore, load_conversation_context_sources,
+        AgentStoreError, ExpectedContextSource, MAXIMUM_CONVERSATION_HISTORY_TURNS,
+        ReplayManifestItem, SqliteStore, load_conversation_context_sources,
+        load_input_context_images, verify_v3_manifest_projection,
     };
     use crate::SystemIdGenerator;
     use mealy_application::{
-        AgentContextSource, ContextDisposition, ContextEpoch, ContextError, MessageRole,
-        NormalizedMessage, compile_context, sha256_digest,
+        AgentContextImage, AgentContextSource, ContextDisposition, ContextEpoch, ContextError,
+        MessageRole, NormalizedImageInput, NormalizedMessage,
+        PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, compile_context, sha256_digest,
     };
-    use mealy_domain::{ContextEpochId, RunId, SessionId, TurnId};
+    use mealy_domain::{ArtifactId, ContextEpochId, RunId, SessionId, TurnId};
     use rusqlite::{Connection, params};
     use std::time::SystemTime;
 
@@ -9847,6 +10284,7 @@ mod conversation_context_tests {
             }
         }
         insert_current_turn(&store.connection, 36);
+        let image = insert_input_image(&store.connection, "inbox-35", 0);
 
         let sources = load_conversation_context_sources(
             &store.connection,
@@ -9854,6 +10292,7 @@ mod conversation_context_tests {
             SESSION_ID,
             PRINCIPAL_ID,
             0,
+            4,
         )
         .expect("load bounded history");
         assert_eq!(
@@ -9865,6 +10304,13 @@ mod conversation_context_tests {
         assert_eq!(
             sources.last().map(|source| source.message.content.as_str()),
             Some("assistant-35")
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .find(|source| source.source_locator == "inbox://inbox-35")
+                .map(|source| source.image_artifacts.as_slice()),
+            Some(std::slice::from_ref(&image))
         );
         assert!(sources.chunks_exact(2).all(|pair| {
             pair[0].source_type == "conversation_user"
@@ -9879,6 +10325,7 @@ mod conversation_context_tests {
             SESSION_ID,
             PRINCIPAL_ID,
             turn_30_completion_cursor,
+            4,
         )
         .expect("load post-compaction history");
         assert_eq!(after_compaction.len(), 10);
@@ -9897,10 +10344,97 @@ mod conversation_context_tests {
                 SESSION_ID,
                 "different-principal",
                 0,
+                0,
             )
             .expect("unauthorized history query fails closed")
             .is_empty()
         );
+    }
+
+    #[test]
+    fn image_history_remains_a_complete_chronological_suffix() {
+        let store = SqliteStore::open_in_memory(1).expect("open test store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO session(\
+                    id, principal_id, channel_binding_id, next_inbox_sequence, \
+                    created_at_ms, updated_at_ms\
+                 ) VALUES (?1, ?2, 'binding-conversation-test', 4, 1, 1)",
+                params![SESSION_ID, PRINCIPAL_ID],
+            )
+            .expect("seed session");
+        insert_completed_turn(&store.connection, 1);
+        insert_completed_turn(&store.connection, 2);
+        insert_current_turn(&store.connection, 3);
+        for ordinal in 0_i64..4 {
+            insert_input_image(&store.connection, "inbox-1", ordinal);
+        }
+
+        let sources = load_conversation_context_sources(
+            &store.connection,
+            "turn-3",
+            SESSION_ID,
+            PRINCIPAL_ID,
+            0,
+            3,
+        )
+        .expect("load image-bounded history");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].source_locator, "inbox://inbox-2");
+        assert_eq!(sources[0].message.content, "user-2");
+        assert!(sources[0].image_artifacts.is_empty());
+        assert_eq!(sources[1].message.content, "assistant-2");
+        assert!(
+            sources
+                .iter()
+                .all(|source| source.source_locator != "inbox://inbox-1"),
+            "an image-bearing pair that cannot fit and every older pair must be omitted"
+        );
+    }
+
+    #[test]
+    fn image_context_rejects_a_dangling_blob_reference() {
+        let store = SqliteStore::open_in_memory(1).expect("open test store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO session(\
+                    id, principal_id, channel_binding_id, next_inbox_sequence, \
+                    created_at_ms, updated_at_ms\
+                 ) VALUES (?1, ?2, 'binding-conversation-test', 2, 1, 1)",
+                params![SESSION_ID, PRINCIPAL_ID],
+            )
+            .expect("seed session");
+        insert_completed_turn(&store.connection, 1);
+        let image = insert_input_image(&store.connection, "inbox-1", 0);
+
+        store
+            .connection
+            .pragma_update(None, "foreign_keys", false)
+            .expect("disable foreign keys for corruption fixture");
+        store
+            .connection
+            .execute(
+                "DELETE FROM artifact_blob WHERE algorithm = 'sha256' AND digest = ?1",
+                [image.sha256_digest],
+            )
+            .expect("remove referenced blob");
+        store
+            .connection
+            .pragma_update(None, "foreign_keys", true)
+            .expect("restore foreign keys");
+
+        assert!(matches!(
+            load_input_context_images(
+                &store.connection,
+                "inbox-1",
+                SESSION_ID,
+                PRINCIPAL_ID
+            ),
+            Err(AgentStoreError::InvariantViolation(message))
+                if message == "stored input image context references are incomplete"
+        ));
     }
 
     #[test]
@@ -9974,6 +10508,145 @@ mod conversation_context_tests {
         ));
     }
 
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn compiler_binds_ordered_images_as_sparse_artifact_items() {
+        const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\ncanonical";
+        let baseline = "base";
+        let epoch = ContextEpoch {
+            epoch_id: ContextEpochId::new(),
+            session_id: SessionId::new(),
+            epoch_number: 1,
+            baseline_version: "test-baseline-v1".to_owned(),
+            baseline_digest: sha256_digest(baseline.as_bytes()),
+            baseline_text: baseline.to_owned(),
+            agent_profile: serde_json::json!({}),
+            config_digest: sha256_digest(b"config"),
+            policy_digest: sha256_digest(b"policy"),
+            workspace_identity: "test://workspace".to_owned(),
+            created_at_ms: 1,
+        };
+        let artifact_id = ArtifactId::new();
+        let image = NormalizedImageInput::new(artifact_id, "image/png", ONE_PIXEL_PNG)
+            .expect("valid normalized image");
+        let mut current_user =
+            context_source("user", MessageRole::User, "inbox://current", "describe");
+        current_user.message.images.push(image.clone());
+        let token_budget = 1 + 2 + PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION;
+
+        let compiled = compile_context(
+            &SystemIdGenerator,
+            RunId::new(),
+            TurnId::new(),
+            &epoch,
+            1,
+            &[current_user],
+            token_budget,
+            "local-test",
+            sha256_digest(b"schemas").as_str(),
+            "test-policy-v1",
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("compile image context");
+
+        assert_eq!(compiled.manifest.compiler_version, "mealy.context.v3");
+        assert_eq!(compiled.manifest.total_token_estimate, token_budget);
+        assert_eq!(compiled.messages.len(), 2);
+        assert_eq!(compiled.messages[1].images, vec![image.clone()]);
+        assert_eq!(compiled.manifest.items.len(), 3);
+        let image_item = &compiled.manifest.items[2];
+        assert_eq!(image_item.source_type, "user_image");
+        assert_eq!(
+            image_item.source_locator,
+            format!("artifact://{artifact_id}")
+        );
+        assert_eq!(image_item.source_content_digest, image.sha256_digest());
+        assert_eq!(image_item.rendered_content_digest, image.sha256_digest());
+        assert_eq!(
+            image_item.token_estimate,
+            PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION
+        );
+        assert_eq!(image_item.content_artifact_id, Some(artifact_id));
+        assert!(image_item.content.is_none());
+
+        let replay_items = compiled
+            .manifest
+            .items
+            .iter()
+            .map(|item| ReplayManifestItem {
+                ordinal: i64::try_from(item.ordinal).expect("ordinal"),
+                item_id: item.item_id.to_string(),
+                disposition: item.disposition.as_str().to_owned(),
+                source_type: item.source_type.clone(),
+                source_locator: item.source_locator.clone(),
+                source_content_digest: item.source_content_digest.clone(),
+                rendered_content_digest: item.rendered_content_digest.clone(),
+                inclusion_reason: item.inclusion_reason.clone(),
+                sensitivity: item.sensitivity.clone(),
+                token_estimate: i64::try_from(item.token_estimate).expect("tokens"),
+                transformation: item.transformation.clone(),
+                policy_decision: item.policy_decision.clone(),
+                content_text: item.content.clone(),
+                content_artifact_id: item.content_artifact_id.map(|id| id.to_string()),
+            })
+            .collect::<Vec<_>>();
+        let image_evidence = AgentContextImage {
+            artifact_id,
+            media_type: image.media_type().to_owned(),
+            sha256_digest: image.sha256_digest().to_owned(),
+            size_bytes: image.size_bytes(),
+            width: 1,
+            height: 1,
+        };
+        let expected = [
+            ExpectedContextSource {
+                source_type: "baseline".to_owned(),
+                sensitivity: "internal".to_owned(),
+                source_locator: "baseline://test-baseline-v1".to_owned(),
+                source_digest: sha256_digest(baseline.as_bytes()),
+                inline_content: Some(baseline.to_owned()),
+                artifact_id: None,
+                size_bytes: u64::try_from(baseline.len()).expect("size"),
+                tool_call_id: None,
+                images: Vec::new(),
+            },
+            ExpectedContextSource {
+                source_type: "user".to_owned(),
+                sensitivity: "private".to_owned(),
+                source_locator: "inbox://current".to_owned(),
+                source_digest: sha256_digest(b"describe"),
+                inline_content: Some("describe".to_owned()),
+                artifact_id: None,
+                size_bytes: 8,
+                tool_call_id: None,
+                images: vec![image_evidence],
+            },
+        ];
+        assert_eq!(
+            verify_v3_manifest_projection(
+                &replay_items,
+                &expected,
+                &compiled.messages,
+                token_budget
+            ),
+            Some((token_budget, 2))
+        );
+        let mut drifted_messages = compiled.messages.clone();
+        drifted_messages[1].images = vec![
+            NormalizedImageInput::new(ArtifactId::new(), "image/png", ONE_PIXEL_PNG)
+                .expect("different image identity"),
+        ];
+        assert_eq!(
+            verify_v3_manifest_projection(
+                &replay_items,
+                &expected,
+                &drifted_messages,
+                token_budget
+            ),
+            None
+        );
+    }
+
     fn context_source(
         source_type: &str,
         role: MessageRole,
@@ -9992,8 +10665,83 @@ mod conversation_context_tests {
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
+        }
+    }
+
+    fn insert_input_image(
+        connection: &Connection,
+        inbox_entry_id: &str,
+        ordinal: i64,
+    ) -> AgentContextImage {
+        let artifact_id = ArtifactId::new();
+        let digest = sha256_digest(format!("{inbox_entry_id}-{ordinal}").as_bytes());
+        let accepted_at_ms = connection
+            .query_row(
+                "SELECT accepted_at_ms FROM session_inbox WHERE inbox_entry_id = ?1",
+                [inbox_entry_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("load input acceptance time");
+        let access_policy =
+            serde_json::json!({"principalId": PRINCIPAL_ID, "sessionId": SESSION_ID}).to_string();
+        connection
+            .execute(
+                "INSERT INTO artifact_blob(algorithm, digest, size_bytes, relative_path, \
+                                            committed_at_ms) \
+                 VALUES ('sha256', ?1, 128, ?2, ?3)",
+                params![
+                    digest,
+                    format!("sha256/{digest}"),
+                    accepted_at_ms.saturating_sub(1),
+                ],
+            )
+            .expect("seed input image blob");
+        connection
+            .execute(
+                "INSERT INTO artifact(\
+                    id, blob_algorithm, blob_digest, principal_id, session_id, media_type, \
+                    origin_kind, origin_id, producer_kind, producer_id, sensitivity, \
+                    retention_class, access_policy_json, access_policy_digest, created_at_ms\
+                 ) VALUES (?1, 'sha256', ?2, ?3, ?4, 'image/png', 'session_input', ?5, \
+                           'builtin', 'mealyd.media-normalizer.v1', 'private', \
+                           'session_history', ?6, ?7, ?8)",
+                params![
+                    artifact_id.to_string(),
+                    digest,
+                    PRINCIPAL_ID,
+                    SESSION_ID,
+                    inbox_entry_id,
+                    access_policy,
+                    sha256_digest(access_policy.as_bytes()),
+                    accepted_at_ms,
+                ],
+            )
+            .expect("seed input image artifact");
+        connection
+            .execute(
+                "INSERT INTO session_inbox_media(\
+                    inbox_entry_id, ordinal, artifact_id, principal_id, session_id, media_type, \
+                    width, height\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'image/png', 32, 24)",
+                params![
+                    inbox_entry_id,
+                    ordinal,
+                    artifact_id.to_string(),
+                    PRINCIPAL_ID,
+                    SESSION_ID,
+                ],
+            )
+            .expect("seed ordered input image");
+        AgentContextImage {
+            artifact_id,
+            media_type: "image/png".to_owned(),
+            sha256_digest: digest,
+            size_bytes: 128,
+            width: 32,
+            height: 24,
         }
     }
 

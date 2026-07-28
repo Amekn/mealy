@@ -11,6 +11,7 @@ use mealy_application::{
     BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
     MCP_PROTOCOL_VERSION, McpServerConfig, McpToolEffect, McpToolGrant, sha256_digest,
 };
+use mealy_domain::ArtifactId;
 use mealy_infrastructure::{
     FileProviderSecretStore, discover_mcp_stdio_server, inspect_browser_bundle,
     inspect_skill_package, probe_browser_bundle_product, publish_browser_bundle,
@@ -25,9 +26,10 @@ use mealy_protocol::{
     PendingApprovalsResponse, ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
     ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
     SessionCheckpointResponse, SessionForkResponse, SessionProviderSelectionResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport, SubmitInputRequest,
-    TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TimelinePageResponse,
-    UpdateSessionProviderSelectionRequest, ValidationMethodResponse, ValidationOutcomeResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport, SubmitImageInputRequest,
+    SubmitInputRequest, SubmittedImageInput, TaskCancellationReceipt, TaskReplayResponse,
+    TaskResponse, TaskStatus, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    ValidationMethodResponse, ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -1522,6 +1524,130 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
+async fn exact_image_input_normalizes_dispatches_exports_and_replays_without_live_redispatch() {
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    let state = MockProviderState::default();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_provider_image_input(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("image HTTP client");
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let artifact_id = ArtifactId::new();
+    let request = SubmitImageInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: "process-image-input".to_owned(),
+        delivery_mode: DeliveryMode::Queue,
+        content: "Describe this canonical image.".to_owned(),
+        provider_selection: ProviderSelectionCommand::Exact {
+            provider_id: "process-proof.responses".to_owned(),
+            model_id: "process-proof-model".to_owned(),
+        },
+        images: vec![SubmittedImageInput {
+            artifact_id: artifact_id.to_string(),
+            media_type: "image/png".to_owned(),
+            data_base64: ONE_PIXEL_PNG.to_owned(),
+        }],
+    };
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/image-inputs", session.session_id),
+        &request,
+    )
+    .await;
+    assert_eq!(admission.image_artifact_ids, vec![artifact_id.to_string()]);
+    assert!(!admission.duplicate);
+    let duplicate: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/image-inputs", session.session_id),
+        &request,
+    )
+    .await;
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.inbox_entry_id, admission.inbox_entry_id);
+    assert_eq!(duplicate.image_artifact_ids, admission.image_artifact_ids);
+
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let task = wait_until_terminal(&client, &connection, &task_id).await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
+    let requests = state.requests();
+    assert_eq!(requests.len(), 1);
+    let provider_body = requests[0].body.to_string();
+    assert!(provider_body.contains("\"type\":\"input_image\""));
+    assert!(provider_body.contains("data:image/jpeg;base64,"));
+    assert!(!provider_body.contains(ONE_PIXEL_PNG));
+
+    let transcript: SessionTranscriptExport = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/exports/json", session.session_id),
+    )
+    .await;
+    assert_eq!(transcript.schema_version, "mealy.session-transcript.v2");
+    assert_eq!(transcript.turns.len(), 1);
+    let images = &transcript.turns[0].user.images;
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].artifact_id, artifact_id.to_string());
+    assert_eq!(images[0].media_type, "image/jpeg");
+    assert_eq!((images[0].width, images[0].height), (1, 1));
+    assert!(images[0].size_bytes > 0);
+    assert_eq!(images[0].sha256_digest.len(), 64);
+
+    let database = rusqlite::Connection::open(home.path().join("mealy.sqlite3"))
+        .expect("open image evidence database");
+    let (compiler_version, sparse_image_references) = database
+        .query_row(
+            "SELECT manifest.compiler_version, \
+                    (SELECT COUNT(*) FROM context_manifest_bundle_artifact link \
+                     WHERE link.manifest_id = manifest.id AND link.artifact_id = ?1) \
+             FROM context_manifest manifest \
+             JOIN model_attempt attempt ON attempt.context_manifest_id = manifest.id \
+             ORDER BY manifest.iteration DESC LIMIT 1",
+            [artifact_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .expect("load durable image manifest evidence");
+    assert_eq!(compiler_version, "mealy.context.v3");
+    assert_eq!(sparse_image_references, 1);
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "{replay:?}");
+    assert_eq!(replay.live_provider_calls, 0);
+    assert_eq!(state.requests().len(), 1);
+
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() {
     let state = MockProviderState::default();
     let (base_url, provider_server) = spawn_provider(state.clone()).await;
@@ -1754,7 +1880,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
     );
     let transcript: SessionTranscriptExport =
         serde_json::from_slice(&json_bytes).expect("session transcript JSON");
-    assert_eq!(transcript.schema_version, "mealy.session-transcript.v1");
+    assert_eq!(transcript.schema_version, "mealy.session-transcript.v2");
     assert_eq!(transcript.session_id, session.session_id);
     assert_eq!(transcript.bounds.total_eligible_turns, 2);
     assert_eq!(transcript.bounds.omitted_turns, 0);
@@ -5546,6 +5672,18 @@ fn enable_provider_streaming(home: &Path) {
         serde_json::to_vec_pretty(&config).expect("encode streaming provider config"),
     )
     .expect("write streaming provider config");
+}
+
+fn enable_provider_image_input(home: &Path) {
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read provider config"))
+        .expect("decode provider config");
+    config["imageInputEnabled"] = Value::Bool(true);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode image provider config"),
+    )
+    .expect("write image provider config");
 }
 
 fn add_skill_config(home: &Path) -> String {

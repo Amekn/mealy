@@ -140,6 +140,7 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/sessions/{session_id}/exports/json` | - | JSON transcript attachment |
 | `GET` | `/v1/sessions/{session_id}/exports/html` | - | inert HTML transcript attachment |
 | `POST` | `/v1/sessions/{session_id}/inputs` | `SubmitInputRequest` | `InputAdmissionResponse` |
+| `POST` | `/v1/sessions/{session_id}/image-inputs` | `SubmitImageInputRequest` | `InputAdmissionResponse` |
 | `GET` | `/v1/sessions/{session_id}/provider-selection` | - | `SessionProviderSelectionResponse` |
 | `PATCH` | `/v1/sessions/{session_id}/provider-selection` | `UpdateSessionProviderSelectionRequest` | `SessionProviderSelectionResponse` |
 | `GET` | `/v1/sessions/{session_id}/status` | - | `SessionStatusResponse` |
@@ -191,13 +192,33 @@ conversation instead of inheriting stale authority.
 Transcript exports are exact-owner, read-only projections of successful completed canonical turns.
 They return the newest contiguous tail under 1,000 turns and 4 MiB of combined user/assistant
 content, with explicit eligible, included, and omitted counts. JSON uses
-`mealy.session-transcript.v1`; HTML is rendered from the same model with strict escaping, no active
-content or remote resources, and a deny-all content security policy. Both attachments include an
-exact SHA-256 in `x-mealy-content-sha256` and use `Cache-Control: no-store`. Exported conversation
-messages are owner-visible verbatim evidence and can contain secrets the owner pasted into chat;
-the export excludes daemon credentials, bearer tokens, private artifact paths, provider request
-envelopes, and effect/tool operational state. Reading an export never replays a model call or
+`mealy.session-transcript.v2`; readers may continue to accept the text-only v1 schema. Each
+image-bearing user message carries only ordered path-free canonical evidence: artifact ID, media
+type, SHA-256, byte count, width, and height. Image bytes and host paths are never embedded. HTML is
+rendered from the same model with strict escaping, no active content or remote resources, and a
+deny-all content security policy. Both attachments include an exact SHA-256 in
+`x-mealy-content-sha256` and use `Cache-Control: no-store`. Exported conversation messages are
+owner-visible verbatim evidence and can contain secrets the owner pasted into chat; the export
+excludes daemon credentials, bearer tokens, private artifact paths, provider request envelopes,
+image bytes, and effect/tool operational state. Reading an export never replays a model call or
 effect.
+
+Image input is a separately activated v0.4 surface. `SubmitImageInputRequest` contains the normal
+`apiVersion`, stable `idempotencyKey`, `deliveryMode`, and bounded UTF-8 `content`, plus an exact
+`providerSelection` (`mode: "exact"`, `providerId`, and `modelId`) and one to four ordered
+`images`. Each image supplies a retry-stable client UUIDv7 `artifactId`, a claimed source
+`mediaType` (`image/png`, `image/jpeg`, or `image/webp`), and standard padded `dataBase64`. Remote
+URLs and provider file IDs are unsupported. The route has a 6 MiB transport limit; source images
+are capped at 2 MiB each and 4 MiB in aggregate before isolated decode/re-encode. Success returns
+the canonical normalized artifact identities in `imageArtifactIds`. An exact retry returns those
+same identities with `duplicate: true`; changing any input evidence under the same delivery key
+conflicts.
+
+The daemon admits this request only when `imageInputEnabled` was explicitly activated while
+stopped, every configured route uses direct OpenAI Responses or Anthropic Messages, and the exact
+selected route advertises image input. Normalization happens in a fresh no-network Bubblewrap
+worker before durable admission. TUI, dashboard, and channel image upload/rendering are not part of
+this first surface.
 
 ### Schedules and governed memory
 

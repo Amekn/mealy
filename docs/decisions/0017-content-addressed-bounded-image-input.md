@@ -68,10 +68,12 @@ predictable across local OpenAI-compatible endpoints as well as those hosted API
 11. Image output and image generation are separate capabilities. Generation crosses an external
     effect and must have its own provider contract, permission/policy decision, byte/cost
     reservation, artifact settlement, safe rendering, and ambiguous-outcome treatment.
-12. Public API, CLI, TUI, dashboard, and channel attachment support remains disabled until the
-    complete context hydration, export, replay/corruption, route-activation, safe-rendering, and
-    supported-provider tests are present. Decode/re-encode and inbox linkage are necessary
-    foundations, not sufficient authority to activate those surfaces.
+12. Public surfaces activate in independently qualified slices. API and scriptable CLI ingress
+    require complete context hydration, export metadata, recorded replay/corruption, exact-route
+    activation, and supported-provider process evidence. TUI, dashboard, and channel attachments
+    remain disabled until their own safe-rendering, hostile-content, retry, and recovery tests are
+    present. Decode/re-encode and inbox linkage are necessary foundations, not sufficient
+    authority to activate any surface.
 
 This decision follows the current OpenAI
 [Images and vision guide](https://developers.openai.com/api/docs/guides/images-vision) and
@@ -94,14 +96,27 @@ deliberately selecting a smaller common denominator.
 
 ## Implementation status
 
-The isolated normalizer and schema-21 commit-before-link inbox boundary are implemented. Canonical
-PNG/JPEG output is published to the private SHA-256 store before an atomic transaction creates its
-owner/session-scoped artifact, ordered inbox link, immutable reference, versioned journal evidence,
-and acknowledgement. Exact duplicates return the original ordered artifact receipt; evidence drift
-conflicts; a late transaction failure leaves no database link; and a fresh precommitted orphan is
-retained by age-gated collection. The production capability remains disabled because context
-hydration, export/replay corruption coverage, public attachment surfaces, exact route activation,
-safe rendering, and image generation are separate unfinished slices.
+The isolated normalizer, schema-21 commit-before-link inbox boundary, context-manifest v3
+projection, trusted pre-dispatch hydration, transcript-v2 metadata export, and recorded-only replay
+are implemented. Canonical PNG/JPEG output is published to the private SHA-256 store before an
+atomic transaction creates its owner/session-scoped artifact, ordered inbox link, immutable
+reference, versioned journal evidence, and acknowledgement. Exact duplicates return the original
+ordered artifact receipt; evidence drift conflicts; dangling or corrupt blob/artifact evidence
+fails closed; a late transaction failure leaves no database link; and a fresh precommitted orphan
+is retained by age-gated collection.
+
+The first public slice is API plus scriptable CLI only. A stopped-daemon, explicitly approved
+`media image-input` configuration change can activate image input only when every configured
+route is a direct OpenAI Responses or Anthropic Messages route. The API accepts one to four
+client-identified source images through a separate 6 MiB transport boundary; the CLI opens only
+no-follow regular PNG/JPEG/WebP files outside the Mealy home. Both require an exact provider/model
+selection and preserve the delivery key plus client UUIDv7 artifact IDs for ambiguous retry.
+A real daemon/provider process proof covers isolated PNG normalization, canonical JPEG dispatch,
+duplicate admission, context-manifest evidence, transcript export, and zero-live-call replay.
+
+TUI, dashboard, and channel image attachment/rendering remain disabled. Forked lineage does not
+yet project source-turn images, and image generation, audio, and video are separate unfinished
+capabilities. Those limitations keep the broader multimodal production gate open.
 
 ## Rejected alternatives
 

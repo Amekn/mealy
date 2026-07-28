@@ -61,6 +61,7 @@ public command cannot be added or removed without updating this reference.
 | `export` | Publish an immutable owner-scoped evidence bundle. |
 | `service` | Render/install or plan/remove an owner-level systemd user unit on Linux. |
 | `config` | Inspect or change governed stopped-home configuration. |
+| `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
 | `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
@@ -167,6 +168,36 @@ that turn. Admission durably pins the resolved identity before queue acknowledge
 selection disables implicit fallback for that turn, although a classified retry may reuse that
 same exact endpoint. Selection changes affect only future new turns and never rewrite queued,
 active, or completed work.
+
+The initial v0.4 image-input surface is scriptable API/CLI only. Stop the daemon, review that every
+primary/fallback route is a direct OpenAI Responses or Anthropic Messages route, and activate it
+explicitly:
+
+```sh
+mealyctl --home "$HOME/.mealy" media image-input --enable --approve
+
+# Restart the daemon, then submit one to four exact local images.
+mealyctl --home "$HOME/.mealy" session send-image SESSION_ID ./screen.png ./detail.webp \
+  --prompt "Compare these screenshots." \
+  --provider-id local.responses --model-id local-vision-model
+
+# Disable while the daemon is stopped.
+mealyctl --home "$HOME/.mealy" media image-input --disable --approve
+```
+
+`session send-image` requires an exact activated provider/model route. It opens only no-follow
+regular `.png`, `.jpg`, `.jpeg`, or `.webp` files outside the Mealy home, rejects empty or
+unsupported input, caps each source at 2 MiB and the ordered source set at 4 MiB, and sends bytes
+only to the daemon's isolated normalizer. It does not send a filename or host path to the model.
+One to four source images are normalized to canonical owner-private artifacts and returned in
+`imageArtifactIds`.
+
+When the command generates its delivery key and UUIDv7 artifact IDs, it prints
+`MEALY_IDEMPOTENCY_KEY` and one `MEALY_IMAGE_ARTIFACT_ID` line per image before the request. After
+an ambiguous client failure, retry with the exact printed values using `--idempotency-key` and one
+`--artifact-id` per path in the original order. Reusing a key or artifact ID with different
+evidence fails closed. TUI, dashboard, chat-native, and channel image attachment/rendering are not
+enabled by this command.
 
 `provider switch` is different from scoped selection: it changes which compatible configured
 route automatic routing prefers. Without `--approve`, it emits a non-mutating

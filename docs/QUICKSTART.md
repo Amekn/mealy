@@ -1053,6 +1053,37 @@ Changing the route set, endpoint, model, credential, price, locality, or residen
 requires the stopped-daemon `config provider` transaction. The switch also fails before mutation
 if reordering would violate the fallback trust-boundary invariant.
 
+### Optional v0.4 scriptable image input
+
+This first image slice is not available in chat, TUI, dashboard, or channels. It is an explicit
+API/CLI capability for direct OpenAI Responses or Anthropic Messages routes. Stop the service,
+enable the capability against the reviewed route chain, then start the service again:
+
+```sh
+systemctl --user stop mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-input --enable --approve
+systemctl --user start mealy.service
+
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  session send-image SESSION_ID ./screen.png ./detail.webp \
+  --prompt "Compare these two screenshots." \
+  --provider-id local.responses --model-id local-vision-model
+```
+
+Choose an endpoint/model that actually supports vision. Activation fails unless every configured
+primary/fallback route is direct OpenAI Responses or Anthropic Messages, and each image turn
+requires an exact route rather than automatic fallback. The CLI accepts one to four no-follow
+regular PNG/JPEG/WebP files outside the Mealy home, up to 2 MiB each and 4 MiB total. The daemon
+normalizes them in a fresh no-network worker, strips metadata, stores canonical owner-private
+artifacts, and returns their IDs.
+
+The CLI prints its generated delivery key and artifact UUIDv7 values before dispatch. Retain those
+lines until the admission receipt arrives; after an ambiguous failure, pass the same
+`--idempotency-key` and one `--artifact-id` per original image. Do not generate replacements,
+reorder paths, or change content for that retry. To disable the capability, stop the service, run
+`media image-input --disable --approve`, and start the service again.
+
 Use `mealyctl chat` or the lower-level session commands shown above. A real-provider turn makes one
 bounded request, commits the normalized response and usage, runs deterministic integrity
 validation, and supports recorded-only replay without another network call. Definite transient

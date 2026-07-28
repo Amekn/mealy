@@ -18,7 +18,24 @@ The CLI opens a no-follow regular file, caps exact UTF-8 bytes at 256 KiB, allow
 extensions, records basename/media/size/SHA-256 in an untrusted frame, and then uses normal durable
 input/idempotency/delivery behavior. Treat the bytes as prompt-visible durable data; never select a
 credential file. Host paths, symlinks, arbitrary binary data, images, audio, and video are not
-admitted by either form.
+admitted by either text-attachment form.
+
+The separate v0.4 image API/CLI surface defaults off. It may be changed only while the daemon is
+stopped and only when every configured route is direct OpenAI Responses or Anthropic Messages:
+
+```sh
+mealyctl --home "$HOME/.mealy" media image-input --enable --approve
+mealyctl --home "$HOME/.mealy" session send-image SESSION_ID ./screen.png \
+  --provider-id local.responses --model-id local-vision-model
+```
+
+Restart the service after changing the setting. Image turns require an exact image-capable route.
+The CLI accepts one to four no-follow PNG/JPEG/WebP files outside the Mealy home, bounded to 2 MiB
+each and 4 MiB total. Preserve the generated delivery/artifact IDs until receipt so an ambiguous
+admission can be retried exactly. The daemon normalizes in a fresh no-network worker, stores only
+canonical owner-private artifacts, and exports path-free metadata. Chat/TUI/dashboard/channel
+image upload/rendering and image generation remain unavailable. See the
+[CLI reference](CLI.md) for the complete retry contract.
 
 For an owner-local interactive overview, run `mealyctl --home "$HOME/.mealy" dashboard` and open the
 printed `127.0.0.1` URL. The foreground command must remain running. It preflights status, doctor,

@@ -183,20 +183,26 @@ resumable GET, and long-lived health remain explicit later slices.
   generation.
 - Reject unsupported media before provider reservation or dispatch.
 
-The provider-neutral image envelope and both direct adapter translations are implemented behind a
-disabled production capability. The envelope accepts only digest-bound PNG/JPEG/WebP bytes, limits
-one request to four images and 4 MiB total, permits images only on authenticated user messages,
-reserves 8,192 input tokens per included image, and fails unsupported text-only routes before any
-HTTP dispatch. OpenAI-compatible requests use low detail for a portable accounting ceiling;
-Anthropic requests use image-first base64 blocks. Public attachment ingress remains intentionally
-disabled. Strict isolated decode/re-encode metadata stripping and schema-21 content-addressed inbox
-linkage are now implemented: exact ordered owner-private image evidence is transactionally bound to
-inbox/journal/acknowledgement state after blob publication, is stable across reopen and duplicate
-delivery, rejects cross-channel reads and mutation, and leaves only an age-protected orphan after a
-failed link. Context-manifest hydration, exports, full crash/replay corruption proofs, public
-ingress, and explicit per-route image capability configuration remain incomplete.
-[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines that remaining
-boundary.
+The provider-neutral image envelope, both direct adapter translations, and the first public
+API/scriptable-CLI ingress are implemented. The envelope accepts only digest-bound PNG/JPEG/WebP
+bytes, limits one request to four images and 4 MiB total, permits images only on authenticated user
+messages, reserves 8,192 input tokens per included image, and fails unsupported text-only routes
+before reservation or HTTP dispatch. OpenAI-compatible requests use low detail for a portable
+accounting ceiling; Anthropic requests use image-first base64 blocks.
+
+Strict isolated decode/re-encode metadata stripping and schema-21 content-addressed inbox linkage
+bind exact ordered owner-private image evidence to inbox/journal/acknowledgement state after blob
+publication. Context-manifest v3 adds sparse artifact provenance, trusted hydration rechecks bytes,
+transcript v2 exports path-free metadata, and recorded-only replay reconstructs the exact request
+without redispatch. Stopped-daemon activation is explicit and limited to all-direct
+OpenAI/Anthropic route chains; individual admissions require an exact image-capable route. The API
+has a 6 MiB transport boundary and `session send-image` uses no-follow local files plus
+retry-stable delivery/artifact IDs.
+
+TUI/dashboard/chat/channel image upload and safe rendering, fork-lineage image projection,
+separately permissioned image generation, and audio/video remain incomplete.
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines those remaining
+boundaries.
 
 ### Channels and browser
 
