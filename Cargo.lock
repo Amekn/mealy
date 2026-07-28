@@ -1811,6 +1811,7 @@ dependencies = [
  "argon2",
  "base64",
  "chacha20poly1305",
+ "ed25519-dalek",
  "flate2",
  "getrandom 0.4.3",
  "image",

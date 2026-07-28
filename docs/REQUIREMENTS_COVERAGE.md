@@ -38,9 +38,13 @@ dependency locks. Deterministic extension/skill diffs enumerate every requested 
 filesystem, network, secret, process, and governed-tool change before a later staging transaction.
 Unit fixtures cover tampering, missing thresholds, expiry, rollback, equivocation, target
 substitution, withdrawal, incompatibility, missing dependencies, and authority widening. Root
-rotation, bounded mirror transport, canonical persistence, package fetch/inspection, staged
-activation, installed-withdrawal handling, and rollback are still open v0.5 work and therefore are
-not marked covered here.
+bootstrap accepts only exact owner-supplied out-of-band JSON; rotation requires the exact next
+version under both old and new key thresholds. Schema 24 retains immutable exact root/snapshot
+bytes and monotonic heads, repeats verification inside the SQLite write transaction, rejects stale
+writers, and survives reopen, migration, integrity, backup, and rollback tests. Stopped-home CLI
+commands, bounded mirror transport, durable release/package evidence, package fetch/inspection,
+staged activation, installed-withdrawal handling, and rollback are still open v0.5 work and
+therefore are not marked covered here.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

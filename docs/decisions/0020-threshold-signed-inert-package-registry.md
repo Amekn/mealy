@@ -57,11 +57,17 @@ Mealy introduces a versioned registry contract in independent, inert layers.
    permission diff: extension capability contracts, logical filesystem access, exact network
    destinations, opaque secret references, process spawning, and data-only skill tool references.
    Any changed surface requires fresh owner review; installation never inherits an old grant.
-9. Accepted root/snapshot/release/package evidence will be committed through stopped-home
-   configuration and canonical lifecycle transactions in later slices. Trust-root rotation,
-   mirror transport, download resumption, package publication tooling, staged activation,
-   withdrawal propagation to installed revisions, and rollback orchestration are deliberately not
-   implied by the data-only verifier.
+9. Initial roots are inspected from exact owner-supplied out-of-band JSON. Network-delivered
+   rotation accepts only the exact next root version when one envelope satisfies both the current
+   and candidate key thresholds. Schema 24 atomically retains immutable exact root/snapshot bytes
+   plus revision-fenced heads. Snapshot acceptance reloads the active root and durable prior head
+   inside the write transaction, repeats verification, and rejects stale writers, rollback, root
+   regression, and same-version equivocation across process restart. Replaying the exact
+   already-active rotation envelope is current-threshold verified and idempotent.
+10. Stopped-home CLI commands, mirror transport, download resumption, release/package evidence,
+   package publication tooling, staged activation, withdrawal propagation to installed revisions,
+   and rollback orchestration remain later slices. Durable metadata acceptance still performs no
+   network request or package execution and grants no runtime authority.
 
 ## Consequences
 
@@ -72,8 +78,10 @@ Mealy introduces a versioned registry contract in independent, inert layers.
   accepted freeze/rollback.
 - Registry discovery remains useful offline once exact metadata is available, but an expired
   snapshot cannot authorize a new install.
-- The first slice adds verification and review primitives, not a public marketplace or automatic
-  update path.
+- Root and snapshot history are append-only canonical evidence; only small current-head rows may
+  advance, under exact monotonic SQLite triggers and application compare-and-swap fences.
+- The first slices add verification, durable anti-rollback state, and review primitives, not a
+  public marketplace or automatic update path.
 - Ed25519 verification adds a small audited cryptographic dependency to the production graph and
   remains subject to the existing advisory, license, duplicate-version, SBOM, and provenance
   gates.

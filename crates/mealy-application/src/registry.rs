@@ -16,6 +16,8 @@ use thiserror::Error;
 pub const REGISTRY_SNAPSHOT_CONTRACT_VERSION: &str = "mealy.registry.snapshot.v1";
 /// Exact contract identifier for one publisher-signed release payload.
 pub const REGISTRY_RELEASE_CONTRACT_VERSION: &str = "mealy.registry.release.v1";
+/// Envelope payload type for registry trust-root rotation.
+pub const REGISTRY_ROOT_PAYLOAD_TYPE: &str = "application/vnd.mealy.registry.root.v1+json";
 /// Envelope payload type for registry snapshots.
 pub const REGISTRY_SNAPSHOT_PAYLOAD_TYPE: &str = "application/vnd.mealy.registry.snapshot.v1+json";
 /// Envelope payload type for package releases.
@@ -36,6 +38,9 @@ pub const REGISTRY_SKILL_PACKAGE_MEDIA_TYPE: &str = "application/vnd.mealy.skill
 
 const SNAPSHOT_SIGNATURE_CONTEXT: &str = "MEALY-REGISTRY-SNAPSHOT-V1";
 const RELEASE_SIGNATURE_CONTEXT: &str = "MEALY-REGISTRY-RELEASE-V1";
+const ROOT_SIGNATURE_CONTEXT: &str = "MEALY-REGISTRY-ROOT-V1";
+const MAXIMUM_ROOT_ENVELOPE_BYTES: usize = 256 * 1024;
+const MAXIMUM_ROOT_PAYLOAD_BYTES: usize = 128 * 1024;
 const MAXIMUM_SNAPSHOT_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_SNAPSHOT_PAYLOAD_BYTES: usize = 3 * 1024 * 1024;
 const MAXIMUM_RELEASE_ENVELOPE_BYTES: usize = 2 * 1024 * 1024;
@@ -48,6 +53,37 @@ const MAXIMUM_TARGETS: usize = 100_000;
 const MAXIMUM_DEPENDENCIES: usize = 128;
 const MAXIMUM_SNAPSHOT_LIFETIME_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
 const MAXIMUM_CLOCK_SKEW_MS: i64 = 5 * 60 * 1_000;
+
+#[derive(Clone, Copy)]
+struct SignedEnvelopePolicy {
+    maximum_envelope_bytes: usize,
+    maximum_payload_bytes: usize,
+    maximum_signatures: usize,
+    payload_type: &'static str,
+    signature_context: &'static str,
+}
+
+const ROOT_ENVELOPE_POLICY: SignedEnvelopePolicy = SignedEnvelopePolicy {
+    maximum_envelope_bytes: MAXIMUM_ROOT_ENVELOPE_BYTES,
+    maximum_payload_bytes: MAXIMUM_ROOT_PAYLOAD_BYTES,
+    maximum_signatures: MAXIMUM_KEYS * 2,
+    payload_type: REGISTRY_ROOT_PAYLOAD_TYPE,
+    signature_context: ROOT_SIGNATURE_CONTEXT,
+};
+const SNAPSHOT_ENVELOPE_POLICY: SignedEnvelopePolicy = SignedEnvelopePolicy {
+    maximum_envelope_bytes: MAXIMUM_SNAPSHOT_ENVELOPE_BYTES,
+    maximum_payload_bytes: MAXIMUM_SNAPSHOT_PAYLOAD_BYTES,
+    maximum_signatures: MAXIMUM_KEYS,
+    payload_type: REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+    signature_context: SNAPSHOT_SIGNATURE_CONTEXT,
+};
+const RELEASE_ENVELOPE_POLICY: SignedEnvelopePolicy = SignedEnvelopePolicy {
+    maximum_envelope_bytes: MAXIMUM_RELEASE_ENVELOPE_BYTES,
+    maximum_payload_bytes: MAXIMUM_RELEASE_PAYLOAD_BYTES,
+    maximum_signatures: MAXIMUM_KEYS,
+    payload_type: REGISTRY_RELEASE_PAYLOAD_TYPE,
+    signature_context: RELEASE_SIGNATURE_CONTEXT,
+};
 
 /// Package class advertised by registry metadata.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -285,12 +321,54 @@ pub struct RegistryRelease {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegistrySnapshotState {
+    /// Stable registry identity.
+    pub registry_id: String,
+    /// Trust-root revision that authorized this snapshot.
+    pub root_version: u64,
     /// Accepted monotonic snapshot version.
     pub version: u64,
     /// Digest of the exact signed envelope bytes.
     pub envelope_digest: String,
     /// Accepted snapshot expiry.
     pub expires_at_ms: i64,
+}
+
+/// Minimal monotonic state retained after accepting one trust root.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryTrustRootState {
+    /// Stable registry identity.
+    pub registry_id: String,
+    /// Accepted monotonic root revision.
+    pub root_version: u64,
+    /// Digest of exact root JSON payload bytes.
+    pub root_digest: String,
+    /// Accepted root expiry.
+    pub expires_at_ms: i64,
+}
+
+/// Strictly inspected out-of-band or dual-threshold-rotated trust root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectedRegistryTrustRoot {
+    /// Exact parsed trust-root policy.
+    pub trust_root: RegistryTrustRoot,
+    /// Exact root JSON payload bytes.
+    pub root_bytes: Vec<u8>,
+    /// SHA-256 digest of the exact root JSON payload bytes.
+    pub root_digest: String,
+}
+
+impl InspectedRegistryTrustRoot {
+    /// Returns the minimal monotonic state used to fence later rotation and snapshots.
+    #[must_use]
+    pub fn state(&self) -> RegistryTrustRootState {
+        RegistryTrustRootState {
+            registry_id: self.trust_root.registry_id.clone(),
+            root_version: self.trust_root.root_version,
+            root_digest: self.root_digest.clone(),
+            expires_at_ms: self.trust_root.expires_at_ms,
+        }
+    }
 }
 
 /// Verified snapshot and exact-byte audit identity.
@@ -302,6 +380,8 @@ pub struct InspectedRegistrySnapshot {
     pub payload_digest: String,
     /// Digest of the exact outer envelope bytes.
     pub envelope_digest: String,
+    /// Exact verified signed envelope bytes.
+    pub envelope_bytes: Vec<u8>,
     /// Monotonic state suitable for the next refresh transaction.
     pub state: RegistrySnapshotState,
 }
@@ -315,6 +395,265 @@ pub struct InspectedRegistryRelease {
     pub payload_digest: String,
     /// Digest of the exact outer envelope bytes.
     pub envelope_digest: String,
+    /// Exact verified signed envelope bytes.
+    pub envelope_bytes: Vec<u8>,
+}
+
+/// Atomic canonical commit of one initial or dual-threshold-rotated trust root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryTrustRootCommit {
+    /// Fully inspected root and exact bytes.
+    pub inspected: InspectedRegistryTrustRoot,
+    /// Exact prior root state, or `None` only for initial out-of-band bootstrap.
+    pub expected: Option<RegistryTrustRootState>,
+    /// UTC time assigned to the canonical activation.
+    pub activated_at_ms: i64,
+}
+
+/// Atomic canonical commit of one verified monotonic registry snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistrySnapshotCommit {
+    /// Fully verified snapshot and exact signed envelope.
+    pub inspected: InspectedRegistrySnapshot,
+    /// Exact prior snapshot state, or `None` for the first accepted snapshot.
+    pub expected: Option<RegistrySnapshotState>,
+    /// UTC time assigned to the canonical acceptance.
+    pub accepted_at_ms: i64,
+}
+
+/// Safe failures from canonical registry metadata persistence.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum RegistryMetadataStoreError {
+    /// The requested registry has no active trust root.
+    #[error("registry trust root was not found")]
+    TrustRootNotFound,
+    /// Canonical root or snapshot state changed under the caller.
+    #[error("registry metadata state conflicts with the expected revision")]
+    Conflict,
+    /// Persistence dependency failed.
+    #[error("registry metadata store is unavailable: {0}")]
+    Unavailable(String),
+    /// Stored or proposed evidence violates the canonical contract.
+    #[error("registry metadata store invariant violation: {0}")]
+    InvariantViolation(String),
+}
+
+/// Canonical persistence boundary for trust roots and anti-rollback snapshot state.
+pub trait RegistryMetadataStore {
+    /// Loads the exact active trust root, when configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for corrupt or unavailable state.
+    fn registry_trust_root(
+        &self,
+        registry_id: &str,
+    ) -> Result<Option<InspectedRegistryTrustRoot>, RegistryMetadataStoreError>;
+
+    /// Loads the current accepted snapshot anti-rollback fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for corrupt or unavailable state.
+    fn registry_snapshot_state(
+        &self,
+        registry_id: &str,
+    ) -> Result<Option<RegistrySnapshotState>, RegistryMetadataStoreError>;
+
+    /// Atomically activates one initial or rotated root under an exact prior-state fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for conflicts, corruption, or persistence failure.
+    fn commit_registry_trust_root(
+        &mut self,
+        commit: RegistryTrustRootCommit,
+    ) -> Result<RegistryTrustRootState, RegistryMetadataStoreError>;
+
+    /// Atomically retains exact snapshot evidence and advances its monotonic head.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for conflicts, corruption, or persistence failure.
+    fn commit_registry_snapshot(
+        &mut self,
+        commit: RegistrySnapshotCommit,
+    ) -> Result<RegistrySnapshotState, RegistryMetadataStoreError>;
+}
+
+/// Registry verification or canonical persistence failure.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum RegistryUseCaseError {
+    /// Cryptographic or semantic verification rejected the supplied bytes.
+    #[error(transparent)]
+    Verification(#[from] RegistryError),
+    /// Canonical persistence rejected the transition.
+    #[error(transparent)]
+    Store(#[from] RegistryMetadataStoreError),
+}
+
+/// Inspects one owner-supplied out-of-band trust root without deriving trust from the network.
+///
+/// The caller must acquire these exact bytes through an authenticated out-of-band path and retain
+/// the returned digest in the stopped-home configuration transaction.
+///
+/// # Errors
+///
+/// Returns [`RegistryError`] for malformed, duplicate-key, expired, unordered, or oversized root
+/// bytes.
+pub fn inspect_initial_registry_trust_root(
+    root_bytes: &[u8],
+    now_ms: i64,
+) -> Result<InspectedRegistryTrustRoot, RegistryError> {
+    if root_bytes.is_empty() || root_bytes.len() > MAXIMUM_ROOT_PAYLOAD_BYTES {
+        return Err(RegistryError::InvalidTrustRoot);
+    }
+    reject_duplicate_json_keys(root_bytes).map_err(|()| RegistryError::InvalidTrustRoot)?;
+    let trust_root = serde_json::from_slice::<RegistryTrustRoot>(root_bytes)
+        .map_err(|_| RegistryError::InvalidTrustRoot)?;
+    validate_trust_root(&trust_root, now_ms)?;
+    Ok(InspectedRegistryTrustRoot {
+        trust_root,
+        root_bytes: root_bytes.to_vec(),
+        root_digest: sha256_digest(root_bytes),
+    })
+}
+
+/// Verifies an exact next-version trust root under both current and candidate thresholds.
+///
+/// A rotation envelope is signed once over exact candidate-root JSON bytes. Its sorted signature
+/// set must satisfy the current root threshold and the candidate root threshold independently.
+/// This prevents either a compromised old threshold or an unproven new key set from rotating
+/// alone.
+///
+/// # Errors
+///
+/// Returns [`RegistryError`] for an invalid current/candidate root, non-consecutive version,
+/// registry substitution, envelope ambiguity, or failure of either signature threshold.
+pub fn inspect_registry_root_rotation(
+    envelope_bytes: &[u8],
+    current_root: &RegistryTrustRoot,
+    now_ms: i64,
+) -> Result<InspectedRegistryTrustRoot, RegistryError> {
+    validate_trust_root(current_root, now_ms)?;
+    let payload = verify_signed_envelope(
+        envelope_bytes,
+        ROOT_ENVELOPE_POLICY,
+        &current_root.keys,
+        current_root.threshold,
+    )?;
+    reject_duplicate_json_keys(&payload).map_err(|()| RegistryError::InvalidRootRotation)?;
+    let candidate = serde_json::from_slice::<RegistryTrustRoot>(&payload)
+        .map_err(|_| RegistryError::InvalidRootRotation)?;
+    validate_trust_root(&candidate, now_ms)?;
+    if candidate.registry_id != current_root.registry_id
+        || current_root.root_version.checked_add(1) != Some(candidate.root_version)
+    {
+        return Err(RegistryError::InvalidRootRotation);
+    }
+    let candidate_payload = verify_signed_envelope(
+        envelope_bytes,
+        ROOT_ENVELOPE_POLICY,
+        &candidate.keys,
+        candidate.threshold,
+    )?;
+    if candidate_payload != payload {
+        return Err(RegistryError::InvalidRootRotation);
+    }
+    Ok(InspectedRegistryTrustRoot {
+        trust_root: candidate,
+        root_bytes: payload.clone(),
+        root_digest: sha256_digest(&payload),
+    })
+}
+
+/// Installs one first root obtained through the owner's out-of-band trust path.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when inspection or the atomic initial-state fence fails.
+pub fn bootstrap_registry_trust_root(
+    store: &mut impl RegistryMetadataStore,
+    root_bytes: &[u8],
+    now_ms: i64,
+) -> Result<RegistryTrustRootState, RegistryUseCaseError> {
+    let inspected = inspect_initial_registry_trust_root(root_bytes, now_ms)?;
+    store
+        .commit_registry_trust_root(RegistryTrustRootCommit {
+            inspected,
+            expected: None,
+            activated_at_ms: now_ms,
+        })
+        .map_err(Into::into)
+}
+
+/// Rotates one configured root through an exact old-and-new-threshold envelope.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when the registry is absent, verification fails, or the
+/// canonical root changes under the operation.
+pub fn rotate_registry_trust_root(
+    store: &mut impl RegistryMetadataStore,
+    registry_id: &str,
+    rotation_envelope_bytes: &[u8],
+    now_ms: i64,
+) -> Result<RegistryTrustRootState, RegistryUseCaseError> {
+    if !valid_identifier(registry_id) {
+        return Err(RegistryError::InvalidTrustRoot.into());
+    }
+    let current = store
+        .registry_trust_root(registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let candidate_payload = verify_signed_envelope(
+        rotation_envelope_bytes,
+        ROOT_ENVELOPE_POLICY,
+        &current.trust_root.keys,
+        current.trust_root.threshold,
+    )?;
+    if candidate_payload == current.root_bytes {
+        return Ok(current.state());
+    }
+    let expected = current.state();
+    let inspected =
+        inspect_registry_root_rotation(rotation_envelope_bytes, &current.trust_root, now_ms)?;
+    store
+        .commit_registry_trust_root(RegistryTrustRootCommit {
+            inspected,
+            expected: Some(expected),
+            activated_at_ms: now_ms,
+        })
+        .map_err(Into::into)
+}
+
+/// Verifies and atomically accepts one registry snapshot against durable anti-rollback state.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when the registry is absent, verification fails, or the
+/// snapshot head changes under the operation.
+pub fn accept_registry_snapshot(
+    store: &mut impl RegistryMetadataStore,
+    registry_id: &str,
+    envelope_bytes: &[u8],
+    now_ms: i64,
+) -> Result<RegistrySnapshotState, RegistryUseCaseError> {
+    if !valid_identifier(registry_id) {
+        return Err(RegistryError::InvalidSnapshot.into());
+    }
+    let root = store
+        .registry_trust_root(registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let previous = store.registry_snapshot_state(registry_id)?;
+    let inspected =
+        inspect_registry_snapshot(envelope_bytes, &root.trust_root, previous.as_ref(), now_ms)?;
+    store
+        .commit_registry_snapshot(RegistrySnapshotCommit {
+            inspected,
+            expected: previous,
+            accepted_at_ms: now_ms,
+        })
+        .map_err(Into::into)
 }
 
 /// Verifies a threshold-signed registry snapshot as inert data.
@@ -335,10 +674,7 @@ pub fn inspect_registry_snapshot(
     validate_trust_root(trust_root, now_ms)?;
     let payload = verify_signed_envelope(
         envelope_bytes,
-        MAXIMUM_SNAPSHOT_ENVELOPE_BYTES,
-        MAXIMUM_SNAPSHOT_PAYLOAD_BYTES,
-        REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
-        SNAPSHOT_SIGNATURE_CONTEXT,
+        SNAPSHOT_ENVELOPE_POLICY,
         &trust_root.keys,
         trust_root.threshold,
     )?;
@@ -348,11 +684,19 @@ pub fn inspect_registry_snapshot(
     validate_snapshot(&snapshot, trust_root, now_ms)?;
     let envelope_digest = sha256_digest(envelope_bytes);
     if let Some(previous) = previous {
-        if !is_sha256_digest(&previous.envelope_digest)
+        if previous.registry_id != snapshot.registry_id
+            || previous.root_version == 0
+            || !is_sha256_digest(&previous.envelope_digest)
             || previous.version == 0
-            || previous.expires_at_ms < 0
+            || previous.expires_at_ms <= 0
         {
             return Err(RegistryError::InvalidSnapshot);
+        }
+        if trust_root.root_version < previous.root_version
+            || (trust_root.root_version != previous.root_version
+                && snapshot.version <= previous.version)
+        {
+            return Err(RegistryError::Rollback);
         }
         if snapshot.version < previous.version {
             return Err(RegistryError::Rollback);
@@ -364,12 +708,15 @@ pub fn inspect_registry_snapshot(
     Ok(InspectedRegistrySnapshot {
         payload_digest: sha256_digest(&payload),
         state: RegistrySnapshotState {
+            registry_id: snapshot.registry_id.clone(),
+            root_version: trust_root.root_version,
             version: snapshot.version,
             envelope_digest: envelope_digest.clone(),
             expires_at_ms: snapshot.expires_at_ms,
         },
         snapshot,
         envelope_digest,
+        envelope_bytes: envelope_bytes.to_vec(),
     })
 }
 
@@ -411,10 +758,7 @@ pub fn inspect_registry_release(
         .ok_or(RegistryError::UnknownPublisher)?;
     let payload = verify_signed_envelope(
         envelope_bytes,
-        MAXIMUM_RELEASE_ENVELOPE_BYTES,
-        MAXIMUM_RELEASE_PAYLOAD_BYTES,
-        REGISTRY_RELEASE_PAYLOAD_TYPE,
-        RELEASE_SIGNATURE_CONTEXT,
+        RELEASE_ENVELOPE_POLICY,
         &publisher.keys,
         publisher.threshold,
     )?;
@@ -431,6 +775,7 @@ pub fn inspect_registry_release(
         release,
         payload_digest: sha256_digest(&payload),
         envelope_digest: sha256_digest(envelope_bytes),
+        envelope_bytes: envelope_bytes.to_vec(),
     })
 }
 
@@ -873,22 +1218,19 @@ fn validate_release(
 
 fn verify_signed_envelope(
     envelope_bytes: &[u8],
-    maximum_envelope_bytes: usize,
-    maximum_payload_bytes: usize,
-    payload_type: &str,
-    signature_context: &str,
+    policy: SignedEnvelopePolicy,
     keys: &[RegistryPublicKey],
     threshold: u16,
 ) -> Result<Vec<u8>, RegistryError> {
-    if envelope_bytes.is_empty() || envelope_bytes.len() > maximum_envelope_bytes {
+    if envelope_bytes.is_empty() || envelope_bytes.len() > policy.maximum_envelope_bytes {
         return Err(RegistryError::EnvelopeTooLarge);
     }
     reject_duplicate_json_keys(envelope_bytes).map_err(|()| RegistryError::InvalidEnvelope)?;
     let envelope = serde_json::from_slice::<RegistrySignedEnvelope>(envelope_bytes)
         .map_err(|_| RegistryError::InvalidEnvelope)?;
-    if envelope.payload_type != payload_type
+    if envelope.payload_type != policy.payload_type
         || envelope.signatures.is_empty()
-        || envelope.signatures.len() > MAXIMUM_KEYS
+        || envelope.signatures.len() > policy.maximum_signatures
         || !envelope
             .signatures
             .windows(2)
@@ -898,12 +1240,12 @@ fn verify_signed_envelope(
     }
     let payload = decode_canonical_base64url(&envelope.payload_base64url)
         .ok_or(RegistryError::InvalidEnvelope)?;
-    if payload.is_empty() || payload.len() > maximum_payload_bytes {
+    if payload.is_empty() || payload.len() > policy.maximum_payload_bytes {
         return Err(RegistryError::InvalidEnvelope);
     }
     let key_map = verifying_keys(keys)?;
-    let mut material = Vec::with_capacity(signature_context.len() + 1 + payload.len());
-    material.extend_from_slice(signature_context.as_bytes());
+    let mut material = Vec::with_capacity(policy.signature_context.len() + 1 + payload.len());
+    material.extend_from_slice(policy.signature_context.as_bytes());
     material.push(0);
     material.extend_from_slice(&payload);
     let mut verified = 0_u16;
@@ -1091,6 +1433,9 @@ pub enum RegistryError {
     /// The out-of-band root is malformed, expired, or internally inconsistent.
     #[error("registry trust root is invalid or expired")]
     InvalidTrustRoot,
+    /// A network-delivered root did not prove an exact next version under old and new thresholds.
+    #[error("registry trust-root rotation is invalid")]
+    InvalidRootRotation,
     /// The supplied signed envelope exceeds its hard byte ceiling.
     #[error("registry signed envelope exceeds its byte ceiling")]
     EnvelopeTooLarge,
@@ -1140,14 +1485,16 @@ mod tests {
     use super::{
         REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE, REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE,
         REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
-        REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_SKILL_MANIFEST_MEDIA_TYPE,
-        REGISTRY_SKILL_PACKAGE_MEDIA_TYPE, REGISTRY_SNAPSHOT_CONTRACT_VERSION,
-        REGISTRY_SNAPSHOT_PAYLOAD_TYPE, RELEASE_SIGNATURE_CONTEXT, RegistryContentDescriptor,
+        REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE,
+        REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
+        REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+        RELEASE_SIGNATURE_CONTEXT, ROOT_SIGNATURE_CONTEXT, RegistryContentDescriptor,
         RegistryError, RegistryPackageKind, RegistryPublicKey, RegistryPublisher, RegistryRelease,
         RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope, RegistrySnapshot,
         RegistrySnapshotState, RegistryTarget, RegistryTrustRoot, RegistryWithdrawal,
         SNAPSHOT_SIGNATURE_CONTEXT, diff_extension_permissions, diff_skill_permissions,
-        inspect_registry_release, inspect_registry_snapshot,
+        inspect_initial_registry_trust_root, inspect_registry_release,
+        inspect_registry_root_rotation, inspect_registry_snapshot,
     };
     use crate::sha256_digest;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -1273,6 +1620,69 @@ mod tests {
     }
 
     #[test]
+    fn trust_root_bootstrap_and_dual_threshold_rotation_are_exact() {
+        let fixture = fixture();
+        let initial_bytes = serde_json::to_vec(&fixture.root).expect("root");
+        let initial =
+            inspect_initial_registry_trust_root(&initial_bytes, NOW_MS).expect("out-of-band root");
+        assert_eq!(initial.trust_root, fixture.root);
+        assert_eq!(initial.root_digest, sha256_digest(&initial_bytes));
+
+        let next_key = SigningKey::from_bytes(&[13; 32]);
+        let candidate = RegistryTrustRoot {
+            registry_id: fixture.root.registry_id.clone(),
+            root_version: 2,
+            keys: vec![public_key(&next_key)],
+            threshold: 1,
+            expires_at_ms: NOW_MS + 180_000,
+        };
+        let rotation = signed_envelope(
+            REGISTRY_ROOT_PAYLOAD_TYPE,
+            ROOT_SIGNATURE_CONTEXT,
+            &candidate,
+            &[&fixture.registry_key, &next_key],
+        );
+        let inspected = inspect_registry_root_rotation(&rotation, &fixture.root, NOW_MS)
+            .expect("dual-threshold rotation");
+        assert_eq!(inspected.trust_root, candidate);
+        assert_eq!(
+            inspected.root_digest,
+            sha256_digest(&serde_json::to_vec(&candidate).expect("candidate"))
+        );
+
+        let old_only = signed_envelope(
+            REGISTRY_ROOT_PAYLOAD_TYPE,
+            ROOT_SIGNATURE_CONTEXT,
+            &candidate,
+            &[&fixture.registry_key],
+        );
+        assert_eq!(
+            inspect_registry_root_rotation(&old_only, &fixture.root, NOW_MS),
+            Err(RegistryError::ThresholdNotMet)
+        );
+        let mut skipped = candidate.clone();
+        skipped.root_version = 3;
+        let skipped_envelope = signed_envelope(
+            REGISTRY_ROOT_PAYLOAD_TYPE,
+            ROOT_SIGNATURE_CONTEXT,
+            &skipped,
+            &[&fixture.registry_key, &next_key],
+        );
+        assert_eq!(
+            inspect_registry_root_rotation(&skipped_envelope, &fixture.root, NOW_MS),
+            Err(RegistryError::InvalidRootRotation)
+        );
+
+        let duplicate_root = String::from_utf8(initial_bytes)
+            .expect("UTF-8")
+            .replace("\"rootVersion\":1", "\"rootVersion\":1,\"rootVersion\":1");
+        assert_eq!(
+            inspect_initial_registry_trust_root(duplicate_root.as_bytes(), NOW_MS),
+            Err(RegistryError::InvalidTrustRoot)
+        );
+    }
+
+    #[test]
     fn snapshot_signature_expiry_rollback_and_equivocation_fail_closed() {
         let fixture = fixture();
         assert_eq!(
@@ -1317,6 +1727,8 @@ mod tests {
             Err(RegistryError::Expired)
         );
         let newer = RegistrySnapshotState {
+            registry_id: fixture.root.registry_id.clone(),
+            root_version: fixture.root.root_version,
             version: 2,
             envelope_digest: "e".repeat(64),
             expires_at_ms: fixture.snapshot.expires_at_ms,
@@ -1331,6 +1743,8 @@ mod tests {
             Err(RegistryError::Rollback)
         );
         let conflicting = RegistrySnapshotState {
+            registry_id: fixture.root.registry_id.clone(),
+            root_version: fixture.root.root_version,
             version: 1,
             envelope_digest: "e".repeat(64),
             expires_at_ms: fixture.snapshot.expires_at_ms,

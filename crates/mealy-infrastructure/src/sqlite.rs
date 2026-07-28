@@ -24,6 +24,7 @@ mod outbox;
 mod promotion;
 mod provider_selection;
 mod recovery;
+mod registry;
 mod schedule;
 mod scheduler;
 mod sessions;
@@ -58,10 +59,11 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_session_input_medi
 const MIGRATION_0022: &str =
     include_str!("../migrations/0022_agent_effect_budget_reservations.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_browser_transaction_origin.sql");
+const MIGRATION_0024: &str = include_str!("../migrations/0024_registry_metadata.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 23;
+pub const LATEST_SCHEMA_VERSION: i64 = 24;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -374,6 +376,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0023)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (23, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 23;
+        }
+        if existing_version == 23 {
+            transaction.execute_batch(MIGRATION_0024)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (24, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -975,6 +985,7 @@ mod tests {
     }
 
     fn remove_browser_transaction_origin_schema(connection: &Connection) {
+        remove_registry_metadata_schema(connection);
         connection
             .execute_batch(
                 "DROP TRIGGER agent_effect_invocation_origin_insert;
@@ -1046,6 +1057,18 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 23;",
             )
             .expect("remove v23 browser transaction origin schema");
+    }
+
+    fn remove_registry_metadata_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TABLE registry_snapshot_head;
+                 DROP TABLE registry_snapshot;
+                 DROP TABLE registry_trust_root_head;
+                 DROP TABLE registry_trust_root;
+                 DELETE FROM schema_version WHERE version = 24;",
+            )
+            .expect("remove v24 registry metadata schema");
     }
 
     fn remove_media_schema(connection: &Connection) {
@@ -2812,6 +2835,62 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v23_upgrade_installs_durable_registry_metadata_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO task(id, status, revision, validation_required)
+                 VALUES ('preserved-v23-task', 'queued', 0, 0)",
+                [],
+            )
+            .expect("seed v23 predecessor");
+        remove_registry_metadata_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v23 registry metadata schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "registry_trust_root",
+            "registry_trust_root_head",
+            "registry_snapshot",
+            "registry_snapshot_head",
+            "registry_trust_root_immutable_update",
+            "registry_trust_root_head_monotonic_update",
+            "registry_snapshot_current_root_insert",
+            "registry_snapshot_head_monotonic_update",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query registry schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row(
+                    "SELECT status FROM task WHERE id = 'preserved-v23-task'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("preserved predecessor task"),
+            "queued"
+        );
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded registry integrity");
     }
 
     #[test]

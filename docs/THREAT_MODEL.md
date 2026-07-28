@@ -610,9 +610,12 @@ signature verification, so parser reserialization cannot change signature meanin
 Discovery remains inert. It performs no fetch, extraction, extension import, skill activation,
 configuration write, staging, or grant. A candidate must later pass the existing full-inventory
 skill/extension inspector and present an exact permission diff; an old grant is never inherited.
-Trust-root rotation, bounded mirror transport, persisted anti-rollback state, and withdrawal
-propagation to installed packages remain explicit follow-on boundaries and are not claimed by the
-first verifier slice.
+An initial root is exact out-of-band owner input. A rotation envelope must satisfy both current and
+candidate thresholds and advance exactly one version. Schema 24 stores immutable exact root and
+snapshot bytes plus monotonic heads; acceptance reloads the active root and prior fence and repeats
+verification inside one immediate transaction. Bounded mirror transport, stopped-home CLI
+lifecycle, durable package evidence, and withdrawal propagation to installed packages remain
+explicit follow-on boundaries and are not yet claimed.
 
 ### A staging asset substitutes a different release daemon
 
@@ -654,6 +657,9 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
   same-version-equivocation denial, withdrawal, host compatibility, dependency-envelope locks,
   strict descriptors, and deterministic permission-diff widening without fetching or executing
   package content.
+- Schema-24 fixtures prove out-of-band bootstrap, dual-threshold consecutive root rotation,
+  transaction-local reverification, stale/rollback denial, immutable evidence, restart persistence,
+  v23 upgrade preservation, complete infrastructure integrity, and migration-backup compatibility.
 - MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
   SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
   executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.

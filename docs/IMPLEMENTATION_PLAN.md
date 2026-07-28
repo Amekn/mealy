@@ -267,10 +267,17 @@ and process-spawn requests. Skill diffs cover separately governed tool reference
 prove threshold failure, signature tampering, expiry, rollback, equivocation, target substitution,
 withdrawal, incompatible host ranges, missing dependency locks, and authority widening.
 
-The next slices must add stopped-home trust-root lifecycle/rotation, SSRF-resistant bounded mirror
-transport, schema-backed monotonic snapshot/release evidence, exact archive download and existing
-package inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade
-and rollback transactions, public registry publication tooling, and package/upgrade/recovery
+The second slice adds exact out-of-band root inspection, old-and-new-threshold next-version root
+rotation, and schema 24 canonical persistence. Immutable exact root/snapshot bytes and monotonic
+heads survive reopen; the write transaction reloads the active root and prior snapshot fence,
+repeats cryptographic verification, and rejects stale commits, rollback, root regression, and
+same-version equivocation. Migration, complete infrastructure, integrity, and migration-backup
+tests cover the additive schema.
+
+The next slices must add stopped-home CLI lifecycle commands, SSRF-resistant bounded mirror
+transport, durable release/package evidence, exact archive download and existing package
+inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade and
+rollback transactions, public registry publication tooling, and package/upgrade/recovery
 qualification. [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the
 boundary.
 
