@@ -109,6 +109,7 @@ release_documents=(
   releases/v0.1.1.md
   releases/v0.2.0.md
   releases/v0.2.1.md
+  releases/v0.3.0.md
 )
 while [[ $# -gt 0 ]]; do
   case "$1" in

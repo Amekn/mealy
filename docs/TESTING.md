@@ -447,6 +447,18 @@ native package: it installs with `dpkg`, checks
 root ownership and service generation, completes and recorded-replays a task, drains, removes the
 package, and proves the user database remains. The archive smoke and Debian smoke use identical
 binary bytes but exercise separate installation/removal boundaries.
+`scripts/installed-native-upgrade-smoke.sh` adds the missing adjacent-release boundary. It rejects
+wrong-architecture packages and maintainer scripts/hooks, installs the checked public baseline,
+creates one searchable successful task, drains, and replaces the package through
+DPKG/RPM/Pacman. The new daemon must preserve the exact owner identity, session, task, and
+recorded-only replay; publish exactly one manifest-verified forward-migration snapshot; report the
+new schema through `doctor`; and accept a new title and checkpoint. Native removal must delete
+program paths while retaining the migrated database and snapshot. A checked
+`packaging/release-upgrade-baseline.json` binds each release to its old tag/version/schema, and its
+validator prevents a stale, same-version, future-schema, or extra-field baseline from entering the
+tag workflow. Pre-publication packages run this proof on Ubuntu-family, Fedora, and Arch lanes;
+post-publication acceptance downloads and release-verifies both versions and repeats it on every
+supported distribution/architecture lane.
 For real ELF payloads, the Debian builder also compares each exact `NEEDED` set with the reviewed
 x86_64/ARM64 glibc contract. A new native dependency fails packaging until its owning package and
 the declared `Depends` field are updated deliberately.

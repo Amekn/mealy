@@ -414,6 +414,10 @@ Maintainers can rerun the exact post-build package proofs before publishing:
 scripts/installed-package-smoke.sh \
   "dist/mealy-v${VERSION#v}-${TARGET}.tar.gz" dist/SHA256SUMS dist/install-mealy.sh
 scripts/installed-deb-smoke.sh "dist/mealy_${DEB_VERSION}_${DEB_ARCH}.deb"
+scripts/installed-native-upgrade-smoke.sh \
+  deb "baseline/mealy_${OLD_VERSION}_${DEB_ARCH}.deb" \
+  "dist/mealy_${DEB_VERSION}_${DEB_ARCH}.deb" \
+  "$OLD_VERSION" "$OLD_SCHEMA" "${VERSION#v}" "$NEW_SCHEMA"
 scripts/systemd-service-smoke.sh target/release/mealyd target/release/mealyctl
 scripts/installed-update-rollback-smoke.sh target/release/mealyd target/release/mealyctl
 ```
@@ -447,6 +451,14 @@ packages. They reject maintainer scripts/install hooks and wrong architecture, r
 embedded payload, install with the native package manager, check root ownership/modes and the
 generated owner-service unit, complete and recorded-replay a real daemon task, drain, remove the
 package, and prove the temporary user database remains.
+The checked `packaging/release-upgrade-baseline.json` separately identifies the prior public
+tag/version/schema for this candidate. Each tag runner downloads and cryptographically verifies
+that release's native package and checksum manifest before replacing it with the just-built
+candidate. `scripts/installed-native-upgrade-smoke.sh` requires the prior durable task, replay, and
+owner identity to survive the schema transition, verifies the automatic migration snapshot,
+creates new-version title/checkpoint records, and proves native removal preserves the migrated
+home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats the same
+old-public-to-new-public proof rather than inheriting a build-runner result.
 Before packaging, each native tag runner launches the exact auditable binaries through their
 generated systemd user unit. After constructing the native system packages, clean distribution
 containers install each exact package and repeat the same proof from the root-owned package paths
