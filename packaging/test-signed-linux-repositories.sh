@@ -132,34 +132,80 @@ EOF
 docker run --rm \
   --env HOST_GID="$(id -g)" \
   --env HOST_UID="$(id -u)" \
+  --env SOURCE_DATE_EPOCH="$epoch" \
   --env VERSION="$version" \
   --volume "$assets:/assets" \
   "$arch_image" bash -lc '
     set -euo pipefail
     trap "chown -R \"$HOST_UID:$HOST_GID\" /assets 2>/dev/null || true" EXIT
-    useradd --create-home --uid 2000 builder
-    chown builder /assets
-    install -d -o builder -g builder /tmp/mealy-arch
-    cat >/tmp/mealy-arch/PKGBUILD <<EOF
+    package_root=/tmp/mealy-arch-package
+    definition=/tmp/mealy-arch-fixture-definition
+    package="/assets/mealy-${VERSION}-1-x86_64.pkg.tar.zst"
+    install -d -m 0755 "$package_root/usr/bin"
+    cat >"$definition" <<EOF
 pkgname=mealy
-pkgver=$VERSION
-pkgrel=1
-pkgdesc="Mealy signed repository acceptance fixture"
-arch=("x86_64")
-license=("Apache-2.0")
-options=("!debug" "!strip")
-
-package() {
-  install -d -m 0755 "\$pkgdir/usr/bin"
-  printf "#!/bin/sh\\nprintf \"mealy repository fixture $VERSION\\\\n\"\\n" \
-    >"\$pkgdir/usr/bin/mealy-repository-fixture"
-  chmod 0755 "\$pkgdir/usr/bin/mealy-repository-fixture"
-}
+pkgver=$VERSION-1
+pkgarch=x86_64
+payload=usr/bin/mealy-repository-fixture
 EOF
-    chown builder:builder /tmp/mealy-arch/PKGBUILD
-    runuser -u builder -- env PKGDEST=/assets \
-      makepkg --cleanbuild --force --nodeps --noconfirm \
-      --dir /tmp/mealy-arch >/dev/null
+    printf "#!/bin/sh\nprintf \"mealy repository fixture $VERSION\\n\"\n" \
+      >"$package_root/usr/bin/mealy-repository-fixture"
+    chmod 0755 "$package_root/usr/bin/mealy-repository-fixture"
+    payload_size=$(stat -c %s "$package_root/usr/bin/mealy-repository-fixture")
+    definition_digest=$(sha256sum "$definition" | awk "{print \$1}")
+    cat >"$package_root/.PKGINFO" <<EOF
+pkgname = mealy
+pkgbase = mealy
+xdata = pkgtype=pkg
+pkgver = $VERSION-1
+pkgdesc = Signed repository acceptance fixture
+url = https://github.com/Amekn/mealy
+builddate = $SOURCE_DATE_EPOCH
+packager = Mealy repository fixture <repository-fixture@mealy.invalid>
+size = $payload_size
+arch = x86_64
+license = Apache-2.0
+EOF
+    cat >"$package_root/.BUILDINFO" <<EOF
+format = 2
+pkgname = mealy
+pkgbase = mealy
+pkgver = $VERSION-1
+pkgarch = x86_64
+pkgbuild_sha256sum = $definition_digest
+packager = Mealy repository fixture <repository-fixture@mealy.invalid>
+builddate = $SOURCE_DATE_EPOCH
+builddir = /tmp/mealy-arch-package
+startdir = /tmp
+buildtool = mealy-repository-fixture
+buildtoolver = 1.0.0
+options = !debug
+options = !strip
+EOF
+    find "$package_root" -exec \
+      touch --no-dereference --date="@$SOURCE_DATE_EPOCH" {} +
+    (
+      cd "$package_root"
+      find . -mindepth 1 ! -name .MTREE -printf "%P\0" |
+        sort -z |
+        bsdtar -cnf - --format=mtree \
+          --options="!all,use-set,type,uid,gid,mode,time,size,sha256,link" \
+          --null --files-from - |
+        gzip -c -f -n >.MTREE
+      touch --date="@$SOURCE_DATE_EPOCH" .MTREE
+      find . -mindepth 1 -printf "%P\0" |
+        sort -z |
+        bsdtar --no-fflags --no-read-sparse -cnf - \
+          --null --files-from - |
+        zstd --compress --quiet --stdout >"$package"
+    )
+    test "$(bsdtar -xOf "$package" .PKGINFO |
+      awk -F " = " '"'"'$1 == "pkgname" {print $2}'"'"')" = mealy
+    test "$(bsdtar -xOf "$package" .PKGINFO |
+      awk -F " = " '"'"'$1 == "pkgver" {print $2}'"'"')" = "$VERSION-1"
+    test "$(bsdtar -xOf "$package" .PKGINFO |
+      awk -F " = " '"'"'$1 == "arch" {print $2}'"'"')" = x86_64
+    pacman --query --info --file "$package" >/dev/null
   '
 
 expected_assets=$(
