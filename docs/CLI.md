@@ -27,6 +27,7 @@ public command cannot be added or removed without updating this reference.
 | `onboard` | Configure one provider route, install/start the Linux owner service, and verify health and doctor. |
 | `setup` | Initialize a clean stopped home and activate one bounded provider configuration. |
 | `chat` | Start or resume the interactive durable conversation client. |
+| `tui` | Open the full-screen canonical session workbench. |
 | `session` | Create, submit to, inspect, search, or watch durable sessions. |
 | `task` | Inspect, cancel, pause, resume, or replay durable agent tasks. |
 | `delegation` | Inspect durable parent-to-child agent delegations. |
@@ -69,6 +70,33 @@ plus status, relative recency, queued input count, and active-turn state without
 session. An empty session is titled `New conversation`. Derived titles make no provider call.
 `--continue` and `--pick` never silently create a session when there is no history.
 
+For the full-screen interface, run:
+
+```sh
+mealyctl --home "$HOME/.mealy" tui
+mealyctl --home "$HOME/.mealy" tui --new
+mealyctl --home "$HOME/.mealy" tui --session-id SESSION_ID
+```
+
+Plain `tui` selects the newest exact-binding session and creates one only when no session exists.
+`--new` and `--session-id` are mutually exclusive. The workbench is a bounded thin client: the
+daemon remains authoritative for sessions, transcripts, timelines, approvals, checkpoints, forks,
+and admission. It shows the verified canonical transcript, provider/model/context/price status,
+queued and active work, structured recent event/tool evidence, and exact pending approvals.
+
+Use `Tab`/`Shift-Tab` to move among panes, arrow keys or `j`/`k` to navigate, `/` from the session
+pane to search canonical user/final-assistant text, and `Enter` to admit the composer content.
+`F2` renames, `F3` checkpoints, `F4` creates a checkpoint and forks it, `F5` refreshes, `F6`
+creates a verified private JSON transcript, `Shift-F6` creates inert HTML, and `F7` reviews an
+exact approval subject before `a` approves or `d` denies. `F1` displays the complete in-product
+key map. `Ctrl-C` cancels a stalled foreground request, restores the terminal, and exits.
+
+The workbench requires terminal stdin, stdout, and stderr and fails before session creation when
+that boundary is absent. Input is capped at the daemon's 1 MiB admission limit; remote text and
+structured previews are bounded and control-safe. Normal exit, Ctrl-C, persistent daemon loss,
+resize, initialization failure, and panic all use terminal restoration. `mealyctl chat` remains
+the accessible line interface, while `session` commands remain the automation interface.
+
 Rename a conversation or capture/list immutable resumable boundaries with:
 
 ```sh
@@ -102,7 +130,7 @@ through its fixed loopback allowlist without exposing the daemon bearer.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;
-they must not infer success from human-readable text. `chat`, `dashboard`, setup approval prompts,
+they must not infer success from human-readable text. `chat`, `tui`, `dashboard`, setup approval prompts,
 and selected pairing flows are intentionally interactive unless their documented explicit flags
 choose a bounded non-interactive path.
 

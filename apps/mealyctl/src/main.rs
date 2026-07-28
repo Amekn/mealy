@@ -3,6 +3,7 @@
 mod chat_picker;
 mod dashboard;
 mod lifecycle;
+mod tui;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
@@ -247,6 +248,15 @@ enum Command {
         /// Interactively choose one of the 20 most recently updated exact-binding sessions.
         #[arg(long, conflicts_with_all = ["session_id", "continue_latest"])]
         pick: bool,
+    },
+    /// Open the full-screen canonical session workbench.
+    Tui {
+        /// Existing session to select; the newest session is selected when omitted.
+        #[arg(long, conflicts_with = "new")]
+        session_id: Option<String>,
+        /// Create and select a fresh durable session.
+        #[arg(long, conflicts_with = "session_id")]
+        new: bool,
     },
     /// Session creation, submission, timeline, and status operations.
     Session {
@@ -3325,6 +3335,16 @@ async fn run() -> Result<(), CliError> {
                 ChatSessionSelection::New
             };
             run_chat(&client, &arguments.home, &connection, selection).await?;
+        }
+        Command::Tui { session_id, new } => {
+            let selection = if new {
+                tui::WorkbenchSelection::New
+            } else if let Some(session_id) = session_id {
+                tui::WorkbenchSelection::Exact(session_id)
+            } else {
+                tui::WorkbenchSelection::Automatic
+            };
+            tui::run_workbench(&client, &arguments.home, &connection, selection).await?;
         }
         Command::Session { command } => {
             run_session(&client, &arguments.home, &connection, command).await?;
@@ -15671,6 +15691,11 @@ enum CliError {
         "chat --pick requires interactive stdin, stdout, and stderr; use --continue or --session-id for automation"
     )]
     ChatPickerRequiresTerminal,
+    /// The full-screen workbench requires a complete interactive terminal boundary.
+    #[error(
+        "the full-screen workbench requires interactive stdin, stdout, and stderr; use `mealyctl chat` or scriptable `session` commands for automation"
+    )]
+    WorkbenchRequiresTerminal,
     /// Three bounded picker attempts did not select one of the displayed sessions.
     #[error("no displayed conversation was selected; rerun `mealyctl chat --pick`")]
     InvalidChatSelection,
@@ -17322,6 +17347,48 @@ mod tests {
                 "mealyctl",
                 "chat",
                 "--pick",
+                "--session-id",
+                "durable-session",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn tui_session_selection_is_explicit_and_mutually_exclusive() {
+        let automatic =
+            Arguments::try_parse_from(["mealyctl", "tui"]).expect("automatic TUI command");
+        assert!(matches!(
+            automatic.command,
+            Command::Tui {
+                session_id: None,
+                new: false
+            }
+        ));
+        let fresh =
+            Arguments::try_parse_from(["mealyctl", "tui", "--new"]).expect("fresh TUI command");
+        assert!(matches!(
+            fresh.command,
+            Command::Tui {
+                session_id: None,
+                new: true
+            }
+        ));
+        let exact =
+            Arguments::try_parse_from(["mealyctl", "tui", "--session-id", "durable-session"])
+                .expect("exact TUI command");
+        assert!(matches!(
+            exact.command,
+            Command::Tui {
+                session_id: Some(ref session_id),
+                new: false,
+            } if session_id == "durable-session"
+        ));
+        assert!(
+            Arguments::try_parse_from([
+                "mealyctl",
+                "tui",
+                "--new",
                 "--session-id",
                 "durable-session",
             ])

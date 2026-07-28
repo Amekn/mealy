@@ -43,10 +43,16 @@ skip = [
     { crate = "chacha20@0.9.1", reason = "chacha20poly1305 0.10 remains on the RustCrypto cipher 0.4 generation." },
     { crate = "cpufeatures@0.2.17", reason = "The older RustCrypto generation is still required by Argon2 and chacha20poly1305." },
     { crate = "crypto-common@0.1.7", reason = "Argon2 and chacha20poly1305 remain on the RustCrypto 0.1 generation." },
+    { crate = "darling@0.20.11", reason = "Pinned croner 3 uses the prior derive_builder proc-macro lineage while Ratatui uses the current instability macros." },
+    { crate = "darling_core@0.20.11", reason = "Pinned croner 3 uses the prior derive_builder proc-macro lineage while Ratatui uses the current instability macros." },
+    { crate = "darling_macro@0.20.11", reason = "Pinned croner 3 uses the prior derive_builder proc-macro lineage while Ratatui uses the current instability macros." },
     { crate = "digest@0.10.7", reason = "Argon2 remains on digest 0.10 while current hashing uses digest 0.11." },
     { crate = "getrandom@0.2.17", reason = "Argon2's rand_core 0.6 lineage still requires getrandom 0.2." },
     { crate = "getrandom@0.3.4", reason = "The property-test dependency graph still requires getrandom 0.3." },
+    { crate = "hashbrown@0.16.1", reason = "Ratatui's pinned layout solver uses hashbrown 0.16 while current workspace caches use 0.17." },
     { crate = "rand_core@0.6.4", reason = "Argon2 remains on rand_core 0.6." },
+    { crate = "strum@0.27.2", reason = "Pinned croner 3 uses strum 0.27 while Ratatui's split widget crates use 0.28." },
+    { crate = "strum_macros@0.27.2", reason = "Pinned croner 3 uses strum 0.27 while Ratatui's split widget crates use 0.28." },
     { crate = "tower-http@0.6.11", reason = "reqwest 0.13 internally uses tower-http 0.6 while the API uses 0.7." },
 ]
 

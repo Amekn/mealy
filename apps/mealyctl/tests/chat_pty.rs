@@ -6,6 +6,8 @@
 use axum::{
     Json, Router,
     extract::{Path as AxumPath, State},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -17,6 +19,7 @@ use mealy_protocol::{
 use rustix::{
     fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open},
     pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt},
+    termios::{Winsize, tcsetwinsize},
 };
 use serde_json::{Value, json};
 use std::{
@@ -164,6 +167,218 @@ async fn chat_continue_resumes_the_latest_session_without_creating_another() {
         String::from_utf8_lossy(&rendered)
     );
     server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tui_enters_canonical_workbench_and_restores_terminal_on_ctrl_c() {
+    let state = AdmissionState::default();
+    state.latest_session_available.store(true, Ordering::SeqCst);
+    let (base_url, server) = spawn_control_plane(state.clone()).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    write_connection(home.path(), &base_url);
+    let (mut terminal, mut child) = spawn_mealyctl_pty(home.path(), Some("tui"), &[]);
+    let mut rendered = Vec::new();
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"\x1b[6n",
+        1,
+        Duration::from_secs(1),
+    );
+    terminal
+        .write_all(b"\x1b[1;1R")
+        .and_then(|()| terminal.flush())
+        .expect("answer terminal cursor-position query");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"MEALY",
+        1,
+        Duration::from_secs(5),
+    );
+    assert!(
+        rendered
+            .windows(b"\x1b[?1049h".len())
+            .any(|window| window == b"\x1b[?1049h"),
+        "workbench did not enter the alternate screen: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    assert_eq!(state.created_sessions.load(Ordering::SeqCst), 0);
+
+    terminal
+        .write_all(&[0x03])
+        .and_then(|()| terminal.flush())
+        .expect("send terminal Ctrl-C");
+    let status = wait_for_child_and_collect(
+        &mut terminal,
+        &mut child,
+        &mut rendered,
+        Duration::from_secs(5),
+    );
+    assert!(
+        status.success(),
+        "workbench failed: {status}; terminal: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    assert!(
+        rendered
+            .windows(b"\x1b[?1049l".len())
+            .any(|window| window == b"\x1b[?1049l"),
+        "workbench did not leave the alternate screen: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    assert!(
+        rendered
+            .windows(b"\x1b[?2004l".len())
+            .any(|window| window == b"\x1b[?2004l"),
+        "workbench did not disable bracketed paste: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    let bearer = URL_SAFE_NO_PAD.encode([0x42_u8; 32]);
+    assert!(
+        !rendered
+            .windows(bearer.len())
+            .any(|window| window == bearer.as_bytes())
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tui_refuses_nonterminal_use_before_creating_a_session() {
+    let state = AdmissionState::default();
+    let (base_url, server) = spawn_control_plane(state.clone()).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    write_connection(home.path(), &base_url);
+    let output = Command::new(env!("CARGO_BIN_EXE_mealyctl"))
+        .arg("--home")
+        .arg(home.path())
+        .args(["tui", "--new"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run TUI without a terminal");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("full-screen workbench requires interactive stdin, stdout, and stderr")
+    );
+    assert_eq!(state.created_sessions.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
+    let state = AdmissionState::default();
+    state.latest_session_available.store(true, Ordering::SeqCst);
+    let (base_url, server) = spawn_control_plane(state.clone()).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    write_connection(home.path(), &base_url);
+    let (mut terminal, mut child) = spawn_mealyctl_pty(home.path(), Some("tui"), &[]);
+    let mut rendered = Vec::new();
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"\x1b[6n",
+        1,
+        Duration::from_secs(1),
+    );
+    terminal
+        .write_all(b"\x1b[1;1R")
+        .and_then(|()| terminal.flush())
+        .expect("answer terminal cursor-position query");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"MEALY",
+        1,
+        Duration::from_secs(5),
+    );
+    terminal
+        .write_all(b"hold this request\r")
+        .and_then(|()| terminal.flush())
+        .expect("submit workbench input");
+    let started_deadline = Instant::now() + Duration::from_secs(2);
+    while !state.started.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < started_deadline,
+            "workbench did not dispatch admission: {}",
+            String::from_utf8_lossy(&rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    terminal
+        .write_all(&[0x03])
+        .and_then(|()| terminal.flush())
+        .expect("cancel stalled workbench admission");
+    let status = wait_for_child_and_collect(
+        &mut terminal,
+        &mut child,
+        &mut rendered,
+        Duration::from_secs(5),
+    );
+    assert!(
+        status.success(),
+        "cancelled workbench failed: {status}; terminal: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    assert!(!state.completed.load(Ordering::SeqCst));
+    assert!(
+        rendered
+            .windows(b"\x1b[?1049l".len())
+            .any(|window| window == b"\x1b[?1049l")
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tui_restores_terminal_after_persistent_daemon_loss() {
+    let state = AdmissionState::default();
+    state.latest_session_available.store(true, Ordering::SeqCst);
+    let (base_url, server) = spawn_control_plane(state).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    write_connection(home.path(), &base_url);
+    let (mut terminal, mut child) = spawn_mealyctl_pty(home.path(), Some("tui"), &[]);
+    let mut rendered = Vec::new();
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"\x1b[6n",
+        1,
+        Duration::from_secs(1),
+    );
+    terminal
+        .write_all(b"\x1b[1;1R")
+        .and_then(|()| terminal.flush())
+        .expect("answer terminal cursor-position query");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"MEALY",
+        1,
+        Duration::from_secs(5),
+    );
+    server.abort();
+    let status = wait_for_child_and_collect(
+        &mut terminal,
+        &mut child,
+        &mut rendered,
+        Duration::from_secs(8),
+    );
+    assert!(!status.success());
+    assert!(
+        rendered
+            .windows(b"\x1b[?1049l".len())
+            .any(|window| window == b"\x1b[?1049l"),
+        "daemon loss left the alternate screen active: {}",
+        String::from_utf8_lossy(&rendered)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -872,9 +1087,14 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
     let address = listener.local_addr().expect("control-plane address");
     let app = Router::new()
         .route("/v1/admin/status", get(admin_status))
+        .route("/v1/approvals", get(pending_approvals))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/{session_id}/status", get(session_status))
         .route("/v1/sessions/{session_id}/timeline", get(session_timeline))
+        .route(
+            "/v1/sessions/{session_id}/exports/json",
+            get(session_transcript),
+        )
         .route("/v1/sessions/{session_id}/inputs", post(block_admission))
         .with_state(state);
     let server = tokio::spawn(async move {
@@ -953,6 +1173,13 @@ async fn admin_status() -> Json<serde_json::Value> {
     }))
 }
 
+async fn pending_approvals() -> Json<serde_json::Value> {
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "approvals": []
+    }))
+}
+
 async fn list_sessions(State(state): State<AdmissionState>) -> Json<SessionsResponse> {
     let configured = state
         .picker_sessions
@@ -1011,6 +1238,64 @@ async fn session_timeline() -> Json<TimelinePageResponse> {
         high_watermark: TimelineCursor(0),
         has_more: false,
     })
+}
+
+async fn session_transcript(AxumPath(session_id): AxumPath<String>) -> Response {
+    assert_eq!(session_id, SESSION_ID);
+    let value = json!({
+        "apiVersion": API_VERSION,
+        "schemaVersion": "mealy.session-transcript.v1",
+        "sessionId": SESSION_ID,
+        "title": "Latest conversation",
+        "titleSource": "derived",
+        "status": "active",
+        "revision": 1,
+        "createdAtMs": 1_800_000_000_000_i64,
+        "updatedAtMs": 1_800_000_000_001_i64,
+        "highWatermark": 1,
+        "lineage": {
+            "rootSessionId": SESSION_ID,
+            "parentSessionId": null,
+            "parentCheckpointId": null,
+            "parentCheckpointCursor": null,
+            "forkEventId": null
+        },
+        "bounds": {
+            "maximumTurns": 1_000,
+            "maximumContentBytes": 4_194_304,
+            "totalEligibleTurns": 0,
+            "omittedTurns": 0,
+            "includedContentBytes": 0,
+            "oldestIncludedSequence": null
+        },
+        "redaction": {
+            "policy": "owner_visible_verbatim_v1",
+            "transcriptContentVerbatim": true,
+            "automaticSecretRedactionApplied": false,
+            "excludedCategories": ["connection_bearer_credential"],
+            "warning": "Owner-visible message text is verbatim."
+        },
+        "turns": []
+    });
+    let bytes = serde_json::to_vec(&value).expect("encode session transcript");
+    let digest = mealy_application::sha256_digest(&bytes);
+    let disposition = format!("attachment; filename=\"mealy-session-{SESSION_ID}.json\"");
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/vnd.mealy.session-transcript+json; charset=utf-8",
+            ),
+            (header::CONTENT_DISPOSITION, disposition.as_str()),
+            (
+                header::HeaderName::from_static("x-mealy-content-sha256"),
+                digest.as_str(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 async fn block_admission(
@@ -1224,6 +1509,16 @@ fn spawn_mealyctl_pty_with_removed_environment(
     )
     .expect("open PTY slave");
     let slave = File::from(slave);
+    tcsetwinsize(
+        &slave,
+        Winsize {
+            ws_row: 40,
+            ws_col: 120,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        },
+    )
+    .expect("set PTY window size");
     let stdin = Stdio::from(slave.try_clone().expect("clone PTY stdin"));
     let stdout = Stdio::from(slave.try_clone().expect("clone PTY stdout"));
     let stderr = Stdio::from(slave);

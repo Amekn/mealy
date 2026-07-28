@@ -206,6 +206,15 @@ hydrates a digest-bound artifact and fails closed after blob corruption. API/CLI
 cover attachment headers, response ceilings, digest verification, inert HTML, safe create-new
 files, and server-side bearer retention.
 
+`apps/mealyctl/tests/chat_pty.rs` also crosses the real full-screen terminal boundary. A sized
+pseudo-terminal answers the cursor-position handshake, proves alternate-screen and bracketed-paste
+entry, loads sessions/status/approvals/timeline plus a digest-verified canonical transcript, and
+exits through a real Ctrl-C key event. It requires both alternate-screen leave and bracketed-paste
+disable sequences and rejects any rendered daemon bearer. Separate cases prove non-terminal
+`tui --new` fails before session mutation, Ctrl-C cancels a deliberately stalled input admission
+without waiting for its HTTP timeout, and five consecutive refresh failures after daemon loss
+restore the terminal before a nonzero exit.
+
 The Phase 3 suite at `apps/mealyd/tests/phase3_effect_approval.rs` drives the authenticated public
 approval/effect commands and a real Bubblewrap worker. It proves deny, expiry, cancellation
 revocation, exact command deduplication/conflict behavior, budget settlement, and the crash matrix

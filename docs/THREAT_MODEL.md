@@ -300,6 +300,25 @@ bearers, private artifact paths, provider request envelopes, and tool/effect ope
 conversation text is deliberately verbatim and the format says that owner-pasted secrets remain.
 Opening an export cannot execute a provider, tool, approval, or effect.
 
+### Full-screen terminal content injects controls or leaves the owner terminal unusable
+
+Controls: `mealyctl tui` requires terminal stdin, stdout, and stderr before any session creation.
+Remote titles, provider/model labels, timeline types, payload previews, transcript text, approval
+targets, notices, and identifiers pass through bounded control-character-safe rendering; structured
+payload previews are capped independently and transcript content is capped by the verified export
+schema. Composer input is UTF-8-boundary aware and cannot exceed the daemon's 1 MiB admission
+ceiling. Search and rename retain their stricter canonical bounds.
+
+The workbench enters raw alternate-screen mode only through a lifecycle guard, enables bracketed
+paste explicitly, and disables paste plus restores the normal screen/raw/cursor state on normal
+exit, Ctrl-C, initialization or event failure, persistent daemon loss, and stack unwinding. The
+terminal library installs restoration ahead of the prior panic hook. While a local API mutation is
+pending, the event loop continues to accept Ctrl-C and drops the request future; the canonical
+daemon command remains idempotent/revision-fenced and its state is rediscovered on reopening.
+Resize below 60×18 renders a bounded recovery message rather than indexing invalid layout.
+Pseudo-terminal process tests exercise non-terminal denial, normal cleanup, stalled-admission
+cancellation, bearer absence, and daemon-loss cleanup.
+
 ### Subscription bridge steals a session or exposes ambient client tools
 
 Controls: Mealy does not parse, copy, refresh, export, or persist OAuth/session material. The owner

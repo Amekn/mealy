@@ -48,10 +48,14 @@ Every slice must preserve the v0.2.1 production contract:
 ## v0.3 — daily-use parity
 
 Status update (2026-07-28): the canonical title/search/checkpoint/fork/export workbench boundary is
-implemented across schema 17, daemon API, scriptable CLI, and the thin dashboard adapter. Focused
-storage, API, process, real-provider, artifact-integrity, exact-owner, and browser-boundary tests
-are green. Full-workspace qualification, the full-screen TUI, provider/model experience, and final
-v0.3 release gates remain in progress.
+implemented across schema 17, daemon API, scriptable CLI, full-screen terminal client, and the thin
+dashboard adapter. The TUI includes session/search navigation, verified conversation rendering,
+bounded composition, provider/context/cost status, recent structured activity/tool evidence,
+exact approval review, and checkpoint/fork/export controls. Pseudo-terminal proofs cover terminal
+enforcement, alternate-screen cleanup, Ctrl-C during stalled admission, and persistent daemon loss.
+Focused storage, API, process, real-provider, artifact-integrity, exact-owner, terminal, and
+browser-boundary tests are green. Integrated provider/model selection, full-workspace
+qualification, and final v0.3 release gates remain in progress.
 
 ### Session workbench
 
@@ -72,14 +76,17 @@ v0.3 release gates remain in progress.
 
 ### Full-screen terminal interface
 
-- Add a full-screen terminal mode while retaining the line REPL and scriptable
+- [x] Add a full-screen terminal mode while retaining the line REPL and scriptable
   commands.
-- Include a session rail, searchable titles, conversation timeline, composer,
-  provider/context/cost status, active/queued work, subagent progress, exact
-  approvals, structured tool results, and artifact/diff previews.
-- Restore terminal state after normal exit, cancellation, panic, daemon loss,
+- [x] Include a session rail, searchable titles, verified conversation timeline, composer,
+  provider/context/cost status, active/queued work, exact approvals, structured recent tool/event
+  results, and bounded evidence previews.
+- [ ] Add richer dedicated subagent cards and media/artifact/diff viewers as the corresponding v0.4
+  delegation and multimodal projections mature; current canonical delegation/tool facts remain
+  visible in the structured activity preview.
+- [x] Restore terminal state after normal exit, cancellation, panic, daemon loss,
   resize, and unsupported-terminal detection.
-- Keep terminal input and rendered remote text bounded and control-character
+- [x] Keep terminal input and rendered remote text bounded and control-character
   safe.
 
 ### Provider and model experience
