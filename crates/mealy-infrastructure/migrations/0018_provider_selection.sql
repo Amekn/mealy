@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS session_provider_selection (
     session_id TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
     provider_id TEXT CHECK (provider_id IS NULL OR length(provider_id) BETWEEN 1 AND 128),
-    model_id TEXT CHECK (model_id IS NULL OR length(model_id) BETWEEN 1 AND 256),
+    model_id TEXT CHECK (model_id IS NULL OR length(model_id) BETWEEN 1 AND 128),
     selection_event_id TEXT NOT NULL UNIQUE
         REFERENCES journal_event(event_id) ON DELETE RESTRICT,
     updated_at_ms INTEGER NOT NULL,
@@ -17,12 +17,12 @@ ALTER TABLE session_inbox ADD COLUMN provider_selection_source TEXT NOT NULL
 ALTER TABLE session_inbox ADD COLUMN selected_provider_id TEXT
     CHECK (selected_provider_id IS NULL OR length(selected_provider_id) BETWEEN 1 AND 128);
 ALTER TABLE session_inbox ADD COLUMN selected_model_id TEXT
-    CHECK (selected_model_id IS NULL OR length(selected_model_id) BETWEEN 1 AND 256);
+    CHECK (selected_model_id IS NULL OR length(selected_model_id) BETWEEN 1 AND 128);
 
 ALTER TABLE turn ADD COLUMN selected_provider_id TEXT
     CHECK (selected_provider_id IS NULL OR length(selected_provider_id) BETWEEN 1 AND 128);
 ALTER TABLE turn ADD COLUMN selected_model_id TEXT
-    CHECK (selected_model_id IS NULL OR length(selected_model_id) BETWEEN 1 AND 256);
+    CHECK (selected_model_id IS NULL OR length(selected_model_id) BETWEEN 1 AND 128);
 
 CREATE TRIGGER IF NOT EXISTS session_provider_selection_insert_binding
 BEFORE INSERT ON session_provider_selection

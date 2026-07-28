@@ -148,6 +148,16 @@ mealyctl --home "$HOME/.mealy" session provider set SESSION_ID --automatic
 
 mealyctl --home "$HOME/.mealy" session send SESSION_ID "Compare the evidence." \
   --provider-id openrouter.responses --model-id vendor/model:free
+
+# Review only: promote one already-configured compatible route to primary.
+mealyctl --home "$HOME/.mealy" provider switch \
+  --provider-id local.responses --model-id local-model
+
+# Apply the exact reviewed plan through the independent Linux service helper.
+mealyctl --home "$HOME/.mealy" provider switch \
+  --provider-id local.responses --model-id local-model --approve
+
+mealyctl --home "$HOME/.mealy" provider switch-status TRANSACTION_ID
 ```
 
 `session provider get SESSION_ID` returns the canonical default and revision. Omitting a selection
@@ -156,6 +166,24 @@ that turn. Admission durably pins the resolved identity before queue acknowledge
 selection disables implicit fallback for that turn, although a classified retry may reuse that
 same exact endpoint. Selection changes affect only future new turns and never rewrite queued,
 active, or completed work.
+
+`provider switch` is different from scoped selection: it changes which compatible configured
+route automatic routing prefers. Without `--approve`, it emits a non-mutating
+`mealy.provider-switch-plan.v1`. Approved apply is supported only for a verified production Linux
+installation whose active `mealy.service` exactly binds this home and daemon. A private,
+digest-bound helper probes the selected route, drains the daemon, atomically promotes it, restarts
+the service, and requires liveness, readiness, `doctor`, config-digest, route-count, and exact
+primary-identity agreement. Failure before activation aborts; failure after activation restores
+the exact prior configuration and requalifies it. `switch-status` reads the durable transaction
+after terminal or client disconnection. Transactional switching accepts brokered credentials,
+credential-free literal-loopback endpoints, and the official subscription client; it rejects
+environment-only credential references because an independent recovery helper cannot safely
+inherit the caller's shell secret.
+
+The switch only reorders the complete existing validated route chain. Adding/removing a route or
+changing an endpoint, model, credential, price, locality, or residency remains a stopped-daemon
+`config` operation. Chain validation may also reject a promotion that would leave a weaker-trust
+fallback behind the new primary.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;
@@ -200,8 +228,9 @@ invoice or silently label an owner-configured currency. After every terminal tas
 recorded input/output tokens, cost microunits, model calls, tool calls, and retries. These values
 come from durable task evidence and are not estimates of the model's remaining context window.
 Changing the configured route set or credentials still uses the stopped-daemon configuration
-transaction. Selecting among already-active compatible routes uses the online revision-fenced
-session/turn boundary above, so an in-flight turn cannot change identity.
+transaction. Scoped session/turn selection never changes the configured primary. Promoting one
+already-configured compatible automatic route uses `provider switch`; its drain/restart boundary
+preserves immutable identity for every in-flight turn.
 
 ## Installation status and completion
 

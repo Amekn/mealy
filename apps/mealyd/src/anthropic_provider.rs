@@ -260,7 +260,7 @@ impl AnthropicMessagesProvider {
     pub fn new(settings: AnthropicMessagesSettings) -> Result<Self, AnthropicMessagesBuildError> {
         let messages_url = messages_url(&settings.base_url)?;
         if !valid_label(&settings.provider_id, MAXIMUM_PROVIDER_ID_BYTES)
-            || !valid_label(&settings.model, 256)
+            || !valid_label(&settings.model, 128)
             || !valid_label(&settings.residency, 128)
             || settings.context_tokens == 0
             || settings.context_tokens <= DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD

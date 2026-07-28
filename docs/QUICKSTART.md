@@ -1030,16 +1030,28 @@ Inspect and select among exact routes already active in the daemon:
 "$HOME/.local/bin/mealyctl" session provider set SESSION_ID --automatic
 "$HOME/.local/bin/mealyctl" session send SESSION_ID "Use the local model once." \
   --provider-id local.responses --model-id local-model
+"$HOME/.local/bin/mealyctl" provider switch \
+  --provider-id local.responses --model-id local-model
 ```
 
 An omitted per-turn choice inherits the conversation default; `--automatic` explicitly uses
 compatible configured routing for that turn. Admission durably pins the resolved provider/model
 before acknowledgement. An exact selection disables implicit fallback for the turn, though
 classified retries may reuse that same endpoint. A default update is revision-fenced, applies only
-to future new turns, and cannot rewrite queued, active, or completed work. Changing the configured
-route set, endpoint, credential, price, or residency boundary still requires the stopped-daemon
-`config provider` transaction until the separately specified plan-first transactional switch is
-implemented and qualified.
+to future new turns, and cannot rewrite queued, active, or completed work.
+
+`provider switch` prints a review-only plan for promoting an already-configured compatible route
+to the automatic primary. Repeat it with `--approve` to start a private durable helper that probes
+the exact candidate, drains the service, atomically archives and activates the reordered complete
+chain, restarts, and verifies `doctor`, readiness, config digest, route count, and primary
+identity. It automatically restores and requalifies the prior configuration after a post-activation
+failure. Use `provider switch-status TRANSACTION_ID` after a disconnected terminal. Environment-only
+credential references are deliberately ineligible; use the provider-secret broker, a
+credential-free literal-loopback endpoint, or the official subscription client.
+
+Changing the route set, endpoint, model, credential, price, locality, or residency boundary still
+requires the stopped-daemon `config provider` transaction. The switch also fails before mutation
+if reordering would violate the fallback trust-boundary invariant.
 
 Use `mealyctl chat` or the lower-level session commands shown above. A real-provider turn makes one
 bounded request, commits the normalized response and usage, runs deterministic integrity

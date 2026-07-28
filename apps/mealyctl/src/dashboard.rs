@@ -3276,7 +3276,7 @@ fn valid_provider_selection(selection: &ProviderSelectionCommand) -> bool {
             !provider_id.is_empty()
                 && provider_id.len() <= 128
                 && !model_id.is_empty()
-                && model_id.len() <= 256
+                && model_id.len() <= 128
                 && !provider_id.chars().any(char::is_control)
                 && !model_id.chars().any(char::is_control)
         }

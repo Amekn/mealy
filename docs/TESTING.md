@@ -135,6 +135,18 @@ credential rotation, inspect the validated chain without credential resolution, 
 incompatible primary before config or broker mutation. All failure paths redact credentials and response
 bodies.
 
+`apps/mealyctl/src/provider_switch.rs` tests the plan and durable recovery evidence independently
+of provider output. It requires config/catalog route-order agreement, promotes only an exact
+configured pair, preserves the complete validated chain, distinguishes a no-op primary, and
+rejects catalog drift. Transaction tests bind private helper and previous/candidate snapshot
+digests, accept only monotonic phases, detect changed recovery bytes, and classify the active
+config from exact file digests so a crash between activation and phase persistence cannot be
+mistaken for untouched state. The ordinary application/config/adapter/storage tests share the
+128-byte model-identity bound. The complete process suite continues to prove drain, owner-service
+restart/readiness, provider probe redaction, exact catalog projection, and configuration-history
+atomic writes used by the composed transaction; installed-package qualification will exercise the
+full approved service-manager path before the v0.3 release gate is signed.
+
 `apps/mealyctl/tests/skill_configuration.rs` crosses the client process boundary for data-only
 skills. It proves read-only inspection, no mutation without approval, immutable digest publication,
 installed-but-disabled staging, source-package independence, exact-digest activation fencing,

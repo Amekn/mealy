@@ -201,7 +201,7 @@ impl ProviderConfig {
                     return Err(ProviderConfigError::Invalid);
                 };
                 if valid_label(provider_id, 128)
-                    && valid_label(model, 256)
+                    && valid_label(model, 128)
                     && valid_label(residency, 128)
                     && (1..=2_000_000).contains(context_tokens)
                     && (1..=*context_tokens).contains(maximum_output_tokens)
@@ -233,7 +233,7 @@ impl ProviderConfig {
                     && valid_label(provider_id, 128)
                     && valid_absolute_executable_path(executable_path)
                     && is_sha256_digest(executable_sha256)
-                    && valid_label(model, 256)
+                    && valid_label(model, 128)
                     && valid_label(residency, 128)
                     && (1..=2_000_000).contains(context_tokens)
                     && client.input_token_overhead() < *context_tokens
@@ -280,6 +280,17 @@ impl ProviderConfig {
             Self::OpenAiResponses { provider_id, .. }
             | Self::AnthropicMessages { provider_id, .. }
             | Self::SubscriptionCli { provider_id, .. } => Some(provider_id),
+        }
+    }
+
+    /// Exact configured model identity when this is an external endpoint.
+    #[must_use]
+    pub fn model_id(&self) -> Option<&str> {
+        match self {
+            Self::BuiltinFixture => None,
+            Self::OpenAiResponses { model, .. }
+            | Self::AnthropicMessages { model, .. }
+            | Self::SubscriptionCli { model, .. } => Some(model),
         }
     }
 
@@ -490,6 +501,23 @@ mod tests {
         *client = SubscriptionCliClient::AnthropicClaude;
         *context_tokens = 32_768;
         assert!(subscription.validate().is_err());
+    }
+
+    #[test]
+    fn model_identity_matches_the_durable_attempt_and_checkpoint_bound() {
+        let mut provider = remote(Some(ProviderCredentialReference::Broker {
+            secret_id: "openai-primary".to_owned(),
+        }));
+        let ProviderConfig::OpenAiResponses { model, .. } = &mut provider else {
+            unreachable!()
+        };
+        *model = "m".repeat(128);
+        assert!(provider.validate().is_ok());
+        let ProviderConfig::OpenAiResponses { model, .. } = &mut provider else {
+            unreachable!()
+        };
+        *model = "m".repeat(129);
+        assert!(provider.validate().is_err());
     }
 
     #[test]

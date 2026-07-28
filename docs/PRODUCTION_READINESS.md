@@ -151,7 +151,12 @@ startup and `/status` render provider/model identity, live health, locality/resi
 context/output limits, provider overhead, configured prices, queue state, and route pressure.
 Every terminal task prints exact durable token, cost-microunit, model/tool-call, and retry
 accounting. The pseudo-terminal process proof refreshes status while the client remains
-interactive; provider switching retains the stopped-daemon review and restart boundary.
+interactive. Compatible active-route promotion is now a plan-first, explicitly approved,
+disconnect-resistant Linux service transaction: it binds exact prior/candidate configuration and
+daemon/helper digests, probes before drain, activates only while stopped, verifies the restarted
+catalog/config/primary identity, and restores then requalifies the prior route on failure. Route
+set, endpoint, model, credential, price, locality, and residency edits retain the stopped-daemon
+review boundary.
 
 The same v0.2.0 source adds an install-provenance layer and plan-first `install-status`,
 `update`, `update-status`, `repair`, `rollback`, `uninstall`, and shell-completion surfaces. The update check uses

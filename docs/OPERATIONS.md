@@ -935,7 +935,54 @@ provider/model selection plus resolution source on admitted inputs and promoted 
 backfills existing sessions and work as `automatic`, while triggers require complete provider/model
 pairs, bind selection events to the exact owner session, prevent later mutation, and require every
 promoted turn to match its admitted input. The active provider catalog is a runtime projection and
-does not create a second configuration authority.
+does not create a second configuration authority. Provider and model identities share the
+existing durable attempt/checkpoint bound of 128 UTF-8 bytes, so a configuration cannot activate
+an identity that storage would later reject.
+
+## Transactional primary-route promotion
+
+Inspect the active catalog, then review a no-mutation plan:
+
+```sh
+mealyctl provider catalog
+mealyctl provider switch \
+  --provider-id local.responses --model-id local-model
+```
+
+The target must be one exact already-configured route. The plan compares the complete config chain
+with the authenticated active catalog, stages a full reordered candidate, and reports whether the
+verified active Linux owner service can apply it. It never resolves or prints a credential.
+
+Approve only the same exact target:
+
+```sh
+mealyctl provider switch \
+  --provider-id local.responses --model-id local-model --approve
+mealyctl provider switch-status TRANSACTION_ID
+```
+
+The client copies its already-verified executable into an owner-private transaction directory and
+asks the user service manager to supervise that digest-bound helper. The helper serializes against
+program updates, resolves only a brokered credential (or uses a credential-free loopback or
+official subscription route), performs the bounded exact-model probe, closes admission, waits for
+drain, acquires the stopped-home lock, archives the prior configuration, and atomically installs
+the candidate. After restart it requires liveness, readiness, `doctor`, active service identity,
+candidate file digest, catalog/status config-digest agreement, unchanged route count, and exact
+primary provider/model.
+
+Every phase and immutable snapshot digest is mode-`0600` evidence below
+`provider-switch-transactions/`. A crash after file activation but before phase persistence is
+recognized from the exact candidate digest when the service manager restarts the helper. Failure
+before activation returns `aborted` only after the prior route qualifies. Failure after activation
+stops the candidate, restores the exact previous snapshot, restarts, and returns `rolled-back`
+only after the old catalog digest and primary identity qualify. `recovery-failed` preserves the
+record and journal for manual incident work.
+
+This transaction intentionally reorders rather than edits the active route set, so persisted exact
+session defaults cannot become dangling. Chain validation rejects a promotion that would weaken a
+fallback trust boundary. Add/remove, endpoint/model, credential, price, locality, and residency
+changes remain stopped-daemon configuration operations. Environment-only credential references
+are not eligible because the independent helper does not inherit a caller's shell secret.
 
 There is no in-place downgrade and an older binary must never open the newer database. For a
 package-managed rollback, inspect the exact automatic snapshot and compare its manifest SHA-256
