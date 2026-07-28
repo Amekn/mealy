@@ -11,6 +11,7 @@ use std::{
 const MAXIMUM_INPUT_BYTES: usize = 64;
 const MAXIMUM_SESSION_ID_BYTES: usize = 128;
 const MAXIMUM_STATUS_BYTES: usize = 64;
+const MAXIMUM_TITLE_BYTES: usize = 160;
 const MAXIMUM_SESSIONS: usize = 20;
 
 pub(super) async fn pick_recent_chat_session(
@@ -116,6 +117,9 @@ fn valid_summary(session: &SessionSummaryResponse) -> bool {
     !session.session_id.is_empty()
         && session.session_id.len() <= MAXIMUM_SESSION_ID_BYTES
         && !session.session_id.chars().any(unsafe_terminal_character)
+        && !session.title.is_empty()
+        && session.title.len() <= MAXIMUM_TITLE_BYTES
+        && !session.title.chars().any(unsafe_terminal_character)
         && !session.status.is_empty()
         && session.status.len() <= MAXIMUM_STATUS_BYTES
         && !session.status.chars().any(unsafe_terminal_character)
@@ -146,8 +150,13 @@ fn render_recent_chat_sessions(
         };
         writeln!(
             prompt,
-            "  {}. {} | {} | {} | {}",
+            "  {}. {}",
             index + 1,
+            terminal_safe_single_line(&session.title),
+        )?;
+        writeln!(
+            prompt,
+            "     {} | {} | {} | {}",
             terminal_safe_single_line(&session.session_id),
             terminal_safe_single_line(&session.status),
             relative_age(session.updated_at_ms, now_ms),
@@ -178,6 +187,7 @@ mod tests {
     fn summary(session_id: &str, updated_at_ms: i64) -> SessionSummaryResponse {
         SessionSummaryResponse {
             session_id: session_id.to_owned(),
+            title: "Review release readiness".to_owned(),
             status: "idle".to_owned(),
             revision: 2,
             pending_inputs: 0,
@@ -204,6 +214,9 @@ mod tests {
         value.status = "idle\u{001b}[31m".to_owned();
         assert!(!valid_summary(&value));
         value.status = "idle".to_owned();
+        value.title = "unsafe\u{001b}[31m".to_owned();
+        assert!(!valid_summary(&value));
+        value.title = "Review release readiness".to_owned();
         value.session_id = "s".repeat(129);
         assert!(!valid_summary(&value));
         value.session_id = "session".to_owned();

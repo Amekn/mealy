@@ -486,8 +486,10 @@ Find recent sessions owned by this exact local channel binding, newest updated f
 ```
 
 The ordinary return path is `chat --continue`. Use `chat --pick` to choose an older conversation
-interactively. `session list` and `chat --session-id SESSION_ID` remain the bounded JSON/script
-path for selecting and resuming exact active/pending work.
+interactively. Both surfaces include a deterministic bounded title derived from the first
+canonical owner input (`New conversation` before any input); title derivation is local and makes no
+provider call. `session list` and `chat --session-id SESSION_ID` remain the bounded JSON/script path
+for selecting and resuming exact active/pending work.
 Telegram-owned sessions remain discoverable through `channel telegram-list`; exact channel-binding
 isolation prevents a general local session query from silently crossing transport identities.
 
@@ -911,8 +913,9 @@ owned by the exact local principal/channel binding. The scriptable form is:
 ```
 
 Search is a literal, case-insensitive substring match—`%` and `_` are not wildcards. Results are
-newest first and contain stable session/turn/task IDs, at most 512 UTF-8 bytes around the match on
-each side, and digests of the complete canonical content. The endpoint returns at most 100 turns
+newest first and contain the effective session title, stable session/turn/task IDs, at most 512
+UTF-8 bytes around the match on each side, and digests of the complete canonical content. The
+endpoint returns at most 100 turns
 and rejects empty, untrimmed, control-bearing, or oversized queries. A local search cannot cross
 into a Telegram, Discord, or webhook session even when the principal is the same, because channel binding is
 filtered before content matching. Resume a hit with `chat --session-id SESSION_ID` and inspect its

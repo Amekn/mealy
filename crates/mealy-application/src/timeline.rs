@@ -78,6 +78,8 @@ pub struct SessionStatusView {
 pub struct SessionSummaryView {
     /// Session ID.
     pub session_id: SessionId,
+    /// Bounded display title derived from the first canonical owner input.
+    pub title: String,
     /// Stable lifecycle spelling.
     pub status: String,
     /// Canonical optimistic-concurrency revision.
@@ -94,6 +96,12 @@ pub struct SessionSummaryView {
 
 /// Maximum UTF-8 bytes returned for either side of one transcript-search hit.
 pub const SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES: usize = 512;
+/// Maximum UTF-8 bytes in a derived session title.
+pub const SESSION_TITLE_MAXIMUM_BYTES: usize = 160;
+/// Maximum Unicode scalar values in a derived session title.
+pub const SESSION_TITLE_MAXIMUM_CHARACTERS: usize = 72;
+/// Stable title for a session that has no canonical owner input yet.
+pub const UNTITLED_SESSION_TITLE: &str = "New conversation";
 
 /// Exact-binding bounded search across canonical user and final-assistant transcript text.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +119,8 @@ pub struct SessionSearchQuery {
 pub struct SessionSearchHitView {
     /// Owning session accepted by `chat --session-id`.
     pub session_id: SessionId,
+    /// Bounded display title derived from the first canonical owner input.
+    pub session_title: String,
     /// Canonical turn identity.
     pub turn_id: TurnId,
     /// Canonical root task identity.
@@ -307,9 +317,71 @@ pub fn session_search_excerpt(content: &str, query: &str) -> Option<String> {
     Some(content[start..end].to_owned())
 }
 
+/// Derives a bounded, single-line, terminal-safe title from canonical owner input.
+///
+/// This is intentionally a deterministic presentation projection rather than a
+/// provider-generated summary. Owner-renamed titles use a separate canonical
+/// metadata lifecycle.
+#[must_use]
+pub fn derive_session_title(first_input: Option<&str>) -> String {
+    let Some(first_input) = first_input else {
+        return UNTITLED_SESSION_TITLE.to_owned();
+    };
+    let sanitized = first_input
+        .chars()
+        .map(|character| {
+            if unsafe_session_title_character(character) {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let normalized = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return UNTITLED_SESSION_TITLE.to_owned();
+    }
+
+    let mut title = String::new();
+    let mut characters = 0_usize;
+    let maximum_content_bytes = SESSION_TITLE_MAXIMUM_BYTES.saturating_sub('…'.len_utf8());
+    let mut truncated = false;
+    for character in normalized.chars() {
+        if characters == SESSION_TITLE_MAXIMUM_CHARACTERS
+            || title.len().saturating_add(character.len_utf8()) > maximum_content_bytes
+        {
+            truncated = true;
+            break;
+        }
+        title.push(character);
+        characters = characters.saturating_add(1);
+    }
+    if truncated {
+        title.push('…');
+    }
+    title
+}
+
+fn unsafe_session_title_character(character: char) -> bool {
+    let codepoint = u32::from(character);
+    character.is_control()
+        || matches!(
+            codepoint,
+            0x061c
+                | 0x200b..=0x200f
+                | 0x2028..=0x202e
+                | 0x2060..=0x206f
+                | 0xfeff
+        )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES, session_search_excerpt};
+    use super::{
+        SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES, SESSION_TITLE_MAXIMUM_BYTES,
+        SESSION_TITLE_MAXIMUM_CHARACTERS, UNTITLED_SESSION_TITLE, derive_session_title,
+        session_search_excerpt,
+    };
 
     #[test]
     fn transcript_excerpt_is_literal_case_insensitive_and_utf8_bounded() {
@@ -319,5 +391,24 @@ mod tests {
         assert!(excerpt.len() <= SESSION_SEARCH_MAXIMUM_EXCERPT_BYTES);
         assert!(session_search_excerpt(&content, "%").is_none());
         assert!(session_search_excerpt(&content, "").is_none());
+    }
+
+    #[test]
+    fn derived_session_title_is_stable_bounded_and_terminal_safe() {
+        assert_eq!(derive_session_title(None), UNTITLED_SESSION_TITLE);
+        assert_eq!(
+            derive_session_title(Some("  Review\nthis\tchange.  ")),
+            "Review this change."
+        );
+        assert_eq!(
+            derive_session_title(Some("Review\u{001b}[31m \u{202e}unsafe output")),
+            "Review [31m unsafe output"
+        );
+
+        let title = derive_session_title(Some(&"界".repeat(200)));
+        assert!(title.ends_with('…'));
+        assert!(title.len() <= SESSION_TITLE_MAXIMUM_BYTES);
+        assert!(title.chars().count() <= SESSION_TITLE_MAXIMUM_CHARACTERS + 1);
+        assert!(!title.chars().any(char::is_control));
     }
 }

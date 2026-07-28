@@ -981,6 +981,7 @@ impl ApiBackend for RuntimeBackend {
             .map(|session| {
                 Ok(SessionSummaryResponse {
                     session_id: session.session_id.to_string(),
+                    title: session.title,
                     status: session.status,
                     revision: session.revision,
                     pending_inputs: session.pending_inputs,
@@ -1016,6 +1017,7 @@ impl ApiBackend for RuntimeBackend {
         .map(|hit| {
             Ok(SessionSearchHitResponse {
                 session_id: hit.session_id.to_string(),
+                session_title: hit.session_title,
                 turn_id: hit.turn_id.to_string(),
                 task_id: hit.task_id.to_string(),
                 user_excerpt: hit.user_excerpt,

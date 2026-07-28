@@ -4,7 +4,7 @@ use mealy_application::{
     AdmitInputCommand, InputAdmissionLimits, LeaseClaimOutcome, LeaseConcurrencyLimits,
     LeaseLimits, LeaseReleaseReason, OwnershipContext, PromotionDefaults, PromotionOutcome,
     ReleaseLeaseCommit, RunCompletionStatus, SchedulerStore, SchedulerStoreError,
-    SchedulerUseCaseError, TimelineQuery, admit_input, claim_next_work,
+    SchedulerUseCaseError, TimelineQuery, UNTITLED_SESSION_TITLE, admit_input, claim_next_work,
     claim_next_work_with_concurrency, complete_run, create_session, heartbeat_lease,
     pending_promotion_sessions, promote_next_input, query_session_status, query_sessions,
     query_timeline, recover_expired_leases,
@@ -119,6 +119,22 @@ fn recent_session_discovery_is_exact_binding_bounded_and_reports_pending_state()
             .expect("pending session")
             .pending_inputs,
         1
+    );
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|session| session.session_id == first)
+            .expect("empty session")
+            .title,
+        UNTITLED_SESSION_TITLE
+    );
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|session| session.session_id == second)
+            .expect("titled session")
+            .title,
+        "input 1"
     );
     assert_eq!(
         query_sessions(&store, ownership, 1)

@@ -63,9 +63,12 @@ public command cannot be added or removed without updating this reference.
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`
 interactively selects one of the 20 newest exact-binding sessions, and `chat --session-id
-SESSION_ID` selects a specific older session for scripts. The picker shows status, relative
-recency, queued input count, and active-turn state without creating a session. `--continue` and
-`--pick` never silently create a session when there is no history.
+SESSION_ID` selects a specific older session for scripts. The picker shows a bounded deterministic
+title derived from the first canonical owner input, plus status, relative recency, queued input
+count, and active-turn state without creating a session. An empty session is titled
+`New conversation`. Derived titles make no provider call and remain presentation data until an
+owner-renaming lifecycle is introduced. `--continue` and `--pick` never silently create a session
+when there is no history.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;

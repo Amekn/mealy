@@ -134,6 +134,12 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/artifacts/{artifact_id}` | - | `ArtifactMetadataResponse` |
 | `GET` | `/v1/artifacts/{artifact_id}/content` | - | bounded artifact bytes |
 
+`SessionsResponse` includes one bounded `title` for each exact-binding session. Until an
+owner-renaming lifecycle is activated, this is a deterministic, control-free projection of the
+first canonical owner input and is `New conversation` before the first input. Search hits include
+the same value as `sessionTitle`; deriving either value makes no provider request and creates no
+canonical mutation.
+
 ### Schedules and governed memory
 
 | Method | Path | Request or query | Response |

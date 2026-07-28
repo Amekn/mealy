@@ -677,6 +677,7 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
     *state.picker_sessions.lock().expect("picker sessions lock") = vec![
         SessionSummaryResponse {
             session_id: SESSION_ID.to_owned(),
+            title: "Investigate active release work".to_owned(),
             status: "active".to_owned(),
             revision: 3,
             pending_inputs: 1,
@@ -686,6 +687,7 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
         },
         SessionSummaryResponse {
             session_id: SECOND_SESSION_ID.to_owned(),
+            title: "Prepare package notes".to_owned(),
             status: "idle".to_owned(),
             revision: 2,
             pending_inputs: 0,
@@ -716,6 +718,8 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
         Duration::from_secs(1),
     );
     let picker = String::from_utf8_lossy(&rendered);
+    assert!(picker.contains("Investigate active release work"));
+    assert!(picker.contains("Prepare package notes"));
     assert!(picker.contains("| active | updated just now | active turn"));
     assert!(picker.contains("| idle | updated just now | idle"));
     terminal
@@ -959,6 +963,7 @@ async fn list_sessions(State(state): State<AdmissionState>) -> Json<SessionsResp
             .load(Ordering::SeqCst)
             .then(|| SessionSummaryResponse {
                 session_id: SESSION_ID.to_owned(),
+                title: "Latest conversation".to_owned(),
                 status: "active".to_owned(),
                 revision: 1,
                 pending_inputs: 0,
