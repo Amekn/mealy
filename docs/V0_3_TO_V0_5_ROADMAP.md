@@ -188,6 +188,20 @@ slices.
   forms, uploads, and downloads. Keep the current research profile as the safe
   default; persistent/personal profiles remain a separate higher-trust choice.
 
+The reusable channel contract and first Slack production slice are implemented on the v0.4
+branch. The pure adapter enforces exact workspace/member/conversation/bot/mention bounds and
+bounded control-safe output. Setup live-verifies both Slack token roles and the app/workspace/bot/
+human/conversation identities, while the Socket Mode hello independently binds the app token to
+the bot app. Routes with identical installation pins share one connection. A complete normalized
+admit/ignore disposition is persisted before acknowledgement, acknowledged-but-unfinished input
+recovers after restart, duplicates are body-bound, and output resolves the exact originating
+thread with stable `client_msg_id` plus per-channel rate control. Both tokens remain broker-only;
+final-route revocation removes them. Slack chat deliberately cannot grant effect approval.
+Migration/storage tests and a real HTTP/WebSocket public-process proof cover crash-after-ack
+recovery, exact allowlists, duplicate acknowledgement, thread routing, 429 retry, stable
+downstream identity, secret exclusion/deletion, and revocation. Package/upgrade matrices and the
+complete v0.4 release gate remain pending with the other unfinished v0.4 slices.
+
 ### v0.4 release gate
 
 In addition to the standard release gates, v0.4 requires adversarial

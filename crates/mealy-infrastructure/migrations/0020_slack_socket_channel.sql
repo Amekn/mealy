@@ -14,6 +14,11 @@ CREATE TABLE slack_channel_binding (
         AND team_id NOT GLOB '*[^A-Z0-9]*'
     ),
     team_name TEXT NOT NULL CHECK (length(CAST(team_name AS BLOB)) BETWEEN 1 AND 128),
+    app_id TEXT NOT NULL CHECK (
+        length(app_id) BETWEEN 2 AND 64
+        AND substr(app_id, 1, 1) = 'A'
+        AND app_id NOT GLOB '*[^A-Z0-9]*'
+    ),
     slack_user_id TEXT NOT NULL CHECK (
         length(slack_user_id) BETWEEN 2 AND 64
         AND substr(slack_user_id, 1, 1) IN ('U', 'W')
@@ -84,12 +89,16 @@ BEGIN
                 existing.app_token_secret_id = NEW.app_token_secret_id
                 OR existing.app_token_digest = NEW.app_token_digest
               )
+          AND existing.status = 'active'
           AND (
+                existing.principal_id <> NEW.principal_id
+                OR
                 existing.app_token_secret_id <> NEW.app_token_secret_id
                 OR existing.app_token_digest <> NEW.app_token_digest
                 OR existing.bot_token_secret_id <> NEW.bot_token_secret_id
                 OR existing.bot_token_digest <> NEW.bot_token_digest
                 OR existing.team_id <> NEW.team_id
+                OR existing.app_id <> NEW.app_id
                 OR existing.bot_user_id <> NEW.bot_user_id
               )
     ) THEN RAISE(ABORT, 'shared Slack installation authority is inconsistent') END;
@@ -103,6 +112,7 @@ BEGIN
         OR NEW.session_id <> OLD.session_id
         OR NEW.team_id <> OLD.team_id
         OR NEW.team_name <> OLD.team_name
+        OR NEW.app_id <> OLD.app_id
         OR NEW.slack_user_id <> OLD.slack_user_id
         OR NEW.slack_channel_id <> OLD.slack_channel_id
         OR NEW.bot_user_id <> OLD.bot_user_id

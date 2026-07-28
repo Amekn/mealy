@@ -250,7 +250,11 @@ pub fn valid_slack_platform_id(value: &str) -> bool {
         .as_bytes()
         .first()
         .is_some_and(|prefix| matches!(prefix, b'T' | b'U' | b'W' | b'C' | b'G' | b'D'))
-        && value.len() >= 2
+        && valid_slack_identifier(value)
+}
+
+fn valid_slack_identifier(value: &str) -> bool {
+    value.len() >= 2
         && value.len() <= MAXIMUM_SLACK_ID_BYTES
         && value
             .bytes()
@@ -258,7 +262,7 @@ pub fn valid_slack_platform_id(value: &str) -> bool {
 }
 
 fn valid_slack_id(value: &str, prefix: u8) -> bool {
-    value.as_bytes().first() == Some(&prefix) && valid_slack_platform_id(value)
+    value.as_bytes().first() == Some(&prefix) && valid_slack_identifier(value)
 }
 
 fn valid_slack_user_id(value: &str) -> bool {
@@ -296,6 +300,12 @@ pub fn valid_slack_acknowledgement_id(value: &str) -> bool {
 #[must_use]
 pub fn valid_slack_delivery_id(value: &str) -> bool {
     valid_bounded_identifier(value, MAXIMUM_SLACK_EVENT_ID_BYTES)
+}
+
+/// Validates a stable Slack application identity reported by `auth.test` and Socket Mode hello.
+#[must_use]
+pub fn valid_slack_app_id(value: &str) -> bool {
+    valid_slack_id(value, b'A')
 }
 
 fn valid_slack_timestamp(value: &str) -> bool {
@@ -347,7 +357,10 @@ fn truncate_slack_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter};
+    use super::{
+        SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_app_id,
+        valid_slack_platform_id,
+    };
     use crate::{
         ChannelAdapter, ChannelInboundDisposition, ChannelOutboundContent, ChannelPlatform,
     };
@@ -454,6 +467,9 @@ mod tests {
 
     #[test]
     fn slack_adapter_accepts_workspace_member_ids_and_normalizes_outer_whitespace() {
+        assert!(valid_slack_app_id("A01234567"));
+        assert!(!valid_slack_platform_id("A01234567"));
+        assert!(!valid_slack_platform_id("B01234567"));
         let adapter = SlackAdapter::new(
             "T01234567".to_owned(),
             "W01234567".to_owned(),

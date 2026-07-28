@@ -939,6 +939,43 @@ revision-fenced, removes the brokered token, stops active target discovery, and 
 message-receipt, health, and journal evidence. Safe mode resolves no Discord credential and runs
 neither polling nor external delivery.
 
+## Slack Socket Mode operations
+
+`channel slack-create` reads `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` once, live-verifies the exact
+app/workspace/bot/member/conversation relationship, and brokers both credentials outside SQLite.
+Use `channel slack-list` and `channel slack-status BINDING_ID` to inspect identity pins, lifecycle,
+revision, last success/failure, consecutive failures, and a secret-free failure code. The daemon
+groups exact routes sharing one installation behind one Socket Mode connection because Slack may
+distribute events unpredictably across multiple connections.
+
+Operational error codes are intentionally stable and secret-free:
+
+- `credential_unavailable`, `credential_mismatch`, or `unauthorized`: rotate/reinstall the Slack
+  app, revoke the affected binding, and create a replacement with both current tokens;
+- `app_identity_mismatch`: the app token opened a socket for a different application than the
+  verified bot token; revoke immediately and correct the token pair;
+- `unsafe_socket_url`: Slack returned a Socket Mode origin outside the fixed production policy;
+- `rate_limited` or `transport`: inspect Slack service/network health and allow bounded backoff;
+- `malformed`, `malformed_hello`, or `oversized`: preserve logs and receipt evidence and treat the
+  upstream/protocol exchange as suspect;
+- `store`, `session`, or `invariant`: stop mutation, preserve the home, and run local integrity and
+  migration diagnostics before retrying.
+
+Routine Slack `disconnect` refresh envelopes cause an immediate fresh `apps.connections.open` and
+do not degrade channel health. Each other failure is recorded for every route sharing that
+installation. A connection success clears the consecutive-failure counter. Pending reserved
+envelopes are completed before new traffic after reconnect/restart.
+
+Outbound delivery uses the exact originating Slack thread. One per-channel send slot per second is
+reserved before dispatch; definite `429` responses defer the route by bounded `Retry-After`.
+Retries retain `client_msg_id`. Rich-text interpretation and link/media unfurls are disabled.
+Approval notifications are informational only: Slack text cannot resolve an effect approval.
+
+Revoke with the current revision. A route sharing the same app installation leaves the shared
+credentials intact; revoking its final active route removes both broker entries. The revocation
+transaction restores credential files if the canonical database transition fails. Safe mode
+resolves neither Slack credential and starts no Socket Mode or Slack outbox worker.
+
 ## Scheduled automation operations
 
 `schedule list`, `schedule status`, and `schedule runs` expose the canonical definition, next due

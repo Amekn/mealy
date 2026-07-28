@@ -1949,6 +1949,57 @@ result always remains in the local session timeline if a 2,000-character notific
 truncated. Rotate by revoking, resetting the token in the Developer Portal, and pairing a new
 binding. Secret-bearing backups include the token only with explicit `--include-secrets`.
 
+## Connect a Slack Socket Mode app
+
+Create a Slack app for the workspace, enable Socket Mode, and create an app-level token with
+`connections:write`. Install the app to the workspace with only the bot scopes required by the
+chosen surface: conversation inspection, exact member inspection, the relevant message event
+history (`message.channels`, `message.groups`, or `message.im`), and `chat:write`. Subscribe only
+to the corresponding message event, invite the bot to a channel when Slack requires membership,
+then copy the exact member and conversation IDs. Mealy opens an outbound Socket Mode connection;
+it does not require an Internet-reachable webhook.
+
+Pass both credentials through separate one-shot environment variables, never through command
+arguments:
+
+```sh
+export SLACK_APP_TOKEN='xapp-...'
+export SLACK_BOT_TOKEN='xoxb-...'
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-create \
+  --user-id U01234567 \
+  --channel-id C01234567
+unset SLACK_APP_TOKEN SLACK_BOT_TOKEN
+```
+
+Creation proves that the app token can open Socket Mode and live-verifies the bot token,
+workspace, application, bot member, allowed human, and conversation before creating a dedicated
+session. Both tokens move into the owner-private credential broker and never enter configuration,
+SQLite, status, or logs. A channel or private-channel binding requires an explicit bot mention by
+default; add `--allow-unmentioned` only after reviewing that wider input surface. Direct-message
+IDs (`D...`) never require a mention. Reusing the same verified installation for another exact
+member/conversation route reuses one Socket Mode connection and the same credential pins.
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-list
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-status BINDING_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-revoke BINDING_ID \
+  --expected-revision REVISION
+```
+
+Mealy persists the complete bounded normalized disposition before acknowledging each Slack
+envelope. If it stops after the acknowledgement but before admission, restart completes that
+reservation without duplicating the input. Wrong workspace, member, conversation, bot/system
+messages, unsupported event types, and missing required mentions are acknowledged as durable
+ignored evidence. Progress and results use the originating thread, disable Slack rich-text parsing
+and unfurls, cap output conservatively, and reuse the durable outbox ID as `client_msg_id`.
+Per-channel sends are paced at one per second and `429 Retry-After` is honored.
+
+Slack is deliberately not an approval authority. Approval notifications identify the local
+approval but instruct the owner to approve or deny through the authenticated dashboard or
+`mealyctl`; `/approve` and `/deny` Slack messages are ignored. Revoking the last route using an
+installation removes both brokered tokens, stops connection discovery, and retains its session,
+envelope, health, and journal evidence.
+
 ## Create a recurring schedule
 
 Schedules target an existing durable session. This example admits one normal read-only turn at

@@ -18,5 +18,6 @@ ADRs record decisions that shape multiple modules or are expensive to reverse. T
 | [0012](0012-transactional-provider-primary-switch.md) | Transactional promotion of an already-configured provider route | Accepted |
 | [0013](0013-atomic-parallel-delegation-groups.md) | Atomic, ordered groups for bounded parallel delegation | Accepted |
 | [0014](0014-governed-streamable-http-mcp.md) | Governed Streamable HTTP MCP boundary | Accepted |
+| [0015](0015-crash-safe-slack-channel-boundary.md) | Crash-safe Slack channel boundary | Accepted |
 
 New ADRs use the next four-digit number and begin as `Proposed`. Superseding an ADR keeps the old file and links both directions.

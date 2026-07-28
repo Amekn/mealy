@@ -1,6 +1,7 @@
 use crate::{
     ChannelInboundMessage, InputAdmissionReceipt, OwnershipContext, SlackAdapter, is_sha256_digest,
-    valid_provider_secret_id, valid_slack_acknowledgement_id, valid_slack_delivery_id,
+    valid_provider_secret_id, valid_slack_acknowledgement_id, valid_slack_app_id,
+    valid_slack_delivery_id,
 };
 use mealy_domain::{
     ApprovalId, ChannelBindingId, CorrelationId, EventId, InboxEntryId, PrincipalId, SessionId,
@@ -38,6 +39,8 @@ pub struct SlackChannelBindingView {
     pub team_id: String,
     /// Human-readable workspace name observed during setup.
     pub team_name: String,
+    /// Exact Slack application identity bound to both token authorities.
+    pub app_id: String,
     /// Exact allowlisted Slack member.
     pub slack_user_id: String,
     /// Exact allowlisted Slack conversation.
@@ -86,6 +89,8 @@ pub struct RegisterSlackChannelCommit {
     pub team_id: String,
     /// Bounded workspace display name.
     pub team_name: String,
+    /// Exact Slack application identity reported by bot-token verification.
+    pub app_id: String,
     /// Exact allowed Slack sender.
     pub slack_user_id: String,
     /// Exact allowed Slack conversation.
@@ -230,6 +235,8 @@ pub struct SlackSocketTarget {
     pub binding_id: ChannelBindingId,
     /// Exact workspace.
     pub team_id: String,
+    /// Exact application required in the Socket Mode hello.
+    pub app_id: String,
     /// Exact allowed sender.
     pub slack_user_id: String,
     /// Exact allowed conversation.
@@ -274,10 +281,16 @@ pub struct OutboundSlackTarget {
     pub binding_id: ChannelBindingId,
     /// Exact Slack conversation.
     pub slack_channel_id: String,
+    /// Exact verified Slack workspace used to reconstruct the pure adapter.
+    pub team_id: String,
+    /// Exact allowlisted Slack member used to reconstruct the pure adapter.
+    pub slack_user_id: String,
     /// Exact originating thread root, when resolvable.
     pub thread_id: Option<String>,
     /// Verified bot member identity.
     pub bot_user_id: String,
+    /// Whether inbound shared-channel messages require a mention.
+    pub require_mention: bool,
     /// Opaque bot-token broker identity.
     pub bot_token_secret_id: String,
     /// Required bot-token digest.
@@ -431,6 +444,7 @@ pub trait SlackChannelStore {
 pub fn validate_slack_binding(
     team_id: &str,
     team_name: &str,
+    app_id: &str,
     slack_user_id: &str,
     slack_channel_id: &str,
     bot_user_id: &str,
@@ -451,6 +465,7 @@ pub fn validate_slack_binding(
     .is_ok();
     if !adapter_valid
         || !valid_display_name(team_name)
+        || !valid_slack_app_id(app_id)
         || !valid_display_name(bot_name)
         || !valid_provider_secret_id(app_token_secret_id)
         || !valid_provider_secret_id(bot_token_secret_id)
@@ -549,6 +564,7 @@ mod tests {
             validate_slack_binding(
                 "T01234567",
                 "Mealy Test",
+                "A01234567",
                 "U01234567",
                 "C01234567",
                 "U07654321",
@@ -565,6 +581,7 @@ mod tests {
             validate_slack_binding(
                 "T01234567",
                 "Mealy Test",
+                "A01234567",
                 "U01234567",
                 "C01234567",
                 "U07654321",

@@ -38,7 +38,7 @@ public command cannot be added or removed without updating this reference.
 | `compaction` | Create or inspect cited derived session compactions. |
 | `extension` | Install, grant, invoke, upgrade, disable, or revoke isolated extensions. |
 | `skill` | Inspect and manage stopped-home data-only skill bundles. |
-| `channel` | Configure and inspect webhook, Telegram, and Discord channel bindings. |
+| `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
 | `health` | Check daemon liveness. |
 | `status` | Inspect queues, leases, providers, approvals, effects, channels, and storage. |

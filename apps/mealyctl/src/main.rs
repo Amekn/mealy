@@ -45,31 +45,32 @@ use mealy_protocol::{
     CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
     CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DeliveryMode,
-    DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
-    DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
-    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
-    ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
-    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
-    InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse,
-    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
-    MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
-    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
-    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
+    DelegationsResponse, DeliveryMode, DiscordChannelResponse, DiscordChannelsResponse,
+    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse,
+    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportKindRequest,
+    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
+    ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
+    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
+    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
+    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
+    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
     RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
     ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
     SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
-    StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
-    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
-    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
-    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
-    WebhookChannelResponse, WebhookChannelsResponse,
+    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest, SubmitInputRequest,
+    TaskBudgetUsage, TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
+    TaskStatus, TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -1899,6 +1900,39 @@ enum ChannelCommand {
         /// Stable Discord binding ID.
         binding_id: String,
         /// Optimistic-concurrency revision returned by `discord-status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Verify Socket Mode and bot tokens, then bind one exact Slack member/conversation.
+    SlackCreate {
+        /// Exact Slack member allowed to submit messages.
+        #[arg(long)]
+        user_id: String,
+        /// Exact Slack conversation used for inbound and outbound messages.
+        #[arg(long)]
+        channel_id: String,
+        /// One-shot environment variable containing the Socket Mode app token.
+        #[arg(long, default_value = "SLACK_APP_TOKEN")]
+        app_token_env: String,
+        /// One-shot environment variable containing the Web API bot token.
+        #[arg(long, default_value = "SLACK_BOT_TOKEN")]
+        bot_token_env: String,
+        /// Permit messages in non-DM conversations without an explicit bot mention.
+        #[arg(long)]
+        allow_unmentioned: bool,
+    },
+    /// List owner-authorized Slack bindings.
+    SlackList,
+    /// Inspect one Slack binding without exposing either token.
+    SlackStatus {
+        /// Stable binding ID returned by `slack-create`.
+        binding_id: String,
+    },
+    /// Terminally revoke one Slack binding and remove unshared brokered tokens.
+    SlackRevoke {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Optimistic-concurrency revision returned by `slack-status`.
         #[arg(long)]
         expected_revision: u64,
     },
@@ -6431,6 +6465,12 @@ async fn run_channel(
         | ChannelCommand::DiscordRevoke { .. }) => {
             return run_discord_channel(client, connection, discord_command).await;
         }
+        slack_command @ (ChannelCommand::SlackCreate { .. }
+        | ChannelCommand::SlackList
+        | ChannelCommand::SlackStatus { .. }
+        | ChannelCommand::SlackRevoke { .. }) => {
+            return run_slack_channel(client, connection, slack_command).await;
+        }
         ChannelCommand::Create {
             external_subject,
             callback_url,
@@ -7034,6 +7074,103 @@ async fn submit_discord_channel_secret(
         connection,
     )
     .json(&command);
+    command.bot_token.zeroize();
+    request.send().await.map_err(CliError::Http)
+}
+
+async fn run_slack_channel(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: ChannelCommand,
+) -> Result<(), CliError> {
+    let response = match command {
+        ChannelCommand::SlackCreate {
+            user_id,
+            channel_id,
+            app_token_env,
+            bot_token_env,
+            allow_unmentioned,
+        } => {
+            if app_token_env == bot_token_env {
+                return Err(CliError::Protocol(
+                    "Slack app and bot tokens must use different environment variables".to_owned(),
+                ));
+            }
+            let app_token = read_channel_credential_environment(&app_token_env)?;
+            let bot_token = read_channel_credential_environment(&bot_token_env)?;
+            let require_mention = !channel_id.starts_with('D') && !allow_unmentioned;
+            submit_slack_channel_secrets(
+                client,
+                connection,
+                CreateSlackChannelRequest {
+                    api_version: API_VERSION.to_owned(),
+                    app_token: app_token.to_string(),
+                    bot_token: bot_token.to_string(),
+                    slack_user_id: user_id,
+                    slack_channel_id: channel_id,
+                    require_mention,
+                },
+            )
+            .await?
+        }
+        ChannelCommand::SlackList => {
+            let response = authorized(
+                client.get(format!("{}/v1/channels/slack", connection.base_url)),
+                connection,
+            )
+            .send()
+            .await?;
+            return print_json(decode::<SlackChannelsResponse>(response).await?);
+        }
+        ChannelCommand::SlackStatus { binding_id } => {
+            authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?
+        }
+        ChannelCommand::SlackRevoke {
+            binding_id,
+            expected_revision,
+        } => {
+            authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/revoke",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&RevokeSlackChannelRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+            })
+            .send()
+            .await?
+        }
+        _ => {
+            return Err(CliError::Protocol(
+                "non-Slack command reached Slack dispatcher".to_owned(),
+            ));
+        }
+    };
+    print_json(decode::<SlackChannelResponse>(response).await?)
+}
+
+async fn submit_slack_channel_secrets(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    mut command: CreateSlackChannelRequest,
+) -> Result<Response, CliError> {
+    let request = authorized(
+        client.post(format!("{}/v1/channels/slack", connection.base_url)),
+        connection,
+    )
+    .json(&command);
+    command.app_token.zeroize();
     command.bot_token.zeroize();
     request.send().await.map_err(CliError::Http)
 }

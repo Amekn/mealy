@@ -4,8 +4,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::OwnershipContext;
 use mealy_domain::{ChannelBindingId, PrincipalId};
 use mealy_infrastructure::{
-    FileArtifactBlobStore, FileProviderSecretStore, SqliteStore, create_backup,
-    create_pre_migration_backup, inspect_existing_schema_version,
+    FileArtifactBlobStore, FileProviderSecretStore, LATEST_SCHEMA_VERSION, SqliteStore,
+    create_backup, create_pre_migration_backup, inspect_existing_schema_version,
 };
 use mealy_protocol::{BackupActivationResponse, MigrationBackupActivationResponse};
 use std::{
@@ -102,6 +102,8 @@ fn encrypted_backup_activation_is_approved_locked_atomic_and_state_preserving() 
 #[cfg(target_os = "linux")]
 #[test]
 fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherited_lock() {
+    let latest_schema_version =
+        u64::try_from(LATEST_SCHEMA_VERSION).expect("latest schema version is nonnegative");
     let root = tempfile::tempdir().expect("temporary migration-activation root");
     let home = root.path().join("home");
     fs::create_dir(&home).expect("home");
@@ -135,8 +137,14 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         .expect("provider secret");
 
     downgrade_to_schema_13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 20, SystemTime::now())
-        .expect("migration backup");
+    let migration = create_pre_migration_backup(
+        &home,
+        &database,
+        13,
+        latest_schema_version,
+        SystemTime::now(),
+    )
+    .expect("migration backup");
     let migration_name = migration
         .path
         .file_name()
@@ -155,7 +163,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
     assert!(!denied.status.success());
     assert_eq!(
         inspect_existing_schema_version(&database).expect("denied schema"),
-        Some(20)
+        Some(latest_schema_version)
     );
 
     let inherited_lock = lock_home(&home);
@@ -175,7 +183,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         serde_json::from_slice(&activated.stdout).expect("activation response");
     assert_eq!(response.manifest_digest, migration.manifest_digest);
     assert_eq!(response.from_schema_version, 13);
-    assert_eq!(response.to_schema_version, 20);
+    assert_eq!(response.to_schema_version, latest_schema_version);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("activated schema"),
         Some(13)
@@ -271,6 +279,8 @@ fn migration_command(
     approve: bool,
     inherited_lock: Option<&File>,
 ) -> std::process::Output {
+    let latest_schema_version =
+        u64::try_from(LATEST_SCHEMA_VERSION).expect("latest schema version is nonnegative");
     let mut command = Command::new(env!("CARGO_BIN_EXE_mealyctl"));
     command
         .arg("--home")
@@ -282,7 +292,7 @@ fn migration_command(
         .arg("--expected-from-schema-version")
         .arg("13")
         .arg("--expected-to-schema-version")
-        .arg("19");
+        .arg(latest_schema_version.to_string());
     if approve {
         command.arg("--approve");
     }

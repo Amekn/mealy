@@ -338,6 +338,15 @@ webhooks, system messages, other users, channels, and bot output are durably ign
 messages cap at 2,000 characters, suppress all mentions and embeds, and use a stable 25-character
 nonce with `enforce_nonce`; 429 responses honor the platform delay, while ambiguous transport,
 server, or acknowledgement outcomes are terminally parked rather than duplicated.
+The v0.4 Slack adapter reuses a platform-neutral channel boundary but retains Slack-specific
+least authority. Setup live-verifies one Socket Mode app token, one bot token, their exact
+workspace/application/bot identity, one human member, and one conversation. One connection is
+shared only by routes with identical installation and credential pins. Every bounded Socket Mode
+envelope is normalized and committed before its acknowledgement; acknowledged-but-unfinished
+input completes after restart. Outbound progress and results return to the exact originating
+thread with stable `client_msg_id`, per-channel rate pacing, disabled rich parsing/unfurls, and
+bounded acknowledgement validation. Slack messages cannot approve effects; approval remains an
+owner-local authenticated dashboard/API/CLI action.
 Recurring schedules are canonical SQLite state with IANA time zones, bounded coalesced misfire
 handling, same-schedule overlap policy, leased occurrence claims, deterministic session admission,
 UUIDv7-keyed duplicate-safe creation, revision-fenced pause/resume/cancel, and durable run history.
@@ -450,6 +459,9 @@ cargo run -p mealyctl -- --home .mealy channel telegram-pair
 cargo run -p mealyctl -- --home .mealy channel telegram-list
 cargo run -p mealyctl -- --home .mealy channel discord-pair --channel-id <DM_CHANNEL_ID>
 cargo run -p mealyctl -- --home .mealy channel discord-list
+cargo run -p mealyctl -- --home .mealy channel slack-create \
+  --user-id <SLACK_MEMBER_ID> --channel-id <SLACK_CONVERSATION_ID>
+cargo run -p mealyctl -- --home .mealy channel slack-list
 cargo run -p mealyctl -- --home .mealy schedule create <SESSION_ID> --name "weekday brief" --cron "0 9 * * MON-FRI" --timezone Pacific/Auckland "Prepare my weekday brief."
 cargo run -p mealyctl -- --home .mealy schedule list
 cargo run -p mealyctl -- --home .mealy backup nightly

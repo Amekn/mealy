@@ -323,6 +323,16 @@ without loss, reserve-before-admission, exact sender rejection, attachment rejec
 429 `Retry-After`, stable nonce reuse, mention suppression, progress/final delivery, transcript
 transport isolation, secret deletion, and terminal revocation.
 
+`apps/mealyd/tests/slack_channel.rs` runs the public daemon against real loopback Slack Web API
+and WebSocket fixtures. It live-verifies both token roles and every identity pin, proves neither
+token enters SQLite, then kills the daemon after the fixture observes a Socket Mode
+acknowledgement but before admission. Restart completes the persisted normalized disposition
+without another input, returns acknowledgements and results to the exact originating thread,
+honors one `429 Retry-After`, reuses `client_msg_id`, re-acknowledges an exact duplicate without
+duplication, durably ignores a wrong sender, removes both final-route broker entries, and preserves
+terminal evidence. `sqlite::slack` separately covers migration, shared-installation invariants,
+pending-envelope reconstruction, thread lookup, health, and revocation.
+
 The Phase 7 process suite at `apps/mealyd/tests/phase7_operations.rs` starts real daemon processes
 for safe mode, clean drain, corrupt-open failure, and a provider call deliberately held beyond a
 100 ms drain deadline. It proves mutation denial with recovery operations still available,
@@ -636,6 +646,7 @@ Each boundary is tested by a deterministic failpoint before and after the action
 | Migration | before backup; during migration; before version marker; exact-digest cross-schema activation; inherited stopped-home lock; atomic preserved-home exchange |
 | Browser | before process; after CDP attach; during navigation; during proxy tunnel; before normalized commit; cancellation/deadline; runtime deletion before replay |
 | Discord DM | after setup fence; before message reservation; after reservation; before cursor commit; saturated-page backfill; after 429; after remote accept; before outbox commit; hard restart/revocation |
+| Slack Socket Mode | after live setup; after reservation before acknowledgement; after remote acknowledgement before admission; pending restart completion; duplicate envelope; 429 and stable `client_msg_id`; shared-route change; revocation |
 
 ## Security matrix
 
@@ -644,6 +655,10 @@ Each boundary is tested by a deterministic failpoint before and after the action
 - Forged channel identity and replayed webhook.
 - Discord DM wrong sender/channel/bot/webhook/system message, snowflake ambiguity, saturated-page
   gap, malicious mention text, nonce mismatch, rate-limit abuse, and ambiguous send acknowledgement.
+- Slack wrong workspace/app/member/conversation, token-role mismatch, app-token/bot-token
+  cross-installation mix, malformed/oversized frames, missing mention, bot/subtype events,
+  envelope/body drift, duplicate acknowledgement, approval-looking chat text, unsafe socket URL,
+  thread ambiguity, and rate-limit/client-message-ID drift.
 - Cross-principal session/task/artifact/memory access.
 - Model text pretending to approve an effect.
 - Approval replay with changed arguments, tool version, target, policy, principal, or expiry.

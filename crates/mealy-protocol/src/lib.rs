@@ -2261,6 +2261,112 @@ pub struct RevokeDiscordChannelRequest {
     pub expected_revision: u64,
 }
 
+/// Administrative creation of one exact Slack app/workspace/member/conversation binding.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSlackChannelRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Socket Mode app token read from a one-shot environment variable by the CLI.
+    pub app_token: String,
+    /// Bot token read from a one-shot environment variable by the CLI.
+    pub bot_token: String,
+    /// Exact Slack member allowed to submit messages.
+    pub slack_user_id: String,
+    /// Exact Slack conversation allowed for inbound and outbound messages.
+    pub slack_channel_id: String,
+    /// Whether shared-channel input must explicitly mention the verified bot.
+    pub require_mention: bool,
+}
+
+impl std::fmt::Debug for CreateSlackChannelRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreateSlackChannelRequest")
+            .field("api_version", &self.api_version)
+            .field("app_token", &"[REDACTED]")
+            .field("bot_token", &"[REDACTED]")
+            .field("slack_user_id", &self.slack_user_id)
+            .field("slack_channel_id", &self.slack_channel_id)
+            .field("require_mention", &self.require_mention)
+            .finish()
+    }
+}
+
+/// Slack channel lifecycle exposed to the owner.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackChannelStatusResponse {
+    /// Socket Mode input and Web API output are active.
+    Active,
+    /// Both token authorities are terminally revoked.
+    Revoked,
+}
+
+/// Owner-safe Slack binding projection without token material.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackChannelResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable channel binding.
+    pub binding_id: String,
+    /// Dedicated durable conversation session.
+    pub session_id: String,
+    /// Exact verified Slack workspace.
+    pub team_id: String,
+    /// Workspace display name observed during setup.
+    pub team_name: String,
+    /// Exact Slack application bound to the Socket Mode hello.
+    pub app_id: String,
+    /// Exact allowed Slack member.
+    pub slack_user_id: String,
+    /// Exact allowed Slack conversation.
+    pub slack_channel_id: String,
+    /// Verified bot member identity.
+    pub bot_user_id: String,
+    /// Bot display name observed during setup.
+    pub bot_name: String,
+    /// Whether shared-channel messages must mention the bot.
+    pub require_mention: bool,
+    /// Current lifecycle.
+    pub status: SlackChannelStatusResponse,
+    /// Optimistic-concurrency revision.
+    pub revision: u64,
+    /// Most recent successful Socket Mode observation.
+    pub last_success_at_ms: Option<i64>,
+    /// Most recent failed Socket Mode observation.
+    pub last_failure_at_ms: Option<i64>,
+    /// Consecutive Socket Mode failures.
+    pub consecutive_failures: u64,
+    /// Stable secret-free last error code.
+    pub last_error_code: Option<String>,
+    /// UTC creation time.
+    pub created_at_ms: i64,
+    /// UTC last lifecycle update time.
+    pub updated_at_ms: i64,
+}
+
+/// Deterministically ordered owner Slack-channel list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackChannelsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Owner-authorized bindings.
+    pub channels: Vec<SlackChannelResponse>,
+}
+
+/// Optimistic terminal Slack-channel revocation command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeSlackChannelRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Exact current channel revision.
+    pub expected_revision: u64,
+}
+
 /// Strict raw-body contract authenticated by the signed webhook ingress.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3128,8 +3234,8 @@ mod tests {
     use super::{
         API_VERSION, ArtifactMetadataResponse, CancelTaskRequest, ContextItemDisposition,
         ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
-        CreateDiscordChannelRequest, CreateTelegramChannelRequest, DeliveryMode,
-        SessionSummaryResponse, SubmitInputRequest, TimelineCursor,
+        CreateDiscordChannelRequest, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+        DeliveryMode, SessionSummaryResponse, SubmitInputRequest, TimelineCursor,
     };
 
     #[test]
@@ -3172,6 +3278,22 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("super-secret"));
+    }
+
+    #[test]
+    fn slack_setup_debug_output_redacts_both_tokens() {
+        let request = CreateSlackChannelRequest {
+            api_version: API_VERSION.to_owned(),
+            app_token: "xapp-super-secret".to_owned(),
+            bot_token: "xoxb-super-secret".to_owned(),
+            slack_user_id: "U01234567".to_owned(),
+            slack_channel_id: "C01234567".to_owned(),
+            require_mention: true,
+        };
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("xapp-super-secret"));
+        assert!(!debug.contains("xoxb-super-secret"));
     }
 
     #[test]

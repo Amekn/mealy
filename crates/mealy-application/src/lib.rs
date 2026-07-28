@@ -293,7 +293,7 @@ pub use sessions::{
 pub use slack::{
     SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
     SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_acknowledgement_id,
-    valid_slack_delivery_id, valid_slack_platform_id,
+    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id,
 };
 pub use slack_channel::{
     AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,

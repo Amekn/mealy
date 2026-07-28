@@ -83,6 +83,14 @@ type, and non-webhook/non-bot classification. Platform IDs are canonical decimal
 authorization by possession. Setup and runtime cursors fence old traffic; reservations make crash
 replay idempotent; revocation removes future target discovery while retaining evidence.
 
+Slack setup verifies the `xoxb-` bot against `auth.test`, the exact human through `users.info`, the
+exact conversation and membership through `conversations.info`, and proves the `xapp-` token can
+call `apps.connections.open`. The Socket Mode `hello.connection_info.app_id` must then equal the
+bot-token app identity before events are accepted. Routes may share a connection only when owner,
+workspace, app, bot, and both secret identities/digests agree. Runtime input repeats the exact
+workspace/conversation/member claims and rejects bot, subtype, malformed, or unmentioned shared
+messages. Token possession alone is not a local principal boundary.
+
 ### Channel backlog, rate, mention, and duplicate-message abuse
 
 Controls: bounded response bytes and record counts; Telegram long-poll limits; Discord full-page
@@ -94,6 +102,15 @@ acknowledgement; and terminal parking when remote acceptance is ambiguous. Attac
 Discord DM profile are ignored rather than fetched. Token bytes are header-only and the production
 base is the exact official API v10 endpoint, preventing credential exfiltration through an
 operator-supplied alternate HTTPS origin.
+
+Slack Web API and Socket Mode use fixed production origins, no proxy, no redirect, bounded HTTP
+bodies, and a one-MiB WebSocket message/frame ceiling. The complete normalized admit/ignore
+disposition is committed before the Socket Mode acknowledgement; a crash after remote
+acknowledgement therefore leaves recoverable local work. Envelope/body drift conflicts rather than
+reinterpreting evidence. Outbound messages are control-text escaped, rich parsing/unfurls are
+disabled, an exact originating thread is mandatory, per-channel sends are paced, `429 Retry-After`
+is bounded, and retries retain the outbox-derived `client_msg_id`. Slack messages are never an
+approval authority; approval-looking commands are durably ignored.
 
 ### Session-ID authorization bypass
 

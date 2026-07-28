@@ -16,7 +16,7 @@ use agent::{
 };
 use backend::{
     DrainController, RuntimeBackend, RuntimeChannelConfig, RuntimeDiscordConfig,
-    RuntimeOperationalConfig, RuntimeTelegramConfig,
+    RuntimeOperationalConfig, RuntimeSlackConfig, RuntimeTelegramConfig,
 };
 use clap::Parser;
 use config::{
@@ -25,30 +25,36 @@ use config::{
     remove_forced_shutdown_marker, write_connection_info, write_forced_shutdown_marker,
 };
 use effect_runtime::{PhaseThreeRuntime, ProcessCommandBinding};
+use futures_util::{SinkExt as _, StreamExt as _};
 use mealy_api::{ApiAuth, ApiConfig, AuthenticatedIdentity, router_with_shutdown};
 use mealy_application::{
-    AdmitInputCommand, BeginDaemonRunCommit, ClaimScheduleRunCommit, CompleteDaemonRunCommit,
-    CompleteDiscordMessageCommit, CompleteScheduleRunCommit, CompleteTelegramUpdateCommit,
-    DaemonRunStatus, DiscordChannelStore, DiscordChannelStoreError, DiscordMessageDisposition,
+    AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, BeginDaemonRunCommit, ChannelAdapter,
+    ChannelInboundDisposition, ChannelOutboundContent, ClaimScheduleRunCommit,
+    CompleteDaemonRunCommit, CompleteDiscordMessageCommit, CompleteScheduleRunCommit,
+    CompleteSlackEnvelopeCommit, CompleteTelegramUpdateCommit, DaemonRunStatus,
+    DiscordChannelStore, DiscordChannelStoreError, DiscordMessageDisposition,
     DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore, EffectLedgerStoreError,
     IdGenerator, InitialTaskProfile, InputAdmissionLimits, McpHttpAuthentication, OperationalStore,
-    OutboundDiscordTarget, OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome,
-    OutboxDelivery, OutboxUseCaseError, OwnershipContext, PromotionDefaults,
-    ProviderCredentialReference, ProviderSelectionPreference, RecordDiscordPollCommit,
-    RecordTelegramPollCommit, ReserveDiscordMessageCommit, ReserveTelegramUpdateCommit,
+    OutboundDiscordTarget, OutboundSlackTarget, OutboundTelegramTarget, OutboundWebhookTarget,
+    OutboxClaimOutcome, OutboxDelivery, OutboxUseCaseError, OwnershipContext, PendingSlackEnvelope,
+    PromotionDefaults, ProviderCredentialReference, ProviderSelectionPreference,
+    RecordDiscordPollCommit, RecordSlackSocketCommit, RecordTelegramPollCommit,
+    ReserveDiscordMessageCommit, ReserveSlackEnvelopeCommit, ReserveTelegramUpdateCommit,
     ResolveApprovalCommit, ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy,
     ScheduleRunIntent, ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError,
+    SlackAdapter, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
+    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
     TelegramChannelStore, TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
     TelegramUpdateReservation, WebhookChannelStore, WebhookChannelStoreError, admit_input,
     canonical_arguments_digest, claim_next_outbox, complete_outbox, discord_input_dedupe_key,
     exponential_retry_delay, is_sha256_digest, pending_promotion_sessions, plan_due_schedule,
     promote_next_input, recover_expired_leases, recover_extension_invocations, recover_startup,
-    retry_outbox, sha256_digest, sign_webhook, telegram_input_dedupe_key,
+    retry_outbox, sha256_digest, sign_webhook, slack_input_dedupe_key, telegram_input_dedupe_key,
     validate_discord_snowflake,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, CapabilityGrant, CorrelationId, DeliveryMode, EffectClass,
-    PolicyProfile, ScheduleRunId, WorkerId,
+    InboxEntryId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
 };
 use mealy_infrastructure::{
     BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
@@ -73,6 +79,10 @@ use std::{
 use store_runtime::RuntimeStore;
 use thiserror::Error as ThisError;
 use tokio::sync::watch;
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{Message as WebSocketMessage, protocol::WebSocketConfig},
+};
 use zeroize::Zeroizing;
 
 #[derive(Debug, Parser)]
@@ -108,6 +118,12 @@ struct Arguments {
     /// Discord REST API v10 base; exact official endpoint or literal-loopback HTTP for tests.
     #[arg(long, default_value = "https://discord.com/api/v10")]
     discord_api_base_url: String,
+    /// Slack Web API base; exact official endpoint or literal-loopback HTTP for tests.
+    #[arg(long, default_value = "https://slack.com/api")]
+    slack_api_base_url: String,
+    /// Test-only pause after a Slack acknowledgement is persisted and before terminal admission.
+    #[arg(long, default_value_t = 0, hide = true)]
+    slack_after_ack_delay_ms: u64,
     /// Delay before the first provider/read-tool worker claim.
     #[arg(long, default_value_t = 250)]
     agent_delay_ms: u64,
@@ -184,6 +200,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     backend::validate_telegram_api_base_url(&arguments.telegram_api_base_url)?;
     backend::validate_discord_api_base_url(&arguments.discord_api_base_url)?;
+    backend::validate_slack_api_base_url(&arguments.slack_api_base_url)?;
     let _instance_lock = acquire_instance_lock(&arguments.home)?;
     let started_at = SystemTime::now();
     let mut daemon_config = load_or_create_daemon_config(&arguments.home)?;
@@ -379,7 +396,14 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .build()?;
+    let slack_client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let discord_rate_limits = Arc::new(DiscordRateLimitGate::new());
+    let slack_rate_limits = Arc::new(SlackRateLimitGate::new());
     let safe_mode_provider = ProviderConfig::BuiltinFixture;
     let effective_provider_config = if arguments.safe_mode {
         if !daemon_config.provider().is_builtin_fixture() {
@@ -778,6 +802,11 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             FileProviderSecretStore::new(arguments.home.join("provider-secrets")).map(Arc::new)
         })
         .transpose()?;
+    let slack_credentials = (!arguments.safe_mode)
+        .then(|| {
+            FileProviderSecretStore::new(arguments.home.join("provider-secrets")).map(Arc::new)
+        })
+        .transpose()?;
     let backend = Arc::new(RuntimeBackend::new(
         Arc::clone(&store),
         Arc::clone(&artifacts),
@@ -790,6 +819,10 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             discord: RuntimeDiscordConfig {
                 credentials: discord_credentials.clone(),
                 api_base_url: arguments.discord_api_base_url.clone(),
+            },
+            slack: RuntimeSlackConfig {
+                credentials: slack_credentials.clone(),
+                api_base_url: arguments.slack_api_base_url.clone(),
             },
         },
         Arc::clone(&provider),
@@ -967,6 +1000,21 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             shutdown_receiver.clone(),
         ))
     });
+    let slack = slack_credentials.as_ref().map(|credentials| {
+        tokio::spawn(slack_driver(
+            Arc::clone(&store),
+            SlackDriverRuntime {
+                credentials: Arc::clone(credentials),
+                client: slack_client.clone(),
+                api_base_url: arguments.slack_api_base_url.clone(),
+                maximum_pending_inputs_per_session: daemon_config
+                    .maximum_pending_inputs_per_session(),
+                after_ack_delay: Duration::from_millis(arguments.slack_after_ack_delay_ms),
+            },
+            Duration::from_millis(500),
+            shutdown_receiver.clone(),
+        ))
+    });
     let outbox = (!arguments.safe_mode).then(|| {
         tokio::spawn(outbox_driver(
             Arc::clone(&store),
@@ -986,6 +1034,13 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 discord_client,
                 discord_rate_limits,
                 discord_api_base_url: arguments.discord_api_base_url.clone(),
+                slack_credentials: slack_credentials
+                    .as_ref()
+                    .map(Arc::clone)
+                    .expect("non-safe mode has a Slack credential broker"),
+                slack_client,
+                slack_rate_limits,
+                slack_api_base_url: arguments.slack_api_base_url.clone(),
             },
             WorkerId::new(),
             Duration::from_millis(arguments.outbox_delay_ms),
@@ -1066,6 +1121,9 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             let _ = worker.await;
         }
         if let Some(worker) = discord {
+            let _ = worker.await;
+        }
+        if let Some(worker) = slack {
             let _ = worker.await;
         }
         if let Some(worker) = outbox {
@@ -2250,6 +2308,689 @@ enum TelegramDriverError {
     Approval(#[from] EffectLedgerStoreError),
 }
 
+#[derive(Clone)]
+struct SlackDriverRuntime {
+    credentials: Arc<FileProviderSecretStore>,
+    client: reqwest::Client,
+    api_base_url: String,
+    maximum_pending_inputs_per_session: u64,
+    after_ack_delay: Duration,
+}
+
+struct SlackInstallationTask {
+    fingerprint: String,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+type SlackWebSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn slack_driver(
+    store: Arc<RuntimeStore>,
+    runtime: SlackDriverRuntime,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut tasks = BTreeMap::<String, SlackInstallationTask>::new();
+    loop {
+        let target_store = Arc::clone(&store);
+        let loaded = tokio::task::spawn_blocking(move || {
+            target_store
+                .read()
+                .map_err(|_| SlackDriverError::Lock)?
+                .active_slack_socket_targets(100)
+                .map_err(SlackDriverError::Store)
+        })
+        .await;
+        match loaded {
+            Ok(Ok(targets)) => {
+                let mut groups = BTreeMap::<String, Vec<SlackSocketTarget>>::new();
+                for target in targets {
+                    groups
+                        .entry(target.app_token_digest.clone())
+                        .or_default()
+                        .push(target);
+                }
+                for targets in groups.values_mut() {
+                    targets.sort_by_key(|target| target.binding_id);
+                }
+                let stale = tasks
+                    .iter()
+                    .filter_map(|(key, task)| {
+                        let expected = groups
+                            .get(key)
+                            .map(|targets| slack_installation_fingerprint(targets));
+                        (task.handle.is_finished()
+                            || expected.as_deref() != Some(task.fingerprint.as_str()))
+                        .then(|| key.clone())
+                    })
+                    .collect::<Vec<_>>();
+                for key in stale {
+                    if let Some(task) = tasks.remove(&key) {
+                        task.handle.abort();
+                        let _ = task.handle.await;
+                    }
+                }
+                for (key, targets) in groups {
+                    if tasks.contains_key(&key) {
+                        continue;
+                    }
+                    let fingerprint = slack_installation_fingerprint(&targets);
+                    let worker_store = Arc::clone(&store);
+                    let worker_runtime = runtime.clone();
+                    let worker_shutdown = shutdown.clone();
+                    let handle = tokio::spawn(slack_installation_driver(
+                        worker_store,
+                        worker_runtime,
+                        targets,
+                        worker_shutdown,
+                    ));
+                    tasks.insert(
+                        key,
+                        SlackInstallationTask {
+                            fingerprint,
+                            handle,
+                        },
+                    );
+                }
+            }
+            Ok(Err(error)) => tracing::error!(%error, "Slack target reconciliation failed"),
+            Err(_) => tracing::error!("Slack target reconciliation worker failed"),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            _ = shutdown.changed() => break,
+        }
+    }
+    for (_, task) in tasks {
+        task.handle.abort();
+        let _ = task.handle.await;
+    }
+}
+
+fn slack_installation_fingerprint(targets: &[SlackSocketTarget]) -> String {
+    let values = targets
+        .iter()
+        .map(|target| {
+            json!({
+                "bindingId": target.binding_id,
+                "teamId": target.team_id,
+                "appId": target.app_id,
+                "slackUserId": target.slack_user_id,
+                "slackChannelId": target.slack_channel_id,
+                "botUserId": target.bot_user_id,
+                "requireMention": target.require_mention,
+                "sessionId": target.session_id,
+                "appTokenSecretId": target.app_token_secret_id,
+                "appTokenDigest": target.app_token_digest,
+                "botTokenSecretId": target.bot_token_secret_id,
+                "botTokenDigest": target.bot_token_digest,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_arguments_digest(&Value::Array(values))
+}
+
+async fn slack_installation_driver(
+    store: Arc<RuntimeStore>,
+    runtime: SlackDriverRuntime,
+    targets: Vec<SlackSocketTarget>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut failures = 0_u32;
+    loop {
+        match slack_socket_session(&store, &runtime, &targets, &mut shutdown).await {
+            Ok(()) => return,
+            Err(SlackDriverError::ServerDisconnect) => {
+                failures = 0;
+                tracing::debug!(
+                    app_token_digest = %targets.first().map_or("", |target| target.app_token_digest.as_str()),
+                    "Slack requested its routine Socket Mode connection refresh"
+                );
+                continue;
+            }
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                let error_code = error.code().to_owned();
+                tracing::warn!(
+                    app_token_digest = %targets.first().map_or("", |target| target.app_token_digest.as_str()),
+                    error_code,
+                    "Slack Socket Mode session failed"
+                );
+                record_slack_health(&store, &targets, false, Some(error_code)).await;
+            }
+        }
+        let exponent = failures.saturating_sub(1).min(5);
+        let delay = Duration::from_secs(1_u64 << exponent);
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            _ = shutdown.changed() => return,
+        }
+    }
+}
+
+async fn slack_socket_session(
+    store: &Arc<RuntimeStore>,
+    runtime: &SlackDriverRuntime,
+    targets: &[SlackSocketTarget],
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), SlackDriverError> {
+    let first = validate_slack_installation_targets(targets)?;
+    let mut socket = open_slack_socket(runtime, first).await?;
+    record_slack_health(store, targets, true, None).await;
+    recover_pending_slack_envelopes(store, targets, runtime.maximum_pending_inputs_per_session)
+        .await?;
+    loop {
+        let message = tokio::select! {
+            message = socket.next() => message,
+            _ = shutdown.changed() => return Ok(()),
+        }
+        .ok_or(SlackDriverError::Disconnected)?
+        .map_err(|_| SlackDriverError::Transport)?;
+        match message {
+            WebSocketMessage::Text(text) => {
+                let disconnect = serde_json::from_slice::<Value>(text.as_bytes())
+                    .ok()
+                    .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .as_deref()
+                    == Some("disconnect");
+                process_slack_socket_envelope(
+                    store,
+                    targets,
+                    &mut socket,
+                    text.as_bytes(),
+                    runtime.maximum_pending_inputs_per_session,
+                    runtime.after_ack_delay,
+                )
+                .await?;
+                if disconnect {
+                    return Err(SlackDriverError::ServerDisconnect);
+                }
+            }
+            WebSocketMessage::Ping(payload) => socket
+                .send(WebSocketMessage::Pong(payload))
+                .await
+                .map_err(|_| SlackDriverError::Transport)?,
+            WebSocketMessage::Pong(_) => {}
+            WebSocketMessage::Close(_) => return Err(SlackDriverError::Disconnected),
+            WebSocketMessage::Binary(_) | WebSocketMessage::Frame(_) => {
+                return Err(SlackDriverError::Malformed);
+            }
+        }
+    }
+}
+
+async fn open_slack_socket(
+    runtime: &SlackDriverRuntime,
+    target: &SlackSocketTarget,
+) -> Result<SlackWebSocket, SlackDriverError> {
+    let credential_store = Arc::clone(&runtime.credentials);
+    let app_secret_id = target.app_token_secret_id.clone();
+    let bot_secret_id = target.bot_token_secret_id.clone();
+    let (app_token, bot_token) = tokio::task::spawn_blocking(move || {
+        Ok::<_, ProviderSecretStoreError>((
+            credential_store.read(&app_secret_id)?,
+            credential_store.read(&bot_secret_id)?,
+        ))
+    })
+    .await
+    .map_err(|_| SlackDriverError::Join)??;
+    if sha256_digest(app_token.as_bytes()) != target.app_token_digest
+        || sha256_digest(bot_token.as_bytes()) != target.bot_token_digest
+        || backend::validate_slack_app_token(&app_token).is_err()
+        || backend::validate_slack_bot_token(&bot_token).is_err()
+    {
+        return Err(SlackDriverError::CredentialMismatch);
+    }
+    let response = runtime
+        .client
+        .post(format!(
+            "{}/apps.connections.open",
+            runtime.api_base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(app_token.as_str())
+        .send()
+        .await
+        .map_err(|_| SlackDriverError::Transport)?;
+    if !response.status().is_success() {
+        return Err(match response.status().as_u16() {
+            401 | 403 => SlackDriverError::Unauthorized,
+            429 => SlackDriverError::RateLimited,
+            _ => SlackDriverError::Transport,
+        });
+    }
+    let body = read_slack_http_response(response, 128 * 1024).await?;
+    let opened: SlackSocketOpenEnvelope =
+        serde_json::from_slice(&body).map_err(|_| SlackDriverError::Malformed)?;
+    let socket_url = opened
+        .url
+        .filter(|_| opened.ok)
+        .ok_or(SlackDriverError::Unauthorized)?;
+    backend::validate_slack_socket_url(&socket_url)
+        .map_err(|_| SlackDriverError::UnsafeSocketUrl)?;
+    let config = WebSocketConfig::default()
+        .read_buffer_size(32 * 1024)
+        .write_buffer_size(16 * 1024)
+        .max_write_buffer_size(256 * 1024)
+        .max_message_size(Some(mealy_application::SLACK_MAXIMUM_ENVELOPE_BYTES))
+        .max_frame_size(Some(mealy_application::SLACK_MAXIMUM_ENVELOPE_BYTES));
+    let (mut socket, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        connect_async_with_config(socket_url, Some(config), true),
+    )
+    .await
+    .map_err(|_| SlackDriverError::Transport)?
+    .map_err(|_| SlackDriverError::Transport)?;
+    let hello = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let message = socket
+                .next()
+                .await
+                .ok_or(SlackDriverError::Disconnected)?
+                .map_err(|_| SlackDriverError::Transport)?;
+            match message {
+                WebSocketMessage::Text(text) => break Ok(text),
+                WebSocketMessage::Ping(payload) => socket
+                    .send(WebSocketMessage::Pong(payload))
+                    .await
+                    .map_err(|_| SlackDriverError::Transport)?,
+                WebSocketMessage::Pong(_) => {}
+                _ => break Err(SlackDriverError::MalformedHello),
+            }
+        }
+    })
+    .await
+    .map_err(|_| SlackDriverError::HelloTimeout)??;
+    let hello: SlackHelloEnvelope =
+        serde_json::from_slice(hello.as_bytes()).map_err(|_| SlackDriverError::MalformedHello)?;
+    if hello.kind != "hello"
+        || hello
+            .connection_info
+            .as_ref()
+            .map(|info| info.app_id.as_str())
+            != Some(target.app_id.as_str())
+    {
+        return Err(SlackDriverError::AppIdentityMismatch);
+    }
+    Ok(socket)
+}
+
+fn validate_slack_installation_targets(
+    targets: &[SlackSocketTarget],
+) -> Result<&SlackSocketTarget, SlackDriverError> {
+    let first = targets.first().ok_or(SlackDriverError::Invariant)?;
+    if targets.iter().any(|target| {
+        target.team_id != first.team_id
+            || target.app_id != first.app_id
+            || target.bot_user_id != first.bot_user_id
+            || target.app_token_secret_id != first.app_token_secret_id
+            || target.app_token_digest != first.app_token_digest
+            || target.bot_token_secret_id != first.bot_token_secret_id
+            || target.bot_token_digest != first.bot_token_digest
+    }) {
+        return Err(SlackDriverError::Invariant);
+    }
+    Ok(first)
+}
+
+async fn process_slack_socket_envelope(
+    store: &Arc<RuntimeStore>,
+    targets: &[SlackSocketTarget],
+    socket: &mut SlackWebSocket,
+    body: &[u8],
+    maximum_pending_inputs_per_session: u64,
+    after_ack_delay: Duration,
+) -> Result<(), SlackDriverError> {
+    let (target, acknowledgement_id, body_digest, disposition) =
+        normalize_slack_socket_envelope(targets, body)?;
+    let binding_id = target.binding_id;
+    let reserve_store = Arc::clone(store);
+    let reserved_disposition = disposition.clone();
+    let reserved_acknowledgement = acknowledgement_id.clone();
+    let reserved_digest = body_digest.clone();
+    let reservation = tokio::task::spawn_blocking(move || {
+        reserve_store
+            .write()
+            .map_err(|_| SlackDriverError::Lock)?
+            .reserve_slack_envelope(ReserveSlackEnvelopeCommit {
+                binding_id,
+                acknowledgement_id: reserved_acknowledgement,
+                body_digest: reserved_digest,
+                disposition: reserved_disposition,
+                received_at: SystemTime::now(),
+            })
+            .map_err(SlackDriverError::Store)
+    })
+    .await
+    .map_err(|_| SlackDriverError::Join)??;
+    socket
+        .send(WebSocketMessage::Text(
+            json!({"envelope_id": acknowledgement_id})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|_| SlackDriverError::Transport)?;
+    let acknowledge_store = Arc::clone(store);
+    let acknowledged_id = acknowledgement_id.clone();
+    tokio::task::spawn_blocking(move || {
+        acknowledge_store
+            .write()
+            .map_err(|_| SlackDriverError::Lock)?
+            .acknowledge_slack_envelope(AcknowledgeSlackEnvelopeCommit {
+                binding_id,
+                acknowledgement_id: acknowledged_id,
+                acknowledged_at: SystemTime::now(),
+            })
+            .map_err(SlackDriverError::Store)
+    })
+    .await
+    .map_err(|_| SlackDriverError::Join)??;
+    if reservation != SlackEnvelopeReservation::ExistingCompleted && !after_ack_delay.is_zero() {
+        tokio::time::sleep(after_ack_delay).await;
+    }
+    if reservation != SlackEnvelopeReservation::ExistingCompleted {
+        complete_reserved_slack_envelope(
+            store,
+            target,
+            acknowledgement_id,
+            disposition,
+            maximum_pending_inputs_per_session,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn normalize_slack_socket_envelope(
+    targets: &[SlackSocketTarget],
+    body: &[u8],
+) -> Result<(SlackSocketTarget, String, String, SlackReservedDisposition), SlackDriverError> {
+    let envelope: Value = serde_json::from_slice(body).map_err(|_| SlackDriverError::Malformed)?;
+    let event = envelope
+        .get("payload")
+        .and_then(|payload| payload.get("event"));
+    let team_id = envelope
+        .get("payload")
+        .and_then(|payload| payload.get("team_id"))
+        .and_then(Value::as_str);
+    let channel_id = event
+        .and_then(|event| event.get("channel"))
+        .and_then(Value::as_str);
+    let user_id = event
+        .and_then(|event| event.get("user"))
+        .and_then(Value::as_str);
+    let target = targets
+        .iter()
+        .find(|target| {
+            team_id == Some(target.team_id.as_str())
+                && channel_id == Some(target.slack_channel_id.as_str())
+                && user_id == Some(target.slack_user_id.as_str())
+        })
+        .or_else(|| targets.first())
+        .ok_or(SlackDriverError::Invariant)?
+        .clone();
+    let adapter = SlackAdapter::new(
+        target.team_id.clone(),
+        target.slack_user_id.clone(),
+        target.slack_channel_id.clone(),
+        target.bot_user_id.clone(),
+        target.require_mention,
+    )
+    .map_err(|_| SlackDriverError::Invariant)?;
+    let receipt = adapter
+        .normalize_inbound(body)
+        .map_err(|_| SlackDriverError::Malformed)?;
+    let disposition = match receipt.disposition {
+        ChannelInboundDisposition::Admit(message)
+            if matches!(
+                message.text.split_whitespace().next(),
+                Some("/approve" | "/deny")
+            ) =>
+        {
+            SlackReservedDisposition::Ignore("approval_commands_unsupported".to_owned())
+        }
+        ChannelInboundDisposition::Admit(message) => SlackReservedDisposition::Admit(message),
+        ChannelInboundDisposition::Ignore(reason) => {
+            SlackReservedDisposition::Ignore(reason.to_owned())
+        }
+    };
+    Ok((
+        target,
+        receipt.acknowledgement_id,
+        sha256_digest(body),
+        disposition,
+    ))
+}
+
+async fn recover_pending_slack_envelopes(
+    store: &Arc<RuntimeStore>,
+    targets: &[SlackSocketTarget],
+    maximum_pending_inputs_per_session: u64,
+) -> Result<(), SlackDriverError> {
+    for target in targets {
+        let pending_store = Arc::clone(store);
+        let binding_id = target.binding_id;
+        let pending = tokio::task::spawn_blocking(move || {
+            pending_store
+                .read()
+                .map_err(|_| SlackDriverError::Lock)?
+                .pending_slack_envelopes(binding_id, 1_000)
+                .map_err(SlackDriverError::Store)
+        })
+        .await
+        .map_err(|_| SlackDriverError::Join)??;
+        for envelope in pending {
+            complete_pending_slack_envelope(
+                store,
+                target,
+                envelope,
+                maximum_pending_inputs_per_session,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn complete_pending_slack_envelope(
+    store: &Arc<RuntimeStore>,
+    target: &SlackSocketTarget,
+    envelope: PendingSlackEnvelope,
+    maximum_pending_inputs_per_session: u64,
+) -> Result<(), SlackDriverError> {
+    complete_reserved_slack_envelope(
+        store,
+        target.clone(),
+        envelope.acknowledgement_id,
+        envelope.disposition,
+        maximum_pending_inputs_per_session,
+    )
+    .await
+}
+
+async fn complete_reserved_slack_envelope(
+    store: &Arc<RuntimeStore>,
+    target: SlackSocketTarget,
+    acknowledgement_id: String,
+    disposition: SlackReservedDisposition,
+    maximum_pending_inputs_per_session: u64,
+) -> Result<(), SlackDriverError> {
+    let worker_store = Arc::clone(store);
+    tokio::task::spawn_blocking(move || {
+        let mut guard = worker_store.write().map_err(|_| SlackDriverError::Lock)?;
+        let completed = match disposition {
+            SlackReservedDisposition::Admit(message) => {
+                let outcome = admit_input(
+                    &mut *guard,
+                    &SystemClock,
+                    &SystemIdGenerator,
+                    InputAdmissionLimits::new(256, 1024 * 1024, maximum_pending_inputs_per_session),
+                    AdmitInputCommand {
+                        session_id: target.session_id,
+                        ownership: target.ownership,
+                        dedupe_key: slack_input_dedupe_key(
+                            target.binding_id,
+                            &message.delivery_id,
+                        )?,
+                        delivery_mode: DeliveryMode::Queue,
+                        content: message.text,
+                        provider_selection: ProviderSelectionPreference::InheritSession,
+                    },
+                )?;
+                SlackEnvelopeDisposition::Admitted(outcome.receipt().clone())
+            }
+            SlackReservedDisposition::Ignore(reason) => SlackEnvelopeDisposition::Ignored(reason),
+        };
+        guard
+            .complete_slack_envelope(CompleteSlackEnvelopeCommit {
+                binding_id: target.binding_id,
+                acknowledgement_id,
+                disposition: completed,
+                completed_at: SystemTime::now(),
+            })
+            .map_err(SlackDriverError::Store)
+    })
+    .await
+    .map_err(|_| SlackDriverError::Join)?
+}
+
+async fn record_slack_health(
+    store: &Arc<RuntimeStore>,
+    targets: &[SlackSocketTarget],
+    succeeded: bool,
+    error_code: Option<String>,
+) {
+    for target in targets {
+        let worker_store = Arc::clone(store);
+        let binding_id = target.binding_id;
+        let error_code = error_code.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            worker_store
+                .write()
+                .map_err(|_| SlackDriverError::Lock)?
+                .record_slack_socket(RecordSlackSocketCommit {
+                    binding_id,
+                    succeeded,
+                    error_code,
+                    observed_at: SystemTime::now(),
+                })
+                .map_err(SlackDriverError::Store)
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!(%binding_id, "Slack socket health evidence could not be recorded");
+        }
+    }
+}
+
+async fn read_slack_http_response(
+    mut response: reqwest::Response,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, SlackDriverError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err(SlackDriverError::Oversized);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| SlackDriverError::Transport)?
+    {
+        if body.len().saturating_add(chunk.len()) > maximum_bytes {
+            return Err(SlackDriverError::Oversized);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+#[derive(Deserialize)]
+struct SlackSocketOpenEnvelope {
+    ok: bool,
+    url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SlackHelloEnvelope {
+    #[serde(rename = "type")]
+    kind: String,
+    connection_info: Option<SlackConnectionInfo>,
+}
+
+#[derive(Deserialize)]
+struct SlackConnectionInfo {
+    app_id: String,
+}
+
+#[derive(Debug, ThisError)]
+enum SlackDriverError {
+    #[error("Slack store lock is unavailable")]
+    Lock,
+    #[error("Slack blocking worker failed")]
+    Join,
+    #[error("Slack credential is unavailable: {0}")]
+    Credential(#[from] ProviderSecretStoreError),
+    #[error("Slack credential digest or kind does not match")]
+    CredentialMismatch,
+    #[error("Slack rejected the credential")]
+    Unauthorized,
+    #[error("Slack rate limited the connection")]
+    RateLimited,
+    #[error("Slack transport is unavailable")]
+    Transport,
+    #[error("Slack returned an oversized response")]
+    Oversized,
+    #[error("Slack returned a malformed envelope")]
+    Malformed,
+    #[error("Slack Socket Mode URL failed its origin policy")]
+    UnsafeSocketUrl,
+    #[error("Slack Socket Mode hello timed out")]
+    HelloTimeout,
+    #[error("Slack Socket Mode hello is malformed")]
+    MalformedHello,
+    #[error("Slack Socket Mode app identity does not match the verified bot")]
+    AppIdentityMismatch,
+    #[error("Slack Socket Mode connection closed")]
+    Disconnected,
+    #[error("Slack requested a connection refresh")]
+    ServerDisconnect,
+    #[error("Slack installation targets violate a shared-authority invariant")]
+    Invariant,
+    #[error(transparent)]
+    Store(#[from] SlackChannelStoreError),
+    #[error(transparent)]
+    Session(#[from] SessionUseCaseError),
+}
+
+impl SlackDriverError {
+    const fn code(&self) -> &'static str {
+        match self {
+            Self::Lock => "store_lock",
+            Self::Join => "worker_join",
+            Self::Credential(_) => "credential_unavailable",
+            Self::CredentialMismatch => "credential_mismatch",
+            Self::Unauthorized => "unauthorized",
+            Self::RateLimited => "rate_limited",
+            Self::Transport => "transport",
+            Self::Oversized => "oversized",
+            Self::Malformed => "malformed",
+            Self::UnsafeSocketUrl => "unsafe_socket_url",
+            Self::HelloTimeout => "hello_timeout",
+            Self::MalformedHello => "malformed_hello",
+            Self::AppIdentityMismatch => "app_identity_mismatch",
+            Self::Disconnected => "disconnected",
+            Self::ServerDisconnect => "server_disconnect",
+            Self::Invariant => "invariant",
+            Self::Store(_) => "store",
+            Self::Session(_) => "session",
+        }
+    }
+}
+
 struct DiscordRateLimitGate {
     not_before: tokio::sync::Mutex<tokio::time::Instant>,
 }
@@ -2975,6 +3716,38 @@ enum DiscordDriverError {
     Approval(#[from] EffectLedgerStoreError),
 }
 
+struct SlackRateLimitGate {
+    not_before: tokio::sync::Mutex<BTreeMap<String, tokio::time::Instant>>,
+}
+
+impl SlackRateLimitGate {
+    fn new() -> Self {
+        Self {
+            not_before: tokio::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    async fn reserve(&self, channel_id: &str) {
+        let now = tokio::time::Instant::now();
+        let deadline = {
+            let mut channels = self.not_before.lock().await;
+            let deadline = channels.get(channel_id).copied().unwrap_or(now).max(now);
+            channels.insert(channel_id.to_owned(), deadline + Duration::from_secs(1));
+            deadline
+        };
+        tokio::time::sleep_until(deadline).await;
+    }
+
+    async fn defer(&self, channel_id: &str, delay: Duration) {
+        let candidate = tokio::time::Instant::now() + delay;
+        let mut channels = self.not_before.lock().await;
+        let deadline = channels.entry(channel_id.to_owned()).or_insert(candidate);
+        if candidate > *deadline {
+            *deadline = candidate;
+        }
+    }
+}
+
 struct OutboxChannelRuntime {
     channel_secrets: Arc<FileChannelSecretStore>,
     telegram_credentials: Arc<FileProviderSecretStore>,
@@ -2985,6 +3758,10 @@ struct OutboxChannelRuntime {
     discord_client: reqwest::Client,
     discord_rate_limits: Arc<DiscordRateLimitGate>,
     discord_api_base_url: String,
+    slack_credentials: Arc<FileProviderSecretStore>,
+    slack_client: reqwest::Client,
+    slack_rate_limits: Arc<SlackRateLimitGate>,
+    slack_api_base_url: String,
 }
 
 async fn outbox_driver(
@@ -3016,6 +3793,7 @@ struct RoutedOutboxDelivery {
     webhook_target: Option<OutboundWebhookTarget>,
     telegram_target: Option<OutboundTelegramTarget>,
     discord_target: Option<OutboundDiscordTarget>,
+    slack_target: Option<OutboundSlackTarget>,
     supported: bool,
     valid_payload: bool,
 }
@@ -3042,6 +3820,8 @@ enum OutboxDriverError {
     Telegram(#[from] TelegramChannelStoreError),
     #[error(transparent)]
     Discord(#[from] DiscordChannelStoreError),
+    #[error(transparent)]
+    Slack(#[from] SlackChannelStoreError),
     #[error("outbox session resolves to more than one external channel")]
     AmbiguousRoute,
 }
@@ -3085,6 +3865,16 @@ async fn drive_outbox_batch(
                 &channels.discord_credentials,
                 &channels.discord_rate_limits,
                 &channels.discord_api_base_url,
+                target,
+                &routed.delivery,
+            )
+            .await
+        } else if let Some(target) = &routed.slack_target {
+            deliver_slack_message(
+                &channels.slack_client,
+                &channels.slack_credentials,
+                &channels.slack_rate_limits,
+                &channels.slack_api_base_url,
                 target,
                 &routed.delivery,
             )
@@ -3168,9 +3958,37 @@ fn claim_routed_outbox(
         .map(|session_id| guard.outbound_discord_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
+    let inbox_entry_id = payload
+        .as_ref()
+        .and_then(|value| value.get("inbox_entry_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<InboxEntryId>().ok());
+    let task_id = payload
+        .as_ref()
+        .and_then(|value| value.get("task_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<TaskId>().ok());
+    let approval_id = payload
+        .as_ref()
+        .and_then(|value| value.get("approval_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<ApprovalId>().ok());
+    let slack_target = session_id
+        .map(|session_id| {
+            guard.outbound_slack_target(SlackOutboundContext {
+                session_id,
+                topic: &delivery.topic,
+                inbox_entry_id,
+                task_id,
+                approval_id,
+            })
+        })
+        .transpose()?
+        .flatten();
     let route_count = usize::from(webhook_target.is_some())
         + usize::from(telegram_target.is_some())
-        + usize::from(discord_target.is_some());
+        + usize::from(discord_target.is_some())
+        + usize::from(slack_target.is_some());
     if route_count > 1 {
         return Err(OutboxDriverError::AmbiguousRoute);
     }
@@ -3179,6 +3997,7 @@ fn claim_routed_outbox(
         webhook_target,
         telegram_target,
         discord_target,
+        slack_target,
         supported,
         valid_payload,
     }))
@@ -3483,6 +4302,206 @@ async fn deliver_discord_message(
         "Discord notification delivered"
     );
     OutboxDeliveryResult::Delivered
+}
+
+async fn deliver_slack_message(
+    client: &reqwest::Client,
+    credentials: &Arc<FileProviderSecretStore>,
+    rate_limits: &Arc<SlackRateLimitGate>,
+    api_base_url: &str,
+    target: &OutboundSlackTarget,
+    delivery: &OutboxDelivery,
+) -> OutboxDeliveryResult {
+    let credential_store = Arc::clone(credentials);
+    let secret_id = target.bot_token_secret_id.clone();
+    let Ok(Ok(token)) =
+        tokio::task::spawn_blocking(move || credential_store.read(&secret_id)).await
+    else {
+        return OutboxDeliveryResult::Terminal("Slack bot credential is unavailable".to_owned());
+    };
+    if sha256_digest(token.as_bytes()) != target.bot_token_digest
+        || backend::validate_slack_bot_token(&token).is_err()
+    {
+        return OutboxDeliveryResult::Terminal("Slack bot credential identity changed".to_owned());
+    }
+    let payload = match prepare_slack_delivery_payload(target, delivery) {
+        Ok(payload) => payload,
+        Err(error) => return OutboxDeliveryResult::Terminal(error),
+    };
+    rate_limits.reserve(&target.slack_channel_id).await;
+    let result = client
+        .post(format!(
+            "{}/chat.postMessage",
+            api_base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(token.as_str())
+        .json(&payload)
+        .send()
+        .await;
+    let Ok(response) = result else {
+        return OutboxDeliveryResult::Failed(
+            "Slack chat.postMessage transport failed; retry retains client_msg_id".to_owned(),
+        );
+    };
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let delay = slack_retry_after(response.headers());
+        rate_limits.defer(&target.slack_channel_id, delay).await;
+        return OutboxDeliveryResult::FailedAfter(
+            "Slack chat.postMessage was rate limited".to_owned(),
+            delay,
+        );
+    }
+    if !response.status().is_success() {
+        return if response.status().is_server_error() {
+            OutboxDeliveryResult::Failed(format!(
+                "Slack chat.postMessage returned HTTP {}; retry retains client_msg_id",
+                response.status().as_u16()
+            ))
+        } else {
+            OutboxDeliveryResult::Terminal(format!(
+                "Slack chat.postMessage returned terminal HTTP {}",
+                response.status().as_u16()
+            ))
+        };
+    }
+    let Ok(body) = read_slack_http_response(response, 128 * 1024).await else {
+        return OutboxDeliveryResult::Failed(
+            "Slack acknowledgement was unreadable; retry retains client_msg_id".to_owned(),
+        );
+    };
+    let acknowledgement = serde_json::from_slice::<Value>(&body).ok();
+    let delivered = acknowledgement.as_ref().is_some_and(|message| {
+        message.get("ok").and_then(Value::as_bool) == Some(true)
+            && message.get("channel").and_then(Value::as_str)
+                == Some(target.slack_channel_id.as_str())
+            && message
+                .get("ts")
+                .and_then(Value::as_str)
+                .is_some_and(valid_slack_message_timestamp)
+    });
+    if !delivered {
+        return OutboxDeliveryResult::Failed(
+            "Slack acknowledgement did not prove destination and message identity; retry retains client_msg_id"
+                .to_owned(),
+        );
+    }
+    tracing::debug!(
+        outbox_id = %delivery.outbox_id,
+        binding_id = %target.binding_id,
+        topic = %delivery.topic,
+        attempt = delivery.attempt,
+        "Slack notification delivered"
+    );
+    OutboxDeliveryResult::Delivered
+}
+
+fn prepare_slack_delivery_payload(
+    target: &OutboundSlackTarget,
+    delivery: &OutboxDelivery,
+) -> Result<Value, String> {
+    let text = render_slack_outbox(delivery).map_err(str::to_owned)?;
+    let adapter = SlackAdapter::new(
+        target.team_id.clone(),
+        target.slack_user_id.clone(),
+        target.slack_channel_id.clone(),
+        target.bot_user_id.clone(),
+        target.require_mention,
+    )
+    .map_err(|_| "Slack route violates the adapter contract".to_owned())?;
+    let prepared = adapter
+        .prepare_outbound(ChannelOutboundContent {
+            delivery_id: &delivery.outbox_id.to_string(),
+            thread_id: target.thread_id.as_deref(),
+            text: &text,
+        })
+        .map_err(|_| "Slack outbound content violates the adapter contract".to_owned())?;
+    let mut payload = json!({
+        "channel": prepared.conversation_id,
+        "text": prepared.text,
+        "client_msg_id": prepared.client_message_id,
+        "mrkdwn": false,
+        "unfurl_links": false,
+        "unfurl_media": false,
+    });
+    if let (Some(payload), Some(thread_id)) = (payload.as_object_mut(), prepared.thread_id) {
+        payload.insert("thread_ts".to_owned(), Value::String(thread_id));
+    }
+    Ok(payload)
+}
+
+fn slack_retry_after(headers: &reqwest::header::HeaderMap) -> Duration {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or_else(
+            || Duration::from_secs(1),
+            |seconds| Duration::from_secs(seconds.clamp(1, 300)),
+        )
+}
+
+fn valid_slack_message_timestamp(value: &str) -> bool {
+    let Some((seconds, micros)) = value.split_once('.') else {
+        return false;
+    };
+    !seconds.is_empty()
+        && seconds.len() <= 16
+        && !micros.is_empty()
+        && micros.len() <= 6
+        && seconds.bytes().all(|byte| byte.is_ascii_digit())
+        && micros.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn render_slack_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str> {
+    let payload: Value =
+        serde_json::from_str(&delivery.payload_json).map_err(|_| "Slack payload is invalid")?;
+    let payload = payload
+        .as_object()
+        .ok_or("Slack payload is not an object")?;
+    match delivery.topic.as_str() {
+        "session.input_acknowledgement" => Ok("Mealy accepted your message.".to_owned()),
+        "session.input_promoted" => Ok("Mealy started working on your message.".to_owned()),
+        "session.input_steered" => Ok("Mealy attached your steering update.".to_owned()),
+        "session.interrupt_requested" => {
+            Ok("Mealy recorded the interruption and queued your replacement.".to_owned())
+        }
+        "session.turn_completed" => {
+            let status = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("completed");
+            let summary = payload
+                .get("summary")
+                .and_then(Value::as_str)
+                .filter(|summary| !summary.is_empty())
+                .unwrap_or("The turn completed without a textual summary.");
+            Ok(format!("Mealy ({status}):\n{summary}"))
+        }
+        "effect.approval_requested" => {
+            let approval_id = payload
+                .get("approval_id")
+                .and_then(Value::as_str)
+                .ok_or("Slack approval ID is absent")?;
+            let subject_digest = payload
+                .get("subject_digest")
+                .and_then(Value::as_str)
+                .ok_or("Slack approval subject is absent")?;
+            let tool_id = payload
+                .get("tool_id")
+                .and_then(Value::as_str)
+                .ok_or("Slack approval tool is absent")?;
+            let arguments = payload
+                .get("normalized_arguments")
+                .ok_or("Slack approval arguments are absent")?;
+            let targets = payload
+                .get("target_resources")
+                .ok_or("Slack approval targets are absent")?;
+            Ok(format!(
+                "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\nApproval: {approval_id}\n\nFor safety, approve or deny from the owner-local Mealy dashboard or mealyctl; Slack replies cannot grant authority."
+            ))
+        }
+        _ => Err("Slack topic is unsupported"),
+    }
 }
 
 fn render_discord_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str> {

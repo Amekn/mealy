@@ -256,12 +256,22 @@ effect.
 | `POST` | `/v1/channels/discord` | `CreateDiscordChannelRequest` | `DiscordChannelResponse` |
 | `GET` | `/v1/channels/discord/{binding_id}` | - | `DiscordChannelResponse` |
 | `POST` | `/v1/channels/discord/{binding_id}/revoke` | `RevokeDiscordChannelRequest` | `DiscordChannelResponse` |
+| `GET` | `/v1/channels/slack` | - | `SlackChannelsResponse` |
+| `POST` | `/v1/channels/slack` | `CreateSlackChannelRequest` | `SlackChannelResponse` |
+| `GET` | `/v1/channels/slack/{binding_id}` | - | `SlackChannelResponse` |
+| `POST` | `/v1/channels/slack/{binding_id}/revoke` | `RevokeSlackChannelRequest` | `SlackChannelResponse` |
 
 The ingress-only `POST /v1/channels/webhooks/{binding_id}/deliveries` route does not accept the
 local bearer. It requires exactly one `X-Mealy-Timestamp`, `X-Mealy-Nonce`, and
 `X-Mealy-Signature` header. The signature is lower-case HMAC-SHA256 over the exact configured
 framing and raw body. Use the binding-time client contract; do not reconstruct the framing from
 this summary. Authentication and replay checks occur before JSON parsing.
+
+Slack administration is local-bearer authenticated. Creation accepts Socket Mode `xapp-` and bot
+`xoxb-` credentials only over the loopback API, live-verifies the bot, workspace, app, member, and
+conversation, proves the app token can open Socket Mode, then brokers both token values outside
+SQLite. Responses expose only identity pins, lifecycle, revision, and secret-free health. Socket
+Mode itself is an outbound daemon connection: no public Slack webhook route is opened.
 
 ### Administration
 

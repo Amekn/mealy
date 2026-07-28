@@ -26,6 +26,7 @@ impl SlackChannelStore for SqliteStore {
         validate_slack_binding(
             &commit.team_id,
             &commit.team_name,
+            &commit.app_id,
             &commit.slack_user_id,
             &commit.slack_channel_id,
             &commit.bot_user_id,
@@ -133,6 +134,7 @@ impl SlackChannelStore for SqliteStore {
                         "session_id": commit.session_id,
                         "team_id": commit.team_id,
                         "team_name": commit.team_name,
+                        "app_id": commit.app_id,
                         "slack_user_id": commit.slack_user_id,
                         "slack_channel_id": commit.slack_channel_id,
                         "bot_user_id": commit.bot_user_id,
@@ -157,13 +159,13 @@ impl SlackChannelStore for SqliteStore {
         transaction
             .execute(
                 "INSERT INTO slack_channel_binding(\
-                    binding_id, principal_id, session_id, team_id, team_name, slack_user_id, \
-                    slack_channel_id, bot_user_id, bot_name, require_mention, app_token_secret_id, \
-                    app_token_digest, bot_token_secret_id, bot_token_digest, status, revision, \
-                    created_event_id, created_at_ms, updated_at_ms\
+                    binding_id, principal_id, session_id, team_id, team_name, app_id, \
+                    slack_user_id, slack_channel_id, bot_user_id, bot_name, require_mention, \
+                    app_token_secret_id, app_token_digest, bot_token_secret_id, bot_token_digest, \
+                    status, revision, created_event_id, created_at_ms, updated_at_ms\
                  ) VALUES (\
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                    'active', 0, ?15, ?16, ?16\
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                    'active', 0, ?16, ?17, ?17\
                  )",
                 params![
                     commit.binding_id.to_string(),
@@ -171,6 +173,7 @@ impl SlackChannelStore for SqliteStore {
                     commit.session_id.to_string(),
                     commit.team_id,
                     commit.team_name,
+                    commit.app_id,
                     commit.slack_user_id,
                     commit.slack_channel_id,
                     commit.bot_user_id,
@@ -321,6 +324,7 @@ impl SlackChannelStore for SqliteStore {
                 Ok(SlackSocketTarget {
                     binding_id,
                     team_id: binding.team_id,
+                    app_id: binding.app_id,
                     slack_user_id: binding.slack_user_id,
                     slack_channel_id: binding.slack_channel_id,
                     bot_user_id: binding.bot_user_id,
@@ -594,9 +598,6 @@ impl SlackChannelStore for SqliteStore {
         &self,
         context: SlackOutboundContext<'_>,
     ) -> Result<Option<OutboundSlackTarget>, SlackChannelStoreError> {
-        if !supported_outbound_context(&context) {
-            return Ok(None);
-        }
         let binding_id = self
             .connection
             .query_row(
@@ -615,6 +616,11 @@ impl SlackChannelStore for SqliteStore {
         let Some(binding_id) = binding_id else {
             return Ok(None);
         };
+        if !supported_outbound_context(&context) {
+            return Err(invalid_contract(
+                "Slack outbox payload lacks its exact originating input, task, or approval",
+            ));
+        }
         let binding_id = parse_id(&binding_id, "Slack binding ID")?;
         let binding = load_binding(&self.connection, binding_id)?;
         let thread_id = resolve_thread(&self.connection, binding_id, &context)?
@@ -622,8 +628,11 @@ impl SlackChannelStore for SqliteStore {
         Ok(Some(OutboundSlackTarget {
             binding_id,
             slack_channel_id: binding.slack_channel_id,
+            team_id: binding.team_id,
+            slack_user_id: binding.slack_user_id,
             thread_id: Some(thread_id),
             bot_user_id: binding.bot_user_id,
+            require_mention: binding.require_mention,
             bot_token_secret_id: binding.bot_token_secret_id,
             bot_token_digest: binding.bot_token_digest,
         }))
@@ -953,9 +962,9 @@ fn load_binding(
     let row = connection
         .query_row(
             "SELECT binding.principal_id, binding.session_id, binding.team_id, binding.team_name, \
-                    binding.slack_user_id, binding.slack_channel_id, binding.bot_user_id, \
-                    binding.bot_name, binding.require_mention, binding.app_token_secret_id, \
-                    binding.app_token_digest, binding.bot_token_secret_id, \
+                    binding.app_id, binding.slack_user_id, binding.slack_channel_id, \
+                    binding.bot_user_id, binding.bot_name, binding.require_mention, \
+                    binding.app_token_secret_id, binding.app_token_digest, binding.bot_token_secret_id, \
                     binding.bot_token_digest, binding.status, binding.revision, \
                     binding.created_at_ms, binding.updated_at_ms, health.last_success_at_ms, \
                     health.last_failure_at_ms, health.consecutive_failures, health.last_error_code, \
@@ -976,41 +985,43 @@ fn load_binding(
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
-                    row.get::<_, bool>(8)?,
-                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, bool>(9)?,
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, String>(12)?,
                     row.get::<_, String>(13)?,
-                    row.get::<_, i64>(14)?,
+                    row.get::<_, String>(14)?,
                     row.get::<_, i64>(15)?,
                     row.get::<_, i64>(16)?,
-                    row.get::<_, Option<i64>>(17)?,
+                    row.get::<_, i64>(17)?,
                     row.get::<_, Option<i64>>(18)?,
-                    row.get::<_, i64>(19)?,
-                    row.get::<_, Option<String>>(20)?,
-                    row.get::<_, String>(21)?,
+                    row.get::<_, Option<i64>>(19)?,
+                    row.get::<_, i64>(20)?,
+                    row.get::<_, Option<String>>(21)?,
                     row.get::<_, String>(22)?,
-                    row.get::<_, Option<String>>(23)?,
-                    row.get::<_, String>(24)?,
-                    row.get::<_, i64>(25)?,
+                    row.get::<_, String>(23)?,
+                    row.get::<_, Option<String>>(24)?,
+                    row.get::<_, String>(25)?,
+                    row.get::<_, i64>(26)?,
                 ))
             },
         )
         .optional()
         .map_err(map_sqlite_error)?
         .ok_or(SlackChannelStoreError::NotFound)?;
-    if row.0 != row.21
-        || row.22 != "extension_channel"
-        || row.23.as_deref() != Some(SLACK_INSTALLATION_ID)
-        || row.13 != row.24
+    if row.0 != row.22
+        || row.23 != "extension_channel"
+        || row.24.as_deref() != Some(SLACK_INSTALLATION_ID)
         || row.14 != row.25
-        || row.19 < 0
+        || row.15 != row.26
+        || row.20 < 0
     {
         return Err(invariant("Slack binding and registry diverged"));
     }
     validate_slack_binding(
-        &row.2, &row.3, &row.4, &row.5, &row.6, &row.7, row.8, &row.9, &row.10, &row.11, &row.12,
+        &row.2, &row.3, &row.4, &row.5, &row.6, &row.7, &row.8, row.9, &row.10, &row.11, &row.12,
+        &row.13,
     )
     .map_err(|_| invariant("stored Slack binding is invalid"))?;
     Ok(SlackChannelBindingView {
@@ -1019,27 +1030,28 @@ fn load_binding(
         session_id: parse_id(&row.1, "Slack session ID")?,
         team_id: row.2,
         team_name: row.3,
-        slack_user_id: row.4,
-        slack_channel_id: row.5,
-        bot_user_id: row.6,
-        bot_name: row.7,
-        require_mention: row.8,
-        app_token_secret_id: row.9,
-        app_token_digest: row.10,
-        bot_token_secret_id: row.11,
-        bot_token_digest: row.12,
-        status: match row.13.as_str() {
+        app_id: row.4,
+        slack_user_id: row.5,
+        slack_channel_id: row.6,
+        bot_user_id: row.7,
+        bot_name: row.8,
+        require_mention: row.9,
+        app_token_secret_id: row.10,
+        app_token_digest: row.11,
+        bot_token_secret_id: row.12,
+        bot_token_digest: row.13,
+        status: match row.14.as_str() {
             "active" => SlackChannelStatus::Active,
             "revoked" => SlackChannelStatus::Revoked,
             _ => return Err(invariant("Slack binding status is invalid")),
         },
-        revision: nonnegative(row.14, "Slack binding revision")?,
-        last_success_at_ms: row.17,
-        last_failure_at_ms: row.18,
-        consecutive_failures: nonnegative(row.19, "Slack consecutive failures")?,
-        last_error_code: row.20,
-        created_at_ms: row.15,
-        updated_at_ms: row.16,
+        revision: nonnegative(row.15, "Slack binding revision")?,
+        last_success_at_ms: row.18,
+        last_failure_at_ms: row.19,
+        consecutive_failures: nonnegative(row.20, "Slack consecutive failures")?,
+        last_error_code: row.21,
+        created_at_ms: row.16,
+        updated_at_ms: row.17,
     })
 }
 
@@ -1142,6 +1154,7 @@ mod tests {
                 session_id,
                 team_id: "T01234567".to_owned(),
                 team_name: "Mealy Test".to_owned(),
+                app_id: "A01234567".to_owned(),
                 slack_user_id: "U01234567".to_owned(),
                 slack_channel_id: "C01234567".to_owned(),
                 bot_user_id: "U07654321".to_owned(),
@@ -1310,5 +1323,93 @@ mod tests {
                 .expect("no active targets")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn shared_installation_requires_identical_owner_app_bot_and_secret_pins() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(500_001);
+        let mut store = super::SqliteStore::open_in_memory(1).expect("store");
+        let administrator = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+        store
+            .register_local_identity(administrator, 1)
+            .expect("register administrator");
+        let app_digest = sha256_digest(b"xapp-shared");
+        let bot_digest = sha256_digest(b"xoxb-shared");
+        let app_secret_id = "slack.app.shared".to_owned();
+        let bot_secret_id = "slack.bot.shared".to_owned();
+        let first_binding = ChannelBindingId::new();
+        let register = |binding_id, user: &str, channel: &str, bot_digest: String| {
+            RegisterSlackChannelCommit {
+                administrative_ownership: administrator,
+                binding_id,
+                session_id: SessionId::new(),
+                team_id: "T01234567".to_owned(),
+                team_name: "Mealy Test".to_owned(),
+                app_id: "A01234567".to_owned(),
+                slack_user_id: user.to_owned(),
+                slack_channel_id: channel.to_owned(),
+                bot_user_id: "U07654321".to_owned(),
+                bot_name: "mealy".to_owned(),
+                require_mention: true,
+                app_token_secret_id: app_secret_id.clone(),
+                app_token_digest: app_digest.clone(),
+                bot_token_secret_id: bot_secret_id.clone(),
+                bot_token_digest: bot_digest,
+                session_event_id: EventId::new(),
+                binding_event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                created_at: now,
+            }
+        };
+        store
+            .register_slack_channel(register(
+                first_binding,
+                "U01234567",
+                "C01234567",
+                bot_digest.clone(),
+            ))
+            .expect("first route");
+        let second_binding = ChannelBindingId::new();
+        store
+            .register_slack_channel(register(
+                second_binding,
+                "U01111111",
+                "C01111111",
+                bot_digest.clone(),
+            ))
+            .expect("second shared route");
+        assert_eq!(
+            store
+                .active_slack_socket_targets(10)
+                .expect("shared targets")
+                .len(),
+            2
+        );
+        assert!(
+            store
+                .register_slack_channel(register(
+                    ChannelBindingId::new(),
+                    "U02222222",
+                    "C02222222",
+                    sha256_digest(b"different bot token"),
+                ))
+                .is_err(),
+            "one app authority cannot drift to another bot credential"
+        );
+        store
+            .revoke_slack_channel(RevokeSlackChannelCommit {
+                administrative_ownership: administrator,
+                binding_id: first_binding,
+                expected_revision: 0,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                revoked_at: now + Duration::from_millis(1),
+            })
+            .expect("revoke one route");
+        let remaining = store
+            .active_slack_socket_targets(10)
+            .expect("remaining shared target");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].binding_id, second_binding);
     }
 }
