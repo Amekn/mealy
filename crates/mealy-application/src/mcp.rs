@@ -1,8 +1,9 @@
-use crate::{ReadToolDescriptor, ReadToolError, sha256_digest};
+use crate::{ProviderCredentialReference, ReadToolDescriptor, ReadToolError, sha256_digest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, path::Path, time::Duration};
+use std::{collections::BTreeSet, net::IpAddr, path::Path, time::Duration};
 use thiserror::Error;
+use url::Url;
 
 /// Exact MCP protocol revision implemented by Mealy's local stdio client.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -15,6 +16,8 @@ pub const MCP_MAXIMUM_DEFINITION_BYTES: usize = 256 * 1024;
 
 /// Maximum independently configured local stdio MCP servers.
 pub const MCP_MAXIMUM_SERVERS: usize = 16;
+/// Maximum canonical bytes accepted for one Streamable HTTP endpoint.
+pub const MCP_MAXIMUM_HTTP_ENDPOINT_BYTES: usize = 2_048;
 const MCP_MAXIMUM_ARGUMENT_BYTES: usize = 4_096;
 const MCP_MAXIMUM_ARGUMENT_TOTAL_BYTES: usize = 32 * 1024;
 const MCP_MAXIMUM_OUTPUT_BYTES: u64 = 1024 * 1024;
@@ -272,6 +275,297 @@ impl McpServerConfig {
     }
 }
 
+/// Optional non-secret authentication reference for a Streamable HTTP MCP server.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum McpHttpAuthentication {
+    /// Server requires no transport credential.
+    #[default]
+    None,
+    /// Resolve one bearer token through the existing hardened credential broker.
+    Bearer {
+        /// Opaque credential reference; the token never enters configuration.
+        credential: ProviderCredentialReference,
+    },
+}
+
+impl McpHttpAuthentication {
+    /// Returns the configured credential reference, if any.
+    #[must_use]
+    pub const fn credential(&self) -> Option<&ProviderCredentialReference> {
+        match self {
+            Self::None => None,
+            Self::Bearer { credential } => Some(credential),
+        }
+    }
+
+    fn validate(&self) -> Result<(), McpConfigError> {
+        match self {
+            Self::None => Ok(()),
+            Self::Bearer { credential } => credential
+                .validate()
+                .map_err(|_| McpConfigError::InvalidServer),
+        }
+    }
+}
+
+/// Validated non-secret endpoint authority used during pre-install discovery.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpHttpEndpointConfig {
+    server_id: String,
+    endpoint: String,
+    #[serde(default)]
+    authentication: McpHttpAuthentication,
+}
+
+impl McpHttpEndpointConfig {
+    /// Constructs one canonical Streamable HTTP endpoint proposal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] for an invalid identity, endpoint, or credential reference.
+    pub fn new(
+        server_id: String,
+        endpoint: String,
+        authentication: McpHttpAuthentication,
+    ) -> Result<Self, McpConfigError> {
+        let config = Self {
+            server_id,
+            endpoint,
+            authentication,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Stable logical server identity.
+    #[must_use]
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// Exact canonical Streamable HTTP endpoint.
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Optional non-secret authentication reference.
+    #[must_use]
+    pub const fn authentication(&self) -> &McpHttpAuthentication {
+        &self.authentication
+    }
+
+    /// Validates a proposal loaded from an untrusted CLI or document boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] for an invalid identity, endpoint, or credential reference.
+    pub fn validate(&self) -> Result<(), McpConfigError> {
+        if valid_mcp_name(&self.server_id, 32)
+            && validated_mcp_http_endpoint(&self.endpoint).is_some()
+            && self.authentication.validate().is_ok()
+        {
+            Ok(())
+        } else {
+            Err(McpConfigError::InvalidServer)
+        }
+    }
+}
+
+/// One schema-pinned Streamable HTTP MCP server grant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpHttpServerConfig {
+    server_id: String,
+    endpoint: String,
+    #[serde(default)]
+    authentication: McpHttpAuthentication,
+    toolset_digest: String,
+    enabled: bool,
+    tools: Vec<McpToolGrant>,
+}
+
+impl McpHttpServerConfig {
+    /// Constructs a complete owner-reviewed Streamable HTTP server configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] for an unsafe endpoint, identity, credential reference,
+    /// discovery digest, grant, ordering, or bound.
+    pub fn new(
+        server_id: String,
+        endpoint: String,
+        authentication: McpHttpAuthentication,
+        toolset_digest: String,
+        enabled: bool,
+        mut tools: Vec<McpToolGrant>,
+    ) -> Result<Self, McpConfigError> {
+        tools.sort_by(|left, right| left.remote_name().cmp(right.remote_name()));
+        let config = Self {
+            server_id,
+            endpoint,
+            authentication,
+            toolset_digest,
+            enabled,
+            tools,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Stable logical server identity, unique across both MCP transports.
+    #[must_use]
+    pub fn server_id(&self) -> &str {
+        &self.server_id
+    }
+
+    /// Exact canonical Streamable HTTP endpoint.
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Optional non-secret transport credential reference.
+    #[must_use]
+    pub const fn authentication(&self) -> &McpHttpAuthentication {
+        &self.authentication
+    }
+
+    /// SHA-256 binding the negotiated revision and complete advertised tool list.
+    #[must_use]
+    pub fn toolset_digest(&self) -> &str {
+        &self.toolset_digest
+    }
+
+    /// Whether this server is activated for new context epochs.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Exact owner-reviewed tool grants in remote-name order.
+    #[must_use]
+    pub fn tools(&self) -> &[McpToolGrant] {
+        &self.tools
+    }
+
+    /// Returns an enabled/disabled copy while preserving exact reviewed evidence.
+    #[must_use]
+    pub fn with_enabled(&self, enabled: bool) -> Self {
+        let mut changed = self.clone();
+        changed.enabled = enabled;
+        changed
+    }
+
+    /// Model-visible collision-resistant identity for one granted remote name.
+    #[must_use]
+    pub fn exposed_tool_id(&self, remote_name: &str) -> String {
+        format!("mcp.{}.{}", self.server_id, remote_name)
+    }
+
+    /// Canonical endpoint origin used for exact egress authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] only if validation was bypassed.
+    pub fn endpoint_origin(&self) -> Result<String, McpConfigError> {
+        validated_mcp_http_endpoint(&self.endpoint)
+            .map(|endpoint| endpoint.origin().ascii_serialization())
+            .ok_or(McpConfigError::InvalidServer)
+    }
+
+    /// Endpoint-only proposal suitable for a fresh owner-requested discovery.
+    #[must_use]
+    pub fn endpoint_config(&self) -> McpHttpEndpointConfig {
+        McpHttpEndpointConfig {
+            server_id: self.server_id.clone(),
+            endpoint: self.endpoint.clone(),
+            authentication: self.authentication.clone(),
+        }
+    }
+
+    /// Exact destination claim copied into task capability grants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] only if validation was bypassed.
+    pub fn capability_network_destination(&self) -> Result<String, McpConfigError> {
+        self.endpoint_origin()
+            .map(|origin| format!("origin:{origin}"))
+    }
+
+    /// Opaque credential claim copied into task capability grants, when configured.
+    #[must_use]
+    pub fn capability_secret_reference(&self) -> Option<String> {
+        self.authentication
+            .credential()
+            .map(ProviderCredentialReference::capability_reference)
+    }
+
+    /// Validates one complete Streamable HTTP server configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpConfigError`] for malformed or non-canonical state.
+    pub fn validate(&self) -> Result<(), McpConfigError> {
+        if self.endpoint_config().validate().is_err()
+            || !crate::is_sha256_digest(&self.toolset_digest)
+            || self.tools.is_empty()
+            || self.tools.len() > MCP_MAXIMUM_TOOLS_PER_SERVER
+        {
+            return Err(McpConfigError::InvalidServer);
+        }
+        let mut names = BTreeSet::new();
+        for tool in &self.tools {
+            tool.validate()?;
+            if !names.insert(tool.remote_name())
+                || self.exposed_tool_id(tool.remote_name()).len() > 128
+            {
+                return Err(McpConfigError::InvalidServer);
+            }
+        }
+        if !self
+            .tools
+            .windows(2)
+            .all(|window| window[0].remote_name() < window[1].remote_name())
+        {
+            return Err(McpConfigError::InvalidServer);
+        }
+        Ok(())
+    }
+}
+
+fn validated_mcp_http_endpoint(value: &str) -> Option<Url> {
+    if value.is_empty() || value.len() > MCP_MAXIMUM_HTTP_ENDPOINT_BYTES || value.trim() != value {
+        return None;
+    }
+    let endpoint = Url::parse(value).ok()?;
+    if endpoint.as_str() != value
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || endpoint.host_str().is_none()
+        || endpoint.path().is_empty()
+    {
+        return None;
+    }
+    let literal_address = endpoint
+        .host_str()
+        .and_then(|host| host.parse::<IpAddr>().ok());
+    let literal_loopback = literal_address.is_some_and(|address| address.is_loopback());
+    (endpoint.scheme() == "https" && literal_address.is_none()
+        || endpoint.scheme() == "http" && literal_loopback)
+        .then_some(endpoint)
+}
+
 /// Validated projection of one server-advertised tool.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -515,6 +809,105 @@ pub fn mcp_read_tool_descriptor(
     Ok(descriptor)
 }
 
+/// Builds the immutable Mealy read-tool descriptor for one Streamable HTTP MCP grant.
+///
+/// # Errors
+///
+/// Returns a descriptor evidence error when canonical material cannot be represented.
+pub fn mcp_http_read_tool_descriptor(
+    server: &McpHttpServerConfig,
+    grant: &McpToolGrant,
+) -> Result<ReadToolDescriptor, crate::ToolDescriptorEvidenceError> {
+    let mut input_schema = grant.input_schema().clone();
+    if let Some(object) = input_schema.as_object_mut() {
+        object
+            .entry("description")
+            .or_insert_with(|| Value::String(grant.description().to_owned()));
+    }
+    let output_schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "serverId": {"type": "string"},
+            "toolName": {"type": "string"},
+            "definitionDigest": {"type": "string"},
+            "sourceLocator": {"type": "string"},
+            "isError": {"type": "boolean"},
+            "content": {"type": "array", "items": {"type": "object"}},
+            "structuredContent": {}
+        },
+        "required": ["serverId", "toolName", "definitionDigest", "sourceLocator", "isError", "content"]
+    });
+    let schema_digest = sha256_digest(input_schema.to_string().as_bytes());
+    let transport_identity_digest = sha256_digest(
+        json!({
+            "contractVersion": "mealy.mcp-streamable-http-tool.v1",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "serverId": server.server_id(),
+            "endpoint": server.endpoint(),
+            "authenticationReference": server
+                .authentication()
+                .credential()
+                .map(ProviderCredentialReference::capability_reference),
+            "serverToolsetDigest": server.toolset_digest(),
+            "toolDefinitionDigest": grant.definition_digest(),
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let network_destination = server
+        .capability_network_destination()
+        .map_err(|_| crate::ToolDescriptorEvidenceError::DescriptorDigestMismatch)?;
+    let secret_reference = server.capability_secret_reference();
+    let authority_digest =
+        mcp_http_authority_digest(&network_destination, secret_reference.as_deref());
+    let mut descriptor = ReadToolDescriptor {
+        tool_id: server.exposed_tool_id(grant.remote_name()),
+        version: format!(
+            "{}+{}",
+            MCP_PROTOCOL_VERSION,
+            &transport_identity_digest[..16]
+        ),
+        input_schema,
+        output_schema,
+        descriptor_digest: String::new(),
+        schema_digest,
+        effect_class: "read_only".to_owned(),
+        risk_class: "medium".to_owned(),
+        required_capability: format!(
+            "mcp.http.invoke:{}:{}:sha256:{transport_identity_digest}:authority-sha256:{authority_digest}",
+            server.server_id(),
+            grant.remote_name()
+        ),
+        timeout: Duration::from_millis(grant.timeout_ms()),
+        maximum_output_bytes: grant.maximum_output_bytes(),
+        conflict_key_template: format!("mcp://{}/{}", server.server_id(), grant.remote_name()),
+        recovery: "retry".to_owned(),
+    };
+    descriptor.descriptor_digest = descriptor.computed_descriptor_digest()?;
+    Ok(descriptor)
+}
+
+/// Digests one exact non-secret Streamable HTTP authority tuple.
+///
+/// Durable descriptors use this claim to prove that both endpoint egress and the opaque
+/// credential reference remain present in an immutable task ceiling.
+#[must_use]
+pub fn mcp_http_authority_digest(
+    network_destination: &str,
+    secret_reference: Option<&str>,
+) -> String {
+    sha256_digest(
+        json!({
+            "contractVersion": "mealy.mcp-http-authority.v1",
+            "networkDestination": network_destination,
+            "secretReference": secret_reference,
+        })
+        .to_string()
+        .as_bytes(),
+    )
+}
+
 fn contains_external_schema_reference(value: &Value) -> bool {
     match value {
         Value::Object(object) => object.iter().any(|(key, value)| {
@@ -592,12 +985,44 @@ pub fn validate_mcp_server_set(servers: &[McpServerConfig]) -> Result<(), McpCon
     Ok(())
 }
 
+/// Validates deterministic identity ordering for configured Streamable HTTP MCP servers.
+///
+/// # Errors
+///
+/// Returns [`McpConfigError`] for invalid grants, ordering, bounds, or a server identity reused by
+/// the stdio transport.
+pub fn validate_mcp_http_server_set(
+    stdio_servers: &[McpServerConfig],
+    http_servers: &[McpHttpServerConfig],
+) -> Result<(), McpConfigError> {
+    if http_servers.len().saturating_add(stdio_servers.len()) > MCP_MAXIMUM_SERVERS
+        || !http_servers
+            .windows(2)
+            .all(|window| window[0].server_id() < window[1].server_id())
+    {
+        return Err(McpConfigError::InvalidServer);
+    }
+    let stdio_ids = stdio_servers
+        .iter()
+        .map(McpServerConfig::server_id)
+        .collect::<BTreeSet<_>>();
+    for server in http_servers {
+        server.validate()?;
+        if stdio_ids.contains(server.server_id()) {
+            return Err(McpConfigError::InvalidServer);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        MCP_PROTOCOL_VERSION, McpServerConfig, McpServerDiscovery, McpToolGrant, McpToolInspection,
-        mcp_read_tool_descriptor, validate_mcp_tool_arguments,
+        MCP_PROTOCOL_VERSION, McpHttpAuthentication, McpHttpServerConfig, McpServerConfig,
+        McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_http_read_tool_descriptor,
+        mcp_read_tool_descriptor, validate_mcp_http_server_set, validate_mcp_tool_arguments,
     };
+    use crate::ProviderCredentialReference;
     use serde_json::json;
 
     fn definition(name: &str) -> serde_json::Value {
@@ -655,6 +1080,97 @@ mod tests {
         let mut task = definition("task");
         task["execution"] = json!({"taskSupport": "required"});
         assert!(McpToolGrant::new(task, 1_000, 1_024).is_err());
+    }
+
+    #[test]
+    fn streamable_http_grant_pins_endpoint_credential_and_toolset() {
+        let grant = McpToolGrant::new(definition("lookup"), 5_000, 64 * 1024).expect("grant");
+        let discovery = McpServerDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "remote-fixture", "version": "1"}),
+            tools: vec![McpToolInspection {
+                definition: grant.definition().clone(),
+                definition_digest: grant.definition_digest().to_owned(),
+            }],
+        };
+        let server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::Bearer {
+                credential: ProviderCredentialReference::Broker {
+                    secret_id: "mcp-remote".to_owned(),
+                },
+            },
+            discovery.toolset_digest().expect("toolset digest"),
+            true,
+            vec![grant.clone()],
+        )
+        .expect("HTTP server");
+        assert_eq!(
+            server.endpoint_origin().expect("endpoint origin"),
+            "https://mcp.example.test"
+        );
+        assert!(validate_mcp_http_server_set(&[], std::slice::from_ref(&server)).is_ok());
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
+        descriptor.validate_evidence().expect("descriptor evidence");
+        assert_eq!(descriptor.tool_id, "mcp.remote.lookup");
+        assert!(
+            descriptor
+                .required_capability
+                .starts_with("mcp.http.invoke:remote:lookup:sha256:")
+        );
+        assert!(
+            descriptor
+                .required_capability
+                .contains(":authority-sha256:")
+        );
+        assert_eq!(
+            server
+                .capability_network_destination()
+                .expect("network destination"),
+            "origin:https://mcp.example.test"
+        );
+        assert_eq!(
+            server.capability_secret_reference().as_deref(),
+            Some("broker:mcp-remote")
+        );
+    }
+
+    #[test]
+    fn streamable_http_endpoint_fails_closed_for_ambiguous_or_private_authority() {
+        let grant = McpToolGrant::new(definition("lookup"), 5_000, 64 * 1024).expect("grant");
+        for endpoint in [
+            "http://localhost:3000/mcp",
+            "http://10.0.0.1/mcp",
+            "https://10.0.0.1/mcp",
+            "https://user@example.test/mcp",
+            "https://example.test/mcp?tenant=other",
+            "https://example.test/mcp#fragment",
+        ] {
+            assert!(
+                McpHttpServerConfig::new(
+                    "remote".to_owned(),
+                    endpoint.to_owned(),
+                    McpHttpAuthentication::None,
+                    "a".repeat(64),
+                    true,
+                    vec![grant.clone()],
+                )
+                .is_err(),
+                "{endpoint} unexpectedly passed"
+            );
+        }
+        assert!(
+            McpHttpServerConfig::new(
+                "local".to_owned(),
+                "http://127.0.0.1:3000/mcp".to_owned(),
+                McpHttpAuthentication::None,
+                "a".repeat(64),
+                true,
+                vec![grant],
+            )
+            .is_ok()
+        );
     }
 
     #[test]

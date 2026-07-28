@@ -45,8 +45,9 @@ pub use maintenance::{
     publish_export, verify_backup,
 };
 pub use mcp::{
-    McpHostError, McpReadTool, discover_mcp_stdio_server, load_mcp_read_tools,
-    mcp_stdio_launcher_main,
+    McpHostError, McpHttpReadTool, McpReadTool, discover_mcp_http_server,
+    discover_mcp_stdio_server, inspect_mcp_http_endpoint, load_mcp_http_read_tools,
+    load_mcp_read_tools, mcp_stdio_launcher_main,
 };
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};

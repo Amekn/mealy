@@ -169,10 +169,12 @@ pub use fixture_write::{
     normalize_fixture_write_file_arguments,
 };
 pub use mcp::{
-    MCP_MAXIMUM_ARGUMENTS, MCP_MAXIMUM_DEFINITION_BYTES, MCP_MAXIMUM_SERVERS,
-    MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpConfigError, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_read_tool_descriptor,
-    mcp_tool_definition_digest, validate_mcp_server_set, validate_mcp_tool_arguments,
+    MCP_MAXIMUM_ARGUMENTS, MCP_MAXIMUM_DEFINITION_BYTES, MCP_MAXIMUM_HTTP_ENDPOINT_BYTES,
+    MCP_MAXIMUM_SERVERS, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpConfigError,
+    McpHttpAuthentication, McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig,
+    McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_http_authority_digest,
+    mcp_http_read_tool_descriptor, mcp_read_tool_descriptor, mcp_tool_definition_digest,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_mcp_tool_arguments,
 };
 pub use memory::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,

@@ -607,14 +607,16 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
             .writable_workspace_roots
             .iter()
             .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
-        && has_web != grant.network_destinations.is_empty()
+        && (!has_web || !grant.network_destinations.is_empty())
+        && (grant.network_destinations.is_empty() || has_web || has_mcp)
         && has_process != grant.executable_identity_digests.is_empty()
         && grant
             .executable_identity_digests
             .iter()
             .all(|digest| crate::is_sha256_digest(digest))
-        && (has_web || grant.secret_references.is_empty())
-        && (grant.secret_references.is_empty() || grant.tools.contains("web.search"))
+        && (grant.secret_references.is_empty()
+            || grant.tools.contains("web.search")
+            || (has_mcp && !grant.network_destinations.is_empty()))
 }
 
 fn valid_mcp_tool_id(tool_id: &str) -> bool {
@@ -817,6 +819,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn configured_authority_accepts_exact_writable_subset_and_rejects_latent_grants() {
         let defaults = PromotionDefaults::new("assistant", AgentLoopLimits::default())
             .expect("defaults")
@@ -846,6 +849,28 @@ mod tests {
                 .clone()
                 .with_general_assistant_capability_ceiling(valid_skill_resource)
                 .is_ok()
+        );
+        let valid_http_mcp = CapabilityGrant {
+            tools: BTreeSet::from(["mcp.remote.lookup".to_owned()]),
+            effect_classes: BTreeSet::from([EffectClass::ReadOnly]),
+            network_destinations: BTreeSet::from(["origin:https://mcp.example.test".to_owned()]),
+            secret_references: BTreeSet::from(["broker:mcp-remote".to_owned()]),
+            profiles: BTreeSet::from([PolicyProfile::Observe]),
+            ..CapabilityGrant::default()
+        };
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(valid_http_mcp.clone())
+                .is_ok()
+        );
+        let mut missing_http_destination = valid_http_mcp;
+        missing_http_destination.network_destinations.clear();
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(missing_http_destination)
+                .is_err()
         );
 
         let valid_action = CapabilityGrant {

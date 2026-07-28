@@ -31,14 +31,14 @@ use mealy_application::{
     CompleteDiscordMessageCommit, CompleteScheduleRunCommit, CompleteTelegramUpdateCommit,
     DaemonRunStatus, DiscordChannelStore, DiscordChannelStoreError, DiscordMessageDisposition,
     DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore, EffectLedgerStoreError,
-    IdGenerator, InitialTaskProfile, InputAdmissionLimits, OperationalStore, OutboundDiscordTarget,
-    OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome, OutboxDelivery,
-    OutboxUseCaseError, OwnershipContext, PromotionDefaults, ProviderCredentialReference,
-    ProviderSelectionPreference, RecordDiscordPollCommit, RecordTelegramPollCommit,
-    ReserveDiscordMessageCommit, ReserveTelegramUpdateCommit, ResolveApprovalCommit,
-    ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy, ScheduleRunIntent,
-    ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError, TelegramChannelStore,
-    TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
+    IdGenerator, InitialTaskProfile, InputAdmissionLimits, McpHttpAuthentication, OperationalStore,
+    OutboundDiscordTarget, OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome,
+    OutboxDelivery, OutboxUseCaseError, OwnershipContext, PromotionDefaults,
+    ProviderCredentialReference, ProviderSelectionPreference, RecordDiscordPollCommit,
+    RecordTelegramPollCommit, ReserveDiscordMessageCommit, ReserveTelegramUpdateCommit,
+    ResolveApprovalCommit, ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy,
+    ScheduleRunIntent, ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError,
+    TelegramChannelStore, TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
     TelegramUpdateReservation, WebhookChannelStore, WebhookChannelStoreError, admit_input,
     canonical_arguments_digest, claim_next_outbox, complete_outbox, discord_input_dedupe_key,
     exponential_retry_delay, is_sha256_digest, pending_promotion_sessions, plan_due_schedule,
@@ -54,8 +54,8 @@ use mealy_infrastructure::{
     BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileProviderSecretStore,
     LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
     SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
-    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_read_tools,
-    mcp_stdio_launcher_main, preserve_forensic_database,
+    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_read_tools,
+    load_mcp_read_tools, mcp_stdio_launcher_main, preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -505,6 +505,60 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         );
         tools
     };
+    let mcp_http_tools = if arguments.safe_mode || daemon_config.mcp_http_servers().is_empty() {
+        Vec::new()
+    } else {
+        let credential_store =
+            FileProviderSecretStore::new(arguments.home.join("provider-secrets"))?;
+        let mut credentials = BTreeMap::new();
+        for server in daemon_config
+            .mcp_http_servers()
+            .iter()
+            .filter(|server| server.enabled())
+        {
+            let Some(reference) = server.authentication().credential() else {
+                continue;
+            };
+            let credential = match reference {
+                ProviderCredentialReference::Broker { secret_id } => credential_store
+                    .read(secret_id)
+                    .map_err(Box::<dyn Error + Send + Sync>::from)?,
+                ProviderCredentialReference::Environment { variable } => std::env::var(variable)
+                    .map(Zeroizing::new)
+                    .map_err(|_| "MCP HTTP credential environment variable is unavailable")?,
+            };
+            if credentials
+                .insert(server.server_id().to_owned(), credential)
+                .is_some()
+            {
+                return Err("duplicate MCP HTTP credential identity".into());
+            }
+        }
+        let tools = tokio::task::block_in_place(|| {
+            load_mcp_http_read_tools(daemon_config.mcp_http_servers(), credentials)
+        })?;
+        tracing::info!(
+            mcp_http_server_count = daemon_config
+                .mcp_http_servers()
+                .iter()
+                .filter(|server| server.enabled())
+                .count(),
+            mcp_http_tool_count = tools.len(),
+            bearer_server_count = daemon_config
+                .mcp_http_servers()
+                .iter()
+                .filter(|server| {
+                    server.enabled()
+                        && matches!(
+                            server.authentication(),
+                            McpHttpAuthentication::Bearer { .. }
+                        )
+                })
+                .count(),
+            "schema-pinned Streamable HTTP MCP tools enabled"
+        );
+        tools
+    };
     let browser_tool = if arguments.safe_mode
         || daemon_config.provider().is_builtin_fixture()
         || daemon_config
@@ -538,6 +592,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         workspace_tools,
         web_tools,
         mcp_tools,
+        mcp_http_tools,
         browser_tool,
         skill_context,
     )?);
@@ -801,6 +856,18 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             effect_classes.insert(EffectClass::NonIdempotent);
             profiles.insert(PolicyProfile::WorkspaceWrite);
         }
+        let mut network_destinations = daemon_config.web_access().capability_network_destinations();
+        let mut secret_references = daemon_config.web_access().capability_secret_references();
+        for server in daemon_config
+            .mcp_http_servers()
+            .iter()
+            .filter(|server| server.enabled())
+        {
+            network_destinations.insert(server.capability_network_destination()?);
+            if let Some(secret_reference) = server.capability_secret_reference() {
+                secret_references.insert(secret_reference);
+            }
+        }
         promotion_defaults =
             promotion_defaults.with_general_assistant_capability_ceiling(CapabilityGrant {
                 tools: tool_ids,
@@ -815,7 +882,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     .flat_map(PhaseThreeRuntime::workspace_ids)
                     .map(|workspace_id| format!("workspace://{workspace_id}/"))
                     .collect(),
-                network_destinations: daemon_config.web_access().capability_network_destinations(),
+                network_destinations,
                 executable_identity_digests: write_runtime
                     .into_iter()
                     .flat_map(PhaseThreeRuntime::command_ids)
@@ -825,7 +892,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                             .map(str::to_owned)
                     })
                     .collect(),
-                secret_references: daemon_config.web_access().capability_secret_references(),
+                secret_references,
                 profiles,
                 maximum_delegated_runs: daemon_config.agent_loop_limits().maximum_delegated_runs,
                 maximum_delegation_depth: u64::from(

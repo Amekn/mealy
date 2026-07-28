@@ -38,9 +38,9 @@ use mealy_domain::{
 };
 use mealy_infrastructure::{
     BrowserReadTool, FileArtifactBlobStore, FileProviderSecretStore, FixtureReadTool,
-    FixtureResource, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, McpReadTool, SkillResourceReadTool,
-    SubscriptionCliProvider, SubscriptionCliSettings, SystemClock, SystemIdGenerator, WebReadTool,
-    WorkspaceReadTool, inspect_skill_package,
+    FixtureResource, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, McpHttpReadTool, McpReadTool,
+    SkillResourceReadTool, SubscriptionCliProvider, SubscriptionCliSettings, SystemClock,
+    SystemIdGenerator, WebReadTool, WorkspaceReadTool, inspect_skill_package,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -321,6 +321,7 @@ impl RuntimeReadTools {
         workspace_tools: Vec<WorkspaceReadTool>,
         web_tools: Vec<WebReadTool>,
         mcp_tools: Vec<McpReadTool>,
+        mcp_http_tools: Vec<McpHttpReadTool>,
         browser_tool: Option<BrowserReadTool>,
         mut skill_context: RuntimeSkillContext,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
@@ -350,6 +351,14 @@ impl RuntimeReadTools {
             }
         }
         for tool in mcp_tools {
+            let tool: Arc<dyn ReadOnlyTool> = Arc::new(tool);
+            let descriptor = tool.descriptor();
+            descriptor.validate_evidence()?;
+            if tools.insert(descriptor.tool_id, tool).is_some() {
+                return Err("duplicate runtime read-tool identity".into());
+            }
+        }
+        for tool in mcp_http_tools {
             let tool: Arc<dyn ReadOnlyTool> = Arc::new(tool);
             let descriptor = tool.descriptor();
             descriptor.validate_evidence()?;
@@ -532,7 +541,9 @@ fn read_descriptor_authorized(
             mealy_application::BROWSER_SNAPSHOT_TOOL_ID => {
                 !capability_ceiling.network_destinations.is_empty()
             }
-            tool_id if tool_id.starts_with("mcp.") => true,
+            tool_id if tool_id.starts_with("mcp.") => {
+                mcp_descriptor_authority_is_present(descriptor, capability_ceiling)
+            }
             "skill.read_resource" => true,
             AGENT_DELEGATE_TOOL_ID => {
                 capability_ceiling.maximum_delegated_runs > 0
@@ -544,6 +555,48 @@ fn read_descriptor_authorized(
             }
             _ => false,
         }
+}
+
+fn mcp_descriptor_authority_is_present(
+    descriptor: &ReadToolDescriptor,
+    capability_ceiling: &CapabilityGrant,
+) -> bool {
+    let Some(identity) = descriptor.tool_id.strip_prefix("mcp.") else {
+        return false;
+    };
+    let Some((server_id, remote_name)) = identity.split_once('.') else {
+        return false;
+    };
+    let http_prefix = format!("mcp.http.invoke:{server_id}:{remote_name}:sha256:");
+    let Some(remainder) = descriptor.required_capability.strip_prefix(&http_prefix) else {
+        let stdio_prefix = format!("mcp.invoke:{server_id}:{remote_name}:sha256:");
+        return descriptor
+            .required_capability
+            .strip_prefix(&stdio_prefix)
+            .is_some_and(mealy_application::is_sha256_digest);
+    };
+    let Some((transport_digest, authority_digest)) = remainder.split_once(":authority-sha256:")
+    else {
+        return false;
+    };
+    if !mealy_application::is_sha256_digest(transport_digest)
+        || !mealy_application::is_sha256_digest(authority_digest)
+    {
+        return false;
+    }
+    capability_ceiling
+        .network_destinations
+        .iter()
+        .any(|destination| {
+            mealy_application::mcp_http_authority_digest(destination, None) == authority_digest
+                || capability_ceiling
+                    .secret_references
+                    .iter()
+                    .any(|reference| {
+                        mealy_application::mcp_http_authority_digest(destination, Some(reference))
+                            == authority_digest
+                    })
+        })
 }
 
 fn read_arguments_authorized(
@@ -4920,11 +4973,14 @@ fn remaining_deadline_duration(deadline_at_ms: i64, observed_at_ms: i64) -> Dura
 mod tests {
     use super::{
         BuiltinPhaseTwoProvider, DurableCancellationProbe, RuntimeSkillContext,
-        remaining_deadline_duration,
+        mcp_descriptor_authority_is_present, remaining_deadline_duration,
     };
     use crate::{config::SkillConfig, store_runtime::RuntimeStore};
-    use mealy_application::{CancellationProbe, ModelProvider, sha256_digest};
-    use mealy_domain::RunId;
+    use mealy_application::{
+        CancellationProbe, McpHttpAuthentication, McpHttpServerConfig, McpToolGrant, ModelProvider,
+        ProviderCredentialReference, mcp_http_read_tool_descriptor, sha256_digest,
+    };
+    use mealy_domain::{CapabilityGrant, RunId};
     use mealy_infrastructure::{SqliteStore, inspect_skill_package, publish_skill_package};
     use serde_json::json;
     use std::{
@@ -4944,6 +5000,52 @@ mod tests {
         );
         assert_eq!(remaining_deadline_duration(10_000, 10_000), Duration::ZERO);
         assert_eq!(remaining_deadline_duration(9_000, 10_000), Duration::ZERO);
+    }
+
+    #[test]
+    fn http_mcp_descriptor_requires_its_exact_destination_and_credential_claims() {
+        let grant = McpToolGrant::new(
+            json!({
+                "name": "lookup",
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {}
+                }
+            }),
+            5_000,
+            64 * 1024,
+        )
+        .expect("grant");
+        let server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::Bearer {
+                credential: ProviderCredentialReference::Broker {
+                    secret_id: "mcp-remote".to_owned(),
+                },
+            },
+            "a".repeat(64),
+            true,
+            vec![grant.clone()],
+        )
+        .expect("server");
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
+        let mut ceiling = CapabilityGrant {
+            network_destinations: std::collections::BTreeSet::from([
+                "origin:https://mcp.example.test".to_owned(),
+            ]),
+            secret_references: std::collections::BTreeSet::from(["broker:mcp-remote".to_owned()]),
+            ..CapabilityGrant::default()
+        };
+        assert!(mcp_descriptor_authority_is_present(&descriptor, &ceiling));
+        ceiling.secret_references = std::collections::BTreeSet::from(["broker:wrong".to_owned()]);
+        assert!(!mcp_descriptor_authority_is_present(&descriptor, &ceiling));
+        ceiling.secret_references =
+            std::collections::BTreeSet::from(["broker:mcp-remote".to_owned()]);
+        ceiling.network_destinations =
+            std::collections::BTreeSet::from(["origin:https://other.example.test".to_owned()]);
+        assert!(!mcp_descriptor_authority_is_present(&descriptor, &ceiling));
     }
 
     #[test]

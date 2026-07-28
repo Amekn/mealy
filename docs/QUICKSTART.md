@@ -1239,12 +1239,11 @@ skill package bytes.
 
 ## Add a local MCP stdio tool
 
-The first MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, exact
+The local MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, exact
 MCP protocol revision `2025-11-25`, and read-only computation only. A server receives direct
 non-secret arguments and model-proposed tool arguments, but no inherited environment, network,
 Mealy home, host workspace, secret, shell, `PATH`, or writable persistent filesystem. Script and
-interpreter entry points, HTTP MCP, OAuth, server credentials, host resource mounts, and effectful
-tools are not supported yet.
+interpreter entry points, host resource mounts, and effectful local tools are not supported.
 
 First inspect an exact canonical executable. Inspection runs the code inside the same sandbox but
 does not change agent authority or configuration:
@@ -1312,6 +1311,71 @@ Configuration history and the content-addressed executable are retained for roll
 exports, backups, isolated restore verification, activation, and cross-schema rollback copy and
 re-verify every configured MCP executable. `--safe-mode` launches none of them. If one prevents a
 normal startup, keep the daemon stopped, run `mcp-list`, disable or revoke that server, and restart.
+
+## Add a remote Streamable HTTP MCP tool
+
+Mealy can expose owner-selected read-only tools from an MCP Streamable HTTP endpoint using the
+stable `2025-11-25` protocol. This is a separate authority from generic web access. Production
+endpoints must use canonical HTTPS; literal-loopback HTTP is permitted for a server on the same
+machine. Redirects, proxies, userinfo, query/fragment-bearing endpoints, ambiguous/private DNS
+answers, unsolicited server requests, and live tool-set changes fail closed.
+
+For a credentialless server, inspect its complete inventory without changing configuration:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http inspect \
+  remote-tools https://mcp.example.com/mcp
+```
+
+For a bearer-protected server, put the token in an environment variable for the two owner commands.
+The value is never printed or written to `config.json`:
+
+```sh
+read -rsp "MCP bearer token: " MCP_HTTP_BEARER_TOKEN
+export MCP_HTTP_BEARER_TOKEN
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http inspect \
+  remote-tools https://mcp.example.com/mcp \
+  --bearer-secret-id mcp.remote-tools
+```
+
+Review every returned definition and schema, drain Mealy, then install only the named tools:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http add \
+  remote-tools https://mcp.example.com/mcp \
+  --bearer-secret-id mcp.remote-tools \
+  --allow-tool search \
+  --timeout-ms 30000 \
+  --maximum-output-bytes 262144 \
+  --approve
+unset MCP_HTTP_BEARER_TOKEN
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config mcp-list
+"$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
+```
+
+`mcp-http add` repeats discovery before importing the bearer token into the owner-private broker.
+Configuration retains only `broker:mcp.remote-tools`. Startup and every invocation open a fresh
+session, initialize, send the required protocol/origin/media headers, rediscover the complete
+paginated tool inventory, compare all retained pins, validate arguments, and only then call the
+selected tool. The exact endpoint destination and opaque credential reference are bound into the
+durable descriptor and immutable run capability ceiling. JSON and SSE responses share hard byte,
+message, event-ID, timeout, schema, and normalized-result bounds. Recorded replay never contacts
+the server.
+
+Disable or revoke a server while Mealy is stopped:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http disable \
+  remote-tools --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http revoke \
+  remote-tools --approve
+```
+
+Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
+credential and an exact live inventory match before publishing authority. OAuth authorization,
+MCP resources/prompts, resumable GET streams, and effectful MCP tools remain planned v0.4 slices
+and are not implied by bearer support.
 
 ## Grant a read-only workspace
 

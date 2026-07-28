@@ -1,12 +1,18 @@
 use mealy_application::{
-    CancellationProbe, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, McpToolInspection, ReadOnlyTool, ReadToolDescriptor,
-    ReadToolError, ReadToolOutput, mcp_read_tool_descriptor, mcp_tool_definition_digest,
+    CancellationProbe, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpHttpAuthentication,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig, McpServerDiscovery, McpToolGrant,
+    McpToolInspection, ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput,
+    mcp_http_read_tool_descriptor, mcp_read_tool_descriptor, mcp_tool_definition_digest,
     sha256_digest, validate_mcp_tool_arguments,
+};
+use reqwest::{
+    StatusCode,
+    blocking::{Client, Response},
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, ORIGIN},
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -20,6 +26,8 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
+use url::Url;
+use zeroize::Zeroizing;
 
 const MCP_LAUNCHER_ARGUMENT: &str = "--mcp-stdio-launcher";
 const MCP_SANDBOX_LAUNCHER: &str = "/runtime/mealy-mcp-launcher";
@@ -33,6 +41,12 @@ const MCP_MAXIMUM_LIST_PAGES: usize = 16;
 const MCP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MCP_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
+const MCP_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const MCP_HTTP_MAXIMUM_BODY_BYTES: u64 = 4 * 1024 * 1024;
+const MCP_HTTP_MAXIMUM_SESSION_ID_BYTES: usize = 1_024;
+const MCP_HTTP_MAXIMUM_EVENT_ID_BYTES: usize = 1_024;
+const MCP_SESSION_ID_HEADER: HeaderName = HeaderName::from_static("mcp-session-id");
+const MCP_PROTOCOL_VERSION_HEADER: HeaderName = HeaderName::from_static("mcp-protocol-version");
 
 /// Reads the complete tool list from one digest-pinned MCP executable inside the hardened local
 /// stdio sandbox. Discovery executes server code, so callers must require explicit owner intent.
@@ -109,6 +123,712 @@ pub fn load_mcp_read_tools(
         return Err(McpHostError::InvalidConfiguration);
     }
     Ok(result)
+}
+
+/// Inspects one Streamable HTTP MCP server through an SSRF-resistant, redirect-free connection.
+///
+/// # Errors
+///
+/// Returns [`McpHostError`] for invalid configuration, missing or rejected credentials, unsafe
+/// resolution, timeout, unsupported media framing, protocol violations, or unbounded discovery.
+pub fn discover_mcp_http_server(
+    server: &McpHttpServerConfig,
+    credential: Option<Zeroizing<String>>,
+) -> Result<McpServerDiscovery, McpHostError> {
+    let endpoint = McpHttpEndpoint::new(&server.endpoint_config(), credential.map(Arc::new))?;
+    let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
+    verify_http_discovery(server, &discovery)?;
+    Ok(discovery)
+}
+
+/// Performs one fresh owner-requested discovery against an uninstalled Streamable HTTP endpoint.
+///
+/// The returned inventory remains untrusted until the owner selects exact tools and persists the
+/// resulting complete definition/toolset digests in [`McpHttpServerConfig`].
+///
+/// # Errors
+///
+/// Returns [`McpHostError`] for unsafe endpoint authority, credential mismatch, timeout, malformed
+/// protocol, unsupported capabilities, or bounded-output violations.
+pub fn inspect_mcp_http_endpoint(
+    config: &McpHttpEndpointConfig,
+    credential: Option<Zeroizing<String>>,
+) -> Result<McpServerDiscovery, McpHostError> {
+    McpHttpEndpoint::new(config, credential.map(Arc::new))?
+        .discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)
+}
+
+/// Builds and startup-verifies all enabled Streamable HTTP MCP read tools.
+///
+/// Credentials are keyed by logical server identity and consumed into process-private endpoint
+/// instances. Configuration and returned descriptors retain only opaque credential references.
+///
+/// # Errors
+///
+/// Returns [`McpHostError`] when endpoint authority, credential cardinality, discovery evidence,
+/// or a reviewed tool definition fails closed.
+pub fn load_mcp_http_read_tools(
+    servers: &[McpHttpServerConfig],
+    mut credentials: BTreeMap<String, Zeroizing<String>>,
+) -> Result<Vec<McpHttpReadTool>, McpHostError> {
+    let mut result = Vec::new();
+    for server in servers.iter().filter(|server| server.enabled()) {
+        server
+            .validate()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        let credential = credentials.remove(server.server_id()).map(Arc::new);
+        let requires_credential = matches!(
+            server.authentication(),
+            McpHttpAuthentication::Bearer { .. }
+        );
+        if requires_credential != credential.is_some() {
+            return Err(McpHostError::InvalidConfiguration);
+        }
+        let endpoint = Arc::new(McpHttpEndpoint::new(&server.endpoint_config(), credential)?);
+        let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
+        verify_http_discovery(server, &discovery)?;
+        for grant in server.tools() {
+            result.push(McpHttpReadTool::new(
+                Arc::clone(&endpoint),
+                server.clone(),
+                grant.clone(),
+            )?);
+        }
+    }
+    if !credentials.is_empty() {
+        return Err(McpHostError::InvalidConfiguration);
+    }
+    result.sort_by(|left, right| left.descriptor.tool_id.cmp(&right.descriptor.tool_id));
+    if result
+        .windows(2)
+        .any(|window| window[0].descriptor.tool_id == window[1].descriptor.tool_id)
+    {
+        return Err(McpHostError::InvalidConfiguration);
+    }
+    Ok(result)
+}
+
+fn verify_http_discovery(
+    server: &McpHttpServerConfig,
+    discovery: &McpServerDiscovery,
+) -> Result<(), McpHostError> {
+    if discovery
+        .toolset_digest()
+        .map_err(|_| McpHostError::InvalidProtocol)?
+        != server.toolset_digest()
+        || server.tools().iter().any(|grant| {
+            discovery
+                .tool(grant.remote_name())
+                .is_none_or(|discovered| {
+                    discovered.definition_digest != grant.definition_digest()
+                        || discovered.definition != *grant.definition()
+                })
+        })
+    {
+        return Err(McpHostError::ToolsetDrift);
+    }
+    Ok(())
+}
+
+/// One model-visible read-only tool backed by a fresh Streamable HTTP MCP session per call.
+pub struct McpHttpReadTool {
+    endpoint: Arc<McpHttpEndpoint>,
+    server: McpHttpServerConfig,
+    grant: McpToolGrant,
+    descriptor: ReadToolDescriptor,
+}
+
+impl std::fmt::Debug for McpHttpReadTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpHttpReadTool")
+            .field("tool_id", &self.descriptor.tool_id)
+            .field("endpoint_origin", &self.server.endpoint_origin().ok())
+            .field(
+                "credential_configured",
+                &self.endpoint.authorization.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpHttpReadTool {
+    fn new(
+        endpoint: Arc<McpHttpEndpoint>,
+        server: McpHttpServerConfig,
+        grant: McpToolGrant,
+    ) -> Result<Self, McpHostError> {
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        descriptor
+            .validate_evidence()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        Ok(Self {
+            endpoint,
+            server,
+            grant,
+            descriptor,
+        })
+    }
+}
+
+impl ReadOnlyTool for McpHttpReadTool {
+    fn descriptor(&self) -> ReadToolDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn validate_arguments(&self, arguments: &Value) -> Result<(), ReadToolError> {
+        validate_mcp_tool_arguments(&self.grant, arguments)
+    }
+
+    fn execute(
+        &self,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<ReadToolOutput, ReadToolError> {
+        self.validate_arguments(arguments)?;
+        let output = self
+            .endpoint
+            .call(
+                &self.server,
+                &self.grant,
+                arguments,
+                cancellation,
+                Duration::from_millis(self.grant.timeout_ms()),
+            )
+            .map_err(|error| map_read_error(error, self.grant.maximum_output_bytes()))?;
+        let bytes = serde_json::to_vec(&output).map_err(|_| {
+            ReadToolError::Unavailable("MCP result normalization failed".to_owned())
+        })?;
+        let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if actual > self.grant.maximum_output_bytes() {
+            return Err(ReadToolError::OutputTooLarge {
+                actual,
+                maximum: self.grant.maximum_output_bytes(),
+            });
+        }
+        Ok(ReadToolOutput {
+            media_type: "application/json".to_owned(),
+            bytes,
+            source_locator: format!(
+                "mcp://{}/{}",
+                self.server.server_id(),
+                self.grant.remote_name()
+            ),
+        })
+    }
+}
+
+struct McpHttpEndpoint {
+    client: Option<Client>,
+    endpoint: Url,
+    authorization: Option<Arc<Zeroizing<String>>>,
+}
+
+impl std::fmt::Debug for McpHttpEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpHttpEndpoint")
+            .field("origin", &self.endpoint.origin().ascii_serialization())
+            .field("credential_configured", &self.authorization.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpHttpEndpoint {
+    fn new(
+        config: &McpHttpEndpointConfig,
+        authorization: Option<Arc<Zeroizing<String>>>,
+    ) -> Result<Self, McpHostError> {
+        config
+            .validate()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        let requires_credential = matches!(
+            config.authentication(),
+            McpHttpAuthentication::Bearer { .. }
+        );
+        if requires_credential != authorization.is_some() {
+            return Err(McpHostError::InvalidConfiguration);
+        }
+        let endpoint =
+            Url::parse(config.endpoint()).map_err(|_| McpHostError::InvalidConfiguration)?;
+        let authority = mealy_application::WebAccessConfig {
+            enabled: true,
+            allow_public_internet: false,
+            allowed_domains: Vec::new(),
+            allowed_origins: vec![endpoint.origin().ascii_serialization()],
+            search: None,
+        };
+        authority
+            .validate()
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        let sockets = crate::web::resolve_pinned_web_destination(&endpoint, &authority)
+            .map_err(|_| McpHostError::InvalidConfiguration)?;
+        let host = endpoint
+            .host_str()
+            .ok_or(McpHostError::InvalidConfiguration)?;
+        let client = Client::builder()
+            .connect_timeout(MCP_HTTP_CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve_to_addrs(host, &sockets)
+            .build()
+            .map_err(|error| McpHostError::Io(format!("MCP HTTP client failed: {error}")))?;
+        Ok(Self {
+            client: Some(client),
+            endpoint,
+            authorization,
+        })
+    }
+
+    fn discover(
+        &self,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<McpServerDiscovery, McpHostError> {
+        let started = Instant::now();
+        let session = self.initialize(cancellation, timeout)?;
+        let discovery = self.discover_tools(&session, cancellation, started, timeout);
+        self.close(&session);
+        discovery
+    }
+
+    fn call(
+        &self,
+        server: &McpHttpServerConfig,
+        grant: &McpToolGrant,
+        arguments: &Value,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<Value, McpHostError> {
+        let started = Instant::now();
+        let session = self.initialize(cancellation, timeout)?;
+        let result = (|| {
+            let discovery = self.discover_tools(&session, cancellation, started, timeout)?;
+            verify_http_discovery(server, &discovery)?;
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            let result = self.request(
+                &session,
+                10_000,
+                "tools/call",
+                &json!({"name": grant.remote_name(), "arguments": arguments}),
+                cancellation,
+                remaining,
+            )?;
+            normalize_tool_result(&result, server.server_id(), grant)
+        })();
+        self.close(&session);
+        result
+    }
+
+    fn initialize(
+        &self,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<McpHttpSession, McpHostError> {
+        let (initialized, headers) = self.post_request(
+            None,
+            1,
+            "initialize",
+            &json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "mealy",
+                    "title": "Mealy governed MCP client",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "description": "Schema-pinned Streamable HTTP MCP boundary"
+                }
+            }),
+            cancellation,
+            timeout,
+        )?;
+        let protocol_version = initialized
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .filter(|version| *version == MCP_PROTOCOL_VERSION)
+            .ok_or(McpHostError::InvalidProtocol)?
+            .to_owned();
+        if !initialized
+            .get("capabilities")
+            .and_then(|capabilities| capabilities.get("tools"))
+            .is_some_and(Value::is_object)
+        {
+            return Err(McpHostError::InvalidProtocol);
+        }
+        let server_info = initialized
+            .get("serverInfo")
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or(McpHostError::InvalidProtocol)?;
+        let session_id = headers
+            .get(&MCP_SESSION_ID_HEADER)
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .filter(|value| {
+                        !value.is_empty()
+                            && value.len() <= MCP_HTTP_MAXIMUM_SESSION_ID_BYTES
+                            && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+                    })
+                    .map(|value| Zeroizing::new(value.to_owned()))
+                    .ok_or(McpHostError::InvalidProtocol)
+            })
+            .transpose()?;
+        let session = McpHttpSession {
+            session_id,
+            protocol_version,
+            server_info,
+        };
+        if let Err(error) =
+            self.post_notification(&session, "notifications/initialized", None, timeout)
+        {
+            self.close(&session);
+            return Err(error);
+        }
+        Ok(session)
+    }
+
+    fn discover_tools(
+        &self,
+        session: &McpHttpSession,
+        cancellation: &dyn CancellationProbe,
+        started: Instant,
+        timeout: Duration,
+    ) -> Result<McpServerDiscovery, McpHostError> {
+        let mut cursor = None;
+        let mut seen_cursors = BTreeSet::new();
+        let mut tools = Vec::new();
+        for page in 0..MCP_MAXIMUM_LIST_PAGES {
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            let id = u64::try_from(page).unwrap_or(u64::MAX).saturating_add(2);
+            let params = cursor
+                .as_ref()
+                .map_or_else(|| json!({}), |value| json!({"cursor": value}));
+            let listed =
+                self.request(session, id, "tools/list", &params, cancellation, remaining)?;
+            let page_tools = listed
+                .get("tools")
+                .and_then(Value::as_array)
+                .ok_or(McpHostError::InvalidProtocol)?;
+            if tools.len().saturating_add(page_tools.len()) > MCP_MAXIMUM_TOOLS_PER_SERVER {
+                return Err(McpHostError::OutputLimitExceeded);
+            }
+            for definition in page_tools {
+                tools.push(McpToolInspection {
+                    definition: definition.clone(),
+                    definition_digest: mcp_tool_definition_digest(definition)
+                        .map_err(|_| McpHostError::InvalidProtocol)?,
+                });
+            }
+            cursor = listed
+                .get("nextCursor")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|cursor| {
+                            !cursor.is_empty()
+                                && cursor.len() <= 1_024
+                                && !cursor.chars().any(char::is_control)
+                        })
+                        .map(str::to_owned)
+                        .ok_or(McpHostError::InvalidProtocol)
+                })
+                .transpose()?;
+            let Some(next) = &cursor else {
+                break;
+            };
+            if !seen_cursors.insert(next.clone()) || page + 1 == MCP_MAXIMUM_LIST_PAGES {
+                return Err(McpHostError::InvalidProtocol);
+            }
+        }
+        tools.sort_by(|left, right| {
+            left.definition["name"]
+                .as_str()
+                .cmp(&right.definition["name"].as_str())
+        });
+        let discovery = McpServerDiscovery {
+            protocol_version: session.protocol_version.clone(),
+            server_info: session.server_info.clone(),
+            tools,
+        };
+        discovery
+            .validate()
+            .map_err(|_| McpHostError::InvalidProtocol)?;
+        Ok(discovery)
+    }
+
+    fn request(
+        &self,
+        session: &McpHttpSession,
+        id: u64,
+        method: &str,
+        params: &Value,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<Value, McpHostError> {
+        self.post_request(Some(session), id, method, params, cancellation, timeout)
+            .map(|(result, _)| result)
+    }
+
+    fn post_request(
+        &self,
+        session: Option<&McpHttpSession>,
+        id: u64,
+        method: &str,
+        params: &Value,
+        cancellation: &dyn CancellationProbe,
+        timeout: Duration,
+    ) -> Result<(Value, HeaderMap), McpHostError> {
+        if cancellation.is_cancelled() {
+            return Err(McpHostError::Cancelled);
+        }
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let response = self
+            .request_builder(self.client()?.post(self.endpoint.clone()), session)?
+            .header(ACCEPT, "application/json, text/event-stream")
+            .json(&request)
+            .timeout(timeout)
+            .send()
+            .map_err(|error| map_http_error(&error))?;
+        let headers = response.headers().clone();
+        let result = parse_http_response(response, id)?;
+        if cancellation.is_cancelled() {
+            return Err(McpHostError::Cancelled);
+        }
+        Ok((result, headers))
+    }
+
+    fn post_notification(
+        &self,
+        session: &McpHttpSession,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<(), McpHostError> {
+        let mut message = serde_json::Map::from_iter([
+            ("jsonrpc".to_owned(), Value::String("2.0".to_owned())),
+            ("method".to_owned(), Value::String(method.to_owned())),
+        ]);
+        if let Some(params) = params {
+            message.insert("params".to_owned(), params);
+        }
+        let response = self
+            .request_builder(self.client()?.post(self.endpoint.clone()), Some(session))?
+            .header(ACCEPT, "application/json, text/event-stream")
+            .json(&Value::Object(message))
+            .timeout(timeout)
+            .send()
+            .map_err(|error| map_http_error(&error))?;
+        match response.status() {
+            StatusCode::ACCEPTED => Ok(()),
+            StatusCode::UNAUTHORIZED => Err(McpHostError::AuthorizationRequired),
+            StatusCode::NOT_FOUND => Err(McpHostError::SessionExpired),
+            status => Err(McpHostError::HttpStatus(status.as_u16())),
+        }
+    }
+
+    fn request_builder(
+        &self,
+        mut request: reqwest::blocking::RequestBuilder,
+        session: Option<&McpHttpSession>,
+    ) -> Result<reqwest::blocking::RequestBuilder, McpHostError> {
+        request = request
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .header(ORIGIN, self.endpoint.origin().ascii_serialization())
+            .header(&MCP_PROTOCOL_VERSION_HEADER, MCP_PROTOCOL_VERSION);
+        if let Some(session_id) = session.and_then(|session| session.session_id.as_deref()) {
+            let mut header = HeaderValue::from_str(session_id.as_str())
+                .map_err(|_| McpHostError::InvalidConfiguration)?;
+            header.set_sensitive(true);
+            request = request.header(&MCP_SESSION_ID_HEADER, header);
+        }
+        if let Some(authorization) = &self.authorization {
+            let mut bearer = Zeroizing::new(String::with_capacity(
+                "Bearer ".len() + authorization.as_ref().len(),
+            ));
+            bearer.push_str("Bearer ");
+            bearer.push_str(authorization.as_ref().as_str());
+            let mut header = HeaderValue::from_str(bearer.as_str())
+                .map_err(|_| McpHostError::InvalidConfiguration)?;
+            header.set_sensitive(true);
+            request = request.header(AUTHORIZATION, header);
+        }
+        Ok(request)
+    }
+
+    fn close(&self, session: &McpHttpSession) {
+        if session.session_id.is_none() {
+            return;
+        }
+        let Ok(client) = self.client() else {
+            return;
+        };
+        let Ok(request) = self.request_builder(client.delete(self.endpoint.clone()), Some(session))
+        else {
+            return;
+        };
+        let _ = request.timeout(Duration::from_secs(1)).send();
+    }
+
+    fn client(&self) -> Result<&Client, McpHostError> {
+        self.client.as_ref().ok_or(McpHostError::ProcessFailed)
+    }
+}
+
+impl Drop for McpHttpEndpoint {
+    fn drop(&mut self) {
+        let Some(client) = self.client.take() else {
+            return;
+        };
+        // reqwest's blocking client owns a small internal async runtime. Drop it on a plain worker
+        // thread so daemon teardown is safe even while the composition root is leaving Tokio.
+        let worker = thread::Builder::new()
+            .name("mealy-mcp-http-client-drop".to_owned())
+            .spawn(move || drop(client));
+        if let Ok(worker) = worker {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct McpHttpSession {
+    session_id: Option<Zeroizing<String>>,
+    protocol_version: String,
+    server_info: Value,
+}
+
+fn map_http_error(error: &reqwest::Error) -> McpHostError {
+    if error.is_timeout() {
+        McpHostError::TimedOut
+    } else {
+        McpHostError::Io(format!("MCP HTTP request failed: {error}"))
+    }
+}
+
+fn parse_http_response(response: Response, expected_id: u64) -> Result<Value, McpHostError> {
+    match response.status() {
+        StatusCode::OK => {}
+        StatusCode::UNAUTHORIZED => return Err(McpHostError::AuthorizationRequired),
+        StatusCode::NOT_FOUND => return Err(McpHostError::SessionExpired),
+        status => return Err(McpHostError::HttpStatus(status.as_u16())),
+    }
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_owned)
+        .ok_or(McpHostError::InvalidProtocol)?;
+    let mut bytes = Vec::new();
+    response
+        .take(MCP_HTTP_MAXIMUM_BODY_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| McpHostError::Io(format!("MCP HTTP response read failed: {error}")))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MCP_HTTP_MAXIMUM_BODY_BYTES {
+        return Err(McpHostError::OutputLimitExceeded);
+    }
+    match content_type.as_str() {
+        "application/json" => {
+            let message =
+                serde_json::from_slice(&bytes).map_err(|_| McpHostError::InvalidProtocol)?;
+            jsonrpc_result(&message, expected_id)?.ok_or(McpHostError::InvalidProtocol)
+        }
+        "text/event-stream" => parse_sse_response(&bytes, expected_id),
+        _ => Err(McpHostError::InvalidProtocol),
+    }
+}
+
+fn parse_sse_response(bytes: &[u8], expected_id: u64) -> Result<Value, McpHostError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| McpHostError::InvalidProtocol)?;
+    let mut data = Vec::new();
+    let mut messages = 0_usize;
+    for raw_line in text.split('\n').chain(std::iter::once("")) {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.is_empty() {
+            if data.is_empty() {
+                continue;
+            }
+            messages = messages.saturating_add(1);
+            if messages > MCP_MAXIMUM_MESSAGES {
+                return Err(McpHostError::OutputLimitExceeded);
+            }
+            let joined = data.join("\n");
+            data.clear();
+            if joined.is_empty() {
+                continue;
+            }
+            let message =
+                serde_json::from_str(&joined).map_err(|_| McpHostError::InvalidProtocol)?;
+            if let Some(result) = jsonrpc_result(&message, expected_id)? {
+                return Ok(result);
+            }
+            continue;
+        }
+        if line.starts_with(':') || line.starts_with("event:") || line.starts_with("retry:") {
+            continue;
+        }
+        if let Some(event_id) = line.strip_prefix("id:") {
+            let event_id = event_id.strip_prefix(' ').unwrap_or(event_id);
+            if event_id.len() > MCP_HTTP_MAXIMUM_EVENT_ID_BYTES
+                || event_id.contains('\0')
+                || event_id.chars().any(char::is_control)
+            {
+                return Err(McpHostError::InvalidProtocol);
+            }
+            continue;
+        }
+        let Some(value) = line.strip_prefix("data:") else {
+            return Err(McpHostError::InvalidProtocol);
+        };
+        data.push(value.strip_prefix(' ').unwrap_or(value));
+    }
+    Err(McpHostError::InvalidProtocol)
+}
+
+fn jsonrpc_result(message: &Value, expected_id: u64) -> Result<Option<Value>, McpHostError> {
+    let object = message.as_object().ok_or(McpHostError::InvalidProtocol)?;
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(McpHostError::InvalidProtocol);
+    }
+    let Some(id) = object.get("id") else {
+        let method = object
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or(McpHostError::InvalidProtocol)?;
+        return if matches!(
+            method,
+            "notifications/message" | "notifications/progress" | "notifications/cancelled"
+        ) {
+            Ok(None)
+        } else if method == "notifications/tools/list_changed" {
+            Err(McpHostError::ToolsetDrift)
+        } else {
+            Err(McpHostError::InvalidProtocol)
+        };
+    };
+    if object.get("method").is_some()
+        || id.as_u64() != Some(expected_id)
+        || object.get("result").is_some() == object.get("error").is_some()
+    {
+        return Err(McpHostError::InvalidProtocol);
+    }
+    if let Some(result) = object.get("result") {
+        return Ok(Some(result.clone()));
+    }
+    Err(remote_error(object.get("error"))?)
 }
 
 fn verify_discovery(
@@ -241,8 +961,11 @@ fn map_read_error(error: McpHostError, maximum: u64) -> ReadToolError {
         | McpHostError::UnsupportedHost(_)
         | McpHostError::Io(_)
         | McpHostError::InvalidProtocol
+        | McpHostError::AuthorizationRequired
+        | McpHostError::SessionExpired
+        | McpHostError::HttpStatus(_)
         | McpHostError::ProcessFailed => {
-            ReadToolError::Unavailable("MCP process boundary is unavailable".to_owned())
+            ReadToolError::Unavailable("MCP transport boundary is unavailable".to_owned())
         }
     }
 }
@@ -348,7 +1071,7 @@ impl McpStdioEndpoint {
             cancellation,
             true,
         )?;
-        let normalized = normalize_tool_result(&result, server, grant)?;
+        let normalized = normalize_tool_result(&result, server.server_id(), grant)?;
         session.shutdown()?;
         Ok(normalized)
     }
@@ -879,7 +1602,7 @@ fn remote_error(value: Option<&Value>) -> Result<McpHostError, McpHostError> {
 
 fn normalize_tool_result(
     result: &Value,
-    server: &McpServerConfig,
+    server_id: &str,
     grant: &McpToolGrant,
 ) -> Result<Value, McpHostError> {
     let object = result.as_object().ok_or(McpHostError::InvalidProtocol)?;
@@ -913,10 +1636,10 @@ fn normalize_tool_result(
         }
     }
     let mut normalized = json!({
-        "serverId": server.server_id(),
+        "serverId": server_id,
         "toolName": grant.remote_name(),
         "definitionDigest": grant.definition_digest(),
-        "sourceLocator": format!("mcp://{}/{}", server.server_id(), grant.remote_name()),
+        "sourceLocator": format!("mcp://{server_id}/{}", grant.remote_name()),
         "isError": is_error,
         "content": content,
     });
@@ -1147,6 +1870,15 @@ pub enum McpHostError {
     /// Request exceeded its hard wall-clock limit.
     #[error("MCP request timed out")]
     TimedOut,
+    /// Protected HTTP endpoint rejected the configured credential or requires owner authorization.
+    #[error("MCP HTTP authorization is required")]
+    AuthorizationRequired,
+    /// Remote HTTP session no longer exists.
+    #[error("MCP HTTP session expired")]
+    SessionExpired,
+    /// Remote endpoint returned a bounded non-success HTTP status.
+    #[error("MCP HTTP endpoint returned status {0}")]
+    HttpStatus(u16),
     /// Durable caller cancellation was observed and propagated.
     #[error("MCP request was cancelled")]
     Cancelled,
@@ -1166,8 +1898,25 @@ pub enum McpHostError {
 
 #[cfg(test)]
 mod tests {
-    use super::{LineError, read_bounded_line};
-    use std::io::Cursor;
+    use super::{
+        LineError, McpHostError, NeverCancelled, discover_mcp_http_server,
+        inspect_mcp_http_endpoint, jsonrpc_result, load_mcp_http_read_tools, parse_sse_response,
+        read_bounded_line,
+    };
+    use mealy_application::{
+        MCP_PROTOCOL_VERSION, McpHttpAuthentication, McpHttpEndpointConfig, McpHttpServerConfig,
+        McpServerDiscovery, McpToolGrant, McpToolInspection, ReadOnlyTool,
+    };
+    use serde_json::{Value, json};
+    use std::{
+        collections::BTreeMap,
+        io::{Cursor, Read, Write},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
+        time::Duration,
+    };
+    use zeroize::Zeroizing;
 
     #[test]
     fn bounded_line_reader_requires_complete_nonempty_frames() {
@@ -1186,5 +1935,432 @@ mod tests {
             read_bounded_line(&mut oversized, 4),
             Err(LineError::Limit | LineError::Malformed)
         ));
+    }
+
+    #[test]
+    fn streamable_http_jsonrpc_and_sse_parsers_fail_closed() {
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "result": {"value": "bounded"}
+        });
+        assert_eq!(
+            jsonrpc_result(&payload, 7).expect("JSON-RPC result"),
+            Some(json!({"value": "bounded"}))
+        );
+        let sse = concat!(
+            "id: prime\n",
+            "data:\n\n",
+            "event: message\n",
+            "id: result-1\n",
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"value\":\"bounded\"}}\n\n",
+        );
+        assert_eq!(
+            parse_sse_response(sse.as_bytes(), 7).expect("SSE result"),
+            json!({"value": "bounded"})
+        );
+        assert!(matches!(
+            parse_sse_response(
+                b"data: {\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"sampling/createMessage\",\"params\":{}}\n\n",
+                7
+            ),
+            Err(McpHostError::InvalidProtocol)
+        ));
+        assert!(matches!(
+            parse_sse_response(
+                b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n",
+                7
+            ),
+            Err(McpHostError::ToolsetDrift)
+        ));
+    }
+
+    #[test]
+    fn streamable_http_discovery_binds_session_headers_bearer_and_sse_inventory() {
+        let definition = json!({
+            "name": "lookup",
+            "description": "Returns one bounded fixture value",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"]
+            }
+        });
+        let grant = McpToolGrant::new(definition.clone(), 5_000, 64 * 1024).expect("grant");
+        let expected = McpServerDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "http-fixture", "version": "1"}),
+            tools: vec![McpToolInspection {
+                definition: definition.clone(),
+                definition_digest: grant.definition_digest().to_owned(),
+            }],
+        };
+        let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "http-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", "fixture-session")),
+            ),
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+            http_sse_response(&format!(
+                "id: tools-1\ndata: {}\n\n",
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"tools": [definition]}
+                })
+            )),
+            "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned(),
+        ]);
+        let config = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            endpoint,
+            McpHttpAuthentication::Bearer {
+                credential: mealy_application::ProviderCredentialReference::Broker {
+                    secret_id: "mcp-http-fixture".to_owned(),
+                },
+            },
+            expected.toolset_digest().expect("toolset digest"),
+            true,
+            vec![grant],
+        )
+        .expect("HTTP config");
+        let discovery = discover_mcp_http_server(
+            &config,
+            Some(Zeroizing::new("fixture-bearer-secret".to_owned())),
+        )
+        .expect("HTTP discovery");
+        assert_eq!(discovery, expected);
+        server_thread.join().expect("fixture server");
+        let requests = requests.lock().expect("fixture requests");
+        assert_eq!(requests.len(), 4);
+        for request in requests.iter() {
+            let lowercase = request.to_ascii_lowercase();
+            assert!(lowercase.contains("mcp-protocol-version: 2025-11-25"));
+            assert!(lowercase.contains("authorization: bearer fixture-bearer-secret"));
+        }
+        assert!(!requests[0].to_ascii_lowercase().contains("mcp-session-id:"));
+        for request in &requests[1..] {
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("mcp-session-id: fixture-session")
+            );
+        }
+        assert!(requests[0].contains("\"method\":\"initialize\""));
+        assert!(requests[1].contains("\"method\":\"notifications/initialized\""));
+        assert!(requests[2].contains("\"method\":\"tools/list\""));
+        assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn streamable_http_loaded_tool_revalidates_inventory_and_normalizes_one_call() {
+        let definition = json!({
+            "name": "lookup",
+            "description": "Returns one bounded fixture value",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"]
+            },
+            "outputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"]
+            }
+        });
+        let grant = McpToolGrant::new(definition.clone(), 5_000, 64 * 1024).expect("grant");
+        let discovery = McpServerDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "http-fixture", "version": "1"}),
+            tools: vec![McpToolInspection {
+                definition: definition.clone(),
+                definition_digest: grant.definition_digest().to_owned(),
+            }],
+        };
+        let initialize = |session: &'static str| {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "http-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", session)),
+            )
+        };
+        let tools = || {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"tools": [definition.clone()]}
+                }),
+                None,
+            )
+        };
+        let accepted =
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let deleted =
+            "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned();
+        let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
+            initialize("load-session"),
+            accepted.clone(),
+            tools(),
+            deleted.clone(),
+            initialize("call-session"),
+            accepted,
+            tools(),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 10_000,
+                    "result": {
+                        "content": [{"type": "text", "text": "bounded"}],
+                        "structuredContent": {"value": "bounded"},
+                        "isError": false
+                    }
+                }),
+                None,
+            ),
+            deleted,
+        ]);
+        let config = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            endpoint,
+            McpHttpAuthentication::Bearer {
+                credential: mealy_application::ProviderCredentialReference::Broker {
+                    secret_id: "mcp-http-fixture".to_owned(),
+                },
+            },
+            discovery.toolset_digest().expect("toolset digest"),
+            true,
+            vec![grant],
+        )
+        .expect("HTTP config");
+        let credentials = BTreeMap::from([(
+            "remote".to_owned(),
+            Zeroizing::new("fixture-bearer-secret".to_owned()),
+        )]);
+        let loaded = load_mcp_http_read_tools(&[config], credentials).expect("load HTTP MCP tool");
+        assert_eq!(loaded.len(), 1);
+        let output = loaded[0]
+            .execute(&json!({"key": "alpha"}), &NeverCancelled)
+            .expect("execute HTTP MCP tool");
+        assert_eq!(output.source_locator, "mcp://remote/lookup");
+        assert_eq!(output.media_type, "application/json");
+        let normalized: Value = serde_json::from_slice(&output.bytes).expect("normalized JSON");
+        assert_eq!(normalized["serverId"], "remote");
+        assert_eq!(normalized["toolName"], "lookup");
+        assert_eq!(normalized["structuredContent"]["value"], "bounded");
+        server_thread.join().expect("fixture server");
+        let requests = requests.lock().expect("fixture requests");
+        assert_eq!(requests.len(), 9);
+        assert!(requests[7].contains("\"method\":\"tools/call\""));
+        assert!(requests[7].contains("\"arguments\":{\"key\":\"alpha\"}"));
+        assert!(
+            requests[7]
+                .to_ascii_lowercase()
+                .contains("mcp-session-id: call-session")
+        );
+        assert!(!requests[7].contains("load-session"));
+    }
+
+    #[test]
+    fn streamable_http_redirects_and_missing_credentials_fail_before_authority_expands() {
+        let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:1/other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        ]);
+        let proposal = McpHttpEndpointConfig::new(
+            "redirect".to_owned(),
+            endpoint,
+            McpHttpAuthentication::None,
+        )
+        .expect("proposal");
+        assert!(matches!(
+            inspect_mcp_http_endpoint(&proposal, None),
+            Err(McpHostError::HttpStatus(307))
+        ));
+        server_thread.join().expect("redirect fixture server");
+        let requests = requests.lock().expect("redirect requests");
+        assert_eq!(requests.len(), 1);
+        let lowercase = requests[0].to_ascii_lowercase();
+        assert!(lowercase.contains("origin: http://127.0.0.1:"));
+        assert!(lowercase.contains("accept: application/json, text/event-stream"));
+
+        let definition = json!({
+            "name": "lookup",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }
+        });
+        let grant = McpToolGrant::new(definition, 5_000, 64 * 1024).expect("grant");
+        let protected = McpHttpServerConfig::new(
+            "protected".to_owned(),
+            "http://127.0.0.1:9/mcp".to_owned(),
+            McpHttpAuthentication::Bearer {
+                credential: mealy_application::ProviderCredentialReference::Broker {
+                    secret_id: "missing".to_owned(),
+                },
+            },
+            "a".repeat(64),
+            true,
+            vec![grant],
+        )
+        .expect("protected config");
+        assert!(matches!(
+            load_mcp_http_read_tools(&[protected], BTreeMap::new()),
+            Err(McpHostError::InvalidConfiguration)
+        ));
+    }
+
+    #[test]
+    fn streamable_http_closes_an_established_session_after_discovery_failure() {
+        let (endpoint, requests, server_thread) = spawn_http_fixture(vec![
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "http-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", "failed-discovery-session")),
+            ),
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "result": {"notTools": []}
+                }),
+                None,
+            ),
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        ]);
+        let proposal = McpHttpEndpointConfig::new(
+            "failed-discovery".to_owned(),
+            endpoint,
+            McpHttpAuthentication::None,
+        )
+        .expect("proposal");
+        assert!(matches!(
+            inspect_mcp_http_endpoint(&proposal, None),
+            Err(McpHostError::InvalidProtocol)
+        ));
+        server_thread.join().expect("failure fixture server");
+        let requests = requests.lock().expect("failure requests");
+        assert_eq!(requests.len(), 4);
+        assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
+        assert!(
+            requests[3]
+                .to_ascii_lowercase()
+                .contains("mcp-session-id: failed-discovery-session")
+        );
+    }
+
+    fn spawn_http_fixture(
+        responses: Vec<String>,
+    ) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+        let address = listener.local_addr().expect("HTTP fixture address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let server = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept HTTP fixture request");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("fixture read timeout");
+                let request = read_http_request(&mut stream);
+                captured.lock().expect("capture request").push(request);
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write HTTP fixture response");
+            }
+        });
+        (format!("http://{address}/mcp"), requests, server)
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4_096];
+        let header_end = loop {
+            let count = stream.read(&mut buffer).expect("read HTTP fixture request");
+            assert_ne!(count, 0, "request closed before headers");
+            bytes.extend_from_slice(&buffer[..count]);
+            if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+            assert!(
+                bytes.len() <= 64 * 1024,
+                "fixture request headers exceeded bound"
+            );
+        };
+        let headers = std::str::from_utf8(&bytes[..header_end]).expect("UTF-8 request headers");
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().expect("content length"))
+                })
+            })
+            .unwrap_or(0);
+        while bytes.len() < header_end.saturating_add(content_length) {
+            let count = stream.read(&mut buffer).expect("read HTTP fixture body");
+            assert_ne!(count, 0, "request closed before body");
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        String::from_utf8(bytes).expect("UTF-8 fixture request")
+    }
+
+    fn http_json_response(
+        status: &str,
+        value: &Value,
+        extra_header: Option<(&str, &str)>,
+    ) -> String {
+        let body = value.to_string();
+        let extra = extra_header
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn http_sse_response(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
     }
 }

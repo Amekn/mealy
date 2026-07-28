@@ -152,6 +152,12 @@ Publication requires:
   attempt, reconciliation, and replay contracts.
 - Keep server discovery metadata separate from granted authority.
 
+The first transport slice is implemented on the v0.4 branch: owner-facing inspect/add/list/
+enable/disable/revoke, exact endpoint and bearer-reference authority, redirect-free DNS-pinned
+connections, fresh sessions, JSON/SSE bounds, complete inventory revalidation before every
+read-only tool call, and execution-free replay. Resources/prompts, resumable GET, OAuth, health,
+and effectful invocation remain explicit later slices; the transport milestone does not claim them.
+
 ### Media
 
 - Add bounded image input first, followed by explicitly supported audio/video

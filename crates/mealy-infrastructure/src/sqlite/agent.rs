@@ -3558,13 +3558,29 @@ fn valid_mcp_descriptor(descriptor: &ReadToolDescriptor) -> bool {
         return false;
     };
     let capability_prefix = format!("mcp.invoke:{server_id}:{remote_name}:sha256:");
-    let Some(identity_digest) = descriptor
+    let http_capability_prefix = format!("mcp.http.invoke:{server_id}:{remote_name}:sha256:");
+    let (identity_digest, valid_authority) = if let Some(identity_digest) = descriptor
         .required_capability
         .strip_prefix(&capability_prefix)
-    else {
+    {
+        (identity_digest, true)
+    } else if let Some(material) = descriptor
+        .required_capability
+        .strip_prefix(&http_capability_prefix)
+    {
+        let Some((identity_digest, authority_digest)) = material.split_once(":authority-sha256:")
+        else {
+            return false;
+        };
+        (
+            identity_digest,
+            mealy_application::is_sha256_digest(authority_digest),
+        )
+    } else {
         return false;
     };
     descriptor.risk_class == "medium"
+        && valid_authority
         && mealy_application::is_sha256_digest(identity_digest)
         && descriptor.version
             == format!(
@@ -3704,9 +3720,10 @@ fn read_tool_within_capability_ceiling(
             .iter()
             .any(|destination| destination.starts_with("search:"))
             && !capability.secret_references.is_empty()
-    } else if descriptor.tool_id == "skill.read_resource" || descriptor.tool_id.starts_with("mcp.")
-    {
+    } else if descriptor.tool_id == "skill.read_resource" {
         true
+    } else if descriptor.tool_id.starts_with("mcp.") {
+        mcp_descriptor_authority_within_capability_ceiling(descriptor, capability)
     } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
         capability.maximum_delegated_runs > 0
             && capability.maximum_delegation_depth > 0
@@ -3724,6 +3741,39 @@ fn read_tool_within_capability_ceiling(
             && capability.network_destinations.is_empty()
             && capability.secret_references.is_empty()
     }
+}
+
+fn mcp_descriptor_authority_within_capability_ceiling(
+    descriptor: &ReadToolDescriptor,
+    capability: &CapabilityGrant,
+) -> bool {
+    let Some(identity) = descriptor.tool_id.strip_prefix("mcp.") else {
+        return false;
+    };
+    let Some((server_id, remote_name)) = identity.split_once('.') else {
+        return false;
+    };
+    let http_prefix = format!("mcp.http.invoke:{server_id}:{remote_name}:sha256:");
+    let Some(remainder) = descriptor.required_capability.strip_prefix(&http_prefix) else {
+        let stdio_prefix = format!("mcp.invoke:{server_id}:{remote_name}:sha256:");
+        return descriptor
+            .required_capability
+            .strip_prefix(&stdio_prefix)
+            .is_some_and(mealy_application::is_sha256_digest);
+    };
+    let Some((transport_digest, authority_digest)) = remainder.split_once(":authority-sha256:")
+    else {
+        return false;
+    };
+    mealy_application::is_sha256_digest(transport_digest)
+        && mealy_application::is_sha256_digest(authority_digest)
+        && capability.network_destinations.iter().any(|destination| {
+            mealy_application::mcp_http_authority_digest(destination, None) == authority_digest
+                || capability.secret_references.iter().any(|reference| {
+                    mealy_application::mcp_http_authority_digest(destination, Some(reference))
+                        == authority_digest
+                })
+        })
 }
 
 fn parse_recorded_read_tool_descriptor(
@@ -9554,6 +9604,72 @@ pub(super) fn map_sqlite_error(error: rusqlite::Error) -> AgentStoreError {
 
 pub(super) fn invariant(message: impl Into<String>) -> AgentStoreError {
     AgentStoreError::InvariantViolation(message.into())
+}
+
+#[cfg(test)]
+mod mcp_http_capability_tests {
+    use super::mcp_descriptor_authority_within_capability_ceiling;
+    use mealy_application::{
+        McpHttpAuthentication, McpHttpServerConfig, McpToolGrant, ProviderCredentialReference,
+        mcp_http_read_tool_descriptor,
+    };
+    use mealy_domain::CapabilityGrant;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn durable_replay_requires_the_recorded_http_mcp_authority_tuple() {
+        let grant = McpToolGrant::new(
+            json!({
+                "name": "lookup",
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {}
+                }
+            }),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("grant");
+        let server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::Bearer {
+                credential: ProviderCredentialReference::Broker {
+                    secret_id: "mcp-remote".to_owned(),
+                },
+            },
+            "a".repeat(64),
+            true,
+            vec![grant.clone()],
+        )
+        .expect("server");
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
+        let exact = CapabilityGrant {
+            network_destinations: BTreeSet::from(["origin:https://mcp.example.test".to_owned()]),
+            secret_references: BTreeSet::from(["broker:mcp-remote".to_owned()]),
+            ..CapabilityGrant::default()
+        };
+        assert!(mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &exact
+        ));
+
+        let mut changed = exact.clone();
+        changed.secret_references = BTreeSet::from(["broker:other".to_owned()]);
+        assert!(!mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &changed
+        ));
+        changed = exact;
+        changed.network_destinations =
+            BTreeSet::from(["origin:https://other.example.test".to_owned()]);
+        assert!(!mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &changed
+        ));
+    }
 }
 
 #[cfg(test)]

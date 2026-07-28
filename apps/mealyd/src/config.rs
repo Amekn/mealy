@@ -1,8 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use mealy_application::ProviderConfig;
 use mealy_application::{
-    AgentLoopLimits, BrowserConfig, LeaseConcurrencyLimits, McpServerConfig, WebAccessConfig,
-    is_sha256_digest, sha256_digest, validate_mcp_server_set, validate_provider_chain,
+    AgentLoopLimits, BrowserConfig, LeaseConcurrencyLimits, McpHttpServerConfig, McpServerConfig,
+    WebAccessConfig, is_sha256_digest, sha256_digest, validate_mcp_http_server_set,
+    validate_mcp_server_set, validate_provider_chain,
 };
 use mealy_domain::{ChannelBindingId, CorrelationId, PrincipalId};
 use mealy_infrastructure::{inspect_browser_bundle, is_trusted_system_executable};
@@ -64,6 +65,8 @@ pub struct DaemonConfig {
     skills: Vec<SkillConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<McpServerConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mcp_http_servers: Vec<McpHttpServerConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser: Option<BrowserConfig>,
     artifact_gc_minimum_age_hours: u64,
@@ -252,6 +255,7 @@ impl Default for DaemonConfig {
             web_access: WebAccessConfig::default(),
             skills: Vec::new(),
             mcp_servers: Vec::new(),
+            mcp_http_servers: Vec::new(),
             browser: None,
             artifact_gc_minimum_age_hours: 24,
             forensic_backup_on_open_failure: true,
@@ -361,6 +365,12 @@ impl DaemonConfig {
         &self.mcp_servers
     }
 
+    /// Returns schema-pinned Streamable HTTP MCP servers in stable identity order.
+    #[must_use]
+    pub fn mcp_http_servers(&self) -> &[McpHttpServerConfig] {
+        &self.mcp_http_servers
+    }
+
     /// Returns the optional content-pinned rendered-browser runtime.
     #[must_use]
     pub const fn browser(&self) -> Option<&BrowserConfig> {
@@ -424,6 +434,7 @@ impl DaemonConfig {
             || self.web_access.validate().is_err()
             || !valid_skills(&self.skills)
             || validate_mcp_server_set(&self.mcp_servers).is_err()
+            || validate_mcp_http_server_set(&self.mcp_servers, &self.mcp_http_servers).is_err()
             || self
                 .browser
                 .as_ref()

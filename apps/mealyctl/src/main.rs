@@ -12,14 +12,14 @@ use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, MessageRole, ModelProvider, NormalizedMessage,
-    ProviderConfig, ProviderCredentialReference, ProviderRequest, ProviderResponse,
-    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
-    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_server_set, validate_provider_base_url,
-    validate_provider_chain,
+    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpHttpAuthentication,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpServerConfig, McpServerDiscovery, McpToolGrant,
+    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
+    ProviderRequest, ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
+    default_daemon_config_document, is_sha256_digest, sha256_digest, valid_provider_secret_id,
+    valid_session_metadata, validate_discord_snowflake, validate_mcp_http_server_set,
+    validate_mcp_server_set, validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
     AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
@@ -30,7 +30,8 @@ use mealy_infrastructure::{
     FileProviderSecretStore, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
     MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, ProviderSecretStoreError,
     SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
-    browser_worker_main, discover_mcp_stdio_server, inspect_browser_bundle, inspect_skill_package,
+    browser_worker_main, discover_mcp_http_server, discover_mcp_stdio_server,
+    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
     inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
     probe_browser_bundle_product, publish_browser_bundle, publish_skill_package,
     verify_browser_runtime_installation,
@@ -101,9 +102,10 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 7] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 8] = [
     "browser",
     "commandTools",
+    "mcpHttpServers",
     "mcpServers",
     "providerFallbacks",
     "skills",
@@ -178,6 +180,23 @@ struct LifecycleArguments {
     /// Installed-program lifecycle operation to execute.
     #[command(subcommand)]
     command: LifecycleCommand,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed Streamable HTTP MCP administration")]
+struct McpHttpArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Streamable HTTP MCP namespace.
+    #[command(subcommand)]
+    command: McpHttpNamespace,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpHttpNamespace {
+    /// Inspect or change governed Streamable HTTP MCP authority.
+    McpHttp(Box<McpHttpOptions>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -433,7 +452,7 @@ enum Command {
     Config {
         /// Configuration operation.
         #[command(subcommand)]
-        command: ConfigCommand,
+        command: Box<ConfigCommand>,
     },
 }
 
@@ -1190,7 +1209,7 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
-    /// List configured MCP servers and exact reviewed tool definitions.
+    /// List configured MCP servers and exact reviewed tool definitions across both transports.
     McpList,
     /// Re-enable one configured MCP server after exact live toolset verification.
     McpEnable {
@@ -1224,6 +1243,43 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum McpHttpAction {
+    Inspect,
+    Add,
+    Enable,
+    Disable,
+    Revoke,
+}
+
+#[derive(Debug, clap::Args)]
+struct McpHttpOptions {
+    /// Lifecycle operation.
+    action: McpHttpAction,
+    /// Stable logical server identity.
+    server_id: String,
+    /// Exact HTTPS endpoint, or literal-loopback HTTP endpoint; required for inspect/add.
+    endpoint: Option<String>,
+    /// Opaque broker identity for bearer-token inspection/import.
+    #[arg(long)]
+    bearer_secret_id: Option<String>,
+    /// Environment variable holding the bearer token for inspection/import.
+    #[arg(long)]
+    bearer_credential_env: Option<String>,
+    /// Exact reviewed remote tool name; repeat for add.
+    #[arg(long = "allow-tool")]
+    allow_tools: Vec<String>,
+    /// Hard total timeout for initialization, re-discovery, and one call.
+    #[arg(long)]
+    timeout_ms: Option<u64>,
+    /// Hard normalized result bound per call.
+    #[arg(long)]
+    maximum_output_bytes: Option<u64>,
+    /// Confirm an authority-changing operation.
+    #[arg(long)]
+    approve: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -2380,13 +2436,15 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command())
-        .subcommand_required(false)
-        .after_help(
-            "On an interactive terminal, run without a subcommand to onboard an unconfigured \
+    <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+        <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+    )
+    .subcommand_required(false)
+    .after_help(
+        "On an interactive terminal, run without a subcommand to onboard an unconfigured \
              home or open a new chat for a configured home. Automation must name an explicit \
              subcommand.",
-        )
+    )
 }
 
 fn stable_default_mealy_home(user_home: Option<OsString>) -> Option<PathBuf> {
@@ -2449,6 +2507,25 @@ fn lifecycle_invocation(arguments: &[OsString]) -> bool {
                     | "update-transaction"
             )
         });
+    }
+    false
+}
+
+fn mcp_http_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "mcp-http";
     }
     false
 }
@@ -3394,6 +3471,14 @@ fn remove_verified_owner_service_if_present(_home: &Path) -> Result<(), CliError
 async fn run() -> Result<(), CliError> {
     let raw_arguments = apply_default_operational_subcommand(std::env::args_os().collect())?;
     let home_override_supplied = cli_home_override_supplied(&raw_arguments);
+    if mcp_http_invocation(&raw_arguments) {
+        let mut arguments = McpHttpArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let McpHttpNamespace::McpHttp(options) = arguments.command;
+        return tokio::task::block_in_place(|| {
+            run_mcp_http_config_operation(&arguments.home, &options)
+        });
+    }
     if lifecycle_invocation(&raw_arguments) {
         let mut arguments = LifecycleArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
@@ -3412,7 +3497,7 @@ async fn run() -> Result<(), CliError> {
         return run_service_installation(&arguments.home, command);
     }
     if let Command::Config { command } = &arguments.command {
-        return run_config_operation(&arguments.home, command);
+        return tokio::task::block_in_place(|| run_config_operation(&arguments.home, command));
     }
     if let Command::Skill { command } = &arguments.command {
         return run_skill_operation(&arguments.home, command);
@@ -11436,7 +11521,33 @@ struct McpInspectionResponse {
 #[serde(rename_all = "camelCase")]
 struct McpServersConfigurationResponse {
     servers: Vec<McpServerConfig>,
+    http_servers: Vec<McpHttpServerConfig>,
     activation_note: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpHttpInspectionResponse {
+    server_id: String,
+    endpoint: String,
+    authentication: McpHttpAuthentication,
+    transport: &'static str,
+    discovery: McpServerDiscovery,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpHttpConfigurationResponse {
+    server_id: String,
+    operation: String,
+    enabled: bool,
+    endpoint: String,
+    authentication: McpHttpAuthentication,
+    exposed_tool_ids: Vec<String>,
+    toolset_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    restart_required: bool,
 }
 
 #[derive(Serialize)]
@@ -11845,6 +11956,59 @@ fn run_config_operation(home: &Path, command: &ConfigCommand) -> Result<(), CliE
             rollback_configuration(home, digest, *approve)
         }
     }
+}
+
+fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Result<(), CliError> {
+    let credential_environment = options
+        .bearer_credential_env
+        .as_deref()
+        .unwrap_or("MCP_HTTP_BEARER_TOKEN");
+    match options.action {
+        McpHttpAction::Inspect
+            if options.endpoint.is_some()
+                && options.allow_tools.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none()
+                && !options.approve =>
+        {
+            inspect_mcp_http_server(
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.bearer_secret_id.as_deref(),
+                credential_environment,
+            )
+        }
+        McpHttpAction::Add if options.endpoint.is_some() => configure_mcp_http_add(
+            home,
+            &options.server_id,
+            options.endpoint.as_deref().expect("guarded endpoint"),
+            options.bearer_secret_id.as_deref(),
+            credential_environment,
+            &options.allow_tools,
+            options.timeout_ms.unwrap_or(30_000),
+            options.maximum_output_bytes.unwrap_or(262_144),
+            options.approve,
+        ),
+        McpHttpAction::Enable if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_enabled(home, &options.server_id, true, options.approve)
+        }
+        McpHttpAction::Disable if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_enabled(home, &options.server_id, false, options.approve)
+        }
+        McpHttpAction::Revoke if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_revoke(home, &options.server_id, options.approve)
+        }
+        _ => Err(CliError::InvalidMcpConfiguration),
+    }
+}
+
+fn valid_mcp_http_lifecycle_options(options: &McpHttpOptions) -> bool {
+    options.endpoint.is_none()
+        && options.bearer_secret_id.is_none()
+        && options.bearer_credential_env.is_none()
+        && options.allow_tools.is_empty()
+        && options.timeout_ms.is_none()
+        && options.maximum_output_bytes.is_none()
 }
 
 fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliError> {
@@ -15014,6 +15178,7 @@ fn configure_mcp_add(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     if servers.iter().any(|server| server.server_id() == server_id) {
         return Err(CliError::InvalidMcpConfiguration);
     }
@@ -15053,7 +15218,8 @@ fn configure_mcp_add(
     install_mcp_executable(&home, &relative_path, &executable_bytes)?;
     servers.push(server.clone());
     servers.sort_by(|left, right| left.server_id().cmp(right.server_id()));
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     object.insert("mcpServers".to_owned(), serde_json::to_value(&servers)?);
     publish_mcp_configuration(
         &home,
@@ -15066,6 +15232,145 @@ fn configure_mcp_add(
     )
 }
 
+fn inspect_mcp_http_server(
+    server_id: &str,
+    endpoint: &str,
+    bearer_secret_id: Option<&str>,
+    bearer_credential_env: &str,
+) -> Result<(), CliError> {
+    let authentication = mcp_http_authentication(bearer_secret_id);
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication.clone(),
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let credential = bearer_secret_id
+        .map(|_| read_provider_credential_environment(bearer_credential_env))
+        .transpose()?;
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential)?;
+    print_json(McpHttpInspectionResponse {
+        server_id: proposal.server_id().to_owned(),
+        endpoint: proposal.endpoint().to_owned(),
+        authentication,
+        transport: "streamable_http_2025_11_25_fresh_session_redirect_free_dns_pinned",
+        discovery,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn configure_mcp_http_add(
+    home: &Path,
+    server_id: &str,
+    endpoint: &str,
+    bearer_secret_id: Option<&str>,
+    bearer_credential_env: &str,
+    allow_tools: &[String],
+    timeout_ms: u64,
+    maximum_output_bytes: u64,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if allow_tools.is_empty() || allow_tools.len() > 64 {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let mut selected = allow_tools.to_vec();
+    selected.sort();
+    if selected.windows(2).any(|window| window[0] == window[1]) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let authentication = mcp_http_authentication(bearer_secret_id);
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication.clone(),
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut http_servers = configured_mcp_http_servers(object)?;
+    if stdio_servers
+        .iter()
+        .any(|server| server.server_id() == server_id)
+        || http_servers
+            .iter()
+            .any(|server| server.server_id() == server_id)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let imported_credential = bearer_secret_id
+        .map(|_| read_provider_credential_environment(bearer_credential_env))
+        .transpose()?;
+    let secret_store = bearer_secret_id
+        .map(|_| FileProviderSecretStore::new(home.join("provider-secrets")))
+        .transpose()?;
+    if let (Some(secret_id), Some(secret_store), Some(credential)) = (
+        bearer_secret_id,
+        secret_store.as_ref(),
+        imported_credential.as_ref(),
+    ) {
+        verify_provider_secret_preflight(secret_store, secret_id, credential.as_str())?;
+    }
+    let credential = imported_credential
+        .as_ref()
+        .map(|credential| Zeroizing::new(credential.as_str().to_owned()));
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential)?;
+    let grants = selected
+        .iter()
+        .map(|name| {
+            let tool = discovery
+                .tool(name)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpToolGrant::new(tool.definition.clone(), timeout_ms, maximum_output_bytes)
+                .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let server = McpHttpServerConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication,
+        discovery
+            .toolset_digest()
+            .map_err(|_| CliError::InvalidMcpConfiguration)?,
+        true,
+        grants,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    http_servers.push(server.clone());
+    http_servers.sort_by(|left, right| left.server_id().cmp(right.server_id()));
+    validate_mcp_http_server_set(&stdio_servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    if let (Some(secret_id), Some(secret_store), Some(credential)) = (
+        bearer_secret_id,
+        secret_store.as_ref(),
+        imported_credential.as_ref(),
+    ) {
+        secret_store.put(secret_id, credential.as_str())?;
+    }
+    object.insert(
+        "mcpHttpServers".to_owned(),
+        serde_json::to_value(&http_servers)?,
+    );
+    publish_mcp_http_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        &server,
+        "installed_and_enabled",
+    )
+}
+
 fn list_mcp_servers(home: &Path) -> Result<(), CliError> {
     let home = fs::canonicalize(home)?;
     let value = serde_json::from_slice::<Value>(&fs::read(home.join("config.json"))?)?;
@@ -15074,10 +15379,88 @@ fn list_mcp_servers(home: &Path) -> Result<(), CliError> {
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     print_json(McpServersConfigurationResponse {
         servers,
-        activation_note: "Only enabled servers whose executable and complete live toolset reproduce every pin are exposed after daemon restart.",
+        http_servers,
+        activation_note: "Only enabled servers whose endpoint/executable and complete live toolset reproduce every pin are exposed after daemon restart.",
     })
+}
+
+fn configure_mcp_http_enabled(
+    home: &Path,
+    server_id: &str,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut servers = configured_mcp_http_servers(object)?;
+    let position = servers
+        .iter()
+        .position(|server| server.server_id() == server_id)
+        .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
+    if servers[position].enabled() == enabled {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    if enabled {
+        let credential = resolve_mcp_http_credential(&home, servers[position].authentication())?;
+        discover_mcp_http_server(&servers[position], credential)?;
+    }
+    servers[position] = servers[position].with_enabled(enabled);
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let server = servers[position].clone();
+    object.insert("mcpHttpServers".to_owned(), serde_json::to_value(&servers)?);
+    publish_mcp_http_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        &server,
+        if enabled { "enabled" } else { "disabled" },
+    )
+}
+
+fn configure_mcp_http_revoke(home: &Path, server_id: &str, approve: bool) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut servers = configured_mcp_http_servers(object)?;
+    let position = servers
+        .iter()
+        .position(|server| server.server_id() == server_id)
+        .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
+    let server = servers.remove(position).with_enabled(false);
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    if servers.is_empty() {
+        object.remove("mcpHttpServers");
+    } else {
+        object.insert("mcpHttpServers".to_owned(), serde_json::to_value(&servers)?);
+    }
+    publish_mcp_http_configuration(&home, &current, &current_body, &value, &server, "revoked")
 }
 
 fn configure_mcp_enabled(
@@ -15099,6 +15482,7 @@ fn configure_mcp_enabled(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     let position = servers
         .iter()
         .position(|server| server.server_id() == server_id)
@@ -15110,7 +15494,8 @@ fn configure_mcp_enabled(
         verify_configured_mcp_server(&home, &servers[position])?;
     }
     servers[position] = servers[position].with_enabled(enabled);
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     let server = servers[position].clone();
     object.insert("mcpServers".to_owned(), serde_json::to_value(&servers)?);
     publish_mcp_configuration(
@@ -15138,12 +15523,14 @@ fn configure_mcp_revoke(home: &Path, server_id: &str, approve: bool) -> Result<(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     let position = servers
         .iter()
         .position(|server| server.server_id() == server_id)
         .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
     let server = servers.remove(position).with_enabled(false);
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     if servers.is_empty() {
         object.remove("mcpServers");
     } else {
@@ -15170,7 +15557,69 @@ fn configured_mcp_servers(
         .transpose()?
         .unwrap_or_default();
     validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let http_servers = object
+        .get("mcpHttpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpHttpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     Ok(servers)
+}
+
+fn configured_mcp_http_servers(
+    object: &serde_json::Map<String, Value>,
+) -> Result<Vec<McpHttpServerConfig>, CliError> {
+    let servers = object
+        .get("mcpHttpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpHttpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    let stdio_servers = object
+        .get("mcpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    Ok(servers)
+}
+
+fn mcp_http_authentication(bearer_secret_id: Option<&str>) -> McpHttpAuthentication {
+    bearer_secret_id.map_or(McpHttpAuthentication::None, |secret_id| {
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Broker {
+                secret_id: secret_id.to_owned(),
+            },
+        }
+    })
+}
+
+fn resolve_mcp_http_credential(
+    home: &Path,
+    authentication: &McpHttpAuthentication,
+) -> Result<Option<Zeroizing<String>>, CliError> {
+    let credential = match authentication {
+        McpHttpAuthentication::None => return Ok(None),
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Broker { secret_id },
+        } => FileProviderSecretStore::new(home.join("provider-secrets"))?.read(secret_id)?,
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Environment { variable },
+        } => {
+            Zeroizing::new(std::env::var(variable).map_err(|_| CliError::InvalidMcpConfiguration)?)
+        }
+    };
+    if credential.is_empty()
+        || credential.len() > MAXIMUM_PROVIDER_CREDENTIAL_BYTES
+        || credential.chars().any(char::is_control)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    Ok(Some(credential))
 }
 
 fn verify_configured_mcp_server(home: &Path, server: &McpServerConfig) -> Result<(), CliError> {
@@ -15337,6 +15786,38 @@ fn publish_mcp_configuration(
         executable_digest: server.executable_digest().to_owned(),
         toolset_digest: server.toolset_digest().to_owned(),
         executable_retained_for_rollback,
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        restart_required: true,
+    })
+}
+
+fn publish_mcp_http_configuration(
+    home: &Path,
+    current: &Path,
+    current_body: &[u8],
+    value: &Value,
+    server: &McpHttpServerConfig,
+    operation: &str,
+) -> Result<(), CliError> {
+    let timestamp = unix_timestamp_millis()?;
+    let history = home.join("config-history");
+    create_private_service_directory(&history)?;
+    let replaced = history.join(format!("pre-mcp-http-{timestamp}.json"));
+    atomic_write_service(&replaced, current_body)?;
+    atomic_write_service(current, &serde_json::to_vec_pretty(value)?)?;
+    print_json(McpHttpConfigurationResponse {
+        server_id: server.server_id().to_owned(),
+        operation: operation.to_owned(),
+        enabled: server.enabled(),
+        endpoint: server.endpoint().to_owned(),
+        authentication: server.authentication().clone(),
+        exposed_tool_ids: server
+            .tools()
+            .iter()
+            .map(|tool| server.exposed_tool_id(tool.remote_name()))
+            .collect(),
+        toolset_digest: server.toolset_digest().to_owned(),
         configuration_path: current.display().to_string(),
         replaced_configuration_copy: replaced.display().to_string(),
         restart_required: true,
@@ -18176,15 +18657,18 @@ mod tests {
         assert!(matches!(
             discovery.command,
             Command::Config {
-                command: ConfigCommand::ProviderModelsOpenrouter {
+                command
+            } if matches!(
+                command.as_ref(),
+                ConfigCommand::ProviderModelsOpenrouter {
                     base_url,
                     credential_env,
                     contains: Some(contains),
                     ..
-                }
-            } if base_url == "https://openrouter.ai/api/v1"
+                } if base_url == "https://openrouter.ai/api/v1"
                 && credential_env == "OPENROUTER_API_KEY"
                 && contains == "claude"
+            )
         ));
         let activation = Arguments::try_parse_from([
             "mealyctl",
@@ -18204,18 +18688,21 @@ mod tests {
         assert!(matches!(
             activation.command,
             Command::Config {
-                command: ConfigCommand::ProviderOpenrouter {
+                command
+            } if matches!(
+                command.as_ref(),
+                ConfigCommand::ProviderOpenrouter {
                     provider_id,
                     base_url,
                     secret_id,
                     credential_env,
                     approve: true,
                     ..
-                }
-            } if provider_id == "openrouter.responses"
+                } if provider_id == "openrouter.responses"
                 && base_url == "https://openrouter.ai/api/v1"
                 && secret_id == "openrouter-primary"
                 && credential_env == "OPENROUTER_API_KEY"
+            )
         ));
     }
 
@@ -19323,9 +19810,8 @@ mod tests {
         .expect("config rollback command");
         assert!(matches!(
             parsed.command,
-            Command::Config {
-                command: ConfigCommand::Rollback { approve: true, .. }
-            }
+            Command::Config { command }
+                if matches!(command.as_ref(), ConfigCommand::Rollback { approve: true, .. })
         ));
     }
 

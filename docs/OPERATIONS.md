@@ -684,6 +684,30 @@ server. Complete export/backup and migration rollback copy configured executable
 executable permissions, and re-verify ELF type, path, size, and digest before the reconstructed home
 is accepted.
 
+Remote Streamable HTTP MCP tools use separate commands and grants:
+
+```sh
+mealyctl --home "$HOME/.mealy" mcp-http inspect \
+  SERVER_ID https://mcp.example.com/mcp
+mealyctl --home "$HOME/.mealy" mcp-http add \
+  SERVER_ID https://mcp.example.com/mcp \
+  --allow-tool REMOTE_TOOL --approve
+mealyctl --home "$HOME/.mealy" config mcp-list
+```
+
+For bearer authentication, set `MCP_HTTP_BEARER_TOKEN` and add `--bearer-secret-id SECRET_ID` to
+both inspect and add. Add imports the token into the existing owner-private broker and persists
+only the opaque reference. Production endpoints require HTTPS; literal-loopback HTTP is accepted
+for local testing. DNS is checked and pinned, proxies and redirects are disabled, session IDs stay
+in zeroizing memory, and every call uses a fresh session plus complete tool-set revalidation. The
+endpoint destination and credential reference are bound to the durable descriptor and immutable
+task ceiling. A changed endpoint, credential reference, protocol, inventory, definition, schema,
+or structured result fails closed.
+
+Use `mcp-http disable`, `mcp-http enable`, or `mcp-http revoke` with `--approve` while stopped.
+OAuth, resources/prompts, resumable GET, and effectful HTTP MCP remain unavailable until their
+separate v0.4 contracts and recovery tests land.
+
 The optional rendered browser is a separate stopped-daemon authority and currently has release
 evidence on Linux x86_64. Fetch only the release-pinned Headless Shell archive with the managed
 helper, inspect it, then install it after web destinations have been configured:

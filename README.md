@@ -140,7 +140,10 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > progress, and exact-subject approval commands. On Linux, real-provider runs can use bounded,
 > cited list/stat/read/search tools over explicitly granted workspaces; explicitly activated profiles can also use
 > bounded, cited web search/fetch. Owner-reviewed native MCP stdio servers can expose selected,
-> schema-pinned read-only tools through a fresh no-network Bubblewrap session per call. Explicit
+> schema-pinned read-only tools through a fresh no-network Bubblewrap session per call. Remote
+> Streamable HTTP MCP servers can expose separately reviewed read-only tools through exact
+> endpoint/bearer-reference grants, pinned resolution, fresh sessions, and complete inventory
+> revalidation. Explicit
 > Linux x86_64 profiles can additionally enable a content-pinned Chrome Headless Shell
 > `browser.snapshot` tool: each call uses a fresh agent-only profile and private network namespace,
 > renders bounded accessibility evidence, can either follow one exact accessible GET link or
@@ -184,7 +187,7 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > interactive
 > arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
 > persistent or personal profiles,
-> HTTP or credential-bearing MCP,
+> OAuth MCP, MCP resources/prompts or effectful MCP calls,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
 > clean-host release evidence must be verified in the exact tag's linked workflows. The checked
 > clean 24-hour packaged-binary report is complete. Credential-scoped live model discovery is available
@@ -262,8 +265,14 @@ extra-tool drift. Each fresh session receives an empty environment, private `/tm
 home, workspace, secret, shell, `PATH`, or child-process authority, plus hard resource limits.
 Calls are cancellable, cited as `mcp://SERVER/TOOL`, durable, and recorded-only replayable after the
 executable is unavailable. Complete backups and migration rollback preserve and re-verify every
-configured server. This first boundary deliberately excludes scripts/interpreters, HTTP MCP,
-server secrets, host workspace mounts, and effectful MCP tools.
+configured server. A separate Streamable HTTP boundary pins a canonical HTTPS endpoint (or
+literal-loopback HTTP), opaque bearer reference, complete tool set, definitions, schemas, and
+per-tool bounds. It disables proxies and redirects, checks and pins DNS, sends bounded
+Origin/media/protocol/session headers, supports bounded JSON and SSE responses, and repeats a fresh
+session plus complete discovery immediately before every selected read-only call. Endpoint and
+credential authority are bound into durable descriptors and run ceilings; tokens never enter
+configuration or evidence. OAuth, resources/prompts, resumable GET, and effectful MCP remain
+deliberately excluded until later v0.4 slices. Both boundaries exclude host workspace mounts.
 The initial rendered-browser adapter similarly treats Chrome as untrusted runtime code. The complete
 Headless Shell bundle and CDP product are pinned, owner-installed, and re-verified; Bubblewrap gives
 each invocation an empty environment, ephemeral profile, private network namespace, and no

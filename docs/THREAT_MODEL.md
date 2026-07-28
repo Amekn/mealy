@@ -32,6 +32,7 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Built-in compiled adapter | Trusted code, reviewed with the daemon |
 | Third-party extension | Untrusted native code confined to its host process and grants |
 | Local MCP stdio server | Untrusted owner-selected native code confined to a fresh read-only sandbox and exact schema/tool-set grant |
+| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/tool-set grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
@@ -45,8 +46,9 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 4. Application to executor: capability token, sandbox profile, effect ID, fencing token.
 5. Application to extension host: manifest grant and versioned RPC.
 6. Skill package to context/resource tool: exact inventory/digest verification, separate activation, and bounded reads.
-7. MCP server to tool evidence: executable/full-toolset/schema pinning, exact protocol lifecycle,
-   fresh no-network process isolation, bounded arguments/results, cancellation, and cited replay.
+7. MCP server to tool evidence: executable or endpoint/credential authority plus
+   full-toolset/schema pinning, exact protocol lifecycle, fresh isolated process or HTTP session,
+   bounded arguments/results, cancellation, and cited replay.
 8. Parent run to delegated child: explicit work package, read-only capability intersection,
    separate budget, depth zero, durable result fence, and cancellation propagation.
 9. Browser/page to evidence: complete runtime pin, private profile/network namespace, scoped
@@ -147,8 +149,9 @@ tools, workspaces, network, processes, secrets, extensions, or delegation to the
 
 ### Malicious or changed MCP server gains ambient authority
 
-Controls: inspection and activation require an exact canonical native ELF and explicit selected
-tool names; installation publishes owner-private content-addressed bytes. The negotiated protocol,
+Controls: all transports require explicit selected tool names. Native stdio inspection and
+activation require an exact canonical ELF and installation publishes owner-private
+content-addressed bytes. The negotiated protocol,
 complete paginated advertised tool set, each selected full definition, self-contained input/output
 schema, direct non-secret arguments, timeout, and output ceiling are pinned. Startup and every call
 re-hash and re-discover before dispatch, so missing, extra, or changed tools remove authority.
@@ -160,6 +163,16 @@ CPU, memory, file, descriptor, process, output, and wall-clock bounds contain fa
 is signalled and followed by termination. Output is untrusted, schema-checked when declared, cited,
 persisted, and replayed without execution. The server still sees arguments deliberately sent to
 it, and the host kernel remains the native-code isolation boundary.
+
+Streamable HTTP grants instead pin one canonical HTTPS endpoint (or literal-loopback HTTP), the
+exact opaque credential reference, protocol, complete inventory, and definitions. The destination
+and credential reference are cryptographically bound into the durable descriptor and immutable run
+ceiling. Resolution rejects mixed/private/reserved answers and pins accepted addresses; proxies and
+redirects are disabled. Required Origin/media/protocol/session headers are bounded, bearer and
+session values are sensitive zeroizing memory only, and every startup verification or call uses a
+fresh session. JSON/SSE parsers reject unsolicited server requests, inventory-change notifications,
+invalid correlation, unbounded events, schema drift, and malformed results. This first slice does
+not grant OAuth, resources/prompts, resumable GET, or effectful HTTP calls.
 
 ### Parent model delegates hidden context or excess authority
 
@@ -494,8 +507,9 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
 - Duplicate delivery and stale lease tests prove no unauthorized transition.
 - Provider payload and child environment tests prove secret minimization.
 - Extension-host crash and malicious-request fixtures cannot stop or bypass the daemon.
-- MCP fixtures prove network/filesystem/environment/process isolation, framing and output bounds,
-  full-toolset/executable drift denial, cancellation, daemon survival, and zero-execution replay.
+- MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
+  SSRF/redirect/credential/session confinement, framing and output bounds, complete-toolset
+  executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.
 - The pinned real Headless Shell gate proves fresh-profile/CDP identity, rendering, safe exact-link
   same-origin navigation, exact form-free button activation plus submit-button denial, native
   text-control fill plus selected-field-only GET and POST/password/hidden-field denial, one bounded

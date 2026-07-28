@@ -96,6 +96,7 @@ release_documents=(
   decisions/0011-session-lineage-and-thin-workbench-clients.md
   decisions/0012-transactional-provider-primary-switch.md
   decisions/0013-atomic-parallel-delegation-groups.md
+  decisions/0014-governed-streamable-http-mcp.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
