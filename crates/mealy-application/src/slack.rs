@@ -286,6 +286,18 @@ fn valid_bounded_identifier(value: &str, maximum: usize) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+/// Validates a Socket Mode envelope acknowledgement identity.
+#[must_use]
+pub fn valid_slack_acknowledgement_id(value: &str) -> bool {
+    valid_bounded_identifier(value, MAXIMUM_SLACK_ENVELOPE_ID_BYTES)
+}
+
+/// Validates a stable Slack Events API delivery identity.
+#[must_use]
+pub fn valid_slack_delivery_id(value: &str) -> bool {
+    valid_bounded_identifier(value, MAXIMUM_SLACK_EVENT_ID_BYTES)
+}
+
 fn valid_slack_timestamp(value: &str) -> bool {
     let Some((seconds, micros)) = value.split_once('.') else {
         return false;

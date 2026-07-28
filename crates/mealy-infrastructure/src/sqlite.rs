@@ -27,6 +27,7 @@ mod recovery;
 mod schedule;
 mod scheduler;
 mod sessions;
+mod slack;
 mod telegram;
 mod timeline;
 mod transcript;
@@ -52,10 +53,11 @@ const MIGRATION_0016: &str = include_str!("../migrations/0016_context_manifest_b
 const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_provider_selection.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_parallel_delegation_groups.sql");
+const MIGRATION_0020: &str = include_str!("../migrations/0020_slack_socket_channel.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 19;
+pub const LATEST_SCHEMA_VERSION: i64 = 20;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -336,6 +338,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0019)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (19, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 19;
+        }
+        if existing_version == 19 {
+            transaction.execute_batch(MIGRATION_0020)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (20, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -836,6 +846,7 @@ mod tests {
     }
 
     fn remove_parallel_delegation_schema(connection: &Connection) {
+        remove_slack_schema(connection);
         connection
             .execute_batch(
                 "DROP TRIGGER delegation_group_child_insert;
@@ -854,6 +865,17 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 19;",
             )
             .expect("remove v19 parallel delegation schema");
+    }
+
+    fn remove_slack_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TABLE slack_envelope_receipt;
+                 DROP TABLE slack_channel_health;
+                 DROP TABLE slack_channel_binding;
+                 DELETE FROM schema_version WHERE version = 20;",
+            )
+            .expect("remove v20 Slack channel schema");
     }
 
     fn journal(event_id: EventId, event_type: &str) -> JournalRecord {
@@ -2266,7 +2288,7 @@ mod tests {
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
-                 DELETE FROM schema_version WHERE version IN (15, 16, 17, 18);",
+                 DELETE FROM schema_version WHERE version IN (15, 16, 17, 18, 19);",
             )
             .expect("construct exact v14 predecessor");
         let connection = store.connection;
@@ -2335,7 +2357,7 @@ mod tests {
                  DROP TABLE session_lineage;
                  DROP TABLE session_checkpoint;
                  DROP TABLE session_metadata;
-                 DELETE FROM schema_version WHERE version IN (17, 18);",
+                 DELETE FROM schema_version WHERE version IN (17, 18, 19);",
             )
             .expect("construct exact v16 predecessor");
         let connection = store.connection;
@@ -2435,6 +2457,41 @@ mod tests {
             .expect("delegation columns");
         for column in ["group_id", "group_ordinal", "child_key"] {
             assert!(columns.contains(column), "{column} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v19_upgrade_installs_slack_socket_reservation_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_slack_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v19 Slack channel schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "slack_channel_binding",
+            "slack_channel_health",
+            "slack_envelope_receipt",
+            "slack_channel_binding_insert_guard",
+            "slack_envelope_transition",
+            "slack_envelope_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query Slack schema object");
+            assert!(exists, "{object} was not installed");
         }
         upgraded
             .verify_storage_integrity()

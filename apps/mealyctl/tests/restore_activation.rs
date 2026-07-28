@@ -135,7 +135,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         .expect("provider secret");
 
     downgrade_to_schema_13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 19, SystemTime::now())
+    let migration = create_pre_migration_backup(&home, &database, 13, 20, SystemTime::now())
         .expect("migration backup");
     let migration_name = migration
         .path
@@ -155,7 +155,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
     assert!(!denied.status.success());
     assert_eq!(
         inspect_existing_schema_version(&database).expect("denied schema"),
-        Some(19)
+        Some(20)
     );
 
     let inherited_lock = lock_home(&home);
@@ -175,7 +175,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         serde_json::from_slice(&activated.stdout).expect("activation response");
     assert_eq!(response.manifest_digest, migration.manifest_digest);
     assert_eq!(response.from_schema_version, 13);
-    assert_eq!(response.to_schema_version, 19);
+    assert_eq!(response.to_schema_version, 20);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("activated schema"),
         Some(13)
@@ -216,6 +216,9 @@ fn downgrade_to_schema_13(database: &Path) {
              DROP TABLE context_manifest_bundle_compaction;
              DROP TABLE context_manifest_bundle_artifact;
              DROP TABLE context_manifest_bundle;
+             DROP TABLE slack_envelope_receipt;
+             DROP TABLE slack_channel_health;
+             DROP TABLE slack_channel_binding;
              DROP TABLE discord_message_receipt;
              DROP TABLE discord_channel_health;
              DROP TABLE discord_channel_cursor;
@@ -232,7 +235,7 @@ fn downgrade_to_schema_13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate v13");

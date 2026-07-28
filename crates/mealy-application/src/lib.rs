@@ -36,6 +36,7 @@ mod session_export;
 mod session_workbench;
 mod sessions;
 mod slack;
+mod slack_channel;
 mod startup;
 mod telegram;
 mod timeline;
@@ -291,7 +292,17 @@ pub use sessions::{
 };
 pub use slack::{
     SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
-    SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_platform_id,
+    SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_acknowledgement_id,
+    valid_slack_delivery_id, valid_slack_platform_id,
+};
+pub use slack_channel::{
+    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,
+    PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
+    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, SLACK_MAXIMUM_DISPLAY_NAME_BYTES,
+    SLACK_MAXIMUM_ERROR_CODE_BYTES, SLACK_MAXIMUM_IGNORE_REASON_BYTES, SlackChannelBindingView,
+    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
+    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
+    slack_input_dedupe_key, validate_slack_binding, validate_slack_reservation,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,

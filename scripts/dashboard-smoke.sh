@@ -58,6 +58,11 @@ for binary in "$mealyd" "$mealyctl" "$sample_extension"; do
     exit 66
   fi
 done
+supported_schema_version=$("$mealyd" --print-supported-schema-version)
+if [[ ! $supported_schema_version =~ ^[1-9][0-9]*$ ]]; then
+  echo "dashboard smoke daemon reported an invalid supported schema version" >&2
+  exit 66
+fi
 
 temporary_root=${TMPDIR:-/tmp}
 home=$(mktemp -d "$temporary_root/mealy-dashboard-smoke.XXXXXX")
@@ -170,7 +175,8 @@ if contains_daemon_token "$home/index.html"; then
 fi
 
 snapshot=$(dashboard_snapshot initial)
-jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 18
+jq -e --argjson schema "$supported_schema_version" \
+  '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == $schema
   and .providerCatalog.catalogScope == "configured_route"
   and (.providerCatalog.routes | length) >= 1
   and .providerCatalog.routes[0].selectable == true
