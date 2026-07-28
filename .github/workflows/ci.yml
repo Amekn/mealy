@@ -116,6 +116,7 @@ jobs:
             scripts/installed-update-rollback-smoke.sh
             scripts/installed-arch-smoke.sh
             scripts/installed-deb-smoke.sh
+            scripts/installed-native-upgrade-smoke.sh
             scripts/installed-rpm-smoke.sh
             scripts/preflight-release-environments.sh
             scripts/render-release-notes.sh
@@ -134,7 +135,9 @@ jobs:
             scripts/test-release-notes.sh
             scripts/test-release-soak-validator.sh
             scripts/test-release-tag-validator.sh
+            scripts/test-release-upgrade-baseline-validator.sh
             scripts/validate-public-license.sh
+            scripts/validate-release-upgrade-baseline.sh
             scripts/verify-public-linux-repository.sh
             scripts/validate-release-soak.sh
             scripts/validate-release-tag.sh

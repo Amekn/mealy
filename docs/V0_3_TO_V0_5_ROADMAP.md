@@ -57,7 +57,12 @@ proofs cover terminal enforcement, alternate-screen cleanup, Ctrl-C during stall
 persistent daemon loss. Focused storage, API, process, real-provider, artifact-integrity,
 exact-owner, terminal, and browser-boundary tests are green. Plan-first transactional route-set
 switching and its installed-package service-manager acceptance are implemented; final package,
-upgrade, soak, protected-CI, live-provider, and publication gates remain in progress.
+upgrade, soak, protected-CI, live-provider, and publication gates remain in progress. The native
+upgrade gate now verifies the attested public v0.2.1 baseline, preserves one completed durable task
+through schema 16-to-18 migration, checks the immutable rollback snapshot, then exercises v0.3
+titles/checkpoints and state-preserving uninstall. Local Ubuntu, Fedora, and Arch executions pass;
+the protected tag workflow and post-publication matrix must repeat it on every supported
+architecture/distribution before the gate is complete.
 
 ### Session workbench
 
