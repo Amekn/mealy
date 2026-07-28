@@ -88,6 +88,7 @@ async fn public_tasks_expose_deterministic_and_fresh_validation_across_restart()
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -98,6 +99,7 @@ async fn public_tasks_expose_deterministic_and_fresh_validation_across_restart()
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase4-deterministic-read".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Read the fixture report and answer only from recorded evidence.".to_owned(),
@@ -141,6 +143,7 @@ async fn public_tasks_expose_deterministic_and_fresh_validation_across_restart()
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase4-fresh-write".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(

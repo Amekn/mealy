@@ -144,6 +144,7 @@ async fn cancellation_is_idempotent_and_closes_every_durable_boundary() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -153,6 +154,7 @@ async fn cancellation_is_idempotent_and_closes_every_durable_boundary() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-cancel-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "This task should be cancelled before provider dispatch.".to_owned(),
@@ -249,6 +251,7 @@ async fn cancellation_during_provider_dispatch_charges_only_dispatched_work() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -258,6 +261,7 @@ async fn cancellation_during_provider_dispatch_charges_only_dispatched_work() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-cancel-dispatched-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Cancel this task after provider dispatch.".to_owned(),
@@ -347,6 +351,7 @@ async fn cancellation_after_prepare_releases_undispatched_reservation_without_ch
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -356,6 +361,7 @@ async fn cancellation_after_prepare_releases_undispatched_reservation_without_ch
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-cancel-prepared-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Cancel after durable preparation but before dispatch.".to_owned(),
@@ -446,6 +452,7 @@ async fn provider_timeout_is_terminal_bounded_and_stops_its_dispatch_thread() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -455,6 +462,7 @@ async fn provider_timeout_is_terminal_bounded_and_stops_its_dispatch_thread() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-provider-timeout-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Exercise the bounded provider timeout.".to_owned(),
@@ -522,6 +530,7 @@ async fn elapsed_pre_dispatch_deadline_retries_without_phantom_usage() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -531,6 +540,7 @@ async fn elapsed_pre_dispatch_deadline_retries_without_phantom_usage() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-expired-pre-dispatch-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Retry an undispatched provider attempt after scheduler contention."
@@ -614,6 +624,7 @@ async fn insufficient_pre_dispatch_execution_window_retries_without_phantom_usag
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -623,6 +634,7 @@ async fn insufficient_pre_dispatch_execution_window_retries_without_phantom_usag
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-short-pre-dispatch-window-input".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Retry before dispatch when contention consumed the provider window."

@@ -47,15 +47,16 @@ Every slice must preserve the v0.2.1 production contract:
 
 ## v0.3 — daily-use parity
 
-Status update (2026-07-28): the canonical title/search/checkpoint/fork/export workbench boundary is
-implemented across schema 17, daemon API, scriptable CLI, full-screen terminal client, and the thin
-dashboard adapter. The TUI includes session/search navigation, verified conversation rendering,
-bounded composition, provider/context/cost status, recent structured activity/tool evidence,
-exact approval review, and checkpoint/fork/export controls. Pseudo-terminal proofs cover terminal
-enforcement, alternate-screen cleanup, Ctrl-C during stalled admission, and persistent daemon loss.
-Focused storage, API, process, real-provider, artifact-integrity, exact-owner, terminal, and
-browser-boundary tests are green. Integrated provider/model selection, full-workspace
-qualification, and final v0.3 release gates remain in progress.
+Status update (2026-07-28): the canonical title/search/checkpoint/fork/export workbench and
+provider-selection boundaries are implemented across schema 18, daemon API, scriptable CLI,
+full-screen terminal client, and the thin dashboard adapter. The TUI includes session/search
+navigation, verified conversation rendering, bounded composition, provider/context/cost status,
+recent structured activity/tool evidence, exact approval review, checkpoint/fork/export controls,
+and an active-route model picker with separate conversation and next-turn scope. Pseudo-terminal
+proofs cover terminal enforcement, alternate-screen cleanup, Ctrl-C during stalled admission, and
+persistent daemon loss. Focused storage, API, process, real-provider, artifact-integrity,
+exact-owner, terminal, and browser-boundary tests are green. Plan-first transactional route-set
+switching, full-workspace qualification, and final v0.3 release gates remain in progress.
 
 ### Session workbench
 
@@ -91,12 +92,12 @@ qualification, and final v0.3 release gates remain in progress.
 
 ### Provider and model experience
 
-- Add an authenticated provider/model catalog projection with locality,
+- [x] Add an authenticated provider/model catalog projection with locality,
   protocol, tool/media capabilities, limits, verified pricing state, health,
   and route pressure.
-- Permit per-new-session and per-new-turn model selection within a compatible
+- [x] Permit per-new-session and per-new-turn model selection within a compatible
   configured route.
-- Add plan-first provider switching that stages and probes a complete candidate,
+- [ ] Add plan-first provider switching that stages and probes a complete candidate,
   drains incompatible in-flight work, activates atomically, verifies health,
   rotates affected context epochs, and automatically rolls back on failure.
 - Never label unverified prices or provider-advertised limits as operator

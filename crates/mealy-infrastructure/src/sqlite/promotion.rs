@@ -150,6 +150,8 @@ struct PendingRow {
     admission_event_id: String,
     correlation_id: String,
     content: String,
+    selected_provider_id: Option<String>,
+    selected_model_id: Option<String>,
     interrupt_requested_at_ms: Option<i64>,
 }
 
@@ -205,7 +207,7 @@ fn load_pending_head(
     transaction
         .query_row(
             "SELECT inbox_entry_id, sequence, delivery_mode, admission_event_id, correlation_id, \
-                    content, interrupt_requested_at_ms \
+                    content, selected_provider_id, selected_model_id, interrupt_requested_at_ms \
              FROM session_inbox \
              WHERE session_id = ?1 AND state = 'pending' ORDER BY sequence LIMIT 1",
             [session_id.to_string()],
@@ -217,7 +219,9 @@ fn load_pending_head(
                     admission_event_id: row.get(3)?,
                     correlation_id: row.get(4)?,
                     content: row.get(5)?,
-                    interrupt_requested_at_ms: row.get(6)?,
+                    selected_provider_id: row.get(6)?,
+                    selected_model_id: row.get(7)?,
+                    interrupt_requested_at_ms: row.get(8)?,
                 })
             },
         )
@@ -829,8 +833,8 @@ fn insert_work_graph(
         .execute(
             "INSERT INTO turn(\
                 id, session_id, inbox_entry_id, task_id, run_id, status, revision, correlation_id, \
-                created_at_ms, context_epoch_id\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 0, ?6, ?7, NULL)",
+                created_at_ms, context_epoch_id, selected_provider_id, selected_model_id\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 0, ?6, ?7, NULL, ?8, ?9)",
             params![
                 commit.turn_id.to_string(),
                 commit.session_id.to_string(),
@@ -839,6 +843,8 @@ fn insert_work_graph(
                 commit.run_id.to_string(),
                 pending.correlation_id,
                 promoted_at_ms,
+                pending.selected_provider_id,
+                pending.selected_model_id,
             ],
         )
         .map_err(map_sqlite_error)?;

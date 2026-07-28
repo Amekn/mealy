@@ -58,6 +58,26 @@ impl From<DeliveryMode> for mealy_domain::DeliveryMode {
     }
 }
 
+/// Owner-visible provider/model choice for a new session or new turn.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProviderSelectionCommand {
+    /// Use the compatible configured route and its explicit fallback policy.
+    Automatic,
+    /// Pin one exact configured provider/model and disable implicit fallback for that turn.
+    Exact {
+        /// Stable configured provider identity.
+        provider_id: String,
+        /// Exact configured model identity.
+        model_id: String,
+    },
+}
+
 /// Current transport projection of a task lifecycle state.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +121,9 @@ impl From<mealy_domain::TaskStatus> for TaskStatus {
 pub struct CreateSessionRequest {
     /// Requested semantic API version.
     pub api_version: String,
+    /// Optional exact initial selection; omitted and `automatic` both use automatic routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_selection: Option<ProviderSelectionCommand>,
 }
 
 /// Committed session-creation response.
@@ -423,6 +446,9 @@ pub struct SubmitInputRequest {
     pub delivery_mode: DeliveryMode,
     /// Bounded UTF-8 content.
     pub content: String,
+    /// Optional per-new-turn override; omitted inherits the session default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_selection: Option<ProviderSelectionCommand>,
 }
 
 /// Durable admission response returned only after commit.
@@ -439,6 +465,10 @@ pub struct InputAdmissionResponse {
     pub inbox_sequence: u64,
     /// Delivery behavior bound to the idempotency key.
     pub delivery_mode: DeliveryMode,
+    /// Exact provider/model durably pinned for the future turn, or `automatic`.
+    pub provider_selection: ProviderSelectionCommand,
+    /// Stable resolution source: `inherited`, `automatic`, or `exact`.
+    pub provider_selection_source: String,
     /// Original acceptance event ID.
     pub event_id: String,
     /// Original acknowledgement outbox ID.
@@ -449,6 +479,38 @@ pub struct InputAdmissionResponse {
     pub duplicate: bool,
     /// Highest visible cursor after admission.
     pub cursor: TimelineCursor,
+}
+
+/// Revision-fenced request to change one session's default route for future new turns.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateSessionProviderSelectionRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Revision observed before the update.
+    pub expected_revision: u64,
+    /// Exact configured route, or automatic routing.
+    pub provider_selection: ProviderSelectionCommand,
+}
+
+/// Canonical session-scoped provider/model default.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionProviderSelectionResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Owning session.
+    pub session_id: String,
+    /// Current exact selection or compatible automatic routing.
+    pub provider_selection: ProviderSelectionCommand,
+    /// Current canonical session revision.
+    pub revision: u64,
+    /// Event that established the current explicit default, when one exists.
+    pub event_id: Option<String>,
+    /// Time at which the current explicit default became effective.
+    pub updated_at_ms: i64,
+    /// Stable scope disclosure.
+    pub applies_to: String,
 }
 
 /// Current authorized session projection.
@@ -2283,6 +2345,85 @@ pub struct ProviderEndpointStatusResponse {
     pub last_failure_at_ms: Option<i64>,
 }
 
+/// One configured provider/model route with truthful capability, evidence, health, and pressure.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ProviderCatalogRouteResponse {
+    /// Stable owner-preference ordinal; zero is the configured primary.
+    pub route_ordinal: u64,
+    /// `primary` or `fallback`.
+    pub route_role: String,
+    /// Stable wire-protocol adapter identity.
+    pub protocol: String,
+    /// Stable configured provider identity.
+    pub provider_id: String,
+    /// Exact configured model identity.
+    pub model_id: String,
+    /// Normalized accepted input modalities.
+    pub input_modalities: Vec<String>,
+    /// Whether normalized tool calls are supported.
+    pub tool_calling: bool,
+    /// Whether structured JSON outputs are supported.
+    pub structured_output: bool,
+    /// Supported normalized reasoning-control names.
+    pub reasoning_controls: Vec<String>,
+    /// Whether bounded non-authoritative streaming deltas are enabled.
+    pub streaming: bool,
+    /// Owner-declared residency/trust label.
+    pub residency: String,
+    /// Whether the endpoint is inside the daemon's local trust boundary.
+    pub local: bool,
+    /// Maximum normalized context tokens from configured/provider-advertised metadata.
+    pub context_tokens: u64,
+    /// Maximum normalized output tokens from configured/provider-advertised metadata.
+    pub maximum_output_tokens: u64,
+    /// Conservative provider-owned input allowance.
+    pub input_token_overhead: u64,
+    /// Truthful source classification for token limits.
+    pub limits_source: String,
+    /// False unless an independent operator-controlled measurement verified these limits.
+    pub limits_operator_verified: bool,
+    /// Configured input price in provider-neutral currency microunits per million tokens.
+    pub input_microunits_per_million_tokens: u64,
+    /// Configured output price in provider-neutral currency microunits per million tokens.
+    pub output_microunits_per_million_tokens: u64,
+    /// Truthful source classification for pricing.
+    pub pricing_source: String,
+    /// False unless independently verified against an authoritative billable price source.
+    pub pricing_verified: bool,
+    /// Current process-lifetime health classification.
+    pub health: String,
+    /// Owner-configured bounded latency estimate.
+    pub estimated_latency_ms: u64,
+    /// Requests currently consuming the concurrency ceiling.
+    pub in_flight_requests: u64,
+    /// Configured simultaneous request ceiling.
+    pub maximum_concurrent_requests: u64,
+    /// Requests reserved in the current UTC minute.
+    pub requests_in_current_minute: u64,
+    /// Configured request ceiling per minute.
+    pub requests_per_minute: u64,
+    /// Whether this exact identity can be selected for a future turn.
+    pub selectable: bool,
+}
+
+/// Authenticated catalog of the exact provider/model endpoints active in this daemon.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCatalogResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable scope disclosure; currently `configured_route`.
+    pub catalog_scope: String,
+    /// Effective non-secret configuration digest.
+    pub config_digest: String,
+    /// Whether automatic routing may use compatible configured fallbacks.
+    pub automatic_fallback_enabled: bool,
+    /// Primary followed by every explicit configured fallback.
+    pub routes: Vec<ProviderCatalogRouteResponse>,
+}
+
 /// Authenticated owner operational health projection and bounded gauges.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2995,6 +3136,7 @@ mod tests {
     fn submit_input_wire_shape_is_stable_camel_case() {
         let value = serde_json::to_value(SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "delivery-1".to_owned(),
             delivery_mode: DeliveryMode::InterruptThenQueue,
             content: "hello".to_owned(),

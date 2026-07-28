@@ -124,6 +124,7 @@ fn checkpoint_captures_precommit_cursor_and_rejects_nonquiescent_sessions() {
             dedupe_key: "pending-after-checkpoint".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "pending input".to_owned(),
+            provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
         },
     )
     .expect("admit pending input");

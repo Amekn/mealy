@@ -22,6 +22,7 @@ mod memory;
 mod operations;
 mod outbox;
 mod promotion;
+mod provider_selection;
 mod recovery;
 mod schedule;
 mod scheduler;
@@ -49,10 +50,11 @@ const MIGRATION_0014: &str = include_str!("../migrations/0014_discord_dm_channel
 const MIGRATION_0015: &str = include_str!("../migrations/0015_usage_reporting.sql");
 const MIGRATION_0016: &str = include_str!("../migrations/0016_context_manifest_bundles.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.sql");
+const MIGRATION_0018: &str = include_str!("../migrations/0018_provider_selection.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 17;
+pub const LATEST_SCHEMA_VERSION: i64 = 18;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -317,6 +319,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0017)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (17, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 17;
+        }
+        if existing_version == 17 {
+            transaction.execute_batch(MIGRATION_0018)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (18, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -2207,12 +2217,24 @@ mod tests {
             .connection
             .execute_batch(
                 "DROP INDEX run_terminal_completion_idx;
+                 DROP TRIGGER session_provider_selection_insert_binding;
+                 DROP TRIGGER session_provider_selection_update_binding;
+                 DROP TRIGGER session_inbox_provider_selection_insert;
+                 DROP TRIGGER session_inbox_provider_selection_immutable;
+                 DROP TRIGGER turn_provider_selection_insert;
+                 DROP TRIGGER turn_provider_selection_immutable;
+                 DROP TABLE session_provider_selection;
+                 ALTER TABLE session_inbox DROP COLUMN provider_selection_source;
+                 ALTER TABLE session_inbox DROP COLUMN selected_provider_id;
+                 ALTER TABLE session_inbox DROP COLUMN selected_model_id;
+                 ALTER TABLE turn DROP COLUMN selected_provider_id;
+                 ALTER TABLE turn DROP COLUMN selected_model_id;
                  DROP TRIGGER model_attempt_manifest_token_total_insert;
                  DROP TABLE context_manifest_bundle_memory_citation;
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
-                 DELETE FROM schema_version WHERE version IN (15, 16, 17);",
+                 DELETE FROM schema_version WHERE version IN (15, 16, 17, 18);",
             )
             .expect("construct exact v14 predecessor");
         let connection = store.connection;
@@ -2264,11 +2286,23 @@ mod tests {
             .connection
             .execute_batch(
                 "DROP TABLE session_fork_context_reference;
+                 DROP TRIGGER session_provider_selection_insert_binding;
+                 DROP TRIGGER session_provider_selection_update_binding;
+                 DROP TRIGGER session_inbox_provider_selection_insert;
+                 DROP TRIGGER session_inbox_provider_selection_immutable;
+                 DROP TRIGGER turn_provider_selection_insert;
+                 DROP TRIGGER turn_provider_selection_immutable;
+                 DROP TABLE session_provider_selection;
+                 ALTER TABLE session_inbox DROP COLUMN provider_selection_source;
+                 ALTER TABLE session_inbox DROP COLUMN selected_provider_id;
+                 ALTER TABLE session_inbox DROP COLUMN selected_model_id;
+                 ALTER TABLE turn DROP COLUMN selected_provider_id;
+                 ALTER TABLE turn DROP COLUMN selected_model_id;
                  DROP TABLE session_fork_command;
                  DROP TABLE session_lineage;
                  DROP TABLE session_checkpoint;
                  DROP TABLE session_metadata;
-                 DELETE FROM schema_version WHERE version = 17;",
+                 DELETE FROM schema_version WHERE version IN (17, 18);",
             )
             .expect("construct exact v16 predecessor");
         let connection = store.connection;

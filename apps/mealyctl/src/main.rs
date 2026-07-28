@@ -53,17 +53,19 @@ use mealy_protocol::{
     MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
     MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
     MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse, RebuildMemoryIndexRequest,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
-    RunGarbageCollectionRequest, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
-    ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionSearchResponse, SessionStatusResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
+    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
+    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
     StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
     TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
-    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse, UpdateSessionTitleRequest,
-    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelsResponse,
+    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
+    WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -263,6 +265,12 @@ enum Command {
         /// Session operation.
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    /// Inspect the active provider/model catalog.
+    Provider {
+        /// Provider operation.
+        #[command(subcommand)]
+        command: ProviderCommand,
     },
     /// Inspect, cancel, or replay durable agent tasks.
     Task {
@@ -2044,9 +2052,95 @@ impl From<MemoryAuthorizationArgument> for MemoryPromotionAuthorizationCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ProviderCommand {
+    /// Print the ordered configured routes with capabilities, limits, health, and pressure.
+    Catalog,
+}
+
+#[derive(Debug, Default, clap::Args)]
+struct ProviderSelectionArguments {
+    /// Pin one exact configured provider identity.
+    #[arg(long, requires = "model_id", conflicts_with = "automatic")]
+    provider_id: Option<String>,
+    /// Pin one exact configured model identity.
+    #[arg(long, requires = "provider_id", conflicts_with = "automatic")]
+    model_id: Option<String>,
+    /// Override an inherited exact default with automatic routing.
+    #[arg(long, conflicts_with_all = ["provider_id", "model_id"])]
+    automatic: bool,
+}
+
+impl ProviderSelectionArguments {
+    fn into_selection(self) -> Result<Option<ProviderSelectionCommand>, CliError> {
+        match (self.automatic, self.provider_id, self.model_id) {
+            (true, None, None) => Ok(Some(ProviderSelectionCommand::Automatic)),
+            (false, Some(provider_id), Some(model_id)) => {
+                if provider_id.is_empty()
+                    || provider_id.len() > 128
+                    || model_id.is_empty()
+                    || model_id.len() > 256
+                    || provider_id.chars().any(char::is_control)
+                    || model_id.chars().any(char::is_control)
+                {
+                    return Err(CliError::Protocol(
+                        "provider/model identities must be nonempty, control-free, and bounded"
+                            .to_owned(),
+                    ));
+                }
+                Ok(Some(ProviderSelectionCommand::Exact {
+                    provider_id,
+                    model_id,
+                }))
+            }
+            (false, None, None) => Ok(None),
+            _ => Err(CliError::Protocol(
+                "--provider-id and --model-id must be supplied together".to_owned(),
+            )),
+        }
+    }
+
+    fn into_required_selection(self) -> Result<ProviderSelectionCommand, CliError> {
+        self.into_selection()?.ok_or_else(|| {
+            CliError::Protocol(
+                "choose --automatic or provide both --provider-id and --model-id".to_owned(),
+            )
+        })
+    }
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionProviderCommand {
+    /// Read the canonical default used by future new turns.
+    Get {
+        /// Opaque session ID.
+        session_id: String,
+    },
+    /// Revision-fence a new automatic or exact default for future new turns.
+    #[command(group(
+        clap::ArgGroup::new("selection_mode")
+            .required(true)
+            .args(["automatic", "provider_id"])
+    ))]
+    Set {
+        /// Opaque session ID.
+        session_id: String,
+        /// Exact revision; the current revision is fetched when omitted.
+        #[arg(long)]
+        expected_revision: Option<u64>,
+        /// Exact or automatic route selection.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SessionCommand {
     /// Create a new durable session.
-    Create,
+    Create {
+        /// Optional initial exact route; omission uses automatic routing.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
+    },
     /// List recently updated sessions owned by this exact local binding.
     List {
         /// Maximum sessions, newest updated first.
@@ -2070,6 +2164,12 @@ enum SessionCommand {
         /// Exact revision; the current revision is fetched when omitted.
         #[arg(long)]
         expected_revision: Option<u64>,
+    },
+    /// Read or change the default provider/model for future new turns.
+    Provider {
+        /// Session provider-selection operation.
+        #[command(subcommand)]
+        command: SessionProviderCommand,
     },
     /// Create or inspect immutable session checkpoints.
     Checkpoint {
@@ -2110,6 +2210,9 @@ enum SessionCommand {
         /// Delivery behavior.
         #[arg(long, value_enum, default_value_t = DeliveryArgument::Queue)]
         delivery: DeliveryArgument,
+        /// Optional per-new-turn route override; omission inherits the session default.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
     },
     /// Durably submit one explicitly selected bounded UTF-8 local file as untrusted text.
     SendFile {
@@ -2129,6 +2232,9 @@ enum SessionCommand {
         /// Delivery behavior.
         #[arg(long, value_enum, default_value_t = DeliveryArgument::Queue)]
         delivery: DeliveryArgument,
+        /// Optional per-new-turn route override; omission inherits the session default.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
     },
     /// Read current session queue/turn status.
     Status {
@@ -3349,6 +3455,7 @@ async fn run() -> Result<(), CliError> {
         Command::Session { command } => {
             run_session(&client, &arguments.home, &connection, command).await?;
         }
+        Command::Provider { command } => run_provider(&client, &connection, command).await?,
         Command::Task { command } => run_task(&client, &connection, command).await?,
         Command::Delegation { command } => {
             run_delegation(&client, &connection, command).await?;
@@ -3947,6 +4054,7 @@ async fn run_chat(
             )
             .json(&CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
             })
             .send()
             .await?;
@@ -4043,6 +4151,7 @@ async fn run_chat(
                         }
                         let request = SubmitInputRequest {
                             api_version: API_VERSION.to_owned(),
+                            provider_selection: None,
                             idempotency_key: generate_idempotency_key()?,
                             delivery_mode: delivery,
                             content,
@@ -7606,7 +7715,9 @@ async fn run_session(
     command: SessionCommand,
 ) -> Result<(), CliError> {
     match command {
-        SessionCommand::Create => create_cli_session(client, connection).await?,
+        SessionCommand::Create { selection } => {
+            create_cli_session(client, connection, selection.into_selection()?).await?;
+        }
         SessionCommand::List { limit } => {
             list_cli_sessions(client, connection, limit).await?;
         }
@@ -7618,6 +7729,9 @@ async fn run_session(
             title,
             expected_revision,
         } => rename_session(client, connection, session_id, title, expected_revision).await?,
+        SessionCommand::Provider { command } => {
+            run_session_provider(client, connection, command).await?;
+        }
         SessionCommand::Checkpoint { command } => {
             run_session_checkpoint(client, connection, command).await?;
         }
@@ -7642,41 +7756,8 @@ async fn run_session(
         } => {
             export_session_transcript(client, connection, session_id, format, output).await?;
         }
-        SessionCommand::Send {
-            session_id,
-            content,
-            idempotency_key,
-            delivery,
-        } => {
-            submit_session_content(
-                client,
-                home,
-                connection,
-                &session_id,
-                content,
-                idempotency_key,
-                delivery,
-            )
-            .await?;
-        }
-        SessionCommand::SendFile {
-            session_id,
-            path,
-            prompt,
-            idempotency_key,
-            delivery,
-        } => {
-            let content = prepare_local_text_attachment(home, &path, &prompt)?;
-            submit_session_content(
-                client,
-                home,
-                connection,
-                &session_id,
-                content,
-                idempotency_key,
-                delivery,
-            )
-            .await?;
+        command @ (SessionCommand::Send { .. } | SessionCommand::SendFile { .. }) => {
+            run_session_submission(client, home, connection, command).await?;
         }
         SessionCommand::Status { session_id } => {
             let response = authorized(
@@ -7699,9 +7780,65 @@ async fn run_session(
     Ok(())
 }
 
+async fn run_session_submission(
+    client: &Client,
+    home: &Path,
+    connection: &LocalConnectionInfo,
+    command: SessionCommand,
+) -> Result<(), CliError> {
+    let (session_id, content, idempotency_key, delivery, provider_selection) = match command {
+        SessionCommand::Send {
+            session_id,
+            content,
+            idempotency_key,
+            delivery,
+            selection,
+        } => (
+            session_id,
+            content,
+            idempotency_key,
+            delivery,
+            selection.into_selection()?,
+        ),
+        SessionCommand::SendFile {
+            session_id,
+            path,
+            prompt,
+            idempotency_key,
+            delivery,
+            selection,
+        } => (
+            session_id,
+            prepare_local_text_attachment(home, &path, &prompt)?,
+            idempotency_key,
+            delivery,
+            selection.into_selection()?,
+        ),
+        _ => {
+            return Err(CliError::Protocol(
+                "non-submission command reached the submission boundary".to_owned(),
+            ));
+        }
+    };
+    let generated = idempotency_key.is_none();
+    let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
+    if generated {
+        eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
+    }
+    let request = SubmitInputRequest {
+        api_version: API_VERSION.to_owned(),
+        provider_selection,
+        idempotency_key: key,
+        delivery_mode: delivery.into(),
+        content,
+    };
+    print_json(submit_input_with_retry(client, home, connection, &session_id, &request).await?)
+}
+
 async fn create_cli_session(
     client: &Client,
     connection: &LocalConnectionInfo,
+    provider_selection: Option<ProviderSelectionCommand>,
 ) -> Result<(), CliError> {
     let response = authorized(
         client.post(format!("{}/v1/sessions", connection.base_url)),
@@ -7709,6 +7846,7 @@ async fn create_cli_session(
     )
     .json(&CreateSessionRequest {
         api_version: API_VERSION.to_owned(),
+        provider_selection,
     })
     .send()
     .await?;
@@ -7729,27 +7867,68 @@ async fn list_cli_sessions(
     print_json(decode::<SessionsResponse>(response).await?)
 }
 
-async fn submit_session_content(
+async fn run_provider(
     client: &Client,
-    home: &Path,
     connection: &LocalConnectionInfo,
-    session_id: &str,
-    content: String,
-    idempotency_key: Option<String>,
-    delivery: DeliveryArgument,
+    command: ProviderCommand,
 ) -> Result<(), CliError> {
-    let generated = idempotency_key.is_none();
-    let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
-    if generated {
-        eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
+    match command {
+        ProviderCommand::Catalog => {
+            let response = authorized(
+                client.get(format!("{}/v1/providers/catalog", connection.base_url)),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<ProviderCatalogResponse>(response).await?)
+        }
     }
-    let request = SubmitInputRequest {
-        api_version: API_VERSION.to_owned(),
-        idempotency_key: key,
-        delivery_mode: delivery.into(),
-        content,
-    };
-    print_json(submit_input_with_retry(client, home, connection, session_id, &request).await?)
+}
+
+async fn run_session_provider(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: SessionProviderCommand,
+) -> Result<(), CliError> {
+    match command {
+        SessionProviderCommand::Get { session_id } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/sessions/{session_id}/provider-selection",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SessionProviderSelectionResponse>(response).await?)
+        }
+        SessionProviderCommand::Set {
+            session_id,
+            expected_revision,
+            selection,
+        } => {
+            let expected_revision = match expected_revision {
+                Some(revision) => revision,
+                None => current_session_revision(client, connection, &session_id).await?,
+            };
+            let response = authorized(
+                client.patch(format!(
+                    "{}/v1/sessions/{session_id}/provider-selection",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&UpdateSessionProviderSelectionRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+                provider_selection: selection.into_required_selection()?,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SessionProviderSelectionResponse>(response).await?)
+        }
+    }
 }
 
 async fn rename_session(
@@ -15918,20 +16097,21 @@ mod tests {
         CompactionCommand, ConfigCommand, DelegationCommand, DiscordPairMessage, DiscordPairUser,
         EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
         MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MemoryCommand,
-        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ResumableChatTask,
-        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
-        SessionExportFormatArgument, SetupProviderArgument, SkillCommand, TelegramPairChat,
-        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
-        chat_usage_line, configure_workspace_grant, decode, generate_discord_pair_challenge,
-        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
-        lifecycle_invocation, load_connection, normalize_openrouter_display_name,
-        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
-        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_text_attachment, resolve_default_operational_subcommand,
-        resolve_setup, select_codex_subscription_model, setup_provider_config,
-        should_open_onboard_chat, stable_default_mealy_home, telegram_pair_api_url,
-        update_recovery_route, validate_anthropic_probe_envelope, validate_anthropic_probe_stream,
-        validate_connection, validate_discord_pair_base_url, validate_provider_probe_envelope,
+        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
+        ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
+        SessionCommand, SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument,
+        SkillCommand, TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
+        UpdateRecoveryRoute, chat_usage_line, configure_workspace_grant, decode,
+        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
+        inspect_mcp_executable, lifecycle_invocation, load_connection,
+        normalize_openrouter_display_name, observe_discord_pair_messages,
+        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
+        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
+        prepare_local_text_attachment, resolve_default_operational_subcommand, resolve_setup,
+        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
+        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
+        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
+        validate_discord_pair_base_url, validate_provider_probe_envelope,
         validate_provider_probe_stream, validate_session_transcript_html,
         validate_session_transcript_json, write_private_new_file,
     };
@@ -17393,6 +17573,89 @@ mod tests {
                 "durable-session",
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_catalog_and_scoped_selection_commands_are_explicit_and_pair_safe() {
+        let catalog =
+            Arguments::try_parse_from(["mealyctl", "provider", "catalog"]).expect("catalog");
+        assert!(matches!(
+            catalog.command,
+            Command::Provider {
+                command: ProviderCommand::Catalog
+            }
+        ));
+
+        let create = Arguments::try_parse_from([
+            "mealyctl",
+            "session",
+            "create",
+            "--provider-id",
+            "openrouter",
+            "--model-id",
+            "vendor/free-model:free",
+        ])
+        .expect("selected session create");
+        assert!(matches!(
+            create.command,
+            Command::Session {
+                command: SessionCommand::Create { .. }
+            }
+        ));
+
+        let set = Arguments::try_parse_from([
+            "mealyctl",
+            "session",
+            "provider",
+            "set",
+            "session-id",
+            "--automatic",
+        ])
+        .expect("automatic session default");
+        assert!(matches!(
+            set.command,
+            Command::Session {
+                command: SessionCommand::Provider {
+                    command: SessionProviderCommand::Set { .. }
+                }
+            }
+        ));
+
+        let exact_turn = Arguments::try_parse_from([
+            "mealyctl",
+            "session",
+            "send",
+            "session-id",
+            "hello",
+            "--provider-id",
+            "local",
+            "--model-id",
+            "model",
+        ])
+        .expect("exact per-turn selection");
+        assert!(matches!(
+            exact_turn.command,
+            Command::Session {
+                command: SessionCommand::Send { .. }
+            }
+        ));
+
+        assert!(
+            Arguments::try_parse_from([
+                "mealyctl",
+                "session",
+                "send",
+                "session-id",
+                "hello",
+                "--provider-id",
+                "openrouter",
+            ])
+            .is_err()
+        );
+        assert!(
+            Arguments::try_parse_from(["mealyctl", "session", "provider", "set", "session-id",])
+                .is_err()
         );
     }
 

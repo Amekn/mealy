@@ -319,6 +319,28 @@ Resize below 60×18 renders a bounded recovery message rather than indexing inva
 Pseudo-terminal process tests exercise non-terminal denial, normal cleanup, stalled-admission
 cancellation, bearer absence, and daemon-loss cleanup.
 
+### Provider selection silently changes route, trust, price, or fallback behavior
+
+Controls: the authenticated catalog contains only exact routes in the daemon's active reviewed
+configuration. Provider/model labels are bounded and control-free. Limits and prices disclose
+their source as `active_configuration`; neither is marked operator-verified without independent
+evidence. Health and pressure are process-lifetime observations, not promises.
+
+An exact new-session or per-turn choice must match one active provider/model pair. Session defaults
+are exact-owner and revision-fenced. Admission resolves inherited, automatic, or exact scope in the
+same transaction as the durable receipt and records the source; promotion must copy the immutable
+pair to the turn. Duplicate admission returns the original selection even if the session default
+later changes. Restart cannot reinterpret prior work. Exact routing filters candidates to that one
+endpoint and disables implicit fallback, while bounded classified retries may reuse the same
+endpoint. A changed default applies only to future new turns and cannot rewrite queued, active, or
+completed work.
+
+The TUI, dashboard, and CLI are thin clients of these canonical contracts. They do not edit
+configuration, broker credentials, or maintain a private routing preference. Changing the active
+route set, endpoint, credential, configured price, locality, or residency remains a stopped-daemon
+transaction until plan-first stage/probe/drain/activate/verify/rollback switching is separately
+implemented and qualified.
+
 ### Subscription bridge steals a session or exposes ambient client tools
 
 Controls: Mealy does not parse, copy, refresh, export, or persist OAuth/session material. The owner

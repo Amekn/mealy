@@ -7,6 +7,65 @@ use thiserror::Error;
 /// variance that are not part of Mealy's normalized context estimate.
 pub const DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD: u64 = 2_048;
 
+/// Exact configured provider/model identity selected for a future turn.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProviderSelection {
+    /// Stable configured provider adapter identity.
+    pub provider_id: String,
+    /// Exact configured model identity.
+    pub model_id: String,
+}
+
+impl ProviderSelection {
+    /// Returns whether both identities are bounded, printable, and safe to persist or render.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        valid_provider_selection_label(&self.provider_id, 128)
+            && valid_provider_selection_label(&self.model_id, 256)
+    }
+}
+
+/// How one input resolves its provider/model at the atomic admission boundary.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ProviderSelectionPreference {
+    /// Resolve the session's current exact default, or automatic routing when it has none.
+    #[default]
+    InheritSession,
+    /// Explicitly use the compatible automatic route for this new turn.
+    Automatic,
+    /// Pin this exact configured provider and model for this new turn.
+    Exact(ProviderSelection),
+}
+
+impl ProviderSelectionPreference {
+    /// Stable evidence spelling persisted with the admitted input.
+    #[must_use]
+    pub const fn source(&self) -> &'static str {
+        match self {
+            Self::InheritSession => "inherited",
+            Self::Automatic => "automatic",
+            Self::Exact(_) => "exact",
+        }
+    }
+
+    /// Returns whether an exact requested selection is structurally safe.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::InheritSession | Self::Automatic => true,
+            Self::Exact(selection) => selection.is_valid(),
+        }
+    }
+}
+
+fn valid_provider_selection_label(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
 /// Versioned capability contract used for routing and request validation.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

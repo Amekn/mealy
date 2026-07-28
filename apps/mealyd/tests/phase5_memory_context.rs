@@ -80,6 +80,7 @@ async fn retrieved_memory_is_cited_untrusted_and_replayable_after_deletion_and_r
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -90,6 +91,7 @@ async fn retrieved_memory_is_cited_untrusted_and_replayable_after_deletion_and_r
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase5-initialize-context".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Initialize the governed context epoch.".to_owned(),
@@ -199,6 +201,7 @@ async fn retrieved_memory_is_cited_untrusted_and_replayable_after_deletion_and_r
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase5-retrieve-memory".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "What is the ORCHID release codename?".to_owned(),

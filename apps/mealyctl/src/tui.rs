@@ -20,10 +20,12 @@ use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
     ApprovalResponse, ApprovalStatusResponse, CreateSessionCheckpointRequest, CreateSessionRequest,
     CreateSessionResponse, DeliveryMode, ForkSessionRequest, LocalConnectionInfo,
-    PendingApprovalsResponse, ResolveApprovalRequest, SessionCheckpointResponse,
-    SessionForkResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
-    SessionTranscriptExport, SessionsResponse, SubmitInputRequest, TimelineEvent,
-    TimelinePageResponse, UpdateSessionTitleRequest,
+    PendingApprovalsResponse, ProviderCatalogResponse, ProviderCatalogRouteResponse,
+    ProviderSelectionCommand, ResolveApprovalRequest, SessionCheckpointResponse,
+    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionSummaryResponse, SessionTranscriptExport, SessionsResponse,
+    SubmitInputRequest, TimelineEvent, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    UpdateSessionTitleRequest,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -105,6 +107,9 @@ enum Overlay {
     Approval {
         index: usize,
     },
+    Provider {
+        index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +147,8 @@ enum Action {
     Checkpoint,
     Fork,
     Export(ExportFormat),
+    SetSessionProvider(ProviderSelectionCommand),
+    SetNextTurnProvider(ProviderSelectionCommand),
     ResolveApproval {
         index: usize,
         decision: ApprovalDecisionCommand,
@@ -256,6 +263,9 @@ struct Workbench {
     timeline: Vec<TimelineEvent>,
     timeline_after: u64,
     admin: Option<AdminStatusResponse>,
+    provider_catalog: Option<ProviderCatalogResponse>,
+    session_provider_selection: Option<SessionProviderSelectionResponse>,
+    next_turn_provider_selection: Option<ProviderSelectionCommand>,
     approvals: Vec<ApprovalResponse>,
     composer: Editor,
     focus: Focus,
@@ -281,6 +291,9 @@ impl Workbench {
             timeline: Vec::new(),
             timeline_after: 0,
             admin: None,
+            provider_catalog: None,
+            session_provider_selection: None,
+            next_turn_provider_selection: None,
             approvals: Vec::new(),
             composer: Editor::default(),
             focus: Focus::Composer,
@@ -333,6 +346,8 @@ impl Workbench {
         self.timeline_after = 0;
         self.transcript_scroll = u16::MAX;
         self.activity_selected = 0;
+        self.session_provider_selection = None;
+        self.next_turn_provider_selection = None;
         true
     }
 
@@ -675,6 +690,7 @@ async fn perform_action(
             let connection = current_connection(home)?;
             let request = SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: state.next_turn_provider_selection.clone(),
                 idempotency_key: generate_idempotency_key()?,
                 delivery_mode: DeliveryMode::Queue,
                 content,
@@ -682,6 +698,7 @@ async fn perform_action(
             let admission =
                 submit_input_with_retry(client, home, &connection, &session_id, &request).await?;
             state.composer.clear();
+            state.next_turn_provider_selection = None;
             state.set_notice(
                 format!(
                     "Input {} is durably queued; the workbench will follow canonical progress.",
@@ -837,6 +854,53 @@ async fn perform_action(
             );
             Ok(())
         }
+        Action::SetSessionProvider(provider_selection) => {
+            let session_id = selected_id_owned(state)?;
+            let connection = current_connection(home)?;
+            let current =
+                fetch_session_provider_selection(client, &connection, &session_id).await?;
+            let response = authorized(
+                client.patch(format!(
+                    "{}/v1/sessions/{session_id}/provider-selection",
+                    connection.base_url
+                )),
+                &connection,
+            )
+            .json(&UpdateSessionProviderSelectionRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision: current.revision,
+                provider_selection: provider_selection.clone(),
+            })
+            .send()
+            .await?;
+            let updated = decode::<SessionProviderSelectionResponse>(response).await?;
+            validate_session_provider_selection(&updated, &session_id)?;
+            if updated.provider_selection != provider_selection {
+                return Err(CliError::Protocol(
+                    "provider-selection update did not match the chosen route".to_owned(),
+                ));
+            }
+            state.session_provider_selection = Some(updated);
+            state.set_notice(
+                format!(
+                    "{} is now the default for future turns in this conversation.",
+                    provider_selection_label(&provider_selection)
+                ),
+                false,
+            );
+            refresh_all(client, home, state, false).await
+        }
+        Action::SetNextTurnProvider(provider_selection) => {
+            state.next_turn_provider_selection = Some(provider_selection.clone());
+            state.set_notice(
+                format!(
+                    "{} will be used only for the next submitted turn.",
+                    provider_selection_label(&provider_selection)
+                ),
+                false,
+            );
+            Ok(())
+        }
         Action::ResolveApproval { index, decision } => {
             let approval = state.approvals.get(index).cloned().ok_or_else(|| {
                 CliError::Protocol("the selected approval is no longer pending".to_owned())
@@ -886,6 +950,7 @@ async fn refresh_all(
     let sessions = fetch_sessions(client, &connection).await?;
     state.sync_base_sessions(sessions);
     state.admin = Some(fetch_admin_status(client, &connection).await?);
+    state.provider_catalog = Some(fetch_provider_catalog(client, &connection).await?);
     state.approvals = fetch_approvals(client, &connection).await?;
     refresh_selected(client, home, state, force_selected).await
 }
@@ -901,9 +966,12 @@ async fn refresh_selected(
         state.transcript = None;
         state.timeline.clear();
         state.timeline_after = 0;
+        state.session_provider_selection = None;
         return Ok(());
     };
     let connection = current_connection(home)?;
+    state.session_provider_selection =
+        Some(fetch_session_provider_selection(client, &connection, &session_id).await?);
     let status = fetch_session_status(client, &connection, &session_id).await?;
     let changed = force
         || state
@@ -1039,6 +1107,7 @@ async fn create_session(
     )
     .json(&CreateSessionRequest {
         api_version: API_VERSION.to_owned(),
+        provider_selection: None,
     })
     .send()
     .await?;
@@ -1083,6 +1152,69 @@ async fn fetch_admin_status(
     .send()
     .await?;
     decode(response).await
+}
+
+async fn fetch_provider_catalog(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+) -> Result<ProviderCatalogResponse, CliError> {
+    let response = authorized(
+        client.get(format!("{}/v1/providers/catalog", connection.base_url)),
+        connection,
+    )
+    .send()
+    .await?;
+    let catalog = decode::<ProviderCatalogResponse>(response).await?;
+    if catalog.api_version != API_VERSION
+        || catalog.catalog_scope != "configured_route"
+        || catalog.routes.is_empty()
+        || catalog.routes.iter().enumerate().any(|(index, route)| {
+            route.route_ordinal != u64::try_from(index).unwrap_or(u64::MAX)
+                || !matches!(route.route_role.as_str(), "primary" | "fallback")
+                || route.provider_id.is_empty()
+                || route.model_id.is_empty()
+        })
+    {
+        return Err(CliError::Protocol(
+            "provider catalog violated its ordered configured-route contract".to_owned(),
+        ));
+    }
+    Ok(catalog)
+}
+
+async fn fetch_session_provider_selection(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    session_id: &str,
+) -> Result<SessionProviderSelectionResponse, CliError> {
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/sessions/{session_id}/provider-selection",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    let selection = decode::<SessionProviderSelectionResponse>(response).await?;
+    validate_session_provider_selection(&selection, session_id)?;
+    Ok(selection)
+}
+
+fn validate_session_provider_selection(
+    selection: &SessionProviderSelectionResponse,
+    session_id: &str,
+) -> Result<(), CliError> {
+    if selection.api_version != API_VERSION
+        || selection.session_id != session_id
+        || selection.applies_to != "future_new_turns"
+        || selection.updated_at_ms < 0
+    {
+        return Err(CliError::Protocol(
+            "session provider-selection response violated its scope binding".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 async fn fetch_approvals(
@@ -1347,6 +1479,11 @@ fn handle_key(state: &mut Workbench, key: KeyEvent) -> Action {
         KeyCode::F(7) if !state.approvals.is_empty() => {
             state.overlay = Some(Overlay::Approval { index: 0 });
         }
+        KeyCode::F(8) if state.provider_catalog.is_some() && state.selected_id().is_some() => {
+            state.overlay = Some(Overlay::Provider {
+                index: current_provider_index(state),
+            });
+        }
         KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
             state.focus = state.focus.previous();
         }
@@ -1398,6 +1535,28 @@ fn handle_overlay_key(state: &mut Workbench, mut overlay: Overlay, key: KeyEvent
             }
             _ => {}
         },
+        Overlay::Provider { index } => {
+            let maximum = state
+                .provider_catalog
+                .as_ref()
+                .map_or(0, |catalog| catalog.routes.len());
+            match key.code {
+                KeyCode::Esc | KeyCode::F(8) => return Action::None,
+                KeyCode::Up => *index = index.saturating_sub(1),
+                KeyCode::Down => *index = index.saturating_add(1).min(maximum),
+                KeyCode::Home => *index = 0,
+                KeyCode::End => *index = maximum,
+                KeyCode::Enter => {
+                    return provider_selection_at(state, *index)
+                        .map_or(Action::None, Action::SetSessionProvider);
+                }
+                KeyCode::Char('t') => {
+                    return provider_selection_at(state, *index)
+                        .map_or(Action::None, Action::SetNextTurnProvider);
+                }
+                _ => {}
+            }
+        }
         Overlay::Input { purpose, editor } => {
             let maximum = if *purpose == InputPurpose::Search {
                 4_096
@@ -1559,6 +1718,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::Checkpoint => "Creating checkpoint",
         Action::Fork => "Checkpointing and forking",
         Action::Export(_) => "Verifying transcript export",
+        Action::SetSessionProvider(_) => "Updating conversation model",
+        Action::SetNextTurnProvider(_) => "Selecting next-turn model",
         Action::ResolveApproval { .. } => "Resolving exact approval",
     }
 }
@@ -1613,6 +1774,10 @@ fn render_header(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
             )
         },
     );
+    let selection = state.session_provider_selection.as_ref().map_or_else(
+        || "selection loading".to_owned(),
+        |selection| provider_selection_label(&selection.provider_selection),
+    );
     let line = Line::from(vec![
         Span::styled(
             " MEALY ",
@@ -1625,7 +1790,10 @@ fn render_header(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
             format!(" {} ", bounded_single_line(selected, 80)),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(status, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{selection} · {status}"),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     frame.render_widget(
         Paragraph::new(line)
@@ -1910,13 +2078,18 @@ fn event_detail(event: &TimelineEvent) -> String {
 }
 
 fn render_composer(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
+    let route = state.next_turn_provider_selection.as_ref().map_or_else(
+        || "inherits conversation model".to_owned(),
+        |selection| format!("next turn: {}", provider_selection_label(selection)),
+    );
     let title = if let Some(busy) = &state.busy {
         format!(" {busy}… ")
     } else {
         format!(
-            " Composer · {} / {} bytes ",
+            " Composer · {} / {} bytes · {} ",
             state.composer.content.len(),
-            InputAdmissionLimits::default().maximum_content_bytes()
+            InputAdmissionLimits::default().maximum_content_bytes(),
+            route,
         )
     };
     let text = if state.composer.content.is_empty() {
@@ -1949,7 +2122,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                " F1 help · F2 rename · F3 checkpoint · F4 fork · F6 export · ",
+                " F1 help · F2 rename · F3 checkpoint · F4 fork · F6 export · F8 model · ",
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(bounded_single_line(&state.notice, 180), style),
@@ -1978,6 +2151,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &Workbench, overlay: &Overlay) {
                 "  F3                  create an immutable checkpoint",
                 "  F4                  checkpoint then fork into fresh operational state",
                 "  F6 / Shift-F6       verified private JSON / inert HTML export",
+                "  F8                  choose default model; t applies only to next turn",
                 "",
                 "Governance",
                 "  F7                  review exact pending approval; a=approve, d=deny",
@@ -2053,6 +2227,154 @@ fn render_overlay(frame: &mut Frame<'_>, state: &Workbench, overlay: &Overlay) {
                 area,
             );
         }
+        Overlay::Provider { index } => {
+            render_provider_overlay(frame, state, area, *index);
+        }
+    }
+}
+
+fn render_provider_overlay(frame: &mut Frame<'_>, state: &Workbench, area: Rect, index: usize) {
+    let Some(catalog) = state.provider_catalog.as_ref() else {
+        frame.render_widget(
+            Paragraph::new("The configured provider catalog is unavailable.").block(
+                Block::default()
+                    .title(" Model selection ")
+                    .borders(Borders::ALL),
+            ),
+            area,
+        );
+        return;
+    };
+    let mut items = Vec::with_capacity(catalog.routes.len().saturating_add(1));
+    items.push(provider_list_item(
+        index == 0,
+        "Automatic",
+        if catalog.automatic_fallback_enabled {
+            "compatible primary with configured fallback"
+        } else {
+            "configured primary; no fallback"
+        },
+        "daemon chooses at admission",
+    ));
+    for (offset, route) in catalog.routes.iter().enumerate() {
+        items.push(provider_route_list_item(index == offset + 1, route));
+    }
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(" Model · ↑/↓ choose · Enter conversation default · t next turn · Esc ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        ),
+        area,
+    );
+}
+
+fn provider_route_list_item(
+    selected: bool,
+    route: &ProviderCatalogRouteResponse,
+) -> ListItem<'static> {
+    let pressure = format!(
+        "{}/{} active · {}/{} this minute",
+        route.in_flight_requests,
+        route.maximum_concurrent_requests,
+        route.requests_in_current_minute,
+        route.requests_per_minute
+    );
+    let detail = format!(
+        "{} · {} · {} · {} context · {}",
+        route.route_role, route.protocol, route.health, route.context_tokens, pressure
+    );
+    provider_list_item(
+        selected,
+        &format!("{}/{}", route.provider_id, route.model_id),
+        &detail,
+        if route.selectable {
+            "selectable"
+        } else {
+            "not selectable"
+        },
+    )
+}
+
+fn provider_list_item(selected: bool, name: &str, detail: &str, status: &str) -> ListItem<'static> {
+    ListItem::new(vec![
+        Line::from(vec![
+            Span::styled(
+                if selected { "› " } else { "  " },
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                bounded_single_line(name, 100),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::styled(
+            format!(
+                "  {} · {}",
+                bounded_single_line(detail, 160),
+                bounded_single_line(status, 32)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+    .style(if selected {
+        Style::default().bg(Color::Rgb(28, 44, 52))
+    } else {
+        Style::default()
+    })
+}
+
+fn current_provider_index(state: &Workbench) -> usize {
+    let Some(ProviderSelectionCommand::Exact {
+        provider_id,
+        model_id,
+    }) = state
+        .session_provider_selection
+        .as_ref()
+        .map(|selection| &selection.provider_selection)
+    else {
+        return 0;
+    };
+    state
+        .provider_catalog
+        .as_ref()
+        .and_then(|catalog| {
+            catalog
+                .routes
+                .iter()
+                .position(|route| route.provider_id == *provider_id && route.model_id == *model_id)
+        })
+        .map_or(0, |index| index + 1)
+}
+
+fn provider_selection_at(state: &Workbench, index: usize) -> Option<ProviderSelectionCommand> {
+    if index == 0 {
+        return Some(ProviderSelectionCommand::Automatic);
+    }
+    state
+        .provider_catalog
+        .as_ref()?
+        .routes
+        .get(index - 1)
+        .filter(|route| route.selectable)
+        .map(|route| ProviderSelectionCommand::Exact {
+            provider_id: route.provider_id.clone(),
+            model_id: route.model_id.clone(),
+        })
+}
+
+fn provider_selection_label(selection: &ProviderSelectionCommand) -> String {
+    match selection {
+        ProviderSelectionCommand::Automatic => "Automatic routing".to_owned(),
+        ProviderSelectionCommand::Exact {
+            provider_id,
+            model_id,
+        } => format!(
+            "{}/{}",
+            bounded_single_line(provider_id, 64),
+            bounded_single_line(model_id, 96)
+        ),
     }
 }
 

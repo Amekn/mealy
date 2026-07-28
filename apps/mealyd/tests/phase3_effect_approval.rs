@@ -53,6 +53,7 @@ async fn cancellation_revokes_pending_approval_and_unparks_without_dispatch() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -62,6 +63,7 @@ async fn cancellation_revokes_pending_approval_and_unparks_without_dispatch() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-cancel-approval".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -235,6 +237,7 @@ async fn expired_approval_is_denied_and_resumed_without_owner_traffic() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -244,6 +247,7 @@ async fn expired_approval_is_denied_and_resumed_without_owner_traffic() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-expired-approval".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -335,6 +339,7 @@ async fn denied_effect_never_dispatches_and_becomes_recorded_model_evidence() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -344,6 +349,7 @@ async fn denied_effect_never_dispatches_and_becomes_recorded_model_evidence() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-denied-write".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -432,6 +438,7 @@ async fn post_mutation_crash_parks_unknown_until_exact_reconciliation() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -441,6 +448,7 @@ async fn post_mutation_crash_parks_unknown_until_exact_reconciliation() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-post-mutation-crash".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -640,6 +648,7 @@ async fn crash_after_effect_preparation_recovers_without_predispatch_mutation() 
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -649,6 +658,7 @@ async fn crash_after_effect_preparation_recovers_without_predispatch_mutation() 
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-prepared-effect-crash".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -784,6 +794,7 @@ async fn crash_after_effect_outcome_resumes_observation_without_redispatch() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -793,6 +804,7 @@ async fn crash_after_effect_outcome_resumes_observation_without_redispatch() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-terminal-effect-crash".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(
@@ -930,6 +942,7 @@ async fn approved_effect_survives_restarts_executes_once_and_replays_without_dis
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -939,6 +952,7 @@ async fn approved_effect_survives_restarts_executes_once_and_replays_without_dis
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-3-approved-write".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: format!(

@@ -90,6 +90,7 @@ async fn public_api_completes_read_only_loop_and_replays_without_live_calls() {
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -99,6 +100,7 @@ async fn public_api_completes_read_only_loop_and_replays_without_live_calls() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-read-only-loop".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Read the Phase 2 fixture report and answer from its evidence.".to_owned(),
@@ -150,6 +152,7 @@ async fn public_api_completes_read_only_loop_and_replays_without_live_calls() {
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-second-turn".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Run a second turn in the same context epoch.".to_owned(),

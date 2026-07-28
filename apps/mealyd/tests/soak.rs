@@ -236,6 +236,7 @@ async fn bounded_soak_restarts_and_reports_durable_measurements() {
             "/v1/sessions",
             &CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
             },
         )
         .await;
@@ -259,6 +260,7 @@ async fn bounded_soak_restarts_and_reports_durable_measurements() {
             let submitted = Instant::now();
             let request = SubmitInputRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
                 idempotency_key: format!("soak-{round}-{session_index}"),
                 delivery_mode: DeliveryMode::Queue,
                 content: format!(

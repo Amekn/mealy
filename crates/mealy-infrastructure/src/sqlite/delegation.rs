@@ -1189,6 +1189,7 @@ mod tests {
         i64::try_from(value).expect("fixture limit fits SQLite")
     }
 
+    #[allow(clippy::too_many_lines)]
     fn running_parent(store: &mut SqliteStore) -> ParentFixture {
         let ownership = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
         let session_id = SessionId::new();
@@ -1197,6 +1198,7 @@ mod tests {
             .create_session(SessionCreationCommit {
                 session_id,
                 ownership,
+                provider_selection: None,
                 event_id: EventId::new(),
                 correlation_id,
                 created_at: at(0),
@@ -1210,6 +1212,8 @@ mod tests {
                 delivery_mode: DeliveryMode::Queue,
                 dedupe_key: "phase4-parent".to_owned(),
                 content: "fixture.write_file {\"operation\":\"write_file\",\"relativePath\":\"delegated.txt\",\"content\":\"parent contract\"}".to_owned(),
+                provider_selection:
+                    mealy_application::ProviderSelectionPreference::InheritSession,
                 maximum_pending_inputs: 1_024,
                 event_id: EventId::new(),
                 outbox_id: OutboxId::new(),

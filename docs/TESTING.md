@@ -68,7 +68,14 @@ checks that no live provider or tool call occurred.
 wire servers for `OpenAI` Responses and Anthropic Messages. It verifies protocol-specific headers,
 request/tool normalization, terminal and streaming settlement, durable retry timing, endpoint
 health/history, active cancellation, workspace/web/mutation integrations, and zero-dispatch
-replay. Its mixed-protocol scenario makes the Responses primary reject definitely, dispatches the
+replay. Its scoped-selection scenario inspects the authenticated active-route catalog, applies a
+revision-fenced exact session default, overrides a later turn back to automatic, restarts the
+daemon, and proves the admitted and promoted provider/model identity remains immutable. The exact
+route is made transient and retried only against itself, proving implicit fallback is disabled.
+`crates/mealy-infrastructure/tests/provider_selection.rs` separately proves automatic/exact/inherit
+resolution, duplicate receipt stability across a later default change, optimistic concurrency,
+exact-owner denial, migration, and reopen behavior. Its mixed-protocol scenario makes the
+Responses primary reject definitely, dispatches the
 authorized retry through streaming Anthropic Messages, and proves both exact endpoint identities
 and brokered credentials remain isolated. Its two-turn scenario verifies the exact chronological
 developer/user/assistant/user wire projection and recorded replay. Storage/compiler units prove

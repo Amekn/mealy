@@ -96,11 +96,13 @@ async fn burst_of_tasks_recovers_after_hard_kill_without_loss_or_redispatch_on_r
             "/v1/sessions",
             &CreateSessionRequest {
                 api_version: API_VERSION.to_owned(),
+                provider_selection: None,
             },
         )
         .await;
         let request = SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: format!("load-recovery-{sequence}"),
             delivery_mode: DeliveryMode::Queue,
             content: format!("Read the deterministic fixture for recovery task {sequence}."),

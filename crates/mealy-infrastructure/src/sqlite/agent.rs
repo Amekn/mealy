@@ -1,6 +1,7 @@
 use super::{SqliteStore, agent_effect};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+use mealy_application::ProviderSelection;
 use mealy_application::{
     AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
     AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
@@ -276,7 +277,8 @@ impl AgentExecutionStore for SqliteStore {
                              WHEN t.turn_kind = 'canonical' THEN s.current_context_epoch_id \
                              ELSE NULL END, \
                         (SELECT COALESCE(MAX(epoch.epoch_number), 0) + 1 \
-                         FROM context_epoch epoch WHERE epoch.session_id = s.id) \
+                         FROM context_epoch epoch WHERE epoch.session_id = s.id), \
+                        t.selected_provider_id, t.selected_model_id \
                  FROM run r \
                  JOIN turn t ON t.run_id = r.id AND t.task_id = r.task_id \
                  JOIN session s ON s.id = t.session_id \
@@ -316,6 +318,8 @@ impl AgentExecutionStore for SqliteStore {
                         cancellation_requested: result.get::<_, i64>(13)? != 0,
                         context_epoch_id: result.get(14)?,
                         next_context_epoch_number: result.get(15)?,
+                        selected_provider_id: result.get(16)?,
+                        selected_model_id: result.get(17)?,
                     })
                 },
             )
@@ -367,6 +371,8 @@ impl AgentExecutionStore for SqliteStore {
             .flatten();
         let iteration = u64::try_from(row.iteration)
             .map_err(|_| invariant("stored loop iteration is negative"))?;
+        let provider_selection =
+            provider_selection_from_pair(row.selected_provider_id, row.selected_model_id)?;
         Ok(AgentRunSnapshot {
             run_id: fence.run_id(),
             agent_role: row.agent_role,
@@ -376,6 +382,7 @@ impl AgentExecutionStore for SqliteStore {
             session_id: parse_id(&row.session_id, "session ID")?,
             principal_id: parse_id(&row.principal_id, "principal ID")?,
             channel_binding_id: parse_id(&channel_binding_id, "channel binding ID")?,
+            provider_selection,
             correlation_id: parse_id(&row.correlation_id, "correlation ID")?,
             next_iteration: iteration
                 .checked_add(1)
@@ -933,6 +940,8 @@ struct LoadedRunRow {
     cancellation_requested: bool,
     context_epoch_id: Option<String>,
     next_context_epoch_number: i64,
+    selected_provider_id: Option<String>,
+    selected_model_id: Option<String>,
 }
 
 #[allow(clippy::struct_field_names)]
@@ -9471,6 +9480,29 @@ fn parse_id<T: FromStr>(value: &str, field: &str) -> Result<T, AgentStoreError> 
     value
         .parse()
         .map_err(|_| invariant(format!("stored {field} is invalid")))
+}
+
+fn provider_selection_from_pair(
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<Option<ProviderSelection>, AgentStoreError> {
+    match (provider_id, model_id) {
+        (None, None) => Ok(None),
+        (Some(provider_id), Some(model_id)) => {
+            let selection = ProviderSelection {
+                provider_id,
+                model_id,
+            };
+            if selection.is_valid() {
+                Ok(Some(selection))
+            } else {
+                Err(invariant("stored turn provider selection is invalid"))
+            }
+        }
+        _ => Err(invariant(
+            "stored turn provider selection pair is incomplete",
+        )),
+    }
 }
 
 pub(super) fn map_sqlite_error(error: rusqlite::Error) -> AgentStoreError {

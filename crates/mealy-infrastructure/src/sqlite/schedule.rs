@@ -1167,6 +1167,7 @@ mod tests {
                 dedupe_key: format!("schedule:{}:{scheduled_for_ms}", schedule.schedule_id),
                 delivery_mode: DeliveryMode::Queue,
                 content: schedule.prompt.clone(),
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
             },
         )
         .expect("scheduled admission");

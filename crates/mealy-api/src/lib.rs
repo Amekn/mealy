@@ -34,16 +34,17 @@ use mealy_protocol::{
     InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
     MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse,
     MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
-    RunGarbageCollectionRequest, ScheduleLifecycleRequest, ScheduleResponse, ScheduleRunsResponse,
-    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    ProviderCatalogResponse, ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
+    ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest,
     TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
     TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
-    UpdateSessionTitleRequest, VerifyBackupRequest, WebhookChannelResponse,
-    WebhookChannelsResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
+    WebhookChannelResponse, WebhookChannelsResponse,
 };
 use serde::Deserialize;
 use std::{
@@ -261,6 +262,18 @@ pub trait ApiBackend: Send + Sync + 'static {
         identity: AuthenticatedIdentity,
     ) -> Result<AdminStatusResponse, BackendError>;
 
+    /// Reads the exact configured provider/model catalog with truthful metadata provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization or inspection fails.
+    fn provider_catalog(
+        &self,
+        _identity: AuthenticatedIdentity,
+    ) -> Result<ProviderCatalogResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
     /// Reads stable machine-consumable operational gauges.
     ///
     /// # Errors
@@ -356,6 +369,23 @@ pub trait ApiBackend: Send + Sync + 'static {
         identity: AuthenticatedIdentity,
     ) -> Result<CreateSessionResponse, BackendError>;
 
+    /// Creates a durable session with an optional exact initial provider/model default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when selection, authorization, or persistence fails.
+    fn create_session_with_request(
+        &self,
+        identity: AuthenticatedIdentity,
+        request: CreateSessionRequest,
+    ) -> Result<CreateSessionResponse, BackendError> {
+        if request.provider_selection.is_some() {
+            Err(BackendError::Unavailable)
+        } else {
+            self.create_session(identity)
+        }
+    }
+
     /// Lists recent sessions for the exact authenticated binding.
     ///
     /// # Errors
@@ -378,6 +408,33 @@ pub trait ApiBackend: Send + Sync + 'static {
         _session_id: String,
         _request: UpdateSessionTitleRequest,
     ) -> Result<SessionTitleResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads a session's canonical default route for future new turns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization or persistence fails.
+    fn session_provider_selection(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+    ) -> Result<SessionProviderSelectionResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Updates a session's future-turn default under a revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when selection, authorization, concurrency, or persistence fails.
+    fn update_session_provider_selection(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _request: UpdateSessionProviderSelectionRequest,
+    ) -> Result<SessionProviderSelectionResponse, BackendError> {
         Err(BackendError::Unavailable)
     }
 
@@ -1273,6 +1330,11 @@ fn build_router(
             patch(update_session_title_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/provider-selection",
+            get(session_provider_selection_handler)
+                .patch(update_session_provider_selection_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/checkpoints",
             get(session_checkpoints_handler).post(create_session_checkpoint_handler),
         )
@@ -1298,6 +1360,7 @@ fn build_router(
         )
         .route("/v1/sessions/{session_id}/timeline", get(timeline_handler))
         .route("/v1/sessions/{session_id}/events", get(events_handler))
+        .route("/v1/providers/catalog", get(provider_catalog_handler))
         .route(
             "/v1/schedules",
             get(schedules_handler).post(create_schedule_handler),
@@ -1721,7 +1784,10 @@ async fn create_session_handler(
 ) -> Result<Json<CreateSessionResponse>, HttpError> {
     let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
     require_version(&request.api_version)?;
-    let result = run_backend(state, move |backend| backend.create_session(identity)).await?;
+    let result = run_backend(state, move |backend| {
+        backend.create_session_with_request(identity, request)
+    })
+    .await?;
     Ok(Json(result))
 }
 
@@ -1759,6 +1825,41 @@ async fn update_session_title_handler(
         backend.update_session_title(identity, session_id, request)
     })
     .await?;
+    Ok(Json(result))
+}
+
+async fn session_provider_selection_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+) -> Result<Json<SessionProviderSelectionResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.session_provider_selection(identity, session_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn update_session_provider_selection_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<UpdateSessionProviderSelectionRequest>, JsonRejection>,
+) -> Result<Json<SessionProviderSelectionResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.update_session_provider_selection(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn provider_catalog_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+) -> Result<Json<ProviderCatalogResponse>, HttpError> {
+    let result = run_backend(state, move |backend| backend.provider_catalog(identity)).await?;
     Ok(Json(result))
 }
 
@@ -3120,13 +3221,14 @@ mod tests {
         ForkSessionRequest, InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
         MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
         PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-        RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-        ResolveApprovalRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
-        SessionForkResponse, SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
-        SessionsResponse, SetMemoryPinRequest, SubmitInputRequest, TaskBudgetUsage,
-        TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
-        TaskSuccessCriteriaResponse, TimelineCursor, TimelinePageResponse,
-        UpdateSessionTitleRequest,
+        ProviderCatalogResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
+        ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
+        SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+        SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
+        SessionTitleResponse, SessionsResponse, SetMemoryPinRequest, SubmitInputRequest,
+        TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass,
+        TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor, TimelinePageResponse,
+        UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3151,6 +3253,19 @@ mod tests {
             _identity: AuthenticatedIdentity,
         ) -> Result<mealy_protocol::AdminStatusResponse, BackendError> {
             Err(BackendError::NotFound)
+        }
+
+        fn provider_catalog(
+            &self,
+            _identity: AuthenticatedIdentity,
+        ) -> Result<ProviderCatalogResponse, BackendError> {
+            Ok(ProviderCatalogResponse {
+                api_version: API_VERSION.to_owned(),
+                catalog_scope: "configured_route".to_owned(),
+                config_digest: "a".repeat(64),
+                automatic_fallback_enabled: false,
+                routes: Vec::new(),
+            })
         }
 
         fn admin_metrics(
@@ -3292,6 +3407,45 @@ mod tests {
                 revision: request.expected_revision + 1,
                 event_id: "event-title".to_owned(),
                 updated_at_ms: 3,
+            })
+        }
+
+        fn session_provider_selection(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+        ) -> Result<SessionProviderSelectionResponse, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionProviderSelectionResponse {
+                api_version: API_VERSION.to_owned(),
+                session_id,
+                provider_selection: ProviderSelectionCommand::Automatic,
+                revision: 1,
+                event_id: None,
+                updated_at_ms: 1,
+                applies_to: "future_new_turns".to_owned(),
+            })
+        }
+
+        fn update_session_provider_selection(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+            request: UpdateSessionProviderSelectionRequest,
+        ) -> Result<SessionProviderSelectionResponse, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionProviderSelectionResponse {
+                api_version: API_VERSION.to_owned(),
+                session_id,
+                provider_selection: request.provider_selection,
+                revision: request.expected_revision + 1,
+                event_id: Some("event-provider-selection".to_owned()),
+                updated_at_ms: 2,
+                applies_to: "future_new_turns".to_owned(),
             })
         }
 
@@ -3819,6 +3973,8 @@ mod tests {
                 inbox_entry_id: "inbox-1".to_owned(),
                 inbox_sequence: 1,
                 delivery_mode: mealy_protocol::DeliveryMode::Queue,
+                provider_selection: mealy_protocol::ProviderSelectionCommand::Automatic,
+                provider_selection_source: "inherited".to_owned(),
                 event_id: "event-1".to_owned(),
                 outbox_id: "outbox-1".to_owned(),
                 accepted_at_ms: 1,
@@ -4226,10 +4382,30 @@ mod tests {
         assert_eq!(sessions.sessions.len(), 1);
         assert_eq!(sessions.sessions[0].session_id, "session-1");
 
+        let catalog = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/providers/catalog")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("provider catalog request"),
+            )
+            .await
+            .expect("provider catalog response");
+        assert_eq!(catalog.status(), StatusCode::OK);
+        let body = to_bytes(catalog.into_body(), 4096)
+            .await
+            .expect("provider catalog body");
+        let catalog =
+            serde_json::from_slice::<ProviderCatalogResponse>(&body).expect("provider catalog");
+        assert_eq!(catalog.catalog_scope, "configured_route");
+
         assert_session_workbench_routes(app, &token).await;
     }
 
     async fn assert_session_workbench_routes(app: axum::Router, token: &str) {
+        assert_provider_selection_routes(app.clone(), token).await;
+
         let renamed = app
             .clone()
             .oneshot(
@@ -4329,6 +4505,63 @@ mod tests {
         assert_eq!(fork.source_checkpoint_id, "checkpoint-1");
 
         assert_session_export_routes(app, token).await;
+    }
+
+    async fn assert_provider_selection_routes(app: axum::Router, token: &str) {
+        let selection = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/sessions/session-1/provider-selection")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("provider selection request"),
+            )
+            .await
+            .expect("provider selection response");
+        assert_eq!(selection.status(), StatusCode::OK);
+        let body = to_bytes(selection.into_body(), 4096)
+            .await
+            .expect("provider selection body");
+        let selection = serde_json::from_slice::<SessionProviderSelectionResponse>(&body)
+            .expect("provider selection");
+        assert_eq!(
+            selection.provider_selection,
+            ProviderSelectionCommand::Automatic
+        );
+
+        let selected = app
+            .clone()
+            .oneshot(
+                Request::patch("/v1/sessions/session-1/provider-selection")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "apiVersion": API_VERSION,
+                            "expectedRevision": 1,
+                            "providerSelection": {
+                                "mode": "exact",
+                                "providerId": "provider",
+                                "modelId": "model",
+                            },
+                        })
+                        .to_string(),
+                    ))
+                    .expect("provider selection update request"),
+            )
+            .await
+            .expect("provider selection update response");
+        assert_eq!(selected.status(), StatusCode::OK);
+        let body = to_bytes(selected.into_body(), 4096)
+            .await
+            .expect("provider selection update body");
+        let selected = serde_json::from_slice::<SessionProviderSelectionResponse>(&body)
+            .expect("updated provider selection");
+        assert_eq!(selected.revision, 2);
+        assert!(matches!(
+            selected.provider_selection,
+            ProviderSelectionCommand::Exact { .. }
+        ));
     }
 
     async fn assert_session_export_routes(app: axum::Router, token: &str) {

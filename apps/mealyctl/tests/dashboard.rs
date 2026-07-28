@@ -180,6 +180,14 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
     assert_eq!(snapshot["apiVersion"], API_VERSION);
     assert_eq!(snapshot["status"]["providerId"], "dashboard-fixture");
     assert_eq!(
+        snapshot["providerCatalog"]["routes"][0]["providerId"],
+        "dashboard-fixture"
+    );
+    assert_eq!(
+        snapshot["providerCatalog"]["routes"][0]["pricingVerified"],
+        false
+    );
+    assert_eq!(
         snapshot["usage"]["buckets"][0]["usedCostMicrounits"],
         321_000
     );
@@ -259,7 +267,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("origin-bound mutation");
     assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
-    assert_eq!(requests.load(Ordering::SeqCst), 14);
+    assert_eq!(requests.load(Ordering::SeqCst), 16);
 
     let unknown_field = client
         .post(format!("{dashboard_origin}/api/sessions"))
@@ -270,7 +278,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("unknown field denial");
     assert_eq!(unknown_field.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 14);
+    assert_eq!(requests.load(Ordering::SeqCst), 16);
 
     let created = client
         .post(format!("{dashboard_origin}/api/sessions"))
@@ -308,6 +316,10 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
     let timeline = timeline.json::<Value>().await.expect("timeline JSON");
     assert_eq!(timeline["status"]["sessionId"], SESSION_ID);
     assert_eq!(timeline["activeTaskId"], TASK_ID);
+    assert_eq!(
+        timeline["providerSelection"]["providerSelection"]["mode"],
+        "automatic"
+    );
     assert_eq!(
         timeline["timeline"]["events"][0]["eventType"],
         "task.created"
@@ -386,7 +398,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("invalid effect identifier denial");
     assert_eq!(invalid_effect.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 20);
+    assert_eq!(requests.load(Ordering::SeqCst), 23);
 
     let invalid_attempt = client
         .get(format!("{dashboard_origin}/api/effect-attempts/not-a-uuid"))
@@ -403,7 +415,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("cross-origin effect denial");
     assert_eq!(cross_origin_effect.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(requests.load(Ordering::SeqCst), 20);
+    assert_eq!(requests.load(Ordering::SeqCst), 23);
 
     let effect = client
         .get(format!("{dashboard_origin}/api/effects/{EFFECT_ID}"))
@@ -451,7 +463,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("reconciliation origin denial");
     assert_eq!(reconcile_without_origin.status(), StatusCode::FORBIDDEN);
-    assert_eq!(requests.load(Ordering::SeqCst), 22);
+    assert_eq!(requests.load(Ordering::SeqCst), 25);
 
     let empty_reconciliation = client
         .post(format!(
@@ -470,7 +482,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("empty reconciliation denial");
     assert_eq!(empty_reconciliation.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 22);
+    assert_eq!(requests.load(Ordering::SeqCst), 25);
 
     let widened_reconciliation = client
         .post(format!(
@@ -490,7 +502,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("widened reconciliation denial");
     assert_eq!(widened_reconciliation.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 22);
+    assert_eq!(requests.load(Ordering::SeqCst), 25);
 
     let reconciliation_key = "dashboard-reconcile-stable-1";
     let reconciliation_evidence = json!({
@@ -547,7 +559,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("cross-origin schedule denial");
     assert_eq!(cross_origin_schedule.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(requests.load(Ordering::SeqCst), 23);
+    assert_eq!(requests.load(Ordering::SeqCst), 26);
 
     let schedule = client
         .get(format!("{dashboard_origin}/api/schedules/{SCHEDULE_ID}"))
@@ -619,7 +631,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("overflowing schedule revision denial");
     assert_eq!(overflowing_schedule.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 25);
+    assert_eq!(requests.load(Ordering::SeqCst), 28);
 
     let paused = client
         .post(format!(
@@ -841,7 +853,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         .await
         .expect("widened memory proposal denial");
     assert_eq!(widened_memory_proposal.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(requests.load(Ordering::SeqCst), 31);
+    assert_eq!(requests.load(Ordering::SeqCst), 34);
 
     let empty_memories = client
         .post(format!("{dashboard_origin}/api/memories/list"))
@@ -1524,141 +1536,192 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         Some("no-store")
     );
 
-    assert_eq!(requests.load(Ordering::SeqCst), 71);
+    assert_eq!(requests.load(Ordering::SeqCst), 74);
     assert_dashboard_transcript_exports(&client, &dashboard_origin, &dashboard_token).await;
-    let commands = commands.lock().expect("recorded commands");
-    assert_eq!(commands.len(), 22);
+    {
+        let recorded_commands = commands.lock().expect("recorded commands");
+        assert_eq!(recorded_commands.len(), 22);
+        assert_eq!(
+            recorded_commands[0],
+            (
+                "create_session".to_owned(),
+                json!({"apiVersion": API_VERSION})
+            )
+        );
+        assert_eq!(recorded_commands[1].0, "submit_input");
+        assert_eq!(recorded_commands[1].1["idempotencyKey"], input_key);
+        assert_eq!(
+            recorded_commands[1].1["content"],
+            "Produce the bounded release brief"
+        );
+        assert_eq!(recorded_commands[2].0, "resolve_approval");
+        assert_eq!(recorded_commands[2].1["idempotencyKey"], approval_key);
+        assert_eq!(
+            recorded_commands[2].1["expectedSubjectDigest"],
+            SUBJECT_DIGEST
+        );
+        assert_eq!(recorded_commands[2].1["decision"], "approve");
+        assert_eq!(recorded_commands[3].0, "cancel_task");
+        assert_eq!(recorded_commands[3].1["idempotencyKey"], cancellation_key);
+        assert_eq!(recorded_commands[4].0, "reconcile_effect");
+        assert_eq!(recorded_commands[4].1["idempotencyKey"], reconciliation_key);
+        assert_eq!(recorded_commands[4].1["expectedEffectRevision"], 4);
+        assert_eq!(recorded_commands[4].1["outcome"], "succeeded");
+        assert_eq!(
+            recorded_commands[4].1["evidence"]["destinationDigest"],
+            "f".repeat(64)
+        );
+        assert_eq!(
+            recorded_commands[5],
+            (
+                "pause_schedule".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 7})
+            )
+        );
+        assert_eq!(
+            recorded_commands[6],
+            (
+                "resume_schedule".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 8})
+            )
+        );
+        assert_eq!(
+            recorded_commands[7],
+            (
+                "cancel_schedule".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 9})
+            )
+        );
+        assert_eq!(recorded_commands[8].0, "create_schedule");
+        assert_eq!(recorded_commands[8].1, schedule_create_body);
+        assert_eq!(recorded_commands[9].0, "propose_memory");
+        assert_eq!(
+            recorded_commands[9].1["workspaceIdentity"],
+            MEMORY_WORKSPACE
+        );
+        assert_eq!(recorded_commands[9].1["content"], proposal_body["content"]);
+        assert!(recorded_commands[9].1.get("idempotencyKey").is_none());
+        assert!(
+            recorded_commands[9].1["sources"][0]["locator"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("owner://mealyctl/dashboard/")
+                    && value.len() == "owner://mealyctl/dashboard/".len() + 64)
+        );
+        assert_eq!(recorded_commands[10].0, "activate_memory");
+        assert_eq!(recorded_commands[10].1["revisionId"], MEMORY_REVISION_ID);
+        assert_eq!(recorded_commands[10].1["authorization"], "owner_approval");
+        assert_eq!(
+            recorded_commands[11],
+            (
+                "pin_memory".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 1, "pinned": true})
+            )
+        );
+        assert_eq!(
+            recorded_commands[12],
+            (
+                "pin_memory".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 2, "pinned": false})
+            )
+        );
+        assert_eq!(recorded_commands[13].0, "correct_memory");
+        assert_eq!(recorded_commands[13].1["expectedRevision"], 3);
+        assert_eq!(
+            recorded_commands[13].1["content"],
+            correction_body["content"]
+        );
+        assert_eq!(recorded_commands[13].1["authorization"], "owner_approval");
+        assert!(recorded_commands[13].1.get("idempotencyKey").is_none());
+        assert_eq!(
+            recorded_commands[14],
+            (
+                "expire_memory".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 4})
+            )
+        );
+        assert_eq!(
+            recorded_commands[15],
+            (
+                "delete_memory".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 5})
+            )
+        );
+        assert_eq!(recorded_commands[16].0, "propose_memory");
+        assert_eq!(
+            recorded_commands[16].1["content"],
+            second_proposal_body["content"]
+        );
+        assert_eq!(
+            recorded_commands[17],
+            (
+                "reject_memory".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 0})
+            )
+        );
+        assert_eq!(recorded_commands[18].0, "enable_extension");
+        assert_eq!(recorded_commands[18].1, extension_enable_body);
+        assert_eq!(
+            recorded_commands[19],
+            (
+                "disable_extension".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 1})
+            )
+        );
+        assert_eq!(recorded_commands[20].0, "enable_extension");
+        assert_eq!(recorded_commands[20].1["expectedRevision"], 2);
+        assert_eq!(
+            recorded_commands[20].1["capabilityIds"],
+            json!(["health", "inspect"])
+        );
+        assert_eq!(
+            recorded_commands[21],
+            (
+                "revoke_extension".to_owned(),
+                json!({"apiVersion": API_VERSION, "expectedRevision": 3})
+            )
+        );
+        assert!(
+            !serde_json::to_string(&*recorded_commands)
+                .expect("recorded command JSON")
+                .contains(DAEMON_TOKEN)
+        );
+    }
+
+    let provider_selection = client
+        .post(format!(
+            "{dashboard_origin}/api/sessions/{SESSION_ID}/provider-selection"
+        ))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .header(header::ORIGIN, &dashboard_origin)
+        .json(&json!({
+            "apiVersion": API_VERSION,
+            "expectedRevision": 3,
+            "providerSelection": {
+                "mode": "exact",
+                "providerId": "dashboard-fixture",
+                "modelId": "fixture-model"
+            }
+        }))
+        .send()
+        .await
+        .expect("update provider selection");
+    assert_eq!(provider_selection.status(), StatusCode::OK);
+    let provider_selection = provider_selection
+        .json::<Value>()
+        .await
+        .expect("provider-selection JSON");
+    assert_eq!(provider_selection["revision"], 4);
     assert_eq!(
-        commands[0],
-        (
-            "create_session".to_owned(),
-            json!({"apiVersion": API_VERSION})
-        )
+        provider_selection["providerSelection"]["providerId"],
+        "dashboard-fixture"
     );
-    assert_eq!(commands[1].0, "submit_input");
-    assert_eq!(commands[1].1["idempotencyKey"], input_key);
+    let commands = commands.lock().expect("recorded provider command");
+    assert_eq!(commands.len(), 23);
+    assert_eq!(commands[22].0, "update_provider_selection");
+    assert_eq!(commands[22].1["expectedRevision"], 3);
     assert_eq!(
-        commands[1].1["content"],
-        "Produce the bounded release brief"
-    );
-    assert_eq!(commands[2].0, "resolve_approval");
-    assert_eq!(commands[2].1["idempotencyKey"], approval_key);
-    assert_eq!(commands[2].1["expectedSubjectDigest"], SUBJECT_DIGEST);
-    assert_eq!(commands[2].1["decision"], "approve");
-    assert_eq!(commands[3].0, "cancel_task");
-    assert_eq!(commands[3].1["idempotencyKey"], cancellation_key);
-    assert_eq!(commands[4].0, "reconcile_effect");
-    assert_eq!(commands[4].1["idempotencyKey"], reconciliation_key);
-    assert_eq!(commands[4].1["expectedEffectRevision"], 4);
-    assert_eq!(commands[4].1["outcome"], "succeeded");
-    assert_eq!(
-        commands[4].1["evidence"]["destinationDigest"],
-        "f".repeat(64)
-    );
-    assert_eq!(
-        commands[5],
-        (
-            "pause_schedule".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 7})
-        )
-    );
-    assert_eq!(
-        commands[6],
-        (
-            "resume_schedule".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 8})
-        )
-    );
-    assert_eq!(
-        commands[7],
-        (
-            "cancel_schedule".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 9})
-        )
-    );
-    assert_eq!(commands[8].0, "create_schedule");
-    assert_eq!(commands[8].1, schedule_create_body);
-    assert_eq!(commands[9].0, "propose_memory");
-    assert_eq!(commands[9].1["workspaceIdentity"], MEMORY_WORKSPACE);
-    assert_eq!(commands[9].1["content"], proposal_body["content"]);
-    assert!(commands[9].1.get("idempotencyKey").is_none());
-    assert!(
-        commands[9].1["sources"][0]["locator"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("owner://mealyctl/dashboard/")
-                && value.len() == "owner://mealyctl/dashboard/".len() + 64)
-    );
-    assert_eq!(commands[10].0, "activate_memory");
-    assert_eq!(commands[10].1["revisionId"], MEMORY_REVISION_ID);
-    assert_eq!(commands[10].1["authorization"], "owner_approval");
-    assert_eq!(
-        commands[11],
-        (
-            "pin_memory".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 1, "pinned": true})
-        )
-    );
-    assert_eq!(
-        commands[12],
-        (
-            "pin_memory".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 2, "pinned": false})
-        )
-    );
-    assert_eq!(commands[13].0, "correct_memory");
-    assert_eq!(commands[13].1["expectedRevision"], 3);
-    assert_eq!(commands[13].1["content"], correction_body["content"]);
-    assert_eq!(commands[13].1["authorization"], "owner_approval");
-    assert!(commands[13].1.get("idempotencyKey").is_none());
-    assert_eq!(
-        commands[14],
-        (
-            "expire_memory".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 4})
-        )
-    );
-    assert_eq!(
-        commands[15],
-        (
-            "delete_memory".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 5})
-        )
-    );
-    assert_eq!(commands[16].0, "propose_memory");
-    assert_eq!(commands[16].1["content"], second_proposal_body["content"]);
-    assert_eq!(
-        commands[17],
-        (
-            "reject_memory".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 0})
-        )
-    );
-    assert_eq!(commands[18].0, "enable_extension");
-    assert_eq!(commands[18].1, extension_enable_body);
-    assert_eq!(
-        commands[19],
-        (
-            "disable_extension".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 1})
-        )
-    );
-    assert_eq!(commands[20].0, "enable_extension");
-    assert_eq!(commands[20].1["expectedRevision"], 2);
-    assert_eq!(
-        commands[20].1["capabilityIds"],
-        json!(["health", "inspect"])
-    );
-    assert_eq!(
-        commands[21],
-        (
-            "revoke_extension".to_owned(),
-            json!({"apiVersion": API_VERSION, "expectedRevision": 3})
-        )
-    );
-    assert!(
-        !serde_json::to_string(&*commands)
-            .expect("recorded command JSON")
-            .contains(DAEMON_TOKEN)
+        commands[22].1["providerSelection"]["modelId"],
+        "fixture-model"
     );
     drop(commands);
 
@@ -1787,9 +1850,14 @@ async fn spawn_mock_daemon() -> (
         .route("/v1/admin/status", get(status))
         .route("/v1/admin/doctor", get(doctor))
         .route("/v1/admin/usage", get(admin_usage))
+        .route("/v1/providers/catalog", get(provider_catalog))
         .route("/v1/sessions", get(sessions).post(create_session))
         .route("/v1/sessions/{session_id}/status", get(session_status))
         .route("/v1/sessions/{session_id}/timeline", get(timeline))
+        .route(
+            "/v1/sessions/{session_id}/provider-selection",
+            get(session_provider_selection).patch(update_session_provider_selection),
+        )
         .route(
             "/v1/sessions/{session_id}/exports/{format}",
             get(session_transcript_export),
@@ -1976,6 +2044,49 @@ async fn sessions(State(state): State<MockState>, headers: HeaderMap) -> Respons
                 "activeTurnId": TURN_ID,
                 "createdAtMs": 1_800_000_000_000_i64,
                 "updatedAtMs": 1_800_000_000_010_i64
+            }]
+        }),
+    )
+}
+
+async fn provider_catalog(State(state): State<MockState>, headers: HeaderMap) -> Response {
+    authenticated_json(
+        &state,
+        &headers,
+        json!({
+            "apiVersion": API_VERSION,
+            "catalogScope": "configured_route",
+            "configDigest": "a".repeat(64),
+            "automaticFallbackEnabled": false,
+            "routes": [{
+                "routeOrdinal": 0,
+                "routeRole": "primary",
+                "protocol": "responses",
+                "providerId": "dashboard-fixture",
+                "modelId": "fixture-model",
+                "inputModalities": ["text"],
+                "toolCalling": true,
+                "structuredOutput": true,
+                "reasoningControls": [],
+                "streaming": true,
+                "residency": "local-test",
+                "local": true,
+                "contextTokens": 32768,
+                "maximumOutputTokens": 4096,
+                "inputTokenOverhead": 2048,
+                "limitsSource": "active_configuration",
+                "limitsOperatorVerified": false,
+                "inputMicrounitsPerMillionTokens": 0,
+                "outputMicrounitsPerMillionTokens": 0,
+                "pricingSource": "active_configuration",
+                "pricingVerified": false,
+                "health": "healthy",
+                "estimatedLatencyMs": 10,
+                "inFlightRequests": 0,
+                "maximumConcurrentRequests": 8,
+                "requestsInCurrentMinute": 0,
+                "requestsPerMinute": 60,
+                "selectable": true
             }]
         }),
     )
@@ -2248,6 +2359,52 @@ async fn session_status(
     )
 }
 
+async fn session_provider_selection(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Response {
+    assert_eq!(session_id, SESSION_ID);
+    authenticated_json(
+        &state,
+        &headers,
+        json!({
+            "apiVersion": API_VERSION,
+            "sessionId": SESSION_ID,
+            "providerSelection": {"mode": "automatic"},
+            "revision": 3,
+            "eventId": null,
+            "updatedAtMs": 1_800_000_000_010_i64,
+            "appliesTo": "future_new_turns"
+        }),
+    )
+}
+
+async fn update_session_provider_selection(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    assert_eq!(session_id, SESSION_ID);
+    let selection = body["providerSelection"].clone();
+    authenticated_command(
+        &state,
+        &headers,
+        "update_provider_selection",
+        body,
+        json!({
+            "apiVersion": API_VERSION,
+            "sessionId": SESSION_ID,
+            "providerSelection": selection,
+            "revision": 4,
+            "eventId": "019f0000-0000-7000-8000-000000000090",
+            "updatedAtMs": 1_800_000_000_050_i64,
+            "appliesTo": "future_new_turns"
+        }),
+    )
+}
+
 async fn session_transcript_export(
     State(state): State<MockState>,
     headers: HeaderMap,
@@ -2381,6 +2538,8 @@ async fn submit_input(
             "inboxEntryId": "019f0000-0000-7000-8000-000000000022",
             "inboxSequence": 2,
             "deliveryMode": "queue",
+            "providerSelection": {"mode": "automatic"},
+            "providerSelectionSource": "inherited",
             "eventId": "019f0000-0000-7000-8000-000000000023",
             "outboxId": "019f0000-0000-7000-8000-000000000024",
             "acceptedAtMs": 1_800_000_000_040_i64,

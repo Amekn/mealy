@@ -124,6 +124,7 @@ async fn dispatched_provider_attempt_is_recovered_immediately_under_a_new_fence(
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -133,6 +134,7 @@ async fn dispatched_provider_attempt_is_recovered_immediately_under_a_new_fence(
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-attempt-crash".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Recover a dispatched provider attempt without waiting for its lease TTL."
@@ -214,6 +216,7 @@ async fn undispatched_read_tool_is_retried_after_restart_without_phantom_usage()
         "/v1/sessions",
         &CreateSessionRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
         },
     )
     .await;
@@ -223,6 +226,7 @@ async fn undispatched_read_tool_is_retried_after_restart_without_phantom_usage()
         &format!("/v1/sessions/{}/inputs", session.session_id),
         &SubmitInputRequest {
             api_version: API_VERSION.to_owned(),
+            provider_selection: None,
             idempotency_key: "phase-2-prepared-tool-crash".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "Recover an undispatched read tool without charging a phantom call."

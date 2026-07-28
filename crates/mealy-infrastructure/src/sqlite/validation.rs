@@ -697,6 +697,7 @@ mod tests {
             .create_session(SessionCreationCommit {
                 session_id,
                 ownership,
+                provider_selection: None,
                 event_id: EventId::new(),
                 correlation_id,
                 created_at: at(0),
@@ -718,6 +719,7 @@ mod tests {
                 delivery_mode: DeliveryMode::Queue,
                 dedupe_key: "phase4-validation".to_owned(),
                 content: write_request,
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
                 maximum_pending_inputs: 1_024,
                 event_id: EventId::new(),
                 outbox_id: OutboxId::new(),

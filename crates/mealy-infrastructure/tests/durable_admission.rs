@@ -61,6 +61,7 @@ fn acknowledged_input_survives_reopen_and_deduplicates() {
                 dedupe_key: "channel-event-42".to_owned(),
                 delivery_mode: DeliveryMode::Queue,
                 content: command_content.clone(),
+                provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
             },
         )
         .expect("acknowledge durably admitted input");
@@ -80,6 +81,7 @@ fn acknowledged_input_survives_reopen_and_deduplicates() {
             dedupe_key: "channel-event-42".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: command_content,
+            provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
         },
     )
     .expect("recover original admission receipt");
@@ -100,6 +102,7 @@ fn acknowledged_input_survives_reopen_and_deduplicates() {
             dedupe_key: "channel-event-42".to_owned(),
             delivery_mode: DeliveryMode::Queue,
             content: "changed after acknowledgement".to_owned(),
+            provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
         },
     )
     .expect_err("idempotency key must remain bound to exact input");

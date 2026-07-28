@@ -170,7 +170,12 @@ if contains_daemon_token "$home/index.html"; then
 fi
 
 snapshot=$(dashboard_snapshot initial)
-jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 17' \
+jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 18
+  and .providerCatalog.catalogScope == "configured_route"
+  and (.providerCatalog.routes | length) >= 1
+  and .providerCatalog.routes[0].selectable == true
+  and .providerCatalog.routes[0].pricingVerified == false
+  and .providerCatalog.routes[0].limitsOperatorVerified == false' \
   >/dev/null <<<"$snapshot"
 if contains_daemon_token <<<"$snapshot"; then
   echo "dashboard snapshot exposed the daemon bearer" >&2
@@ -223,14 +228,30 @@ created=$(dashboard_curl --fail --silent --show-error \
   "$origin/api/sessions")
 session_id=$(jq -er '.sessionId' <<<"$created")
 
+selected_provider=$(jq -er '.providerCatalog.routes[0].providerId' <<<"$snapshot")
+selected_model=$(jq -er '.providerCatalog.routes[0].modelId' <<<"$snapshot")
+selection_body=$(jq -cn --arg provider "$selected_provider" --arg model "$selected_model" \
+  '{apiVersion:"v1",expectedRevision:0,providerSelection:{mode:"exact",providerId:$provider,modelId:$model}}')
+selected=$(dashboard_curl --fail --silent --show-error \
+  -X POST \
+  -H "Origin: $origin" \
+  -H 'Content-Type: application/json' \
+  --data "$selection_body" \
+  "$origin/api/sessions/$session_id/provider-selection")
+jq -e --arg session "$session_id" --arg provider "$selected_provider" --arg model "$selected_model" \
+  '.apiVersion == "v1" and .sessionId == $session and .revision == 1
+   and .appliesTo == "future_new_turns"
+   and .providerSelection == {mode:"exact",providerId:$provider,modelId:$model}' \
+  >/dev/null <<<"$selected"
+
 checkpoint=$(dashboard_curl --fail --silent --show-error \
   -H "Origin: $origin" \
   -H 'Content-Type: application/json' \
-  --data '{"apiVersion":"v1","expectedRevision":0,"label":"Dashboard smoke fork base"}' \
+  --data '{"apiVersion":"v1","expectedRevision":1,"label":"Dashboard smoke fork base"}' \
   "$origin/api/sessions/$session_id/checkpoints")
 checkpoint_id=$(jq -er '.checkpointId' <<<"$checkpoint")
 jq -e --arg session "$session_id" \
-  '.apiVersion == "v1" and .sessionId == $session and .sourceSessionRevision == 0 and .revision == 1 and .sourceTurnId == null' \
+  '.apiVersion == "v1" and .sessionId == $session and .sourceSessionRevision == 1 and .revision == 2 and .sourceTurnId == null' \
   >/dev/null <<<"$checkpoint"
 
 fork_body=$(jq -cn --arg checkpoint "$checkpoint_id" \
@@ -809,5 +830,5 @@ fi
 wait "$daemon_pid"
 daemon_pid=
 
-printf 'dashboard smoke: ok (schema 17, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
+printf 'dashboard smoke: ok (schema 18, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
   "$session_id" "$task_id" "$schedule_id" "$memory_id" "$extension_id"

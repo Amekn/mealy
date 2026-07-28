@@ -85,6 +85,7 @@ fn admit_mode(
             dedupe_key: format!("delivery-{sequence}"),
             delivery_mode,
             content: format!("input {sequence}"),
+            provider_selection: mealy_application::ProviderSelectionPreference::InheritSession,
         },
     )
     .expect("admit input");

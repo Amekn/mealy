@@ -103,6 +103,21 @@ Retry a mutation only with the same idempotency key and identical semantic paylo
 for a new command. The delivery modes are `queue`, `steer_at_boundary`, and
 `interrupt_then_queue`.
 
+`ProviderSelectionCommand` is a tagged object: `{"mode":"automatic"}` or
+`{"mode":"exact","providerId":"…","modelId":"…"}`. Create-session and input requests may omit it.
+An omitted input choice inherits the canonical session default; explicit `automatic` overrides an
+exact default for that turn. The admission receipt always returns the resolved choice and its
+stable `inherited`, `automatic`, or `exact` source. Resolution is committed with admission and is
+immutable across queueing, promotion, duplicate retry, and restart.
+
+The catalog exposes only routes in the active reviewed configuration. It reports capability,
+locality, health, pressure, configured limits/prices, and provenance; unverified configured values
+remain explicitly unverified. An exact choice must match one selectable catalog route and disables
+implicit fallback for that turn, though bounded classified retry may reuse that same endpoint.
+Changing a session default requires its exact current revision and applies only to future new
+turns. Catalog or selection routes never change endpoints, credentials, prices, locality, or
+residency.
+
 ## Endpoints
 
 Request and response names below refer to public types in `mealy_protocol`. `-` means there is no
@@ -114,6 +129,7 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | --- | --- | --- | --- |
 | `GET` | `/health/live` | - | `HealthResponse` |
 | `GET` | `/health/ready` | - | `ReadinessResponse` |
+| `GET` | `/v1/providers/catalog` | - | `ProviderCatalogResponse` |
 | `GET` | `/v1/sessions` | `limit` (default 20, 1–100) | `SessionsResponse` |
 | `POST` | `/v1/sessions` | `CreateSessionRequest` | `CreateSessionResponse` |
 | `GET` | `/v1/sessions/search` | `query`, optional `limit` (default 20, 1–100) | `SessionSearchResponse` |
@@ -124,6 +140,8 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/sessions/{session_id}/exports/json` | - | JSON transcript attachment |
 | `GET` | `/v1/sessions/{session_id}/exports/html` | - | inert HTML transcript attachment |
 | `POST` | `/v1/sessions/{session_id}/inputs` | `SubmitInputRequest` | `InputAdmissionResponse` |
+| `GET` | `/v1/sessions/{session_id}/provider-selection` | - | `SessionProviderSelectionResponse` |
+| `PATCH` | `/v1/sessions/{session_id}/provider-selection` | `UpdateSessionProviderSelectionRequest` | `SessionProviderSelectionResponse` |
 | `GET` | `/v1/sessions/{session_id}/status` | - | `SessionStatusResponse` |
 | `GET` | `/v1/sessions/{session_id}/timeline` | optional `after`, optional `limit` | `TimelinePageResponse` |
 | `GET` | `/v1/sessions/{session_id}/events` | optional `after`, optional `limit`; SSE | timeline events |

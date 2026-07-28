@@ -29,6 +29,7 @@ public command cannot be added or removed without updating this reference.
 | `chat` | Start or resume the interactive durable conversation client. |
 | `tui` | Open the full-screen canonical session workbench. |
 | `session` | Create, submit to, inspect, search, or watch durable sessions. |
+| `provider` | Inspect the active provider/model catalog and metadata provenance. |
 | `task` | Inspect, cancel, pause, resume, or replay durable agent tasks. |
 | `delegation` | Inspect durable parent-to-child agent delegations. |
 | `approval` | Inspect and resolve authenticated approval subjects. |
@@ -89,7 +90,9 @@ pane to search canonical user/final-assistant text, and `Enter` to admit the com
 `F2` renames, `F3` checkpoints, `F4` creates a checkpoint and forks it, `F5` refreshes, `F6`
 creates a verified private JSON transcript, `Shift-F6` creates inert HTML, and `F7` reviews an
 exact approval subject before `a` approves or `d` denies. `F1` displays the complete in-product
-key map. `Ctrl-C` cancels a stalled foreground request, restores the terminal, and exits.
+key map. `F8` opens the active model catalog: `Enter` changes this conversation's default for
+future turns, while `t` pins only the next submitted turn. `Ctrl-C` cancels a stalled foreground
+request, restores the terminal, and exits.
 
 The workbench requires terminal stdin, stdout, and stderr and fails before session creation when
 that boundary is absent. Input is capped at the daemon's 1 MiB admission limit; remote text and
@@ -126,7 +129,33 @@ daemon-provided digest and transcript structure before creating a new owner-only
 overwrite an existing path or follow a symlink, and prints a bounded JSON receipt. Transcript text
 is verbatim owner-visible evidence, so protect the file if the conversation contains a pasted
 secret. The dashboard exposes the same title, checkpoint, fork, and verified export operations
-through its fixed loopback allowlist without exposing the daemon bearer.
+through its fixed loopback allowlist without exposing the daemon bearer. It also exposes the same
+catalog and provider-selection contracts for new sessions, conversation defaults, and one-turn
+overrides.
+
+Inspect and select only routes already present in the daemon's active configuration:
+
+```sh
+mealyctl --home "$HOME/.mealy" provider catalog
+
+mealyctl --home "$HOME/.mealy" session create \
+  --provider-id openrouter.responses --model-id vendor/model:free
+
+mealyctl --home "$HOME/.mealy" session provider set SESSION_ID \
+  --provider-id local.responses --model-id local-model
+
+mealyctl --home "$HOME/.mealy" session provider set SESSION_ID --automatic
+
+mealyctl --home "$HOME/.mealy" session send SESSION_ID "Compare the evidence." \
+  --provider-id openrouter.responses --model-id vendor/model:free
+```
+
+`session provider get SESSION_ID` returns the canonical default and revision. Omitting a selection
+from `session send` inherits that default; `--automatic` explicitly overrides an exact default for
+that turn. Admission durably pins the resolved identity before queue acknowledgement. Exact
+selection disables implicit fallback for that turn, although a classified retry may reuse that
+same exact endpoint. Selection changes affect only future new turns and never rewrite queued,
+active, or completed work.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;
@@ -170,8 +199,9 @@ Prices and settled task cost remain provider-neutral integer microunits; Mealy d
 invoice or silently label an owner-configured currency. After every terminal task, chat prints the
 recorded input/output tokens, cost microunits, model calls, tool calls, and retries. These values
 come from durable task evidence and are not estimates of the model's remaining context window.
-Provider switching still uses the stopped-daemon configuration transaction so an in-flight chat
-cannot split across unreviewed configuration.
+Changing the configured route set or credentials still uses the stopped-daemon configuration
+transaction. Selecting among already-active compatible routes uses the online revision-fenced
+session/turn boundary above, so an in-flight turn cannot change identity.
 
 ## Installation status and completion
 

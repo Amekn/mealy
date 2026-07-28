@@ -917,7 +917,7 @@ step before handing program files back to the package manager. Preserve a verifi
 Before any supported forward migration, startup read-only inspects the old schema and publishes an
 online database/config snapshot under `migration-backups/`. Migrations and version markers run in
 one immediate SQLite transaction, preserve canonical history, and have forward tests from each
-phase snapshot. The public v0.2.1 release schema is 16; the v0.3 development schema is 17.
+phase snapshot. The public v0.2.1 release schema is 16; the v0.3 development schema is 18.
 Schema 15 added the partial
 terminal-completion index used by bounded usage reports; migration tests preserve schema-14 state
 and assert the query plan uses that index. Schema 16 adds bounded, digest-bound compressed context
@@ -930,6 +930,12 @@ fork-context references. Migration creates root-lineage rows for existing sessio
 title; their deterministic derived titles remain unchanged until the owner renames them. Transcript
 exports require no canonical export table: they are bounded coherent read-only projections from
 the existing session, turn, attempt, artifact, lineage, and timeline evidence.
+Schema 18 adds the canonical revision-fenced session provider-selection projection and immutable
+provider/model selection plus resolution source on admitted inputs and promoted turns. It
+backfills existing sessions and work as `automatic`, while triggers require complete provider/model
+pairs, bind selection events to the exact owner session, prevent later mutation, and require every
+promoted turn to match its admitted input. The active provider catalog is a runtime projection and
+does not create a second configuration authority.
 
 There is no in-place downgrade and an older binary must never open the newer database. For a
 package-managed rollback, inspect the exact automatic snapshot and compare its manifest SHA-256
@@ -937,7 +943,7 @@ with the `manifest_digest` recorded by the startup migration event. Then use the
 manager's explicit cross-schema path:
 
 ```sh
-SNAPSHOT='v16-to-v17-TIMESTAMP-SEQUENCE'
+SNAPSHOT='v16-to-v18-TIMESTAMP-SEQUENCE'
 MANIFEST="$HOME/.mealy/migration-backups/$SNAPSHOT/manifest.json"
 DIGEST=$(sha256sum "$MANIFEST" | awk '{print $1}')
 jq '{fromSchemaVersion,toSchemaVersion,createdAtMs,files}' "$MANIFEST"
