@@ -393,10 +393,10 @@ mod tests {
     use crate::{Clock, IdGenerator, ProviderSelectionPreference};
     use mealy_domain::{
         ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-        ContextItemId, ContextManifestId, CorrelationId, DelegationId, DeliveryMode, EffectId,
-        EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId,
-        MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, SessionCheckpointId,
-        SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
+        ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId,
+        DeliveryMode, EffectId, EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
+        InboxEntryId, LeaseId, MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId,
+        SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
     };
     use std::time::SystemTime;
 
@@ -567,6 +567,10 @@ mod tests {
 
         fn generate_delegation_id(&self) -> DelegationId {
             self.delegation
+        }
+
+        fn generate_delegation_group_id(&self) -> DelegationGroupId {
+            DelegationGroupId::new()
         }
 
         fn generate_memory_id(&self) -> MemoryId {

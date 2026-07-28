@@ -152,6 +152,10 @@ define_id!(
     DelegationId
 );
 define_id!(
+    /// Identifies one atomically admitted ordered delegation group.
+    DelegationGroupId
+);
+define_id!(
     /// Identifies a durable worker lease.
     LeaseId
 );

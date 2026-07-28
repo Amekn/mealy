@@ -229,6 +229,9 @@ impl TimelineStore for SqliteStore {
                         (SELECT id FROM delegation WHERE parent_run_id IN \
                             (SELECT run_id FROM session_runs) OR child_run_id IN \
                             (SELECT run_id FROM session_runs))) OR \
+                    (je.aggregate_kind = 'delegation_group' AND je.aggregate_id IN \
+                        (SELECT id FROM delegation_group WHERE parent_run_id IN \
+                            (SELECT run_id FROM session_runs))) OR \
                     (je.aggregate_kind = 'resource_claim' AND je.aggregate_id IN \
                         (SELECT claim_id FROM resource_claim WHERE run_id IN \
                             (SELECT run_id FROM session_runs))) OR \
@@ -490,6 +493,9 @@ pub(super) fn high_watermark(
                    (je.aggregate_kind = 'delegation' AND je.aggregate_id IN \
                        (SELECT id FROM delegation WHERE parent_run_id IN \
                            (SELECT run_id FROM session_runs) OR child_run_id IN \
+                           (SELECT run_id FROM session_runs))) OR \
+                   (je.aggregate_kind = 'delegation_group' AND je.aggregate_id IN \
+                       (SELECT id FROM delegation_group WHERE parent_run_id IN \
                            (SELECT run_id FROM session_runs))) OR \
                    (je.aggregate_kind = 'resource_claim' AND je.aggregate_id IN \
                        (SELECT claim_id FROM resource_claim WHERE run_id IN \

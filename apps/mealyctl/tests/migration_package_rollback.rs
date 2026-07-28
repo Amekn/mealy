@@ -59,7 +59,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         .expect("provider secret");
 
     downgrade_fixture_to_v13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 18, SystemTime::now())
+    let migration = create_pre_migration_backup(&home, &database, 13, 19, SystemTime::now())
         .expect("migration backup");
     let migration_name = migration
         .path
@@ -74,7 +74,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     };
     let sbom = prepare_sbom(root.path(), &repository, target);
     let old_package = build_package(root.path(), &repository, &sbom, target, 13, "old");
-    let new_package = build_package(root.path(), &repository, &sbom, target, 18, "new");
+    let new_package = build_package(root.path(), &repository, &sbom, target, 19, "new");
     let prefix = root.path().join("prefix");
     run_success(
         Command::new(repository.join("packaging/install.sh"))
@@ -91,7 +91,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         "install schema-13 package",
     );
 
-    drop(SqliteStore::open(&database, 2).expect("migrate active home to schema 18"));
+    drop(SqliteStore::open(&database, 2).expect("migrate active home to schema 19"));
     run_success(
         Command::new(repository.join("packaging/install.sh"))
             .env("MEALY_TEST_REAL_MEALYCTL", env!("CARGO_BIN_EXE_mealyctl"))
@@ -104,7 +104,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
             .arg(&prefix)
             .arg("--home")
             .arg(&home),
-        "install schema-18 package",
+        "install schema-19 package",
     );
     fs::write(
         home.join("newer-only.txt"),
@@ -115,10 +115,10 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     let manager = prefix.join("share/mealy-manager.sh");
     let denied = rollback_command(&manager, &prefix, &home, migration_name, &"0".repeat(64));
     assert!(!denied.status.success());
-    assert_eq!(package_schema(&prefix), 18);
+    assert_eq!(package_schema(&prefix), 19);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("schema after compensated denial"),
-        Some(18)
+        Some(19)
     );
     assert!(home.join("newer-only.txt").is_file());
 
@@ -159,7 +159,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     assert_eq!(
         inspect_existing_schema_version(&preserved.join("mealy.sqlite3"))
             .expect("preserved migrated schema"),
-        Some(18)
+        Some(19)
     );
 }
 
@@ -167,7 +167,20 @@ fn downgrade_fixture_to_v13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
         .execute_batch(
-            "DROP INDEX run_terminal_completion_idx;
+            "DROP TRIGGER delegation_group_child_insert;
+             DROP TRIGGER delegation_group_identity_immutable;
+             DROP TRIGGER delegation_group_contract_immutable;
+             DROP TRIGGER delegation_group_settlement;
+             DROP TRIGGER delegation_group_no_reopen;
+             DROP TRIGGER delegation_group_no_delete;
+             DROP INDEX delegation_group_ordinal_idx;
+             DROP INDEX delegation_group_child_key_idx;
+             DROP INDEX delegation_group_parent_state_idx;
+             ALTER TABLE delegation DROP COLUMN group_id;
+             ALTER TABLE delegation DROP COLUMN group_ordinal;
+             ALTER TABLE delegation DROP COLUMN child_key;
+             DROP TABLE delegation_group;
+             DROP INDEX run_terminal_completion_idx;
              DROP TRIGGER model_attempt_manifest_token_total_insert;
              DROP TABLE context_manifest_bundle_memory_citation;
              DROP TABLE context_manifest_bundle_compaction;
@@ -189,7 +202,7 @@ fn downgrade_fixture_to_v13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate schema 13");

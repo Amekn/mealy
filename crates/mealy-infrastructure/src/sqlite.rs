@@ -51,10 +51,11 @@ const MIGRATION_0015: &str = include_str!("../migrations/0015_usage_reporting.sq
 const MIGRATION_0016: &str = include_str!("../migrations/0016_context_manifest_bundles.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_provider_selection.sql");
+const MIGRATION_0019: &str = include_str!("../migrations/0019_parallel_delegation_groups.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 18;
+pub const LATEST_SCHEMA_VERSION: i64 = 19;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -327,6 +328,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0018)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (18, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 18;
+        }
+        if existing_version == 18 {
+            transaction.execute_batch(MIGRATION_0019)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (19, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -794,6 +803,7 @@ mod tests {
         ensure_initial_journal_envelope, ensure_phase_one_run_columns,
     };
     use mealy_domain::{CorrelationId, EventId, OutboxId, PrincipalId, TaskId, TaskState};
+    use rusqlite::Connection;
     use serde_json::json;
     use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -823,6 +833,27 @@ mod tests {
                 let _ = fs::remove_file(self.sidecar(suffix));
             }
         }
+    }
+
+    fn remove_parallel_delegation_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER delegation_group_child_insert;
+                 DROP TRIGGER delegation_group_identity_immutable;
+                 DROP TRIGGER delegation_group_contract_immutable;
+                 DROP TRIGGER delegation_group_settlement;
+                 DROP TRIGGER delegation_group_no_reopen;
+                 DROP TRIGGER delegation_group_no_delete;
+                 DROP INDEX delegation_group_ordinal_idx;
+                 DROP INDEX delegation_group_child_key_idx;
+                 DROP INDEX delegation_group_parent_state_idx;
+                 ALTER TABLE delegation DROP COLUMN group_id;
+                 ALTER TABLE delegation DROP COLUMN group_ordinal;
+                 ALTER TABLE delegation DROP COLUMN child_key;
+                 DROP TABLE delegation_group;
+                 DELETE FROM schema_version WHERE version = 19;",
+            )
+            .expect("remove v19 parallel delegation schema");
     }
 
     fn journal(event_id: EventId, event_type: &str) -> JournalRecord {
@@ -2213,6 +2244,7 @@ mod tests {
     #[test]
     fn v14_upgrade_installs_usage_index_and_compact_manifest_schema() {
         let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
         store
             .connection
             .execute_batch(
@@ -2282,6 +2314,7 @@ mod tests {
     #[test]
     fn v16_upgrade_installs_session_workbench_and_immutable_lineage() {
         let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
         store
             .connection
             .execute_batch(
@@ -2357,6 +2390,51 @@ mod tests {
                 )
                 .expect("query workbench trigger");
             assert!(exists, "{trigger} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v18_upgrade_installs_parallel_delegation_group_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v18 parallel delegation schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "delegation_group",
+            "delegation_group_child_insert",
+            "delegation_group_settlement",
+            "delegation_group_identity_immutable",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query parallel delegation schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        let columns = upgraded
+            .connection
+            .prepare("SELECT name FROM pragma_table_info('delegation')")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()
+            })
+            .expect("delegation columns");
+        for column in ["group_id", "group_ordinal", "child_key"] {
+            assert!(columns.contains(column), "{column} was not installed");
         }
         upgraded
             .verify_storage_integrity()

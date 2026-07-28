@@ -278,6 +278,7 @@ fn fixture_task_contract(content: &str) -> InitialTaskContract {
             workspace_roots: BTreeSet::from(["fixture://phase3/workspace".to_owned()]),
             profiles: BTreeSet::from([PolicyProfile::WorkspaceWrite]),
             maximum_delegated_runs: 2,
+            maximum_delegation_depth: 1,
             ..CapabilityGrant::default()
         }
     } else {
@@ -286,6 +287,7 @@ fn fixture_task_contract(content: &str) -> InitialTaskContract {
             effect_classes: BTreeSet::from([EffectClass::ReadOnly]),
             profiles: BTreeSet::from([PolicyProfile::Observe]),
             maximum_delegated_runs: 2,
+            maximum_delegation_depth: 1,
             ..CapabilityGrant::default()
         }
     };
@@ -534,7 +536,8 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         .iter()
         .any(|tool| tool.starts_with("web.") || tool == crate::BROWSER_SNAPSHOT_TOOL_ID);
     let has_mcp = grant.tools.iter().any(|tool| valid_mcp_tool_id(tool));
-    let has_delegation = grant.tools.contains(crate::AGENT_DELEGATE_TOOL_ID);
+    let has_delegation = grant.tools.contains(crate::AGENT_DELEGATE_TOOL_ID)
+        || grant.tools.contains(crate::AGENT_DELEGATE_PARALLEL_TOOL_ID);
     let has_read = has_mcp
         || grant.tools.iter().any(|tool| {
             matches!(
@@ -544,6 +547,7 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
                     | "workspace.read"
                     | "workspace.search"
                     | crate::AGENT_DELEGATE_TOOL_ID
+                    | crate::AGENT_DELEGATE_PARALLEL_TOOL_ID
                     | "skill.read_resource"
                     | "web.fetch"
                     | "web.search"
@@ -574,6 +578,7 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
                         | "workspace.read"
                         | "workspace.search"
                         | crate::AGENT_DELEGATE_TOOL_ID
+                        | crate::AGENT_DELEGATE_PARALLEL_TOOL_ID
                         | "skill.read_resource"
                         | crate::WORKSPACE_CREATE_FILE_TOOL_ID
                         | crate::WORKSPACE_REPLACE_FILE_TOOL_ID
@@ -588,8 +593,9 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         && grant.profiles == expected_profiles
         && if has_delegation {
             (1..=32).contains(&grant.maximum_delegated_runs)
+                && (1..=8).contains(&grant.maximum_delegation_depth)
         } else {
-            grant.maximum_delegated_runs == 0
+            grant.maximum_delegated_runs == 0 && grant.maximum_delegation_depth == 0
         }
         && has_workspace != grant.workspace_roots.is_empty()
         && grant

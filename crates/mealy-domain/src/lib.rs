@@ -34,8 +34,8 @@ pub use extension::{
 };
 pub use id::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-    ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
-    ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
+    ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId,
+    EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
     MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, ScheduleId, ScheduleRunId,
     SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
 };

@@ -6,15 +6,17 @@ use crate::{
     store_runtime::{RuntimeStore, TryStoreAccessError},
 };
 use mealy_application::{
-    AGENT_DELEGATE_TOOL_ID, AgentArtifactCommit, AgentDelegationRequest, AgentEffectStore,
-    AgentExecutionStore, AgentNextAction, ApprovalRequestDraft, ArtifactBlobStore,
-    ArtifactEvidenceStore, CancellationProbe, CapabilityRequirement, Clock, ContextEpoch,
-    DELEGATION_CONTRACT_VERSION, DelegationStore, DispatchModelAttemptCommit,
-    DispatchReadToolCommit, EffectAttemptOutcome, EffectLedgerStore, EffectLedgerStoreError,
-    ExecutorError, ExecutorTerminal, ExpireApprovalCommit, FinalMessageCommit, IdGenerator,
-    LaunchAgentDelegationCommit, LeaseClaimOutcome, LeaseConcurrencyLimits, LeaseLimits,
-    MarkEffectAttemptRunningCommit, MessageRole, ModelDispatchReceipt, ModelProvider, ModelUsage,
-    OwnershipContext, ParkAgentEffectRunCommit, PolicyDecision, PolicyRequest,
+    AGENT_DELEGATE_PARALLEL_TOOL_ID, AGENT_DELEGATE_TOOL_ID, AgentArtifactCommit,
+    AgentDelegationRequest, AgentEffectStore, AgentExecutionStore, AgentNextAction,
+    ApprovalRequestDraft, ArtifactBlobStore, ArtifactEvidenceStore, CancellationProbe,
+    CapabilityRequirement, Clock, ContextEpoch, DELEGATION_CONTRACT_VERSION, DelegationStore,
+    DispatchModelAttemptCommit, DispatchReadToolCommit, EffectAttemptOutcome, EffectLedgerStore,
+    EffectLedgerStoreError, ExecutorError, ExecutorTerminal, ExpireApprovalCommit,
+    FinalMessageCommit, IdGenerator, LaunchAgentDelegationCommit,
+    LaunchParallelAgentDelegationCommit, LaunchParallelDelegationChildCommit, LeaseClaimOutcome,
+    LeaseConcurrencyLimits, LeaseLimits, MarkEffectAttemptRunningCommit, MessageRole,
+    ModelDispatchReceipt, ModelProvider, ModelUsage, OwnershipContext,
+    ParallelAgentDelegationRequest, ParkAgentEffectRunCommit, PolicyDecision, PolicyRequest,
     PrepareDelegationCommit, PrepareEffectAttemptCommit, ProviderCapabilities, ProviderConfig,
     ProviderCredentialReference, ProviderError, ProviderErrorClass, ProviderFailureDisposition,
     ProviderFallbackPolicy, ProviderLocality, ProviderOutput, ProviderPricing, ProviderProgress,
@@ -25,10 +27,10 @@ use mealy_application::{
     RecordModelProgressCommit, RecordModelResultCommit, RecordReadToolResultCommit,
     RecordValidationCommit, ResumeAgentEffectRunCommit, RunCompletionStatus,
     VALIDATION_POLICY_VERSION, ValidationContextDraft, ValidationStore,
-    agent_delegate_tool_descriptor, bounded_deadline, canonical_arguments_digest,
-    claim_next_work_with_concurrency, compile_context, complete_agent_run, complete_run,
-    estimate_tokens, heartbeat_lease, provider_retry_delay, route_provider, sha256_digest,
-    validate_provider_chain, web_url_authorized_by_capabilities,
+    agent_delegate_parallel_tool_descriptor, agent_delegate_tool_descriptor, bounded_deadline,
+    canonical_arguments_digest, claim_next_work_with_concurrency, compile_context,
+    complete_agent_run, complete_run, estimate_tokens, heartbeat_lease, provider_retry_delay,
+    route_provider, sha256_digest, validate_provider_chain, web_url_authorized_by_capabilities,
 };
 use mealy_domain::{
     CapabilityGrant, EffectClass, EffectStatus, LeaseFence, PolicyProfile, RiskClass,
@@ -286,7 +288,7 @@ impl RuntimeSkillContext {
 /// Runtime registry separating the fixture conformance tool from configured workspace reads.
 pub struct RuntimeReadTools {
     tools: BTreeMap<String, Arc<dyn ReadOnlyTool>>,
-    delegation_descriptor: ReadToolDescriptor,
+    delegation_descriptors: BTreeMap<String, ReadToolDescriptor>,
     workspace_ids: Vec<String>,
     skill_context: RuntimeSkillContext,
     invocation_count: AtomicU64,
@@ -297,7 +299,10 @@ impl std::fmt::Debug for RuntimeReadTools {
         formatter
             .debug_struct("RuntimeReadTools")
             .field("tool_ids", &self.tools.keys().collect::<Vec<_>>())
-            .field("delegation_tool_id", &self.delegation_descriptor.tool_id)
+            .field(
+                "delegation_tool_ids",
+                &self.delegation_descriptors.keys().collect::<Vec<_>>(),
+            )
             .field("workspace_ids", &self.workspace_ids)
             .field("enabled_skill_count", &self.skill_context.enabled_count())
             .field("invocation_count", &self.invocation_count())
@@ -368,9 +373,16 @@ impl RuntimeReadTools {
                 return Err("duplicate runtime read-tool identity".into());
             }
         }
+        let delegation_descriptors = [
+            agent_delegate_tool_descriptor()?,
+            agent_delegate_parallel_tool_descriptor()?,
+        ]
+        .into_iter()
+        .map(|descriptor| (descriptor.tool_id.clone(), descriptor))
+        .collect();
         Ok(Self {
             tools,
-            delegation_descriptor: agent_delegate_tool_descriptor()?,
+            delegation_descriptors,
             workspace_ids,
             skill_context,
             invocation_count: AtomicU64::new(0),
@@ -387,7 +399,7 @@ impl RuntimeReadTools {
             .map(|(_, tool)| tool.descriptor())
             .collect::<Vec<_>>();
         if !fixture_mode {
-            descriptors.push(self.delegation_descriptor.clone());
+            descriptors.extend(self.delegation_descriptors.values().cloned());
             descriptors.sort_by(|left, right| left.tool_id.cmp(&right.tool_id));
         }
         descriptors
@@ -437,8 +449,8 @@ impl RuntimeReadTools {
     }
 
     fn descriptor(&self, tool_id: &str) -> Option<ReadToolDescriptor> {
-        if tool_id == AGENT_DELEGATE_TOOL_ID {
-            Some(self.delegation_descriptor.clone())
+        if let Some(descriptor) = self.delegation_descriptors.get(tool_id) {
+            Some(descriptor.clone())
         } else {
             self.tools.get(tool_id).map(|tool| tool.descriptor())
         }
@@ -454,6 +466,11 @@ impl RuntimeReadTools {
                 .map(|_| ())
                 .map_err(|error| ReadToolError::InvalidArguments(error.to_string()));
         }
+        if tool_id == AGENT_DELEGATE_PARALLEL_TOOL_ID {
+            return ParallelAgentDelegationRequest::from_arguments(arguments)
+                .map(|_| ())
+                .map_err(|error| ReadToolError::InvalidArguments(error.to_string()));
+        }
         self.tools
             .get(tool_id)
             .ok_or_else(|| ReadToolError::InvalidArguments("tool is not registered".to_owned()))?
@@ -466,7 +483,10 @@ impl RuntimeReadTools {
         arguments: &serde_json::Value,
         cancellation: &dyn CancellationProbe,
     ) -> Result<ReadToolOutput, ReadToolError> {
-        if tool_id == AGENT_DELEGATE_TOOL_ID {
+        if matches!(
+            tool_id,
+            AGENT_DELEGATE_TOOL_ID | AGENT_DELEGATE_PARALLEL_TOOL_ID
+        ) {
             return Err(ReadToolError::Unavailable(
                 "delegation is dispatched by the durable agent controller".to_owned(),
             ));
@@ -514,7 +534,14 @@ fn read_descriptor_authorized(
             }
             tool_id if tool_id.starts_with("mcp.") => true,
             "skill.read_resource" => true,
-            AGENT_DELEGATE_TOOL_ID => capability_ceiling.maximum_delegated_runs > 0,
+            AGENT_DELEGATE_TOOL_ID => {
+                capability_ceiling.maximum_delegated_runs > 0
+                    && capability_ceiling.maximum_delegation_depth > 0
+            }
+            AGENT_DELEGATE_PARALLEL_TOOL_ID => {
+                capability_ceiling.maximum_delegated_runs >= 2
+                    && capability_ceiling.maximum_delegation_depth > 0
+            }
             _ => false,
         }
 }
@@ -555,7 +582,14 @@ fn read_arguments_authorized(
             && !capability_ceiling.secret_references.is_empty()
     } else if descriptor.tool_id == AGENT_DELEGATE_TOOL_ID {
         capability_ceiling.maximum_delegated_runs > 0
+            && capability_ceiling.maximum_delegation_depth > 0
             && AgentDelegationRequest::from_arguments(arguments).is_ok()
+    } else if descriptor.tool_id == AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        capability_ceiling.maximum_delegation_depth > 0
+            && ParallelAgentDelegationRequest::from_arguments(arguments).is_ok_and(|request| {
+                u64::try_from(request.delegations.len())
+                    .is_ok_and(|fanout| fanout <= capability_ceiling.maximum_delegated_runs)
+            })
     } else {
         true
     }
@@ -1951,9 +1985,12 @@ fn prepare_next_model(
     let browser_enabled = read_descriptors
         .iter()
         .any(|descriptor| descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID);
-    let delegation_enabled = read_descriptors
-        .iter()
-        .any(|descriptor| descriptor.tool_id == AGENT_DELEGATE_TOOL_ID);
+    let delegation_enabled = read_descriptors.iter().any(|descriptor| {
+        matches!(
+            descriptor.tool_id.as_str(),
+            AGENT_DELEGATE_TOOL_ID | AGENT_DELEGATE_PARALLEL_TOOL_ID
+        )
+    });
     let mcp_enabled = read_descriptors
         .iter()
         .any(|descriptor| descriptor.tool_id.starts_with("mcp."));
@@ -2592,6 +2629,9 @@ fn provider_definition_for_read_tool(descriptor: &ReadToolDescriptor) -> Provide
             }
             AGENT_DELEGATE_TOOL_ID => {
                 "Runs one isolated, budgeted read-only child task and returns its durable result"
+            }
+            AGENT_DELEGATE_PARALLEL_TOOL_ID => {
+                "Atomically runs two to eight isolated budgeted child tasks and returns results in request order"
             }
             "web.fetch" => "Fetches one bounded authorized text/HTML/JSON URL without redirects",
             "web.search" => "Searches the configured bounded web index and returns cited results",
@@ -3420,6 +3460,9 @@ fn launch_agent_delegation(
     if snapshot.agent_role != "assistant" || snapshot.turn_kind != "canonical" {
         return Err("only a canonical assistant may create a delegated child".into());
     }
+    if snapshot.capability_ceiling.maximum_delegation_depth == 0 {
+        return Err("delegation exceeds the parent depth ceiling".into());
+    }
     let request = AgentDelegationRequest::from_arguments(arguments)?;
     let child_capabilities = delegated_read_capabilities(&snapshot.capability_ceiling);
     child_capabilities.validate()?;
@@ -3483,6 +3526,103 @@ fn launch_agent_delegation(
     Ok(())
 }
 
+fn launch_parallel_agent_delegation(
+    store: &Arc<RuntimeStore>,
+    fence: LeaseFence,
+    parent_tool_call_id: mealy_domain::ToolCallId,
+    snapshot: &mealy_application::AgentRunSnapshot,
+    arguments: &serde_json::Value,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if snapshot.agent_role != "assistant" || snapshot.turn_kind != "canonical" {
+        return Err("only a canonical assistant may create a parallel delegated group".into());
+    }
+    if snapshot.capability_ceiling.maximum_delegation_depth == 0 {
+        return Err("parallel delegation exceeds the parent depth ceiling".into());
+    }
+    let request = ParallelAgentDelegationRequest::from_arguments(arguments)?;
+    let fanout = u64::try_from(request.delegations.len())
+        .map_err(|_| "parallel delegation fan-out exceeds the runtime")?;
+    if fanout > snapshot.capability_ceiling.maximum_delegated_runs {
+        return Err("parallel delegation fan-out exceeds the parent delegated-run ceiling".into());
+    }
+    let child_capabilities = delegated_read_capabilities(&snapshot.capability_ceiling);
+    child_capabilities.validate()?;
+    let child_budget = delegated_child_limits(snapshot.limits).validate()?;
+    let group_id = SystemIdGenerator.generate_delegation_group_id();
+    let now = SystemClock.now();
+    let children = request
+        .delegations
+        .into_iter()
+        .map(|request| {
+            let success_criteria = TaskSuccessCriteria {
+                objective: request.objective.clone(),
+                criteria: request
+                    .success_criteria
+                    .iter()
+                    .enumerate()
+                    .map(|(index, requirement)| SuccessCriterion {
+                        criterion_id: format!("criterion_{:02}", index + 1),
+                        requirement: requirement.clone(),
+                    })
+                    .collect(),
+                no_objective_criteria_reason: None,
+                risk_class: RiskClass::Low,
+                policy_version: VALIDATION_POLICY_VERSION.to_owned(),
+            };
+            success_criteria.validate()?;
+            Ok::<_, Box<dyn Error + Send + Sync>>(LaunchParallelDelegationChildCommit {
+                child_key: request.child_key.clone(),
+                delegation: PrepareDelegationCommit {
+                    parent_fence: fence,
+                    delegation_id: SystemIdGenerator.generate_delegation_id(),
+                    child_task_id: SystemIdGenerator.generate_task_id(),
+                    child_run_id: SystemIdGenerator.generate_run_id(),
+                    work_order: serde_json::json!({
+                        "contractVersion": DELEGATION_CONTRACT_VERSION,
+                        "delegationGroupId": group_id,
+                        "childKey": request.child_key.clone(),
+                        "objective": request.objective,
+                        "instructions": request.instructions,
+                        "parentToolCallId": parent_tool_call_id,
+                    }),
+                    success_criteria,
+                    context_package: serde_json::json!({
+                        "contractVersion": DELEGATION_CONTRACT_VERSION,
+                        "delegationGroupId": group_id,
+                        "childKey": request.child_key,
+                        "parentToolCallId": parent_tool_call_id,
+                        "context": request.context.unwrap_or_else(|| {
+                            serde_json::json!({"provided": false})
+                        }),
+                    }),
+                    requested_capabilities: child_capabilities.clone(),
+                    policy_capabilities: child_capabilities.clone(),
+                    child_budget,
+                    event_id: SystemIdGenerator.generate_event_id(),
+                    prepared_at: now,
+                },
+                child_turn_id: SystemIdGenerator.generate_turn_id(),
+                child_inbox_entry_id: SystemIdGenerator.generate_inbox_entry_id(),
+                child_acknowledgement_outbox_id: SystemIdGenerator.generate_outbox_id(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    store
+        .write()
+        .map_err(|_| "agent store lock is poisoned")?
+        .launch_parallel_agent_delegation(LaunchParallelAgentDelegationCommit {
+            group_id,
+            parent_tool_call_id,
+            children,
+            group_event_id: SystemIdGenerator.generate_event_id(),
+            tool_event_id: SystemIdGenerator.generate_event_id(),
+            lease_event_id: SystemIdGenerator.generate_event_id(),
+            parent_run_event_id: SystemIdGenerator.generate_event_id(),
+            parent_task_event_id: SystemIdGenerator.generate_event_id(),
+        })?;
+    Ok(())
+}
+
 fn dispatch_tool(
     store: &Arc<RuntimeStore>,
     fence: LeaseFence,
@@ -3514,6 +3654,10 @@ fn dispatch_tool(
     heartbeat(store, fence)?;
     if tool_id == AGENT_DELEGATE_TOOL_ID {
         launch_agent_delegation(store, fence, tool_call_id, snapshot, arguments)?;
+        return Ok(true);
+    }
+    if tool_id == AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        launch_parallel_agent_delegation(store, fence, tool_call_id, snapshot, arguments)?;
         return Ok(true);
     }
     {
@@ -3882,7 +4026,8 @@ fn run_delegated_validator(
         .as_array()
         .is_some_and(|criteria| !criteria.is_empty() && criteria.len() <= 8);
     let isolated_package = request.is_some_and(|content| {
-        content.starts_with("[ISOLATED DELEGATED WORK PACKAGE")
+        (content.starts_with("[ISOLATED DELEGATED WORK PACKAGE")
+            || content.starts_with("[ISOLATED PARALLEL DELEGATED WORK PACKAGE"))
             && context.request["contentDigest"].as_str()
                 == Some(sha256_digest(content.as_bytes()).as_str())
     });
@@ -3916,6 +4061,7 @@ fn run_delegated_validator(
         })
     };
     let read_only_authority = context.capabilities.maximum_delegated_runs == 0
+        && context.capabilities.maximum_delegation_depth == 0
         && context.capabilities.writable_workspace_roots.is_empty()
         && context.capabilities.executable_identity_digests.is_empty()
         && context.capabilities.network_destinations.is_empty()
@@ -3991,6 +4137,7 @@ fn build_general_assistant_validation_context(
             && tool_id != mealy_application::BROWSER_SNAPSHOT_TOOL_ID
             && tool_id != "skill.read_resource"
             && tool_id != AGENT_DELEGATE_TOOL_ID
+            && tool_id != AGENT_DELEGATE_PARALLEL_TOOL_ID
     }) {
         return Err("general assistant used an unsupported tool authority".into());
     }
@@ -4008,11 +4155,18 @@ fn build_general_assistant_validation_context(
             tools: read_tool_ids.iter().cloned().collect(),
             effect_classes: BTreeSet::from([EffectClass::ReadOnly]),
             profiles: BTreeSet::from([PolicyProfile::Observe]),
-            maximum_delegated_runs: u64::from(
-                read_tool_ids
-                    .iter()
-                    .any(|tool_id| tool_id == AGENT_DELEGATE_TOOL_ID),
-            ),
+            maximum_delegated_runs: u64::from(read_tool_ids.iter().any(|tool_id| {
+                matches!(
+                    tool_id.as_str(),
+                    AGENT_DELEGATE_TOOL_ID | AGENT_DELEGATE_PARALLEL_TOOL_ID
+                )
+            })),
+            maximum_delegation_depth: u64::from(read_tool_ids.iter().any(|tool_id| {
+                matches!(
+                    tool_id.as_str(),
+                    AGENT_DELEGATE_TOOL_ID | AGENT_DELEGATE_PARALLEL_TOOL_ID
+                )
+            })),
             ..CapabilityGrant::default()
         }
     };
@@ -4108,6 +4262,7 @@ fn run_general_assistant_validator(
                     || tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
                     || tool_id == "skill.read_resource"
                     || tool_id == AGENT_DELEGATE_TOOL_ID
+                    || tool_id == AGENT_DELEGATE_PARALLEL_TOOL_ID
             })
             && context.capabilities.effect_classes == BTreeSet::from([EffectClass::ReadOnly])
             && context.capabilities.profiles == BTreeSet::from([PolicyProfile::Observe])

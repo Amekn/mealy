@@ -53,6 +53,10 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(home: &Path, safe_mode: bool) -> Self {
+        Self::spawn_with_agent_interval(home, safe_mode, 25)
+    }
+
+    fn spawn_with_agent_interval(home: &Path, safe_mode: bool, agent_interval_ms: u64) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mealyd"));
         command
             .arg("--home")
@@ -63,6 +67,8 @@ impl Daemon {
             .arg("10")
             .arg("--agent-delay-ms")
             .arg("0")
+            .arg("--agent-interval-ms")
+            .arg(agent_interval_ms.to_string())
             .arg("--outbox-delay-ms")
             .arg("0")
             .env(
@@ -117,6 +123,9 @@ enum PendingToolCall {
     Process,
     SkillResource,
     Delegation,
+    DelegationThenParallel,
+    ParallelDelegation,
+    ParallelAfterChild,
     Mcp,
     Browser,
 }
@@ -213,6 +222,28 @@ impl MockProviderState {
         })))
     }
 
+    fn with_parallel_delegation_tool_call() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::ParallelDelegation,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_serial_then_over_budget_parallel_delegation() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::DelegationThenParallel,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
     fn with_mcp_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
@@ -237,6 +268,17 @@ impl MockProviderState {
 
     fn with_delayed_delegation_tool_call(delay: Duration) -> Self {
         let state = Self::with_delegation_tool_call();
+        state
+            .0
+            .lock()
+            .expect("provider capture lock")
+            .delegated_child_delay_ms =
+            u64::try_from(delay.as_millis()).expect("test delay fits u64");
+        state
+    }
+
+    fn with_delayed_parallel_delegation_tool_call(delay: Duration) -> Self {
+        let state = Self::with_parallel_delegation_tool_call();
         state
             .0
             .lock()
@@ -272,6 +314,10 @@ async fn responses_handler(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let delegated_child_request = body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE")
+        || body
+            .to_string()
+            .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE");
     let authorization = headers
         .get(reqwest::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -285,6 +331,7 @@ async fn responses_handler(
         call_process,
         call_skill_resource,
         call_delegation,
+        call_parallel_delegation,
         call_mcp,
         call_browser,
         web_tool_call,
@@ -297,11 +344,17 @@ async fn responses_handler(
         });
         let fail = state.transient_failures_remaining > 0;
         state.transient_failures_remaining = state.transient_failures_remaining.saturating_sub(1);
-        let pending_tool_call = if fail {
+        let pending_tool_call = if fail
+            || delegated_child_request
+                && state.pending_tool_call == PendingToolCall::ParallelAfterChild
+        {
             PendingToolCall::None
         } else {
             std::mem::take(&mut state.pending_tool_call)
         };
+        if pending_tool_call == PendingToolCall::DelegationThenParallel {
+            state.pending_tool_call = PendingToolCall::ParallelAfterChild;
+        }
         let web_tool_call = if !fail && state.web_tool_steps_remaining > 0 {
             let step = state.web_tool_steps_remaining;
             state.web_tool_steps_remaining = state.web_tool_steps_remaining.saturating_sub(1);
@@ -309,12 +362,11 @@ async fn responses_handler(
         } else {
             None
         };
-        let delegated_child_delay_ms =
-            if body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE") {
-                state.delegated_child_delay_ms
-            } else {
-                0
-            };
+        let delegated_child_delay_ms = if delegated_child_request {
+            state.delegated_child_delay_ms
+        } else {
+            0
+        };
         (
             fail,
             pending_tool_call == PendingToolCall::WorkspaceRead,
@@ -323,7 +375,14 @@ async fn responses_handler(
             pending_tool_call == PendingToolCall::WorkspaceManage,
             pending_tool_call == PendingToolCall::Process,
             pending_tool_call == PendingToolCall::SkillResource,
-            pending_tool_call == PendingToolCall::Delegation,
+            matches!(
+                pending_tool_call,
+                PendingToolCall::Delegation | PendingToolCall::DelegationThenParallel
+            ),
+            matches!(
+                pending_tool_call,
+                PendingToolCall::ParallelDelegation | PendingToolCall::ParallelAfterChild
+            ),
             pending_tool_call == PendingToolCall::Mcp,
             pending_tool_call == PendingToolCall::Browser,
             web_tool_call,
@@ -610,6 +669,52 @@ async fn responses_handler(
         );
         return response;
     }
+    if call_parallel_delegation {
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"]
+                        .as_str()
+                        .is_some_and(|description| description.contains("two to eight isolated"))
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .expect("agent.delegate_parallel provider tool name");
+        let mut response = Json(json!({
+            "id": "resp-parallel-delegation-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-agent-delegate-parallel",
+                "name": tool_name,
+                "arguments": serde_json::json!({
+                    "delegations": [{
+                        "childKey": "first",
+                        "objective": "Assess the first bounded proof",
+                        "instructions": "Return the first concise isolated assessment.",
+                        "successCriteria": ["Return the first keyed result"],
+                        "context": {"evidenceLabel": "parallel-first"}
+                    }, {
+                        "childKey": "second",
+                        "objective": "Assess the second bounded proof",
+                        "instructions": "Return the second concise isolated assessment.",
+                        "successCriteria": ["Return the second keyed result"],
+                        "context": {"evidenceLabel": "parallel-second"}
+                    }]
+                }).to_string()
+            }],
+            "usage": {"input_tokens": 14, "output_tokens": 16, "total_tokens": 30}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-parallel-delegation-call"),
+        );
+        return response;
+    }
     if call_mcp {
         let tool_name = body["tools"]
             .as_array()
@@ -750,9 +855,24 @@ async fn responses_handler(
             "The approved action reached durable effect state {status}; recorded observation sha256:{}",
             sha256_digest(observation_text.as_bytes())
         )
+    } else if body.to_string().contains("delegation://group-result") {
+        "The parent incorporated both ordered durable child results \
+         (delegation://group-result)."
+            .to_owned()
     } else if body.to_string().contains("delegation://result") {
         "The parent incorporated the durable isolated child result (delegation://result)."
             .to_owned()
+    } else if body
+        .to_string()
+        .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+        && body.to_string().contains("\"childKey\":\"first\"")
+    {
+        "The first parallel isolated child completed.".to_owned()
+    } else if body
+        .to_string()
+        .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+    {
+        "The second parallel isolated child completed.".to_owned()
     } else if body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE") {
         "The isolated child execution completed and returned a result suitable for the waiting parent."
             .to_owned()
@@ -1268,7 +1388,7 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
     assert_eq!(requests[0].body["store"], false);
     assert_eq!(requests[0].body["stream"], true);
     assert_eq!(requests[0].body["parallel_tool_calls"], false);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
     assert!(
         requests[0].body["tools"][0]["description"]
             .as_str()
@@ -1866,7 +1986,11 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "skill.read_resource"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "skill.read_resource"
+        ]
     );
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -1908,7 +2032,7 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
     assert!(requests[0].body.to_string().contains("skill.read_resource"));
     assert!(
         requests[1]
@@ -1964,7 +2088,10 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
     let connection = wait_until_ready(&client, home.path()).await;
     let status: AdminStatusResponse =
         authorized_get(&client, &connection, "/v1/admin/status").await;
-    assert_eq!(status.enabled_read_tools, ["agent.delegate"]);
+    assert_eq!(
+        status.enabled_read_tools,
+        ["agent.delegate", "agent.delegate_parallel"]
+    );
 
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -2149,6 +2276,400 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
+async fn parallel_delegation_is_atomic_ordered_and_resumes_only_after_both_children() {
+    let state = MockProviderState::with_parallel_delegation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-process-proof".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run two independent bounded checks concurrently and combine them.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let parent = wait_until_terminal(&client, &connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Succeeded, "parent: {parent:?}");
+    assert_eq!((parent.model_attempts, parent.tool_calls), (2, 1));
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (2, 0)
+    );
+    assert!(
+        parent
+            .final_response
+            .as_deref()
+            .is_some_and(|response| { response.contains("delegation://group-result") })
+    );
+
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(delegations.delegations.len(), 2);
+    assert!(
+        delegations
+            .delegations
+            .iter()
+            .all(|delegation| delegation.state == "succeeded"),
+        "delegations: {delegations:?}"
+    );
+    for delegation in &delegations.delegations {
+        let child: TaskResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}", delegation.child_task_id),
+        )
+        .await;
+        assert_eq!(child.status, TaskStatus::Succeeded, "child: {child:?}");
+        let replay: TaskReplayResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}/replay", delegation.child_task_id),
+        )
+        .await;
+        assert!(replay.evidence_complete, "child replay: {replay:?}");
+    }
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert!(timeline.events.iter().any(|event| {
+        event.event_type == "tool.call.succeeded"
+            && event.payload["source_locator"] == "delegation://group-result"
+    }));
+
+    let requests = state.requests();
+    assert_eq!(requests.len(), 4, "provider requests: {requests:?}");
+    let child_requests = requests
+        .iter()
+        .filter(|request| {
+            request
+                .body
+                .to_string()
+                .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_requests.len(), 2);
+    assert!(
+        child_requests
+            .iter()
+            .any(|request| request.body.to_string().contains("parallel-first"))
+    );
+    assert!(
+        child_requests
+            .iter()
+            .any(|request| request.body.to_string().contains("parallel-second"))
+    );
+    let parent_resume = requests
+        .last()
+        .expect("parent resume request")
+        .body
+        .to_string();
+    let first_position = parent_resume
+        .find("first")
+        .expect("first ordered child result");
+    let second_position = parent_resume
+        .find("second")
+        .expect("second ordered child result");
+    assert!(first_position < second_position);
+    assert!(parent_resume.contains("delegation://group-result"));
+
+    let parent_replay: TaskReplayResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/tasks/{parent_task_id}/replay"),
+    )
+    .await;
+    assert!(
+        parent_replay.evidence_complete,
+        "parent replay: {parent_replay:?}"
+    );
+    assert_eq!(
+        (
+            parent_replay.live_provider_calls,
+            parent_replay.live_tool_calls
+        ),
+        (0, 0)
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn queued_parallel_group_survives_an_abrupt_daemon_restart() {
+    let state = MockProviderState::with_parallel_delegation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+
+    let (session_id, parent_task_id) = {
+        // Keep the next worker claim far enough away to crash after the complete group commits but
+        // before either child can acquire a lease.
+        let _daemon = Daemon::spawn_with_agent_interval(home.path(), false, 5_000);
+        let connection = wait_until_ready(&client, home.path()).await;
+        let session: CreateSessionResponse = authorized_post(
+            &client,
+            &connection,
+            "/v1/sessions",
+            &CreateSessionRequest {
+                api_version: API_VERSION.to_owned(),
+                provider_selection: None,
+            },
+        )
+        .await;
+        let admission: InputAdmissionResponse = authorized_post(
+            &client,
+            &connection,
+            &format!("/v1/sessions/{}/inputs", session.session_id),
+            &SubmitInputRequest {
+                api_version: API_VERSION.to_owned(),
+                provider_selection: None,
+                idempotency_key: "parallel-delegation-abrupt-restart".to_owned(),
+                delivery_mode: DeliveryMode::Queue,
+                content: "Commit two bounded children, then wait for their ordered result."
+                    .to_owned(),
+            },
+        )
+        .await;
+        let parent_task_id = wait_for_task_id(
+            &client,
+            &connection,
+            &session.session_id,
+            admission.cursor.0,
+        )
+        .await;
+        let group_deadline = Instant::now() + COMPLETION_TIMEOUT;
+        let queued = loop {
+            let delegations: DelegationsResponse =
+                authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+            if delegations.delegations.len() == 2 {
+                break delegations;
+            }
+            assert!(
+                Instant::now() < group_deadline,
+                "parallel group was not durably admitted before restart"
+            );
+            sleep(Duration::from_millis(10)).await;
+        };
+        assert!(
+            queued
+                .delegations
+                .iter()
+                .all(|delegation| delegation.state == "queued"),
+            "a child escaped the deliberately delayed claim boundary: {queued:?}"
+        );
+        assert_eq!(
+            state.requests().len(),
+            1,
+            "a child provider request crossed the crash boundary"
+        );
+        (session.session_id, parent_task_id)
+    };
+    fs::remove_file(home.path().join("connection.json")).expect("remove stale descriptor");
+
+    let _restarted = Daemon::spawn(home.path(), false);
+    let restarted_connection = wait_until_ready(&client, home.path()).await;
+    let parent = wait_until_terminal(&client, &restarted_connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Succeeded, "parent: {parent:?}");
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (2, 0)
+    );
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &restarted_connection, "/v1/delegations?limit=20").await;
+    assert_eq!(delegations.delegations.len(), 2);
+    assert!(
+        delegations
+            .delegations
+            .iter()
+            .all(|delegation| delegation.state == "succeeded"),
+        "recovered delegations: {delegations:?}"
+    );
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &restarted_connection,
+        &format!("/v1/sessions/{session_id}/timeline?limit=1000"),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert_eq!(
+        state.requests().len(),
+        4,
+        "restart duplicated or skipped a provider boundary"
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn over_budget_parallel_group_rolls_back_every_proposed_child() {
+    let state = MockProviderState::with_serial_then_over_budget_parallel_delegation();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-atomic-budget-rejection".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run one child, then attempt two more bounded children.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let request_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    while state.requests().len() < 3 {
+        assert!(
+            Instant::now() < request_deadline,
+            "parent did not attempt its over-budget parallel group"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    // The model response has reached the daemon; allow its immediate writer transaction to
+    // reject the second reservation and roll back the first proposed child.
+    sleep(Duration::from_millis(250)).await;
+
+    let parent: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{parent_task_id}")).await;
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (1, 0),
+        "partial child budget reservation escaped rollback: {parent:?}"
+    );
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(
+        delegations.delegations.len(),
+        1,
+        "a proposed parallel child escaped rollback: {delegations:?}"
+    );
+    assert_eq!(delegations.delegations[0].state, "succeeded");
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        0,
+        "failed parallel group published durable evidence: {:?}",
+        timeline.events
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
     let state = MockProviderState::with_delayed_delegation_tool_call(Duration::from_millis(1_500));
     let (base_url, provider_server) = spawn_provider(state.clone()).await;
@@ -2254,8 +2775,8 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
     .await;
     for event_type in [
         "run.cancellation_waiting_for_delegation",
-        "run.cancellation_requested_by_parent",
-        "task.cancellation_requested_by_parent",
+        "run.child_cancellations_requested",
+        "task.child_cancellations_requested",
         "delegation.cancelled",
     ] {
         assert!(
@@ -2268,6 +2789,168 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
         );
     }
     assert_eq!(state.requests().len(), 2);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn parent_cancellation_propagates_to_every_nonterminal_parallel_sibling() {
+    let state =
+        MockProviderState::with_delayed_parallel_delegation_tool_call(Duration::from_secs(3));
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-parent-cancellation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run two bounded checks, then await both results.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let request_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    while state.requests().len() < 3 {
+        assert!(
+            Instant::now() < request_deadline,
+            "both parallel child provider requests did not begin"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    let running: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(running.delegations.len(), 2);
+    let running_ids = running
+        .delegations
+        .iter()
+        .filter(|delegation| delegation.state == "running")
+        .map(|delegation| delegation.delegation_id.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !running_ids.is_empty()
+            && running
+                .delegations
+                .iter()
+                .all(|delegation| matches!(delegation.state.as_str(), "running" | "succeeded")),
+        "running delegations: {running:?}"
+    );
+
+    let _: TaskCancellationReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/tasks/{parent_task_id}/cancel"),
+        &CancelTaskRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "parallel-parent-cancellation-command".to_owned(),
+            reason: "owner cancelled the parallel parent".to_owned(),
+        },
+    )
+    .await;
+    let parent = wait_until_terminal(&client, &connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Cancelled, "parent: {parent:?}");
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs,
+            parent.usage.reserved_tool_calls
+        ),
+        (2, 0, 0)
+    );
+    assert!(parent.final_response.is_none());
+
+    let terminal: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(terminal.delegations.len(), 2);
+    for delegation in &terminal.delegations {
+        let expected = if running_ids.contains(&delegation.delegation_id) {
+            "cancelled"
+        } else {
+            "succeeded"
+        };
+        assert_eq!(delegation.state, expected, "{delegation:?}");
+        assert_eq!(
+            delegation
+                .result
+                .as_ref()
+                .and_then(|value| value["status"].as_str()),
+            Some(expected)
+        );
+        let child: TaskResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}", delegation.child_task_id),
+        )
+        .await;
+        assert_eq!(
+            child.status,
+            if expected == "cancelled" {
+                TaskStatus::Cancelled
+            } else {
+                TaskStatus::Succeeded
+            },
+            "child: {child:?}"
+        );
+    }
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation.cancelled")
+            .count(),
+        running_ids.len()
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "run.child_cancellations_requested")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert_eq!(state.requests().len(), 3);
     provider_server.abort();
 }
 
@@ -2375,6 +3058,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
         status.enabled_read_tools,
         [
             "agent.delegate",
+            "agent.delegate_parallel",
             "workspace.list",
             "workspace.read",
             "workspace.search",
@@ -2427,7 +3111,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(5));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
     assert!(requests[0].body.to_string().contains("workspace.read"));
     assert!(
         requests[1]
@@ -2512,7 +3196,11 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "mcp.fixture.add"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "mcp.fixture.add"
+        ]
     );
 
     let session: CreateSessionResponse = authorized_post(
@@ -2557,7 +3245,7 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
     assert!(requests[0].body.to_string().contains("mcp.fixture.add"));
     assert!(requests[1].body.to_string().contains("sum"));
     assert!(requests[1].body.to_string().contains("42"));
@@ -2675,7 +3363,7 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(4));
     assert!(requests[0].body.to_string().contains("browser.snapshot"));
     assert!(requests[0].body.to_string().contains("downloadLink"));
     assert!(
@@ -2839,7 +3527,7 @@ async fn explicit_action_creates_one_approved_file_and_replays_without_redispatc
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -2982,7 +3670,7 @@ async fn explicit_edit_applies_one_digest_pinned_patch_and_replays_without_redis
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -3139,7 +3827,7 @@ async fn explicit_manage_moves_one_digest_matched_file_and_replays_without_redis
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -3347,7 +4035,7 @@ async fn explicit_process_runs_one_pinned_command_and_replays_without_redispatch
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(requests[0].body.to_string().contains("process.run"));
     assert!(
         !requests[0]
@@ -3580,10 +4268,10 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
 
     let requests = state.requests();
     assert_eq!(requests.len(), 4);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(5));
-    assert_eq!(requests[1].body["tools"].as_array().map(Vec::len), Some(5));
-    assert_eq!(requests[2].body["tools"].as_array().map(Vec::len), Some(1));
-    assert_eq!(requests[3].body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[1].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[2].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[3].body["tools"].as_array().map(Vec::len), Some(2));
     for request in &requests[2..] {
         assert!(!request.body.to_string().contains("workspace://project"));
         assert!(
@@ -3620,7 +4308,12 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "web.fetch", "web.search"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "web.fetch",
+            "web.search"
+        ]
     );
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -3666,7 +4359,7 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
 
     let requests = state.requests();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(4));
     assert!(requests[0].body.to_string().contains("web.search"));
     assert!(requests[0].body.to_string().contains("web.fetch"));
     assert!(

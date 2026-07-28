@@ -1,8 +1,8 @@
 use mealy_application::{Clock, IdGenerator};
 use mealy_domain::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-    ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
-    ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
+    ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId,
+    EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
     MemoryRevisionId, MessageId, OutboxId, RunId, SessionCheckpointId, SessionId, TaskId,
     ToolCallId, TurnId, ValidationId, WorkerId,
 };
@@ -113,6 +113,10 @@ impl IdGenerator for SystemIdGenerator {
 
     fn generate_delegation_id(&self) -> DelegationId {
         DelegationId::new()
+    }
+
+    fn generate_delegation_group_id(&self) -> DelegationGroupId {
+        DelegationGroupId::new()
     }
 
     fn generate_memory_id(&self) -> MemoryId {

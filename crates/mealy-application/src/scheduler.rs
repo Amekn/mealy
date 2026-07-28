@@ -231,6 +231,8 @@ pub struct CompleteRunCommit {
     pub session_event_id: EventId,
     /// Delegation terminal event when the completed run is a child.
     pub delegation_event_id: EventId,
+    /// Delegation-group settlement event when the completed child is the last active sibling.
+    pub delegation_group_event_id: EventId,
     /// Parent tool-result event when the completed run is a child.
     pub parent_tool_event_id: EventId,
     /// Parent run-resume event when the completed run is a child.
@@ -483,6 +485,7 @@ pub fn complete_run(
             turn_event_id: ids.generate_event_id(),
             session_event_id: ids.generate_event_id(),
             delegation_event_id: ids.generate_event_id(),
+            delegation_group_event_id: ids.generate_event_id(),
             parent_tool_event_id: ids.generate_event_id(),
             parent_run_event_id: ids.generate_event_id(),
             parent_task_event_id: ids.generate_event_id(),
@@ -521,6 +524,7 @@ pub fn complete_agent_run(
             turn_event_id: ids.generate_event_id(),
             session_event_id: ids.generate_event_id(),
             delegation_event_id: ids.generate_event_id(),
+            delegation_group_event_id: ids.generate_event_id(),
             parent_tool_event_id: ids.generate_event_id(),
             parent_run_event_id: ids.generate_event_id(),
             parent_task_event_id: ids.generate_event_id(),

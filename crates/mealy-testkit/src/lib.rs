@@ -8,8 +8,8 @@ use mealy_application::{
 };
 use mealy_domain::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-    ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
-    ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
+    ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId,
+    EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
     MemoryRevisionId, MessageId, OutboxId, RunId, SessionCheckpointId, SessionId, TaskId,
     ToolCallId, TurnId, ValidationId, WorkerId,
 };
@@ -732,6 +732,10 @@ impl IdGenerator for TestIdGenerator {
         DelegationId::from_uuid(self.next_uuid())
     }
 
+    fn generate_delegation_group_id(&self) -> DelegationGroupId {
+        DelegationGroupId::from_uuid(self.next_uuid())
+    }
+
     fn generate_memory_id(&self) -> MemoryId {
         MemoryId::from_uuid(self.next_uuid())
     }
@@ -770,9 +774,10 @@ mod tests {
     };
     use mealy_domain::{
         ApprovalId, ArtifactId, AttemptId, CompactionId, ContextEpochId, ContextItemId,
-        ContextManifestId, CorrelationId, DelegationId, EffectId, EventId, ExtensionGrantId,
-        ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId, MemoryRevisionId,
-        MessageId, OutboxId, RunId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
+        ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId, EventId,
+        ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
+        MemoryRevisionId, MessageId, OutboxId, RunId, SessionId, TaskId, ToolCallId, TurnId,
+        ValidationId, WorkerId,
     };
     use std::{
         collections::HashSet,
@@ -865,7 +870,7 @@ mod tests {
         }
     }
 
-    fn generate_all_types(generator: &TestIdGenerator) -> [Uuid; 27] {
+    fn generate_all_types(generator: &TestIdGenerator) -> [Uuid; 28] {
         let session_id: SessionId = generator.generate_session_id();
         let inbox_entry_id: InboxEntryId = generator.generate_inbox_entry_id();
         let event_id: EventId = generator.generate_event_id();
@@ -887,6 +892,7 @@ mod tests {
         let approval_id: ApprovalId = generator.generate_approval_id();
         let validation_id: ValidationId = generator.generate_validation_id();
         let delegation_id: DelegationId = generator.generate_delegation_id();
+        let delegation_group_id: DelegationGroupId = generator.generate_delegation_group_id();
         let memory_id: MemoryId = generator.generate_memory_id();
         let memory_revision_id: MemoryRevisionId = generator.generate_memory_revision_id();
         let compaction_id: CompactionId = generator.generate_compaction_id();
@@ -917,6 +923,7 @@ mod tests {
             approval_id.as_uuid(),
             validation_id.as_uuid(),
             delegation_id.as_uuid(),
+            delegation_group_id.as_uuid(),
             memory_id.as_uuid(),
             memory_revision_id.as_uuid(),
             compaction_id.as_uuid(),

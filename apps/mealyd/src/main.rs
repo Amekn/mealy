@@ -110,6 +110,9 @@ struct Arguments {
     /// Delay before the first provider/read-tool worker claim.
     #[arg(long, default_value_t = 250)]
     agent_delay_ms: u64,
+    /// Interval between bounded provider/read-tool worker claims.
+    #[arg(long, default_value_t = 25, hide = true)]
+    agent_interval_ms: u64,
     /// Test-only delay inside each deterministic fake-provider call.
     #[arg(long, default_value_t = 0)]
     fake_provider_delay_ms: u64,
@@ -773,6 +776,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     | "workspace.read"
                     | "workspace.search"
                     | mealy_application::AGENT_DELEGATE_TOOL_ID
+                    | mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
                     | "skill.read_resource"
                     | "web.fetch"
                     | "web.search"
@@ -824,6 +828,9 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 secret_references: daemon_config.web_access().capability_secret_references(),
                 profiles,
                 maximum_delegated_runs: daemon_config.agent_loop_limits().maximum_delegated_runs,
+                maximum_delegation_depth: u64::from(
+                    daemon_config.agent_loop_limits().maximum_delegated_runs > 0,
+                ),
             })?;
     }
     let promotion = (!arguments.safe_mode).then(|| {
@@ -920,7 +927,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     daemon_config.maximum_resource_class_invocations(),
                     Duration::from_millis(arguments.agent_delay_ms),
                     Duration::from_millis(arguments.agent_boundary_delay_ms),
-                    Duration::from_millis(25),
+                    Duration::from_millis(arguments.agent_interval_ms.max(1)),
                     shutdown_receiver.clone(),
                 ))
             })

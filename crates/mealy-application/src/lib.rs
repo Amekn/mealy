@@ -100,12 +100,18 @@ pub use context::{
 };
 pub use daemon_config::{DAEMON_CONFIG_FORMAT_VERSION, default_daemon_config_document};
 pub use delegation::{
+    AGENT_DELEGATE_GROUP_RESULT_LOCATOR, AGENT_DELEGATE_PARALLEL_TOOL_ID,
     AGENT_DELEGATE_RESULT_LOCATOR, AGENT_DELEGATE_TOOL_ID, AcquireResourceClaimCommit,
     AgentDelegationRequest, DELEGATION_CONTRACT_VERSION, DelegationStore, DelegationView,
-    LaunchAgentDelegationCommit, MAXIMUM_DELEGATION_CONTEXT_BYTES, MAXIMUM_DELEGATION_CRITERIA,
+    LaunchAgentDelegationCommit, LaunchParallelAgentDelegationCommit,
+    LaunchParallelDelegationChildCommit, MAXIMUM_DELEGATION_CHILD_KEY_BYTES,
+    MAXIMUM_DELEGATION_CONTEXT_BYTES, MAXIMUM_DELEGATION_CRITERIA,
     MAXIMUM_DELEGATION_INSTRUCTION_BYTES, MAXIMUM_DELEGATION_OBJECTIVE_BYTES,
-    PrepareDelegationCommit, RecordDelegationResultCommit, ResourceClass, StartDelegationCommit,
+    MAXIMUM_PARALLEL_DELEGATIONS, MINIMUM_PARALLEL_DELEGATIONS, ParallelAgentDelegationChild,
+    ParallelAgentDelegationRequest, PrepareDelegationCommit, RecordDelegationResultCommit,
+    ResourceClass, StartDelegationCommit, agent_delegate_parallel_tool_descriptor,
     agent_delegate_tool_descriptor, validate_delegation_commit,
+    validate_parallel_delegation_commit,
 };
 pub use digest::{SHA256_ALGORITHM, SHA256_DIGEST_HEX_LENGTH, is_sha256_digest, sha256_digest};
 pub use discord::{

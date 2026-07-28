@@ -1,5 +1,6 @@
 use super::SqliteStore;
 use mealy_application::{
+    AGENT_DELEGATE_GROUP_RESULT_LOCATOR, AGENT_DELEGATE_PARALLEL_TOOL_ID,
     AGENT_DELEGATE_RESULT_LOCATOR, AGENT_DELEGATE_TOOL_ID, AgentNextAction, CompleteRunCommit,
     HeartbeatCommit, LeaseClaimCommit, LeaseClaimOutcome, LeaseClaimReceipt, ReleaseLeaseCommit,
     RunCompletionReceipt, RunCompletionStatus, SchedulerStore, SchedulerStoreError, sha256_digest,
@@ -748,6 +749,10 @@ struct IncompleteModelSettlement {
 
 struct DelegatedParentCompletion {
     delegation_id: String,
+    group_id: String,
+    group_mode: String,
+    group_ordinal: i64,
+    child_key: String,
     parent_run_id: String,
     parent_task_id: String,
     parent_tool_call_id: String,
@@ -766,39 +771,48 @@ fn settle_delegated_child(
 ) -> Result<(), SchedulerStoreError> {
     let parent = transaction
         .query_row(
-            "SELECT delegation.id, delegation.parent_run_id, parent.task_id, \
-                    json_extract(delegation.context_package_json, '$.parentToolCallId'), \
+            "SELECT delegation.id, delegation.group_id, child_group.mode, \
+                    delegation.group_ordinal, delegation.child_key, \
+                    delegation.parent_run_id, parent.task_id, child_group.parent_tool_call_id, \
                     delegation.child_task_id, parent.correlation_id, \
                     parent.cancellation_requested_at_ms IS NOT NULL \
              FROM delegation \
+             JOIN delegation_group child_group ON child_group.id = delegation.group_id \
              JOIN run parent ON parent.id = delegation.parent_run_id \
              JOIN task parent_task ON parent_task.id = parent.task_id \
-             JOIN tool_call tool \
-               ON tool.tool_call_id = json_extract(\
-                    delegation.context_package_json, '$.parentToolCallId') \
-              AND tool.run_id = parent.id AND tool.tool_id = ?1 AND tool.state = 'running' \
+             JOIN tool_call tool ON tool.tool_call_id = child_group.parent_tool_call_id \
+              AND tool.run_id = parent.id \
+              AND tool.tool_id = CASE child_group.mode \
+                    WHEN 'serial' THEN ?1 ELSE ?2 END \
+              AND tool.state = 'running' \
              JOIN run_loop_state loop ON loop.run_id = parent.id \
                AND loop.next_action = 'dispatch_read_tool' \
                AND loop.current_tool_call_id = tool.tool_call_id \
-             WHERE delegation.child_run_id = ?2 AND delegation.child_task_id = ?3 \
-               AND delegation.state = 'running' AND parent.status = 'waiting' \
+             WHERE delegation.child_run_id = ?3 AND delegation.child_task_id = ?4 \
+               AND delegation.state = 'running' AND child_group.state = 'active' \
+               AND parent.status = 'waiting' \
                AND parent_task.status IN ('waiting', 'cancelling') \
                AND NOT EXISTS(SELECT 1 FROM work_lease lease \
                               WHERE lease.run_id = parent.id AND lease.state = 'active')",
             params![
                 AGENT_DELEGATE_TOOL_ID,
+                AGENT_DELEGATE_PARALLEL_TOOL_ID,
                 commit.fence.run_id().to_string(),
                 row.task_id,
             ],
             |result| {
                 Ok(DelegatedParentCompletion {
                     delegation_id: result.get(0)?,
-                    parent_run_id: result.get(1)?,
-                    parent_task_id: result.get(2)?,
-                    parent_tool_call_id: result.get(3)?,
-                    child_task_id: result.get(4)?,
-                    correlation_id: result.get(5)?,
-                    cancellation_requested: result.get::<_, i64>(6)? != 0,
+                    group_id: result.get(1)?,
+                    group_mode: result.get(2)?,
+                    group_ordinal: result.get(3)?,
+                    child_key: result.get(4)?,
+                    parent_run_id: result.get(5)?,
+                    parent_task_id: result.get(6)?,
+                    parent_tool_call_id: result.get(7)?,
+                    child_task_id: result.get(8)?,
+                    correlation_id: result.get(9)?,
+                    cancellation_requested: result.get::<_, i64>(10)? != 0,
                 })
             },
         )
@@ -808,15 +822,35 @@ fn settle_delegated_child(
     if parent.child_task_id != row.task_id {
         return Err(invariant("delegated child task linkage diverged"));
     }
-    let result = json!({
-        "contractVersion": "mealy.delegation-result.v1",
-        "delegationId": parent.delegation_id,
-        "childTaskId": row.task_id,
-        "childRunId": commit.fence.run_id(),
-        "status": commit.status.as_str(),
-        "summary": commit.summary,
-        "sourceLocator": AGENT_DELEGATE_RESULT_LOCATOR,
-    });
+    let parent_summary = if parent.group_mode == "parallel" {
+        bounded_utf8(&commit.summary, 6 * 1024)
+    } else {
+        commit.summary.clone()
+    };
+    let result = if parent.group_mode == "parallel" {
+        json!({
+            "contractVersion": "mealy.delegation-result.v1",
+            "delegationId": parent.delegation_id,
+            "delegationGroupId": parent.group_id,
+            "groupOrdinal": parent.group_ordinal,
+            "childKey": parent.child_key,
+            "childTaskId": row.task_id,
+            "childRunId": commit.fence.run_id(),
+            "status": commit.status.as_str(),
+            "summary": parent_summary,
+            "sourceLocator": AGENT_DELEGATE_RESULT_LOCATOR,
+        })
+    } else {
+        json!({
+            "contractVersion": "mealy.delegation-result.v1",
+            "delegationId": parent.delegation_id,
+            "childTaskId": row.task_id,
+            "childRunId": commit.fence.run_id(),
+            "status": commit.status.as_str(),
+            "summary": parent_summary,
+            "sourceLocator": AGENT_DELEGATE_RESULT_LOCATOR,
+        })
+    };
     let result_json = result.to_string();
     if result_json.is_empty() || result_json.len() > 64 * 1024 {
         return Err(invariant(
@@ -824,8 +858,6 @@ fn settle_delegated_child(
         ));
     }
     let result_digest = sha256_digest(result_json.as_bytes());
-    let result_size = i64::try_from(result_json.len())
-        .map_err(|_| invariant("delegated child result size exceeds SQLite"))?;
     let delegation_changed = transaction
         .execute(
             "UPDATE delegation SET state = ?1, result_json = ?2, result_digest = ?3, \
@@ -842,6 +874,67 @@ fn settle_delegated_child(
             ],
         )
         .map_err(map_sqlite_error)?;
+    let child_budget_changed = transaction
+        .execute(
+            "UPDATE run_budget_usage SET revision = revision + 1, \
+                reserved_delegated_runs = reserved_delegated_runs - 1, \
+                used_delegated_runs = used_delegated_runs + 1 \
+             WHERE run_id = ?1 AND reserved_delegated_runs >= 1",
+            [parent.parent_run_id.as_str()],
+        )
+        .map_err(map_sqlite_error)?;
+    if delegation_changed != 1 || child_budget_changed != 1 {
+        return Err(invariant(
+            "delegated child result and reservation were not current together",
+        ));
+    }
+    let correlation_id = parse_id(&parent.correlation_id, "parent correlation ID")?;
+    super::agent::append_agent_event(
+        transaction,
+        commit.delegation_event_id,
+        "delegation",
+        &parent.delegation_id,
+        match commit.status {
+            RunCompletionStatus::Succeeded => "delegation.succeeded",
+            RunCompletionStatus::Failed => "delegation.failed",
+            RunCompletionStatus::Cancelled => "delegation.cancelled",
+        },
+        completed_at_ms,
+        correlation_id,
+        json!({
+            "child_run_id": commit.fence.run_id(),
+            "fencing_token": child_token,
+            "group_id": parent.group_id,
+            "group_ordinal": parent.group_ordinal,
+            "result_digest": result_digest,
+            "status": commit.status.as_str(),
+            "parent_run_id": parent.parent_run_id,
+        }),
+    )
+    .map_err(|error| invariant(format!("delegation event failed: {error}")))?;
+    let active_siblings: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM delegation \
+             WHERE group_id = ?1 AND state IN ('queued', 'running')",
+            [parent.group_id.as_str()],
+            |result| result.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if active_siblings != 0 {
+        return Ok(());
+    }
+
+    let (parent_result_json, source_locator) =
+        delegation_group_result(transaction, &parent, &result_json)?;
+    let parent_result_digest = sha256_digest(parent_result_json.as_bytes());
+    let parent_result_size = i64::try_from(parent_result_json.len())
+        .map_err(|_| invariant("delegation group result size exceeds SQLite"))?;
+    let group_changed = super::delegation::settle_terminal_delegation_group(
+        transaction,
+        parse_id(&parent.delegation_id, "delegation ID")?,
+        completed_at_ms,
+    )
+    .map_err(|error| invariant(format!("delegation group settlement failed: {error}")))?;
     let tool_changed = transaction
         .execute(
             "UPDATE tool_call SET state = 'succeeded', completed_at_ms = ?1, \
@@ -851,27 +944,24 @@ fn settle_delegated_child(
                AND started_at_ms + timeout_ms >= ?1",
             params![
                 completed_at_ms,
-                result_json,
-                result_digest,
-                result_size,
-                AGENT_DELEGATE_RESULT_LOCATOR,
+                parent_result_json,
+                parent_result_digest,
+                parent_result_size,
+                source_locator,
                 parent.parent_tool_call_id,
                 parent.parent_run_id,
             ],
         )
         .map_err(map_sqlite_error)?;
-    let budget_changed = transaction
+    let tool_budget_changed = transaction
         .execute(
             "UPDATE run_budget_usage SET revision = revision + 1, \
-                reserved_delegated_runs = reserved_delegated_runs - 1, \
-                used_delegated_runs = used_delegated_runs + 1, \
                 reserved_tool_calls = reserved_tool_calls - 1, \
                 used_tool_calls = used_tool_calls + 1, \
                 used_output_bytes = used_output_bytes + ?1 \
-             WHERE run_id = ?2 AND reserved_delegated_runs >= 1 \
-               AND reserved_tool_calls >= 1 \
+             WHERE run_id = ?2 AND reserved_tool_calls >= 1 \
                AND used_output_bytes + reserved_output_bytes + ?1 <= maximum_output_bytes",
-            params![result_size, parent.parent_run_id],
+            params![parent_result_size, parent.parent_run_id],
         )
         .map_err(map_sqlite_error)?;
     let loop_changed = transaction
@@ -920,36 +1010,32 @@ fn settle_delegated_child(
         .map_err(map_sqlite_error)?;
     if [
         delegation_changed,
+        child_budget_changed,
+        group_changed,
         tool_changed,
-        budget_changed,
+        tool_budget_changed,
         loop_changed,
         parent_run_changed,
         parent_task_changed,
-    ] != [1, 1, 1, 1, 1, 1]
+    ] != [1, 1, 1, 1, 1, 1, 1, 1]
     {
         return Err(invariant(
             "delegated child result and parent resume were not current together",
         ));
     }
-    let correlation_id = parse_id(&parent.correlation_id, "parent correlation ID")?;
     super::agent::append_agent_event(
         transaction,
-        commit.delegation_event_id,
-        "delegation",
-        &parent.delegation_id,
-        match commit.status {
-            RunCompletionStatus::Succeeded => "delegation.succeeded",
-            RunCompletionStatus::Failed => "delegation.failed",
-            RunCompletionStatus::Cancelled => "delegation.cancelled",
-        },
+        commit.delegation_group_event_id,
+        "delegation_group",
+        &parent.group_id,
+        "delegation_group.settled",
         completed_at_ms,
         correlation_id,
         json!({
-            "child_run_id": commit.fence.run_id(),
-            "fencing_token": child_token,
-            "result_digest": result_digest,
-            "status": commit.status.as_str(),
             "parent_run_id": parent.parent_run_id,
+            "parent_tool_call_id": parent.parent_tool_call_id,
+            "result_digest": parent_result_digest,
+            "source_locator": source_locator,
         }),
     )
     .map_err(|error| invariant(format!("delegation event failed: {error}")))?;
@@ -963,10 +1049,10 @@ fn settle_delegated_child(
         correlation_id,
         json!({
             "run_id": parent.parent_run_id,
-            "output_digest": result_digest,
-            "output_size_bytes": result_size,
+            "output_digest": parent_result_digest,
+            "output_size_bytes": parent_result_size,
             "output_media_type": "application/json",
-            "source_locator": AGENT_DELEGATE_RESULT_LOCATOR,
+            "source_locator": source_locator,
             "artifact_id": Value::Null,
         }),
     )
@@ -980,8 +1066,7 @@ fn settle_delegated_child(
         completed_at_ms,
         correlation_id,
         json!({
-            "delegation_id": parent.delegation_id,
-            "child_run_id": commit.fence.run_id(),
+            "delegation_group_id": parent.group_id,
             "cancelled_parent": parent.cancellation_requested,
         }),
     )
@@ -995,7 +1080,7 @@ fn settle_delegated_child(
         completed_at_ms,
         correlation_id,
         json!({
-            "delegation_id": parent.delegation_id,
+            "delegation_group_id": parent.group_id,
             "run_id": parent.parent_run_id,
             "status": resumed_task_status,
         }),
@@ -1014,6 +1099,84 @@ fn settle_delegated_child(
         json!({"reason": "tool_result_committed"}),
     )
     .map_err(|error| invariant(format!("parent delegation checkpoint failed: {error}")))
+}
+
+fn delegation_group_result(
+    transaction: &Transaction<'_>,
+    parent: &DelegatedParentCompletion,
+    serial_result_json: &str,
+) -> Result<(String, &'static str), SchedulerStoreError> {
+    if parent.group_mode == "serial" {
+        return Ok((serial_result_json.to_owned(), AGENT_DELEGATE_RESULT_LOCATOR));
+    }
+    if parent.group_mode != "parallel" {
+        return Err(invariant("delegation group mode is invalid"));
+    }
+    let mut statement = transaction
+        .prepare(
+            "SELECT child_key, id, child_task_id, child_run_id, state, result_json \
+             FROM delegation WHERE group_id = ?1 ORDER BY group_ordinal, id",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([parent.group_id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    let delegations = rows
+        .into_iter()
+        .map(
+            |(child_key, delegation_id, child_task_id, child_run_id, status, result_json)| {
+                let result = serde_json::from_str::<Value>(&result_json)
+                    .map_err(|_| invariant("stored parallel child result is invalid"))?;
+                let summary = result["summary"]
+                    .as_str()
+                    .ok_or_else(|| invariant("stored parallel child summary is invalid"))?;
+                Ok(json!({
+                    "childKey": child_key,
+                    "delegationId": delegation_id,
+                    "childTaskId": child_task_id,
+                    "childRunId": child_run_id,
+                    "status": status,
+                    "summary": summary,
+                }))
+            },
+        )
+        .collect::<Result<Vec<_>, SchedulerStoreError>>()?;
+    let result = json!({
+        "contractVersion": "mealy.delegation-group-result.v1",
+        "parentToolCallId": parent.parent_tool_call_id,
+        "status": "all_terminal",
+        "delegations": delegations,
+        "sourceLocator": AGENT_DELEGATE_GROUP_RESULT_LOCATOR,
+    })
+    .to_string();
+    if result.len() > 64 * 1024 {
+        return Err(invariant(
+            "parallel delegation group result exceeds the parent tool-output bound",
+        ));
+    }
+    Ok((result, AGENT_DELEGATE_GROUP_RESULT_LOCATOR))
+}
+
+fn bounded_utf8(value: &str, maximum_bytes: usize) -> String {
+    if value.len() <= maximum_bytes {
+        return value.to_owned();
+    }
+    let mut boundary = maximum_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value[..boundary].to_owned()
 }
 
 fn append_completion_events(

@@ -3040,7 +3040,20 @@ mod tests {
         let connection = rusqlite::Connection::open(&database).expect("downgrade fixture");
         connection
             .execute_batch(
-                "DROP INDEX run_terminal_completion_idx;
+                "DROP TRIGGER delegation_group_child_insert;
+                 DROP TRIGGER delegation_group_identity_immutable;
+                 DROP TRIGGER delegation_group_contract_immutable;
+                 DROP TRIGGER delegation_group_settlement;
+                 DROP TRIGGER delegation_group_no_reopen;
+                 DROP TRIGGER delegation_group_no_delete;
+                 DROP INDEX delegation_group_ordinal_idx;
+                 DROP INDEX delegation_group_child_key_idx;
+                 DROP INDEX delegation_group_parent_state_idx;
+                 ALTER TABLE delegation DROP COLUMN group_id;
+                 ALTER TABLE delegation DROP COLUMN group_ordinal;
+                 ALTER TABLE delegation DROP COLUMN child_key;
+                 DROP TABLE delegation_group;
+                 DROP INDEX run_terminal_completion_idx;
                  DROP TRIGGER session_provider_selection_insert_binding;
                  DROP TRIGGER session_provider_selection_update_binding;
                  DROP TRIGGER session_inbox_provider_selection_insert;
@@ -3062,7 +3075,7 @@ mod tests {
                  DROP TABLE discord_channel_health;
                  DROP TABLE discord_channel_cursor;
                  DROP TABLE discord_channel_binding;
-                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18);
+                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
@@ -3071,7 +3084,7 @@ mod tests {
             inspect_existing_schema_version(&database).expect("inspect"),
             Some(13)
         );
-        let report = create_pre_migration_backup(home.path(), &database, 13, 18, SystemTime::now())
+        let report = create_pre_migration_backup(home.path(), &database, 13, 19, SystemTime::now())
             .expect("migration backup");
         let snapshot = rusqlite::Connection::open(report.path.join("state.sqlite3"))
             .expect("open migration snapshot");
@@ -3190,7 +3203,20 @@ mod tests {
         let connection = rusqlite::Connection::open(&database).expect("downgrade fixture");
         connection
             .execute_batch(
-                "DROP INDEX run_terminal_completion_idx;
+                "DROP TRIGGER delegation_group_child_insert;
+                 DROP TRIGGER delegation_group_identity_immutable;
+                 DROP TRIGGER delegation_group_contract_immutable;
+                 DROP TRIGGER delegation_group_settlement;
+                 DROP TRIGGER delegation_group_no_reopen;
+                 DROP TRIGGER delegation_group_no_delete;
+                 DROP INDEX delegation_group_ordinal_idx;
+                 DROP INDEX delegation_group_child_key_idx;
+                 DROP INDEX delegation_group_parent_state_idx;
+                 ALTER TABLE delegation DROP COLUMN group_id;
+                 ALTER TABLE delegation DROP COLUMN group_ordinal;
+                 ALTER TABLE delegation DROP COLUMN child_key;
+                 DROP TABLE delegation_group;
+                 DROP INDEX run_terminal_completion_idx;
                  DROP TRIGGER session_provider_selection_insert_binding;
                  DROP TRIGGER session_provider_selection_update_binding;
                  DROP TRIGGER session_inbox_provider_selection_insert;
@@ -3212,13 +3238,13 @@ mod tests {
                  DROP TABLE discord_channel_health;
                  DROP TABLE discord_channel_cursor;
                  DROP TABLE discord_channel_binding;
-                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18);
+                 DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
         drop(connection);
         let migration =
-            create_pre_migration_backup(home.path(), &database, 13, 18, SystemTime::now())
+            create_pre_migration_backup(home.path(), &database, 13, 19, SystemTime::now())
                 .expect("migration backup");
         let migration_name = migration
             .path
@@ -3226,7 +3252,7 @@ mod tests {
             .and_then(|value| value.to_str())
             .expect("migration backup name")
             .to_owned();
-        drop(SqliteStore::open(&database, 2).expect("migrate active database to v18"));
+        drop(SqliteStore::open(&database, 2).expect("migrate active database to v19"));
         fs::write(
             home.path().join("newer-only.txt"),
             b"must remain in preserved migrated home",
@@ -3246,7 +3272,7 @@ mod tests {
         ));
         assert_eq!(
             inspect_existing_schema_version(&database).expect("active schema after denial"),
-            Some(18)
+            Some(19)
         );
         assert!(home.path().join("newer-only.txt").is_file());
 
@@ -3255,12 +3281,12 @@ mod tests {
             &migration_name,
             &migration.manifest_digest,
             13,
-            18,
+            19,
             SystemTime::now(),
         )
         .expect("activate migration backup");
         assert_eq!(activated.from_schema_version, 13);
-        assert_eq!(activated.to_schema_version, 18);
+        assert_eq!(activated.to_schema_version, 19);
         assert_eq!(activated.artifact_count, 1);
         assert_eq!(
             fs::read(home.path().join(&mcp_relative_path)).expect("restored MCP executable"),
@@ -3282,7 +3308,7 @@ mod tests {
         assert_eq!(
             inspect_existing_schema_version(&activated.preserved_home.join("mealy.sqlite3"))
                 .expect("preserved schema"),
-            Some(18)
+            Some(19)
         );
         assert!(activated.preserved_home.join("newer-only.txt").is_file());
         assert!(!home.path().join("newer-only.txt").exists());

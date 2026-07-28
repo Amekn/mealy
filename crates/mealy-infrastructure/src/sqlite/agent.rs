@@ -3525,11 +3525,14 @@ fn valid_recorded_read_tool_descriptor(descriptor: &ReadToolDescriptor) -> bool 
         && descriptor.conflict_key_template == "skill-resource:{skillId}:{path}";
     let delegation = descriptor.version == "1"
         && descriptor.risk_class == "low"
-        && descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID
         && descriptor.required_capability == "agent:delegate"
         && descriptor.timeout == Duration::from_mins(5)
-        && descriptor.maximum_output_bytes == 64 * 1024
-        && descriptor.conflict_key_template == "agent-delegate:{objective}";
+        && ((descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID
+            && descriptor.maximum_output_bytes == 64 * 1024
+            && descriptor.conflict_key_template == "agent-delegate:{objective}")
+            || (descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+                && descriptor.maximum_output_bytes == 64 * 1024
+                && descriptor.conflict_key_template == "agent-delegate-parallel"));
     let browser = matches!(descriptor.version.as_str(), "1" | "2" | "3" | "4")
         && descriptor.risk_class == "medium"
         && descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
@@ -3613,7 +3616,11 @@ fn read_tool_policy(descriptor: &ReadToolDescriptor) -> Option<(&'static str, &'
             "mealy.read-tools.v1",
             "allow: enabled passive skill resource",
         ))
-    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
+    } else if matches!(
+        descriptor.tool_id.as_str(),
+        mealy_application::AGENT_DELEGATE_TOOL_ID
+            | mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+    ) {
         Some((
             "mealy.read-tools.v1",
             "allow: bounded isolated internal child run",
@@ -3639,6 +3646,10 @@ fn validated_read_tool_source_locator(
         mealy_application::AgentDelegationRequest::from_arguments(arguments)
             .ok()
             .map(|_| mealy_application::AGENT_DELEGATE_RESULT_LOCATOR.to_owned())
+    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        mealy_application::ParallelAgentDelegationRequest::from_arguments(arguments)
+            .ok()
+            .map(|_| mealy_application::AGENT_DELEGATE_GROUP_RESULT_LOCATOR.to_owned())
     } else if descriptor.tool_id.starts_with("mcp.") {
         jsonschema::validator_for(&descriptor.input_schema)
             .ok()
@@ -3698,7 +3709,15 @@ fn read_tool_within_capability_ceiling(
         true
     } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
         capability.maximum_delegated_runs > 0
+            && capability.maximum_delegation_depth > 0
             && mealy_application::AgentDelegationRequest::from_arguments(arguments).is_ok()
+    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        capability.maximum_delegation_depth > 0
+            && mealy_application::ParallelAgentDelegationRequest::from_arguments(arguments)
+                .is_ok_and(|request| {
+                    u64::try_from(request.delegations.len())
+                        .is_ok_and(|fanout| fanout <= capability.maximum_delegated_runs)
+                })
     } else {
         descriptor.tool_id == "fixture.read"
             && capability.workspace_roots.is_empty()
@@ -4360,37 +4379,29 @@ fn request_task_cancellation(
         return Err(AgentStoreError::Conflict);
     }
     let correlation_id = parse_id(&row.2, "correlation ID")?;
-    let active_delegations = transaction
-        .query_row(
-            "SELECT COUNT(*), MIN(delegation.id), MIN(delegation.child_run_id), \
-                    MIN(delegation.child_task_id) \
-             FROM delegation \
-             WHERE delegation.parent_run_id = ?1 \
-               AND delegation.state IN ('queued', 'running')",
-            [row.0.as_str()],
-            |result| {
+    let active_delegations = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT delegation.id, delegation.child_run_id, delegation.child_task_id \
+                 FROM delegation \
+                 WHERE delegation.parent_run_id = ?1 \
+                   AND delegation.state IN ('queued', 'running') \
+                 ORDER BY delegation.group_id, delegation.group_ordinal, delegation.id",
+            )
+            .map_err(map_sqlite_error)?;
+        statement
+            .query_map([row.0.as_str()], |result| {
                 Ok((
-                    result.get::<_, i64>(0)?,
-                    result.get::<_, Option<String>>(1)?,
-                    result.get::<_, Option<String>>(2)?,
-                    result.get::<_, Option<String>>(3)?,
+                    result.get::<_, String>(0)?,
+                    result.get::<_, String>(1)?,
+                    result.get::<_, String>(2)?,
                 ))
-            },
-        )
-        .map_err(map_sqlite_error)?;
-    if active_delegations.0 > 1 {
-        return Err(invariant(
-            "one waiting parent owns multiple active delegated children",
-        ));
-    }
-    let active_delegation = match active_delegations {
-        (0, None, None, None) => None,
-        (1, Some(delegation_id), Some(child_run_id), Some(child_task_id)) => {
-            Some((delegation_id, child_run_id, child_task_id))
-        }
-        _ => return Err(invariant("active delegation linkage is incomplete")),
+            })
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)?
     };
-    if let Some((delegation_id, child_run_id, child_task_id)) = &active_delegation {
+    for (_, child_run_id, child_task_id) in &active_delegations {
         let child_run_changed = transaction
             .execute(
                 "UPDATE run SET cancellation_requested_at_ms = COALESCE(\
@@ -4422,17 +4433,31 @@ fn request_task_cancellation(
         if child_run_changed != 1 || child_task_changed != 1 {
             return Err(AgentStoreError::Conflict);
         }
+    }
+    if !active_delegations.is_empty() {
+        let delegation_ids = active_delegations
+            .iter()
+            .map(|value| value.0.as_str())
+            .collect::<Vec<_>>();
+        let child_run_ids = active_delegations
+            .iter()
+            .map(|value| value.1.as_str())
+            .collect::<Vec<_>>();
+        let child_task_ids = active_delegations
+            .iter()
+            .map(|value| value.2.as_str())
+            .collect::<Vec<_>>();
         append_agent_event(
             &transaction,
             commit.approval_event_id,
             "run",
-            child_run_id,
-            "run.cancellation_requested_by_parent",
+            &row.0,
+            "run.child_cancellations_requested",
             requested_at_ms,
             correlation_id,
             json!({
-                "delegation_id": delegation_id,
-                "parent_run_id": row.0,
+                "delegation_ids": delegation_ids,
+                "child_run_ids": child_run_ids,
                 "reason": commit.reason,
             }),
         )?;
@@ -4440,13 +4465,13 @@ fn request_task_cancellation(
             &transaction,
             commit.effect_event_id,
             "task",
-            child_task_id,
-            "task.cancellation_requested_by_parent",
+            &commit.task_id.to_string(),
+            "task.child_cancellations_requested",
             requested_at_ms,
             correlation_id,
             json!({
-                "delegation_id": delegation_id,
-                "parent_task_id": commit.task_id,
+                "delegation_ids": delegation_ids,
+                "child_task_ids": child_task_ids,
                 "reason": commit.reason,
             }),
         )?;
@@ -4462,7 +4487,7 @@ fn request_task_cancellation(
     )
     .map_err(super::agent_effect::map_effect_error)?;
     if row.1 == "waiting" {
-        let waiting_for_delegation = active_delegation.is_some();
+        let waiting_for_delegation = !active_delegations.is_empty();
         if !waiting_for_delegation {
             let requeued = transaction
                 .execute(
@@ -4494,7 +4519,8 @@ fn request_task_cancellation(
             correlation_id,
             json!({
                 "effect_id": cancelled_effect,
-                "delegation_id": active_delegation.as_ref().map(|value| value.0.as_str()),
+                "delegation_ids": active_delegations.iter()
+                    .map(|value| value.0.as_str()).collect::<Vec<_>>(),
                 "reason": "task_cancellation_requested",
             }),
         )?;
@@ -5780,8 +5806,18 @@ fn declared_read_tool_within_capability(tool_id: &str, capability: &CapabilityGr
                 && !capability.secret_references.is_empty()
         } else if tool_id == "skill.read_resource" || tool_id.starts_with("mcp.") {
             true
-        } else if tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
-            capability.maximum_delegated_runs > 0
+        } else if matches!(
+            tool_id,
+            mealy_application::AGENT_DELEGATE_TOOL_ID
+                | mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+        ) {
+            capability.maximum_delegation_depth > 0
+                && capability.maximum_delegated_runs
+                    >= if tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+                        2
+                    } else {
+                        1
+                    }
         } else {
             tool_id == "fixture.read"
         }
