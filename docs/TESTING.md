@@ -175,7 +175,11 @@ grants.
 `apps/mealyctl/tests/mcp_configuration.rs` crosses the stopped-home client boundary. It proves
 read-only listing, approval-before-execution/mutation, exact selected-tool/static-resource/prompt
 publication, disable/re-enable/revoke semantics, live complete-catalog verification, and retained
-configuration history. Infrastructure HTTP fixtures additionally prove paginated
+configuration history. The same real client boundary proves OAuth metadata inspection leaves both
+configuration and the credential broker unchanged. Infrastructure OAuth fixtures prove bounded
+multi-scheme challenge parsing, advertised and path/root protected-resource metadata discovery,
+exact resource and issuer binding, explicit multi-issuer selection, OAuth/OIDC discovery order,
+authorization-code support, and mandatory PKCE S256. Infrastructure HTTP fixtures additionally prove paginated
 tool/resource/resource-template/prompt discovery, exact resource reads, prompt argument fencing,
 untrusted-evidence normalization, authority-bound durable descriptors, and fail-closed catalog
 drift. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable` scenario in

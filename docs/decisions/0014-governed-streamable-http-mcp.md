@@ -2,9 +2,10 @@
 
 Status: Accepted (2026-07-29)
 
-Implementation status: transport, complete catalog pinning, exact static-resource reads, and exact
-prompt retrieval are implemented. Resource-template invocation/subscriptions, resumable GET,
-OAuth, health, and effectful calls remain subsequent slices.
+Implementation status: transport, complete catalog pinning, exact static-resource reads, exact
+prompt retrieval, and non-mutating OAuth protected-resource/authorization-server metadata
+discovery are implemented. OAuth registration/login/token lifecycle, resource-template
+invocation/subscriptions, resumable GET, health, and effectful calls remain subsequent slices.
 
 ## Context
 
@@ -143,3 +144,11 @@ the external action did not occur.
   guarantees rather than creating a weaker second effect system.
 - The first implementation can land in independently testable slices:
   transport/inventory, resources/prompts, OAuth, then effectful calls.
+
+The first OAuth slice deliberately stops before authorization. `oauth-inspect` sends one
+unauthenticated protected-resource probe, prefers an advertised `resource_metadata` challenge,
+falls back through the required path-scoped then root well-known URLs, validates the exact resource
+audience, and discovers OAuth or OpenID issuer metadata in specification order. Every fetch is
+bounded, redirect/proxy free, SSRF checked, and DNS pinned. Multiple issuers require an exact owner
+selection, and missing authorization-code or PKCE S256 support fails closed. It creates no client,
+browser flow, state, verifier, code, token, broker entry, configuration, or model authority.

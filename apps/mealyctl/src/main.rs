@@ -13,14 +13,14 @@ use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
     BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpHttpAuthentication,
-    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant,
-    McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolGrant, MessageRole,
-    ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference, ProviderRequest,
-    ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
-    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
+    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolGrant,
+    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
+    ProviderRequest, ProviderResponse, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
+    default_daemon_config_document, is_sha256_digest, sha256_digest, valid_provider_secret_id,
+    valid_session_metadata, validate_discord_snowflake, validate_mcp_http_server_set,
+    validate_mcp_server_set, validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
     AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
@@ -31,11 +31,11 @@ use mealy_infrastructure::{
     FileProviderSecretStore, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
     MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, ProviderSecretStoreError,
     SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
-    browser_worker_main, discover_mcp_http_server, discover_mcp_stdio_server,
-    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
-    inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
-    probe_browser_bundle_product, publish_browser_bundle, publish_skill_package,
-    verify_browser_runtime_installation,
+    browser_worker_main, discover_mcp_http_server, discover_mcp_oauth_metadata,
+    discover_mcp_stdio_server, inspect_browser_bundle, inspect_mcp_http_endpoint,
+    inspect_skill_package, inspect_subscription_cli_executable, is_trusted_system_executable,
+    mcp_stdio_launcher_main, probe_browser_bundle_product, publish_browser_bundle,
+    publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -1249,6 +1249,7 @@ enum ConfigCommand {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum McpHttpAction {
     Inspect,
+    OauthInspect,
     Add,
     Enable,
     Disable,
@@ -1269,6 +1270,9 @@ struct McpHttpOptions {
     /// Environment variable holding the bearer token for inspection/import.
     #[arg(long)]
     bearer_credential_env: Option<String>,
+    /// Exact issuer to select when protected-resource metadata advertises more than one.
+    #[arg(long)]
+    authorization_server: Option<String>,
     /// Exact reviewed remote tool name; repeat for add.
     #[arg(long = "allow-tool")]
     allow_tools: Vec<String>,
@@ -11544,6 +11548,16 @@ struct McpHttpInspectionResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct McpOAuthInspectionResponse {
+    server_id: String,
+    endpoint: String,
+    transport: &'static str,
+    mutation: &'static str,
+    discovery: McpOAuthMetadataDiscovery,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct McpHttpConfigurationResponse {
     server_id: String,
     operation: String,
@@ -11975,6 +11989,7 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
     match options.action {
         McpHttpAction::Inspect
             if options.endpoint.is_some()
+                && options.authorization_server.is_none()
                 && options.allow_tools.is_empty()
                 && options.allow_resources.is_empty()
                 && options.allow_prompts.is_empty()
@@ -11989,19 +12004,40 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
                 credential_environment,
             )
         }
-        McpHttpAction::Add if options.endpoint.is_some() => configure_mcp_http_add(
-            home,
-            &options.server_id,
-            options.endpoint.as_deref().expect("guarded endpoint"),
-            options.bearer_secret_id.as_deref(),
-            credential_environment,
-            &options.allow_tools,
-            &options.allow_resources,
-            &options.allow_prompts,
-            options.timeout_ms.unwrap_or(30_000),
-            options.maximum_output_bytes.unwrap_or(262_144),
-            options.approve,
-        ),
+        McpHttpAction::OauthInspect
+            if options.endpoint.is_some()
+                && options.bearer_secret_id.is_none()
+                && options.bearer_credential_env.is_none()
+                && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none()
+                && !options.approve =>
+        {
+            inspect_mcp_oauth_server(
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.authorization_server.as_deref(),
+            )
+        }
+        McpHttpAction::Add
+            if options.endpoint.is_some() && options.authorization_server.is_none() =>
+        {
+            configure_mcp_http_add(
+                home,
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.bearer_secret_id.as_deref(),
+                credential_environment,
+                &options.allow_tools,
+                &options.allow_resources,
+                &options.allow_prompts,
+                options.timeout_ms.unwrap_or(30_000),
+                options.maximum_output_bytes.unwrap_or(262_144),
+                options.approve,
+            )
+        }
         McpHttpAction::Enable if valid_mcp_http_lifecycle_options(options) => {
             configure_mcp_http_enabled(home, &options.server_id, true, options.approve)
         }
@@ -12019,6 +12055,7 @@ fn valid_mcp_http_lifecycle_options(options: &McpHttpOptions) -> bool {
     options.endpoint.is_none()
         && options.bearer_secret_id.is_none()
         && options.bearer_credential_env.is_none()
+        && options.authorization_server.is_none()
         && options.allow_tools.is_empty()
         && options.allow_resources.is_empty()
         && options.allow_prompts.is_empty()
@@ -15269,6 +15306,27 @@ fn inspect_mcp_http_server(
         endpoint: proposal.endpoint().to_owned(),
         authentication,
         transport: "streamable_http_2025_11_25_fresh_session_redirect_free_dns_pinned",
+        discovery,
+    })
+}
+
+fn inspect_mcp_oauth_server(
+    server_id: &str,
+    endpoint: &str,
+    authorization_server: Option<&str>,
+) -> Result<(), CliError> {
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        McpHttpAuthentication::None,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let discovery = discover_mcp_oauth_metadata(&proposal, authorization_server)?;
+    print_json(McpOAuthInspectionResponse {
+        server_id: proposal.server_id().to_owned(),
+        endpoint: proposal.endpoint().to_owned(),
+        transport: "streamable_http_oauth_2025_11_25_redirect_free_dns_pinned",
+        mutation: "none_metadata_discovery_only",
         discovery,
     })
 }

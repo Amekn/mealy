@@ -310,6 +310,77 @@ fn mcp_http_add_selects_exact_resources_and_prompts_from_the_complete_catalog() 
     server.join().expect("HTTP catalog fixture server");
 }
 
+#[test]
+fn mcp_http_oauth_inspect_is_non_mutating_and_reports_pinned_discovery() {
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    let config = serde_json::to_vec_pretty(&default_config()).expect("config bytes");
+    fs::write(home.path().join("config.json"), &config).expect("write config");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind OAuth fixture");
+    let address = listener.local_addr().expect("OAuth fixture address");
+    let origin = format!("http://{address}");
+    let endpoint = format!("{origin}/mcp");
+    let origin_for_worker = origin.clone();
+    let server = thread::spawn(move || {
+        let responses = [
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"{origin_for_worker}/.well-known/oauth-protected-resource/mcp\", scope=\"files:read\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "resource": format!("{origin_for_worker}/mcp"),
+                    "authorization_servers": [origin_for_worker],
+                    "scopes_supported": ["files:read"]
+                }),
+                None,
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "issuer": origin_for_worker,
+                    "authorization_endpoint": format!("{origin_for_worker}/authorize"),
+                    "token_endpoint": format!("{origin_for_worker}/token"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"]
+                }),
+                None,
+            ),
+        ];
+        for response in responses {
+            let (mut stream, _) = listener.accept().expect("accept OAuth fixture request");
+            read_http_request(&mut stream);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write OAuth fixture response");
+        }
+    });
+    let inspected = command(
+        home.path(),
+        &["mcp-http", "oauth-inspect", "oauth", endpoint.as_str()],
+    );
+    assert!(
+        inspected.status.success(),
+        "OAuth inspect failed: {}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let response: Value = serde_json::from_slice(&inspected.stdout).expect("inspect response");
+    assert_eq!(response["mutation"], "none_metadata_discovery_only");
+    assert_eq!(response["discovery"]["resource"], endpoint);
+    assert_eq!(response["discovery"]["selectedAuthorizationServer"], origin);
+    assert_eq!(
+        response["discovery"]["codeChallengeMethodsSupported"],
+        json!(["S256"])
+    );
+    assert_eq!(
+        fs::read(home.path().join("config.json")).expect("unchanged config"),
+        config
+    );
+    assert!(!home.path().join("provider-secrets").exists());
+    server.join().expect("OAuth fixture server");
+}
+
 fn fixture_config() -> McpServerConfig {
     let definition = json!({
         "name": "add",

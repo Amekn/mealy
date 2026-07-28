@@ -175,9 +175,15 @@ ceiling. Resolution rejects mixed/private/reserved answers and pins accepted add
 redirects are disabled. Required Origin/media/protocol/session headers are bounded, bearer and
 session values are sensitive zeroizing memory only, and every startup verification or call uses a
 fresh session. JSON/SSE parsers reject unsolicited server requests, inventory-change notifications,
-invalid correlation, unbounded events, catalog drift, and malformed results. The implemented slice
-does not grant OAuth, resource-template expansion/subscriptions, resumable GET, or effectful HTTP
-calls.
+invalid correlation, unbounded events, catalog drift, and malformed results. OAuth metadata
+inspection sends an unauthenticated bounded probe and validates an advertised protected-resource
+metadata URL or both required well-known fallbacks. Metadata fetches reuse the same redirect-free,
+proxy-free, SSRF-resistant DNS-pinned boundary; the advertised resource must exactly match the MCP
+endpoint, multiple issuers require owner selection, issuer metadata must match that selection, and
+authorization-code plus PKCE S256 support is mandatory. Inspection creates no client, state,
+verifier, code, token, broker entry, configuration, or authority. The implemented slice does not
+yet grant OAuth login/token lifecycle, resource-template expansion/subscriptions, resumable GET, or
+effectful HTTP calls.
 
 ### Parent model delegates hidden context or excess authority
 
@@ -515,6 +521,9 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
 - MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
   SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
   executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.
+  OAuth fixtures additionally prove bounded challenge parsing, path/root and OAuth/OIDC discovery
+  order, exact resource/issuer binding, explicit multi-issuer selection, PKCE S256 enforcement, and
+  metadata inspection without home or broker mutation.
 - The pinned real Headless Shell gate proves fresh-profile/CDP identity, rendering, safe exact-link
   same-origin navigation, exact form-free button activation plus submit-button denial, native
   text-control fill plus selected-field-only GET and POST/password/hidden-field denial, one bounded

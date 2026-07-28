@@ -1339,6 +1339,20 @@ export MCP_HTTP_BEARER_TOKEN
   --bearer-secret-id mcp.remote-tools
 ```
 
+For an OAuth-protected server, first inspect only its public authorization metadata:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-inspect \
+  remote-tools https://mcp.example.com/mcp
+```
+
+This command does not open a browser, create a client, request consent, exchange a code, store a
+token, change configuration, or expose a tool. It validates the `401` challenge, protected-resource
+metadata, exact MCP `resource` audience, OAuth/OIDC issuer metadata, authorization-code support,
+and mandatory PKCE S256 through the same redirect-free, proxy-free, SSRF-resistant pinned network
+boundary. If the resource advertises multiple issuers, rerun with the exact reviewed
+`--authorization-server URL`; Mealy never chooses one silently.
+
 Review every returned tool, resource, resource-template, and prompt definition, drain Mealy, then
 install only the exact operations you intend to expose. Repeat any selection flag as needed:
 
@@ -1380,9 +1394,12 @@ Disable or revoke a server while Mealy is stopped:
 ```
 
 Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
-credential and an exact live inventory match before publishing authority. OAuth authorization,
-resource-template expansion/subscriptions, resumable GET streams, and effectful MCP tools remain
-planned v0.4 slices and are not implied by bearer support. See the stable MCP
+credential and an exact live inventory match before publishing authority. OAuth metadata
+inspection is available, but registration, login, token storage/refresh/revocation, and OAuth-backed
+tool activation remain unavailable. Resource-template expansion/subscriptions, resumable GET
+streams, and effectful MCP tools are also planned v0.4 slices and are not implied by bearer support.
+See the stable MCP
+[authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
 [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and
 [schema](https://modelcontextprotocol.io/specification/2025-11-25/schema) references for the
 wire-level objects Mealy validates.

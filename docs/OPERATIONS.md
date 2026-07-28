@@ -710,9 +710,23 @@ endpoint destination and credential reference are bound to the durable descripto
 task ceiling. A changed endpoint, credential reference, protocol, inventory, definition, schema,
 or structured result fails closed.
 
+Before authorizing an OAuth-protected server, inspect its public metadata without mutation:
+
+```sh
+mealyctl --home "$HOME/.mealy" mcp-http oauth-inspect \
+  SERVER_ID https://mcp.example.com/mcp
+```
+
+The inspection proves the bounded `401` challenge, protected-resource metadata, exact resource
+audience, selected issuer, OAuth/OIDC metadata, authorization-code flow, and PKCE S256. Redirects,
+proxies, private destinations, mismatched resources/issuers, malformed metadata, and missing PKCE
+fail closed. Multiple advertised issuers require `--authorization-server EXACT_ISSUER`. This
+operation writes neither the Mealy home nor a credential broker.
+
 Use `mcp-http disable`, `mcp-http enable`, or `mcp-http revoke` with `--approve` while stopped.
-OAuth, resource-template expansion/subscriptions, resumable GET, and effectful HTTP MCP remain
-unavailable until their separate v0.4 contracts and recovery tests land.
+OAuth registration/login/token lifecycle and OAuth-backed activation remain unavailable after this
+metadata-only slice. Resource-template expansion/subscriptions, resumable GET, and effectful HTTP
+MCP also remain unavailable until their separate v0.4 contracts and recovery tests land.
 
 The optional rendered browser is a separate stopped-daemon authority and currently has release
 evidence on Linux x86_64. Fetch only the release-pinned Headless Shell archive with the managed

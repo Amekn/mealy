@@ -846,7 +846,7 @@ impl McpHttpServerConfig {
     }
 }
 
-fn validated_mcp_http_endpoint(value: &str) -> Option<Url> {
+pub(crate) fn validated_mcp_http_endpoint(value: &str) -> Option<Url> {
     if value.is_empty() || value.len() > MCP_MAXIMUM_HTTP_ENDPOINT_BYTES || value.trim() != value {
         return None;
     }

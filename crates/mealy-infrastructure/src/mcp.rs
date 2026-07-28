@@ -1575,6 +1575,8 @@ fn map_read_error(error: McpHostError, maximum: u64) -> ReadToolError {
         | McpHostError::Io(_)
         | McpHostError::InvalidProtocol
         | McpHostError::AuthorizationRequired
+        | McpHostError::InvalidOAuthMetadata
+        | McpHostError::OAuthAuthorizationServerSelectionRequired(_)
         | McpHostError::SessionExpired
         | McpHostError::HttpStatus(_)
         | McpHostError::ProcessFailed => {
@@ -2486,6 +2488,12 @@ pub enum McpHostError {
     /// Protected HTTP endpoint rejected the configured credential or requires owner authorization.
     #[error("MCP HTTP authorization is required")]
     AuthorizationRequired,
+    /// Protected-resource or authorization-server metadata is malformed or unsafe.
+    #[error("MCP OAuth metadata is invalid")]
+    InvalidOAuthMetadata,
+    /// More than one authorization server was advertised and owner selection is required.
+    #[error("MCP OAuth authorization-server selection is required from {0:?}")]
+    OAuthAuthorizationServerSelectionRequired(Vec<String>),
     /// Remote HTTP session no longer exists.
     #[error("MCP HTTP session expired")]
     SessionExpired,

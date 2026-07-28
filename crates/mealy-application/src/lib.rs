@@ -17,6 +17,7 @@ mod executor;
 mod extension;
 mod fixture_write;
 mod mcp;
+mod mcp_oauth;
 mod memory;
 mod operations;
 mod outbox;
@@ -181,6 +182,10 @@ pub use mcp::{
     mcp_resource_definition_digest, mcp_resource_template_definition_digest,
     mcp_tool_definition_digest, validate_mcp_http_server_set, validate_mcp_prompt_arguments,
     validate_mcp_server_set, validate_mcp_tool_arguments,
+};
+pub use mcp_oauth::{
+    MCP_OAUTH_MAXIMUM_AUTHORIZATION_SERVERS, MCP_OAUTH_MAXIMUM_METADATA_VALUES,
+    MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError,
 };
 pub use memory::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,

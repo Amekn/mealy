@@ -9,6 +9,7 @@ mod extension_host;
 mod fixture;
 mod maintenance;
 mod mcp;
+mod mcp_oauth;
 mod provider_secret;
 mod sandbox;
 mod skill_package;
@@ -49,6 +50,7 @@ pub use mcp::{
     discover_mcp_stdio_server, inspect_mcp_http_endpoint, load_mcp_http_read_tools,
     load_mcp_read_tools, mcp_stdio_launcher_main,
 };
+pub use mcp_oauth::discover_mcp_oauth_metadata;
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};
 pub use skill_package::{
