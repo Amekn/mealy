@@ -1525,6 +1525,7 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
     );
 
     assert_eq!(requests.load(Ordering::SeqCst), 71);
+    assert_dashboard_transcript_exports(&client, &dashboard_origin, &dashboard_token).await;
     let commands = commands.lock().expect("recorded commands");
     assert_eq!(commands.len(), 22);
     assert_eq!(
@@ -1666,6 +1667,93 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
     daemon.abort();
 }
 
+async fn assert_dashboard_transcript_exports(
+    client: &reqwest::Client,
+    dashboard_origin: &str,
+    dashboard_token: &str,
+) {
+    let unauthorized = client
+        .get(format!(
+            "{dashboard_origin}/api/sessions/{SESSION_ID}/exports/json"
+        ))
+        .send()
+        .await
+        .expect("unauthorized transcript export");
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    for (format, media_type) in [
+        (
+            "json",
+            "application/vnd.mealy.session-transcript+json; charset=utf-8",
+        ),
+        ("html", "text/html; charset=utf-8"),
+    ] {
+        let response = client
+            .get(format!(
+                "{dashboard_origin}/api/sessions/{SESSION_ID}/exports/{format}"
+            ))
+            .header("x-mealy-dashboard", dashboard_token)
+            .send()
+            .await
+            .expect("dashboard transcript export");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(media_type)
+        );
+        let expected_disposition =
+            format!("attachment; filename=\"mealy-session-{SESSION_ID}.{format}\"");
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_disposition.as_str())
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        let csp = response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(
+            csp,
+            Some("default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        );
+        let expected_digest = response
+            .headers()
+            .get("x-mealy-content-sha256")
+            .and_then(|value| value.to_str().ok())
+            .expect("transcript digest")
+            .to_owned();
+        let bytes = response.bytes().await.expect("transcript body");
+        assert_eq!(mealy_application::sha256_digest(&bytes), expected_digest);
+        assert!(
+            !bytes
+                .windows(DAEMON_TOKEN.len())
+                .any(|window| window == DAEMON_TOKEN.as_bytes())
+        );
+        if format == "json" {
+            let transcript: Value =
+                serde_json::from_slice(&bytes).expect("dashboard transcript JSON");
+            assert_eq!(transcript["sessionId"], SESSION_ID);
+            assert_eq!(transcript["schemaVersion"], "mealy.session-transcript.v1");
+        } else {
+            let transcript = std::str::from_utf8(&bytes).expect("dashboard transcript HTML");
+            assert!(transcript.contains(SESSION_ID));
+            assert!(!transcript.to_ascii_lowercase().contains("<script"));
+        }
+    }
+}
+
 fn extract_dashboard_token(html: &str) -> String {
     const PREFIX: &str = "const DASHBOARD_TOKEN = \"";
     let remainder = html.split_once(PREFIX).expect("token prefix").1;
@@ -1702,6 +1790,10 @@ async fn spawn_mock_daemon() -> (
         .route("/v1/sessions", get(sessions).post(create_session))
         .route("/v1/sessions/{session_id}/status", get(session_status))
         .route("/v1/sessions/{session_id}/timeline", get(timeline))
+        .route(
+            "/v1/sessions/{session_id}/exports/{format}",
+            get(session_transcript_export),
+        )
         .route("/v1/sessions/{session_id}/inputs", post(submit_input))
         .route("/v1/approvals", get(approvals))
         .route(
@@ -2154,6 +2246,90 @@ async fn session_status(
             "latestCursor": 1
         }),
     )
+}
+
+async fn session_transcript_export(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path((session_id, format)): Path<(String, String)>,
+) -> Response {
+    assert_eq!(session_id, SESSION_ID);
+    if !authenticate(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (content_type, extension, bytes) = match format.as_str() {
+        "json" => (
+            "application/vnd.mealy.session-transcript+json; charset=utf-8",
+            "json",
+            serde_json::to_vec(&session_transcript_value()).expect("transcript JSON"),
+        ),
+        "html" => (
+            "text/html; charset=utf-8",
+            "html",
+            format!(
+                "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" \
+                 content=\"default-src 'none'; base-uri 'none'; form-action 'none'; \
+                 frame-ancestors 'none'\"></head><body><p>mealy.session-transcript.v1</p>\
+                 <p>{SESSION_ID}</p><p>href=plain-text</p></body></html>\n"
+            )
+            .into_bytes(),
+        ),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let digest = mealy_application::sha256_digest(&bytes);
+    let disposition = format!("attachment; filename=\"mealy-session-{SESSION_ID}.{extension}\"");
+    let mut response = bytes.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        content_type.parse().expect("content type"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        disposition.parse().expect("content disposition"),
+    );
+    response.headers_mut().insert(
+        "x-mealy-content-sha256",
+        digest.parse().expect("content digest"),
+    );
+    response
+}
+
+fn session_transcript_value() -> Value {
+    json!({
+        "apiVersion": API_VERSION,
+        "schemaVersion": "mealy.session-transcript.v1",
+        "sessionId": SESSION_ID,
+        "title": "Review production readiness",
+        "titleSource": "owner",
+        "status": "active",
+        "revision": 3,
+        "createdAtMs": 1_800_000_000_000_i64,
+        "updatedAtMs": 1_800_000_000_010_i64,
+        "highWatermark": 1,
+        "lineage": {
+            "rootSessionId": SESSION_ID,
+            "parentSessionId": null,
+            "parentCheckpointId": null,
+            "parentCheckpointCursor": null,
+            "forkEventId": null
+        },
+        "bounds": {
+            "maximumTurns": 1_000,
+            "maximumContentBytes": 4_194_304,
+            "totalEligibleTurns": 0,
+            "omittedTurns": 0,
+            "includedContentBytes": 0,
+            "oldestIncludedSequence": null
+        },
+        "redaction": {
+            "policy": "owner_visible_verbatim_v1",
+            "transcriptContentVerbatim": true,
+            "automaticSecretRedactionApplied": false,
+            "excludedCategories": ["connection_bearer_credential"],
+            "warning": "Owner-visible message text is verbatim."
+        },
+        "turns": []
+    })
 }
 
 async fn timeline(

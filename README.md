@@ -198,7 +198,10 @@ leases, restart recovery, outbox delivery, resumable timeline SSE, and a bounded
 agent loop. Its default offline conformance profile uses a deterministic local provider and one
 fixture read tool; configured production profiles use the external adapters described below. The
 loop persists immutable context manifests, normalized attempts and usage, content-addressed
-artifacts, cancellation, checkpoints, and recorded-only replay. Its approval-gated fixture write
+artifacts, cancellation, checkpoints, and recorded-only replay. The v0.3 session-workbench
+foundation adds safe derived/owner titles, exact-binding search, immutable checkpoints,
+duplicate-safe fresh-state forks, and digest-verified bounded JSON/HTML transcript exports across
+the canonical daemon, scriptable CLI, and thin dashboard adapter. Its approval-gated fixture write
 uses an exact policy subject, durable effect ledger, stable idempotency key, out-of-process Linux
 sandbox, explicit unknown-outcome reconciliation, automatic expiry, and effect-aware replay.
 Every admitted task also has explicit success criteria and risk policy. Low-risk reads retain
@@ -392,6 +395,10 @@ cargo run -p mealyctl -- --home .mealy session send-file <SESSION_ID> ./notes.md
   --prompt "Summarize this untrusted document."
 cargo run -p mealyctl -- --home .mealy session status <SESSION_ID>
 cargo run -p mealyctl -- --home .mealy session watch <SESSION_ID>
+cargo run -p mealyctl -- --home .mealy session rename <SESSION_ID> "Release planning"
+cargo run -p mealyctl -- --home .mealy session checkpoint create <SESSION_ID> --label "Before refactor"
+cargo run -p mealyctl -- --home .mealy session fork <SESSION_ID> <CHECKPOINT_ID>
+cargo run -p mealyctl -- --home .mealy session export <SESSION_ID> --format json --output ./session.json
 cargo run -p mealyctl -- --home .mealy task status <TASK_ID>
 cargo run -p mealyctl -- --home .mealy task pause <TASK_ID> --expected-revision <REVISION>
 cargo run -p mealyctl -- --home .mealy task resume <TASK_ID> --expected-revision <REVISION>

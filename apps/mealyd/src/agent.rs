@@ -2430,9 +2430,19 @@ fn prepare_next_model(
         return Err("agent input-token budget is exhausted".into());
     }
     let mut context_sources = hydrate_artifact_sources(store, artifacts, snapshot)?;
-    if new_epoch {
-        context_sources.retain(|source| matches!(source.source_type.as_str(), "user" | "tool"));
-    }
+    let fork_context_authorized = snapshot
+        .fork_context_boundary
+        .as_ref()
+        .is_some_and(|boundary| {
+            boundary.config_digest == epoch.config_digest
+                && boundary.policy_digest == epoch.policy_digest
+                && boundary.workspace_identity == epoch.workspace_identity
+        });
+    context_sources.retain(|source| match source.source_type.as_str() {
+        "fork_conversation_user" | "fork_conversation_assistant" => fork_context_authorized,
+        "user" | "tool" => true,
+        _ => !new_epoch,
+    });
     let compiled = compile_context(
         &SystemIdGenerator,
         snapshot.run_id,

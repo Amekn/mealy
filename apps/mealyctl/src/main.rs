@@ -13,12 +13,14 @@ use mealy_application::{
     BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpServerConfig,
     McpServerDiscovery, McpToolGrant, MessageRole, ModelProvider, NormalizedMessage,
     ProviderConfig, ProviderCredentialReference, ProviderRequest, ProviderResponse,
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
     SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
-    is_sha256_digest, sha256_digest, valid_provider_secret_id, validate_discord_snowflake,
-    validate_mcp_server_set, validate_provider_base_url, validate_provider_chain,
+    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    validate_discord_snowflake, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
-    AttemptId, ContextManifestId, RunId, ScheduleId, SkillAsset, SkillToolRequirement,
+    AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
 };
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
@@ -44,23 +46,23 @@ use mealy_protocol::{
     DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
     EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
     ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
-    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
-    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
-    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
-    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
-    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
-    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
-    SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage,
-    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
-    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
-    UpdateSessionTitleRequest, VerifyBackupRequest, WebhookChannelResponse,
-    WebhookChannelsResponse,
+    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse,
+    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+    MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse, RebuildMemoryIndexRequest,
+    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
+    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
+    RunGarbageCollectionRequest, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
+    ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionSearchResponse, SessionStatusResponse,
+    SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
+    StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
+    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
+    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse, UpdateSessionTitleRequest,
+    VerifyBackupRequest, WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -113,6 +115,7 @@ const CHAT_MEMORY_GRANTED_WORKSPACES: &str = "mealy://assistant/granted-workspac
 const DAEMON_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_LONG_REQUEST_TIMEOUT: Duration = Duration::from_mins(10);
 const MAXIMUM_DAEMON_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAXIMUM_TIMELINE_SSE_EVENT_BYTES: usize = MAXIMUM_DAEMON_RESPONSE_BYTES;
 const MAXIMUM_CONNECTION_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_EXTENSION_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -2064,6 +2067,27 @@ enum SessionCommand {
         #[command(subcommand)]
         command: SessionCheckpointCommand,
     },
+    /// Create a fresh session from one immutable checkpoint.
+    Fork {
+        /// Source session that owns the checkpoint.
+        session_id: String,
+        /// Immutable checkpoint ID.
+        checkpoint_id: String,
+        /// Stable duplicate-safe command key; generated when omitted.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+    },
+    /// Download a bounded tamper-evident canonical transcript.
+    Export {
+        /// Opaque session ID.
+        session_id: String,
+        /// Human-readable inert HTML or versioned JSON.
+        #[arg(long, value_enum, default_value_t = SessionExportFormatArgument::Json)]
+        format: SessionExportFormatArgument,
+        /// New private destination file; defaults to `mealy-session-<ID>.<format>`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Durably submit one input.
     Send {
         /// Opaque session ID returned by `session create`.
@@ -2135,6 +2159,31 @@ enum SessionCheckpointCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum SessionExportFormatArgument {
+    /// Versioned provider-neutral JSON evidence model.
+    #[default]
+    Json,
+    /// Inert self-contained human-readable HTML.
+    Html,
+}
+
+impl SessionExportFormatArgument {
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Html => "html",
+        }
+    }
+
+    const fn media_type(self) -> &'static str {
+        match self {
+            Self::Json => "application/vnd.mealy.session-transcript+json; charset=utf-8",
+            Self::Html => "text/html; charset=utf-8",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -7537,26 +7586,9 @@ async fn run_session(
     command: SessionCommand,
 ) -> Result<(), CliError> {
     match command {
-        SessionCommand::Create => {
-            let response = authorized(
-                client.post(format!("{}/v1/sessions", connection.base_url)),
-                connection,
-            )
-            .json(&CreateSessionRequest {
-                api_version: API_VERSION.to_owned(),
-            })
-            .send()
-            .await?;
-            print_json(decode::<CreateSessionResponse>(response).await?)?;
-        }
+        SessionCommand::Create => create_cli_session(client, connection).await?,
         SessionCommand::List { limit } => {
-            let response = authorized(
-                client.get(format!("{}/v1/sessions?limit={limit}", connection.base_url)),
-                connection,
-            )
-            .send()
-            .await?;
-            print_json(decode::<SessionsResponse>(response).await?)?;
+            list_cli_sessions(client, connection, limit).await?;
         }
         SessionCommand::Search { query, limit } => {
             print_json(search_session_transcripts(client, connection, &query, limit).await?)?;
@@ -7569,26 +7601,43 @@ async fn run_session(
         SessionCommand::Checkpoint { command } => {
             run_session_checkpoint(client, connection, command).await?;
         }
+        SessionCommand::Fork {
+            session_id,
+            checkpoint_id,
+            idempotency_key,
+        } => {
+            fork_session_from_checkpoint(
+                client,
+                connection,
+                session_id,
+                checkpoint_id,
+                idempotency_key,
+            )
+            .await?;
+        }
+        SessionCommand::Export {
+            session_id,
+            format,
+            output,
+        } => {
+            export_session_transcript(client, connection, session_id, format, output).await?;
+        }
         SessionCommand::Send {
             session_id,
             content,
             idempotency_key,
             delivery,
         } => {
-            let generated = idempotency_key.is_none();
-            let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
-            if generated {
-                eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
-            }
-            let request = SubmitInputRequest {
-                api_version: API_VERSION.to_owned(),
-                idempotency_key: key,
-                delivery_mode: delivery.into(),
+            submit_session_content(
+                client,
+                home,
+                connection,
+                &session_id,
                 content,
-            };
-            print_json(
-                submit_input_with_retry(client, home, connection, &session_id, &request).await?,
-            )?;
+                idempotency_key,
+                delivery,
+            )
+            .await?;
         }
         SessionCommand::SendFile {
             session_id,
@@ -7598,20 +7647,16 @@ async fn run_session(
             delivery,
         } => {
             let content = prepare_local_text_attachment(home, &path, &prompt)?;
-            let generated = idempotency_key.is_none();
-            let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
-            if generated {
-                eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
-            }
-            let request = SubmitInputRequest {
-                api_version: API_VERSION.to_owned(),
-                idempotency_key: key,
-                delivery_mode: delivery.into(),
+            submit_session_content(
+                client,
+                home,
+                connection,
+                &session_id,
                 content,
-            };
-            print_json(
-                submit_input_with_retry(client, home, connection, &session_id, &request).await?,
-            )?;
+                idempotency_key,
+                delivery,
+            )
+            .await?;
         }
         SessionCommand::Status { session_id } => {
             let response = authorized(
@@ -7632,6 +7677,59 @@ async fn run_session(
         } => watch(client, home, &session_id, after, limit).await?,
     }
     Ok(())
+}
+
+async fn create_cli_session(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+) -> Result<(), CliError> {
+    let response = authorized(
+        client.post(format!("{}/v1/sessions", connection.base_url)),
+        connection,
+    )
+    .json(&CreateSessionRequest {
+        api_version: API_VERSION.to_owned(),
+    })
+    .send()
+    .await?;
+    print_json(decode::<CreateSessionResponse>(response).await?)
+}
+
+async fn list_cli_sessions(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    limit: usize,
+) -> Result<(), CliError> {
+    let response = authorized(
+        client.get(format!("{}/v1/sessions?limit={limit}", connection.base_url)),
+        connection,
+    )
+    .send()
+    .await?;
+    print_json(decode::<SessionsResponse>(response).await?)
+}
+
+async fn submit_session_content(
+    client: &Client,
+    home: &Path,
+    connection: &LocalConnectionInfo,
+    session_id: &str,
+    content: String,
+    idempotency_key: Option<String>,
+    delivery: DeliveryArgument,
+) -> Result<(), CliError> {
+    let generated = idempotency_key.is_none();
+    let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
+    if generated {
+        eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
+    }
+    let request = SubmitInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: key,
+        delivery_mode: delivery.into(),
+        content,
+    };
+    print_json(submit_input_with_retry(client, home, connection, session_id, &request).await?)
 }
 
 async fn rename_session(
@@ -7705,6 +7803,308 @@ async fn run_session_checkpoint(
             print_json(decode::<SessionCheckpointsResponse>(response).await?)
         }
     }
+}
+
+async fn fork_session_from_checkpoint(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    session_id: String,
+    checkpoint_id: String,
+    idempotency_key: Option<String>,
+) -> Result<(), CliError> {
+    let generated = idempotency_key.is_none();
+    let idempotency_key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
+    if generated {
+        eprintln!("MEALY_IDEMPOTENCY_KEY {idempotency_key}");
+    }
+    let response = authorized(
+        client.post(format!(
+            "{}/v1/sessions/{session_id}/forks",
+            connection.base_url
+        )),
+        connection,
+    )
+    .json(&ForkSessionRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key,
+        checkpoint_id,
+    })
+    .send()
+    .await?;
+    print_json(decode::<SessionForkResponse>(response).await?)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionTranscriptExportReceipt {
+    api_version: String,
+    session_id: String,
+    format: String,
+    path: String,
+    digest: String,
+    size_bytes: u64,
+}
+
+async fn export_session_transcript(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    session_id: String,
+    format: SessionExportFormatArgument,
+    output: Option<PathBuf>,
+) -> Result<(), CliError> {
+    let session_id = session_id
+        .parse::<SessionId>()
+        .map_err(|_| CliError::Protocol("session export requires a valid session ID".to_owned()))?
+        .to_string();
+    let extension = format.extension();
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/sessions/{session_id}/exports/{extension}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    if !response.status().is_success() {
+        return Err(server_error(response).await);
+    }
+    let expected_filename = format!("mealy-session-{session_id}.{extension}");
+    let expected_disposition = format!("attachment; filename=\"{expected_filename}\"");
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    let disposition = response
+        .headers()
+        .get(reqwest::header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok());
+    let digest = response
+        .headers()
+        .get("x-mealy-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| is_sha256_digest(value))
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CliError::Protocol(
+                "session export response omitted its canonical SHA-256 digest".to_owned(),
+            )
+        })?;
+    if content_type != Some(format.media_type()) || disposition != Some(&expected_disposition) {
+        return Err(CliError::Protocol(
+            "session export response used unexpected attachment metadata".to_owned(),
+        ));
+    }
+    let bytes =
+        read_bounded_success_body(response, MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES).await?;
+    if sha256_digest(&bytes) != digest {
+        return Err(CliError::Protocol(
+            "session export response did not match its SHA-256 digest".to_owned(),
+        ));
+    }
+    match format {
+        SessionExportFormatArgument::Json => {
+            validate_session_transcript_json(&bytes, &session_id)?;
+        }
+        SessionExportFormatArgument::Html => {
+            validate_session_transcript_html(&bytes, &session_id)?;
+        }
+    }
+    let destination = output.unwrap_or_else(|| PathBuf::from(&expected_filename));
+    write_private_new_file(&destination, &bytes)?;
+    print_json(SessionTranscriptExportReceipt {
+        api_version: API_VERSION.to_owned(),
+        session_id,
+        format: extension.to_owned(),
+        path: destination.display().to_string(),
+        digest,
+        size_bytes: u64::try_from(bytes.len())
+            .map_err(|_| CliError::Protocol("session export size exceeds u64".to_owned()))?,
+    })
+}
+
+async fn read_bounded_success_body(
+    mut response: Response,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, CliError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err(CliError::Protocol(
+            "session export response exceeded its 32 MiB byte bound".to_owned(),
+        ));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > maximum_bytes {
+            return Err(CliError::Protocol(
+                "session export response exceeded its 32 MiB byte bound".to_owned(),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn validate_session_transcript_json(
+    bytes: &[u8],
+    expected_session_id: &str,
+) -> Result<(), CliError> {
+    let export: SessionTranscriptExport = serde_json::from_slice(bytes)?;
+    let included_turns = u64::try_from(export.turns.len())
+        .map_err(|_| CliError::Protocol("session export turn count exceeds u64".to_owned()))?;
+    let expected_maximum_turns = u64::try_from(SESSION_TRANSCRIPT_MAXIMUM_TURNS)
+        .map_err(|_| CliError::Protocol("session export turn bound exceeds u64".to_owned()))?;
+    if export.api_version != API_VERSION
+        || export.schema_version != "mealy.session-transcript.v1"
+        || export.session_id != expected_session_id
+        || export.session_id.parse::<SessionId>().is_err()
+        || !valid_session_metadata(&export.title)
+        || !matches!(export.title_source.as_str(), "owner" | "derived")
+        || !matches!(export.status.as_str(), "active" | "paused" | "closed")
+        || export.created_at_ms < 0
+        || export.updated_at_ms < export.created_at_ms
+        || export.high_watermark.0 == 0
+        || export.bounds.maximum_turns != expected_maximum_turns
+        || export.bounds.maximum_content_bytes != SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
+        || export.turns.len() > SESSION_TRANSCRIPT_MAXIMUM_TURNS
+        || export.bounds.omitted_turns.checked_add(included_turns)
+            != Some(export.bounds.total_eligible_turns)
+        || export.redaction.policy != "owner_visible_verbatim_v1"
+        || !export.redaction.transcript_content_verbatim
+        || export.redaction.automatic_secret_redaction_applied
+    {
+        return Err(CliError::Protocol(
+            "session JSON export violated its versioned envelope contract".to_owned(),
+        ));
+    }
+    let lineage_is_root = export.lineage.root_session_id == export.session_id;
+    let parent_shape_empty = export.lineage.parent_session_id.is_none()
+        && export.lineage.parent_checkpoint_id.is_none()
+        && export.lineage.parent_checkpoint_cursor.is_none()
+        && export.lineage.fork_event_id.is_none();
+    if export.lineage.root_session_id.parse::<SessionId>().is_err()
+        || lineage_is_root != parent_shape_empty
+        || (!lineage_is_root
+            && (export
+                .lineage
+                .parent_session_id
+                .as_deref()
+                .is_none_or(|value| value.parse::<SessionId>().is_err())
+                || export.lineage.parent_checkpoint_id.is_none()
+                || export
+                    .lineage
+                    .parent_checkpoint_cursor
+                    .is_none_or(|cursor| cursor.0 == 0)
+                || export.lineage.fork_event_id.is_none()))
+    {
+        return Err(CliError::Protocol(
+            "session JSON export lineage evidence is inconsistent".to_owned(),
+        ));
+    }
+    let mut content_bytes = 0_u64;
+    let mut previous_sequence = None;
+    for turn in &export.turns {
+        let storage_shape_valid = match turn.assistant.storage.as_str() {
+            "inline" => turn.assistant.artifact_id.is_none(),
+            "artifact" => turn.assistant.artifact_id.is_some(),
+            _ => false,
+        };
+        if previous_sequence.is_some_and(|previous| previous >= turn.sequence)
+            || turn.sequence == 0
+            || turn.user.citation.cursor.0 == 0
+            || turn.completion.cursor.0 < turn.user.citation.cursor.0
+            || turn.completion.cursor.0 > export.high_watermark.0
+            || turn.user.byte_length != u64::try_from(turn.user.content.len()).unwrap_or(u64::MAX)
+            || turn.assistant.byte_length
+                != u64::try_from(turn.assistant.content.len()).unwrap_or(u64::MAX)
+            || sha256_digest(turn.user.content.as_bytes()) != turn.user.content_digest
+            || sha256_digest(turn.assistant.content.as_bytes()) != turn.assistant.content_digest
+            || turn.assistant.media_type != "text/plain; charset=utf-8"
+            || turn.assistant.sensitivity != "internal"
+            || !storage_shape_valid
+        {
+            return Err(CliError::Protocol(
+                "session JSON export contains inconsistent turn evidence".to_owned(),
+            ));
+        }
+        previous_sequence = Some(turn.sequence);
+        content_bytes = content_bytes
+            .checked_add(turn.user.byte_length)
+            .and_then(|value| value.checked_add(turn.assistant.byte_length))
+            .ok_or_else(|| {
+                CliError::Protocol("session JSON export content size overflowed".to_owned())
+            })?;
+    }
+    if content_bytes != export.bounds.included_content_bytes
+        || content_bytes > SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
+        || export.bounds.oldest_included_sequence != export.turns.first().map(|turn| turn.sequence)
+    {
+        return Err(CliError::Protocol(
+            "session JSON export bounded-window metadata is inconsistent".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_session_transcript_html(
+    bytes: &[u8],
+    expected_session_id: &str,
+) -> Result<(), CliError> {
+    const INERT_CSP_META: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">";
+    let html = std::str::from_utf8(bytes)
+        .map_err(|_| CliError::Protocol("session HTML export is not UTF-8".to_owned()))?;
+    let lowercase = html.to_ascii_lowercase();
+    if !html.starts_with("<!doctype html>")
+        || !html.ends_with("</html>\n")
+        || !html.contains("mealy.session-transcript.v1")
+        || !html.contains(expected_session_id)
+        || !html.contains(INERT_CSP_META)
+        || [
+            "<script", "<style", "<link", "<img", "<iframe", "<object", "<embed", "<form", "<base",
+            "<area", "<audio", "<video", "<source", "<track", "<svg", "<math", "<a ", "<a>",
+            "<a\n", "<a\t",
+        ]
+        .iter()
+        .any(|needle| lowercase.contains(needle))
+    {
+        return Err(CliError::Protocol(
+            "session HTML export violated its inert document contract".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let mut file = File::from(
+        open(
+            path,
+            OFlags::CREATE | OFlags::EXCL | OFlags::WRONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from(0o600),
+        )
+        .map_err(|error| CliError::Io(error.into()))?,
+    );
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(CliError::Io(error));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
+    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(CliError::Io(error));
+    }
+    Ok(())
 }
 
 async fn current_session_revision(
@@ -15494,10 +15894,10 @@ mod tests {
         EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
         MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MemoryCommand,
         OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ResumableChatTask,
-        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
-        SetupProviderArgument, SkillCommand, TelegramPairChat, TelegramPairMessage,
-        TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute, chat_usage_line,
-        configure_workspace_grant, decode, generate_discord_pair_challenge,
+        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
+        SessionExportFormatArgument, SetupProviderArgument, SkillCommand, TelegramPairChat,
+        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
+        chat_usage_line, configure_workspace_grant, decode, generate_discord_pair_challenge,
         generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
         lifecycle_invocation, load_connection, normalize_openrouter_display_name,
         observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
@@ -15507,7 +15907,8 @@ mod tests {
         should_open_onboard_chat, stable_default_mealy_home, telegram_pair_api_url,
         update_recovery_route, validate_anthropic_probe_envelope, validate_anthropic_probe_stream,
         validate_connection, validate_discord_pair_base_url, validate_provider_probe_envelope,
-        validate_provider_probe_stream,
+        validate_provider_probe_stream, validate_session_transcript_html,
+        validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -16153,6 +16554,116 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    fn empty_transcript_value(session_id: &str) -> serde_json::Value {
+        json!({
+            "apiVersion": API_VERSION,
+            "schemaVersion": "mealy.session-transcript.v1",
+            "sessionId": session_id,
+            "title": "Release planning",
+            "titleSource": "owner",
+            "status": "active",
+            "revision": 3,
+            "createdAtMs": 1_800_000_000_000_i64,
+            "updatedAtMs": 1_800_000_000_010_i64,
+            "highWatermark": 1,
+            "lineage": {
+                "rootSessionId": session_id,
+                "parentSessionId": null,
+                "parentCheckpointId": null,
+                "parentCheckpointCursor": null,
+                "forkEventId": null
+            },
+            "bounds": {
+                "maximumTurns": 1_000,
+                "maximumContentBytes": 4_194_304,
+                "totalEligibleTurns": 0,
+                "omittedTurns": 0,
+                "includedContentBytes": 0,
+                "oldestIncludedSequence": null
+            },
+            "redaction": {
+                "policy": "owner_visible_verbatim_v1",
+                "transcriptContentVerbatim": true,
+                "automaticSecretRedactionApplied": false,
+                "excludedCategories": ["connection_bearer_credential"],
+                "warning": "Owner-visible message text is verbatim."
+            },
+            "turns": []
+        })
+    }
+
+    #[test]
+    fn session_export_cli_validates_formats_and_creates_one_private_file() {
+        let session_id = "019f0000-0000-7000-8000-000000000090";
+        let parsed = Arguments::try_parse_from([
+            "mealyctl",
+            "session",
+            "export",
+            session_id,
+            "--format",
+            "html",
+            "--output",
+            "./session.html",
+        ])
+        .expect("parse session export");
+        assert!(matches!(
+            parsed.command,
+            Command::Session {
+                command: SessionCommand::Export {
+                    format: SessionExportFormatArgument::Html,
+                    ..
+                }
+            }
+        ));
+
+        let transcript = empty_transcript_value(session_id);
+        let bytes = serde_json::to_vec(&transcript).expect("transcript JSON");
+        validate_session_transcript_json(&bytes, session_id).expect("valid JSON transcript");
+        let mut invalid = transcript;
+        invalid["bounds"]["maximumTurns"] = json!(999);
+        assert!(
+            validate_session_transcript_json(
+                &serde_json::to_vec(&invalid).expect("invalid transcript JSON"),
+                session_id,
+            )
+            .is_err()
+        );
+
+        let html = format!(
+            "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" \
+             content=\"default-src 'none'; base-uri 'none'; form-action 'none'; \
+             frame-ancestors 'none'\"></head><body>mealy.session-transcript.v1 \
+             {session_id} href=plain-text</body></html>\n"
+        );
+        validate_session_transcript_html(html.as_bytes(), session_id)
+            .expect("valid inert HTML transcript");
+        let active_html = format!(
+            "<!doctype html><html><head><meta http-equiv=\"Content-Security-Policy\" \
+             content=\"default-src 'none'; base-uri 'none'; form-action 'none'; \
+             frame-ancestors 'none'\"></head><body>{session_id}<script>bad()</script>\
+             mealy.session-transcript.v1</body></html>\n"
+        );
+        assert!(validate_session_transcript_html(active_html.as_bytes(), session_id).is_err());
+
+        let directory = tempfile::tempdir().expect("transcript destination");
+        let destination = directory.path().join("session.json");
+        write_private_new_file(&destination, &bytes).expect("private transcript file");
+        assert_eq!(
+            std::fs::read(&destination).expect("transcript bytes"),
+            bytes
+        );
+        assert!(write_private_new_file(&destination, b"replacement").is_err());
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&destination)
+                .expect("transcript metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]

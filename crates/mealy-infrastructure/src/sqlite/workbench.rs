@@ -1,8 +1,9 @@
-use super::{SqliteStore, timeline};
+use super::{SqliteStore, agent, timeline};
 use mealy_application::{
-    CreateSessionCheckpointCommit, OwnershipContext, SessionCheckpointView, SessionTitleReceipt,
-    SessionWorkbenchStore, SessionWorkbenchStoreError, UpdateSessionTitleCommit, is_sha256_digest,
-    sha256_digest, valid_session_metadata,
+    CreateSessionCheckpointCommit, ForkSessionCommit, OwnershipContext, SessionCheckpointView,
+    SessionForkReceipt, SessionTitleReceipt, SessionWorkbenchStore, SessionWorkbenchStoreError,
+    UpdateSessionTitleCommit, is_sha256_digest, sha256_digest, valid_fork_idempotency_key,
+    valid_session_metadata,
 };
 use mealy_domain::{ContextEpochId, CorrelationId, EventId, SessionId, TurnId};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -196,6 +197,44 @@ impl SessionWorkbenchStore for SqliteStore {
             .map(|row| row.map_err(map_sqlite_error)?.into_view(session_id))
             .collect()
     }
+
+    fn fork_session(
+        &mut self,
+        commit: ForkSessionCommit,
+    ) -> Result<SessionForkReceipt, SessionWorkbenchStoreError> {
+        if !valid_fork_idempotency_key(&commit.idempotency_key) {
+            return Err(invariant(
+                "application supplied invalid fork idempotency key",
+            ));
+        }
+        let created_at_ms = epoch_milliseconds(commit.created_at)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        require_active_identity(&transaction, commit.ownership)?;
+        if let Some(receipt) = load_existing_fork(&transaction, &commit)? {
+            return Ok(receipt);
+        }
+        let source = load_fork_source(&transaction, &commit)?;
+        ensure_checkpoint_retained(&transaction, source.source_cursor)?;
+        let references = load_eligible_fork_references(&transaction, &source)?;
+        persist_session_fork(&transaction, &commit, &source, &references, created_at_ms)?;
+        let receipt = SessionForkReceipt {
+            fork_session_id: commit.fork_session_id,
+            root_session_id: source.root_session_id,
+            source_session_id: source.source_session_id,
+            source_checkpoint_id: commit.checkpoint_id,
+            referenced_turns: u64::try_from(references.len())
+                .map_err(|_| invariant("fork reference count exceeds u64"))?,
+            event_id: commit.event_id,
+            correlation_id: commit.correlation_id,
+            created_at: system_time(created_at_ms)?,
+            duplicate: false,
+        };
+        transaction.commit().map_err(map_sqlite_error)?;
+        Ok(receipt)
+    }
 }
 
 #[derive(Clone)]
@@ -225,6 +264,22 @@ struct PreparedCheckpoint {
     revision: i64,
     journal_sequence: i64,
     created_at_ms: i64,
+}
+
+struct ForkSource {
+    root_session_id: SessionId,
+    source_session_id: SessionId,
+    source_cursor: i64,
+    context_epoch_id: Option<String>,
+}
+
+struct ForkReference {
+    turn_id: String,
+    inbox_entry_id: String,
+    user_content_digest: String,
+    assistant_message_id: String,
+    assistant_content_digest: String,
+    completion_cursor: i64,
 }
 
 struct StoredCheckpoint {
@@ -297,6 +352,377 @@ impl StoredCheckpoint {
             created_at: system_time(self.created_at_ms)?,
         })
     }
+}
+
+fn load_existing_fork(
+    transaction: &Transaction<'_>,
+    commit: &ForkSessionCommit,
+) -> Result<Option<SessionForkReceipt>, SessionWorkbenchStoreError> {
+    let stored = transaction
+        .query_row(
+            "SELECT command.source_checkpoint_id, command.fork_session_id, \
+                    lineage.root_session_id, checkpoint.session_id, \
+                    (SELECT COUNT(*) FROM session_fork_context_reference reference \
+                     WHERE reference.fork_session_id = command.fork_session_id), \
+                    command.event_id, command.correlation_id, command.created_at_ms \
+             FROM session_fork_command command \
+             JOIN session_lineage lineage ON lineage.session_id = command.fork_session_id \
+             JOIN session_checkpoint checkpoint ON checkpoint.id = command.source_checkpoint_id \
+             WHERE command.principal_id = ?1 AND command.channel_binding_id = ?2 \
+               AND command.idempotency_key = ?3",
+            params![
+                commit.ownership.principal_id().to_string(),
+                commit.ownership.channel_binding_id().to_string(),
+                commit.idempotency_key,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((
+        checkpoint_id,
+        fork_session_id,
+        root_session_id,
+        source_session_id,
+        referenced_turns,
+        event_id,
+        correlation_id,
+        created_at_ms,
+    )) = stored
+    else {
+        return Ok(None);
+    };
+    if checkpoint_id != commit.checkpoint_id.to_string() {
+        return Err(SessionWorkbenchStoreError::IdempotencyConflict);
+    }
+    if source_session_id != commit.source_session_id.to_string() {
+        return Err(SessionWorkbenchStoreError::CheckpointNotFound);
+    }
+    Ok(Some(SessionForkReceipt {
+        fork_session_id: parse_id(&fork_session_id, "fork session ID")?,
+        root_session_id: parse_id(&root_session_id, "fork root session ID")?,
+        source_session_id: parse_id(&source_session_id, "fork source session ID")?,
+        source_checkpoint_id: parse_id(&checkpoint_id, "fork checkpoint ID")?,
+        referenced_turns: nonnegative_u64(referenced_turns, "fork reference count")?,
+        event_id: parse_id(&event_id, "fork event ID")?,
+        correlation_id: parse_id(&correlation_id, "fork correlation ID")?,
+        created_at: system_time(created_at_ms)?,
+        duplicate: true,
+    }))
+}
+
+fn load_fork_source(
+    transaction: &Transaction<'_>,
+    commit: &ForkSessionCommit,
+) -> Result<ForkSource, SessionWorkbenchStoreError> {
+    let source = transaction
+        .query_row(
+            "SELECT checkpoint.session_id, lineage.root_session_id, checkpoint.source_cursor, \
+                    checkpoint.context_epoch_id, source_session.principal_id, \
+                    source_session.channel_binding_id, checkpoint.principal_id \
+             FROM session_checkpoint checkpoint \
+             JOIN session source_session ON source_session.id = checkpoint.session_id \
+             JOIN session_lineage lineage ON lineage.session_id = checkpoint.session_id \
+             WHERE checkpoint.id = ?1",
+            [commit.checkpoint_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(SessionWorkbenchStoreError::CheckpointNotFound)?;
+    if source.4 != commit.ownership.principal_id().to_string()
+        || source.5 != commit.ownership.channel_binding_id().to_string()
+        || source.6 != source.4
+    {
+        return Err(SessionWorkbenchStoreError::Unauthorized);
+    }
+    if source.0 != commit.source_session_id.to_string() {
+        return Err(SessionWorkbenchStoreError::CheckpointNotFound);
+    }
+    Ok(ForkSource {
+        source_session_id: parse_id(&source.0, "fork source session ID")?,
+        root_session_id: parse_id(&source.1, "fork root session ID")?,
+        source_cursor: source.2,
+        context_epoch_id: source.3,
+    })
+}
+
+fn ensure_checkpoint_retained(
+    transaction: &Transaction<'_>,
+    source_cursor: i64,
+) -> Result<(), SessionWorkbenchStoreError> {
+    let floor = transaction
+        .query_row(
+            "SELECT earliest_available_cursor FROM timeline_retention WHERE singleton = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if source_cursor <= 0 {
+        Err(invariant("checkpoint source cursor is not positive"))
+    } else if source_cursor < floor {
+        Err(SessionWorkbenchStoreError::CheckpointNotRetained)
+    } else {
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_eligible_fork_references(
+    transaction: &Transaction<'_>,
+    source: &ForkSource,
+) -> Result<Vec<ForkReference>, SessionWorkbenchStoreError> {
+    let mut statement = transaction
+        .prepare(
+            "WITH compaction_cutoff(value) AS (\
+                 SELECT COALESCE(MAX(compaction.source_last_cursor), 0) \
+                 FROM session_compaction compaction \
+                 JOIN timeline_event compaction_timeline \
+                   ON compaction_timeline.event_id = compaction.event_id \
+                 WHERE compaction.session_id = ?1 AND compaction_timeline.cursor <= ?2\
+             ), candidates AS (\
+                 SELECT turn.id AS source_turn_id, \
+                        inbox.inbox_entry_id AS source_inbox_entry_id, \
+                        inbox.content AS source_user_content, \
+                        assistant.id AS source_assistant_message_id, \
+                        assistant.content_inline AS source_assistant_content, \
+                        assistant.content_digest AS source_assistant_content_digest, \
+                        assistant.byte_length AS source_assistant_byte_length, \
+                        completion_timeline.cursor AS source_completion_cursor, inbox.sequence, \
+                        ROW_NUMBER() OVER (ORDER BY inbox.sequence DESC) AS recency_rank, \
+                        SUM(length(CAST(inbox.content AS BLOB)) + assistant.byte_length) OVER (\
+                            ORDER BY inbox.sequence DESC \
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\
+                        ) AS cumulative_bytes \
+                 FROM turn \
+                 JOIN session_inbox inbox ON inbox.inbox_entry_id = turn.inbox_entry_id \
+                 JOIN timeline_event input_timeline \
+                   ON input_timeline.event_id = inbox.admission_event_id \
+                 JOIN task ON task.id = turn.task_id \
+                 JOIN run ON run.id = turn.run_id AND run.task_id = task.id \
+                 JOIN run_loop_state loop ON loop.run_id = run.id \
+                 JOIN message assistant ON assistant.id = loop.final_message_id \
+                 JOIN journal_event completion \
+                   ON completion.aggregate_kind = 'turn' \
+                  AND completion.aggregate_id = turn.id \
+                  AND completion.event_type = 'turn.completed' \
+                 JOIN timeline_event completion_timeline \
+                   ON completion_timeline.event_id = completion.event_id \
+                 CROSS JOIN compaction_cutoff \
+                 WHERE turn.session_id = ?1 AND turn.context_epoch_id IS ?3 \
+                   AND turn.status = 'completed' AND turn.turn_kind = 'canonical' \
+                   AND task.status = 'succeeded' AND run.status = 'succeeded' \
+                   AND inbox.state = 'promoted' AND inbox.promoted_turn_id = turn.id \
+                   AND input_timeline.cursor > compaction_cutoff.value \
+                   AND completion_timeline.cursor <= ?2 \
+                   AND assistant.session_id = ?1 AND assistant.turn_id = turn.id \
+                   AND assistant.task_id = task.id AND assistant.run_id = run.id \
+                   AND assistant.role = 'assistant' \
+                   AND assistant.media_type = 'text/plain; charset=utf-8' \
+                   AND assistant.sensitivity = 'internal' \
+                   AND assistant.content_inline IS NOT NULL \
+                   AND assistant.content_artifact_id IS NULL\
+             ) \
+             SELECT source_turn_id, source_inbox_entry_id, source_user_content, \
+                    source_assistant_message_id, source_assistant_content, \
+                    source_assistant_content_digest, source_assistant_byte_length, \
+                    source_completion_cursor \
+             FROM candidates \
+             WHERE recency_rank <= ?4 AND cumulative_bytes <= ?5 \
+             ORDER BY sequence",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(
+            params![
+                source.source_session_id.to_string(),
+                source.source_cursor,
+                source.context_epoch_id,
+                agent::MAXIMUM_CONVERSATION_HISTORY_TURNS,
+                agent::MAXIMUM_CONVERSATION_HISTORY_BYTES,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    rows.into_iter()
+        .map(
+            |(
+                turn_id,
+                inbox_entry_id,
+                user_content,
+                assistant_message_id,
+                assistant_content,
+                assistant_digest,
+                assistant_byte_length,
+                completion_cursor,
+            )| {
+                if assistant_byte_length <= 0
+                    || usize::try_from(assistant_byte_length).ok() != Some(assistant_content.len())
+                    || sha256_digest(assistant_content.as_bytes()) != assistant_digest
+                {
+                    return Err(invariant(
+                        "stored fork conversation evidence is inconsistent",
+                    ));
+                }
+                Ok(ForkReference {
+                    turn_id,
+                    inbox_entry_id,
+                    user_content_digest: sha256_digest(user_content.as_bytes()),
+                    assistant_message_id,
+                    assistant_content_digest: assistant_digest,
+                    completion_cursor,
+                })
+            },
+        )
+        .collect()
+}
+
+fn persist_session_fork(
+    transaction: &Transaction<'_>,
+    commit: &ForkSessionCommit,
+    source: &ForkSource,
+    references: &[ForkReference],
+    created_at_ms: i64,
+) -> Result<(), SessionWorkbenchStoreError> {
+    transaction
+        .execute(
+            "INSERT INTO session(\
+                id, principal_id, channel_binding_id, created_at_ms, updated_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![
+                commit.fork_session_id.to_string(),
+                commit.ownership.principal_id().to_string(),
+                commit.ownership.channel_binding_id().to_string(),
+                created_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    let payload = json!({
+        "root_session_id": source.root_session_id,
+        "source_session_id": source.source_session_id,
+        "source_checkpoint_id": commit.checkpoint_id,
+        "source_cursor": source.source_cursor,
+        "referenced_turns": references.len(),
+    });
+    insert_session_event(
+        transaction,
+        commit.fork_session_id,
+        0,
+        &commit.event_id,
+        "session.forked",
+        &commit.correlation_id,
+        commit.ownership,
+        created_at_ms,
+        &payload,
+    )?;
+    transaction
+        .execute(
+            "INSERT INTO aggregate_sequence(aggregate_kind, aggregate_id, sequence) \
+             VALUES ('session', ?1, 0)",
+            [commit.fork_session_id.to_string()],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction
+        .execute(
+            "INSERT INTO session_lineage(\
+                session_id, root_session_id, parent_checkpoint_id, fork_event_id, created_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                commit.fork_session_id.to_string(),
+                source.root_session_id.to_string(),
+                commit.checkpoint_id.to_string(),
+                commit.event_id.to_string(),
+                created_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    insert_fork_references(transaction, commit, references)?;
+    transaction
+        .execute(
+            "INSERT INTO session_fork_command(\
+                principal_id, channel_binding_id, idempotency_key, source_checkpoint_id, \
+                fork_session_id, event_id, correlation_id, created_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                commit.ownership.principal_id().to_string(),
+                commit.ownership.channel_binding_id().to_string(),
+                commit.idempotency_key,
+                commit.checkpoint_id.to_string(),
+                commit.fork_session_id.to_string(),
+                commit.event_id.to_string(),
+                commit.correlation_id.to_string(),
+                created_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+fn insert_fork_references(
+    transaction: &Transaction<'_>,
+    commit: &ForkSessionCommit,
+    references: &[ForkReference],
+) -> Result<(), SessionWorkbenchStoreError> {
+    for (index, reference) in references.iter().enumerate() {
+        let ordinal = i64::try_from(index.saturating_add(1))
+            .map_err(|_| invariant("fork reference ordinal exceeds SQLite"))?;
+        transaction
+            .execute(
+                "INSERT INTO session_fork_context_reference(\
+                    fork_session_id, ordinal, source_checkpoint_id, source_turn_id, \
+                    source_inbox_entry_id, source_user_content_digest, \
+                    source_assistant_message_id, source_assistant_content_digest, \
+                    source_completion_cursor\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    commit.fork_session_id.to_string(),
+                    ordinal,
+                    commit.checkpoint_id.to_string(),
+                    reference.turn_id,
+                    reference.inbox_entry_id,
+                    reference.user_content_digest,
+                    reference.assistant_message_id,
+                    reference.assistant_content_digest,
+                    reference.completion_cursor,
+                ],
+            )
+            .map_err(map_sqlite_error)?;
+    }
+    Ok(())
 }
 
 fn prepare_checkpoint(
@@ -578,7 +1004,10 @@ fn validate_epoch_tuple(
     }
 }
 
-fn authority_digest(ownership: OwnershipContext, workspace_identity: Option<&str>) -> String {
+pub(super) fn authority_digest(
+    ownership: OwnershipContext,
+    workspace_identity: Option<&str>,
+) -> String {
     sha256_digest(
         json!({
             "channel_binding_id": ownership.channel_binding_id(),

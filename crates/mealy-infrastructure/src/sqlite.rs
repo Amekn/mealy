@@ -28,6 +28,7 @@ mod scheduler;
 mod sessions;
 mod telegram;
 mod timeline;
+mod transcript;
 mod validation;
 mod workbench;
 
@@ -2257,12 +2258,15 @@ mod tests {
     }
 
     #[test]
-    fn v16_upgrade_installs_session_metadata_and_immutable_checkpoints() {
+    fn v16_upgrade_installs_session_workbench_and_immutable_lineage() {
         let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
         store
             .connection
             .execute_batch(
-                "DROP TABLE session_checkpoint;
+                "DROP TABLE session_fork_context_reference;
+                 DROP TABLE session_fork_command;
+                 DROP TABLE session_lineage;
+                 DROP TABLE session_checkpoint;
                  DROP TABLE session_metadata;
                  DELETE FROM schema_version WHERE version = 17;",
             )
@@ -2275,7 +2279,13 @@ mod tests {
             upgraded.schema_version().expect("schema version"),
             u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
         );
-        for table in ["session_metadata", "session_checkpoint"] {
+        for table in [
+            "session_metadata",
+            "session_checkpoint",
+            "session_lineage",
+            "session_fork_command",
+            "session_fork_context_reference",
+        ] {
             let exists: bool = upgraded
                 .connection
                 .query_row(
@@ -2293,6 +2303,15 @@ mod tests {
             "session_checkpoint_binding_insert",
             "session_checkpoint_immutable_update",
             "session_checkpoint_immutable_delete",
+            "session_lineage_binding_insert",
+            "session_lineage_immutable_update",
+            "session_lineage_immutable_delete",
+            "session_fork_command_binding_insert",
+            "session_fork_command_immutable_update",
+            "session_fork_command_immutable_delete",
+            "session_fork_context_reference_binding_insert",
+            "session_fork_context_reference_immutable_update",
+            "session_fork_context_reference_immutable_delete",
         ] {
             let exists: bool = upgraded
                 .connection

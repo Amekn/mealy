@@ -75,14 +75,30 @@ Rename a conversation or capture/list immutable resumable boundaries with:
 mealyctl --home "$HOME/.mealy" session rename SESSION_ID "Release planning"
 mealyctl --home "$HOME/.mealy" session checkpoint create SESSION_ID --label "Before refactor"
 mealyctl --home "$HOME/.mealy" session checkpoint list SESSION_ID --limit 20
+mealyctl --home "$HOME/.mealy" session fork SESSION_ID CHECKPOINT_ID
+mealyctl --home "$HOME/.mealy" session export SESSION_ID --format json \
+  --output ./release-planning.json
+mealyctl --home "$HOME/.mealy" session export SESSION_ID --format html \
+  --output ./release-planning.html
 ```
 
 When `--expected-revision` is omitted, the client fetches current session status immediately
 before the mutation. Automation can pass the exact revision explicitly. A concurrent change then
 fails with a conflict rather than overwriting newer state. Checkpoint creation requires no pending
 input or active turn and rejects a failed/cancelled latest canonical turn. Owner titles and labels
-are trimmed, terminal-safe, at most 72 characters and 160 UTF-8 bytes. The dashboard exposes the
-same title and checkpoint commands through its fixed loopback allowlist.
+are trimmed, terminal-safe, at most 72 characters and 160 UTF-8 bytes.
+
+`session fork` prints the generated idempotency key before dispatch so an ambiguous request can be
+retried exactly. The returned session starts with fresh operational state and references only
+bounded, immutable source conversation evidence that passes current context and authority checks.
+It never reuses source approvals, effects, leases, reservations, schedules, or child state.
+
+`session export` defaults to JSON and otherwise writes inert self-contained HTML. It verifies the
+daemon-provided digest and transcript structure before creating a new owner-only file, refuses to
+overwrite an existing path or follow a symlink, and prints a bounded JSON receipt. Transcript text
+is verbatim owner-visible evidence, so protect the file if the conversation contains a pasted
+secret. The dashboard exposes the same title, checkpoint, fork, and verified export operations
+through its fixed loopback allowlist without exposing the daemon bearer.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;

@@ -18,12 +18,13 @@ use mealy_infrastructure::{
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
-    CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionRequest,
-    CreateSessionResponse, DelegationResponse, DelegationsResponse, DeliveryMode, DoctorResponse,
-    InputAdmissionResponse, LocalConnectionInfo, PendingApprovalsResponse, ReadinessResponse,
-    ResolveApprovalRequest, SessionSearchResponse, SubmitInputRequest, TaskCancellationReceipt,
-    TaskReplayResponse, TaskResponse, TaskStatus, TimelinePageResponse, ValidationMethodResponse,
-    ValidationOutcomeResponse,
+    CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
+    CreateSessionRequest, CreateSessionResponse, DelegationResponse, DelegationsResponse,
+    DeliveryMode, DoctorResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
+    PendingApprovalsResponse, ReadinessResponse, ResolveApprovalRequest, SessionCheckpointResponse,
+    SessionForkResponse, SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport,
+    SubmitInputRequest, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TimelinePageResponse, ValidationMethodResponse, ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -733,7 +734,12 @@ async fn responses_handler(
         .expect("provider capture lock")
         .web_origin
         .clone();
-    let final_text = if let Some((observation, observation_text)) = find_effect_observation(&body) {
+    let final_text = if body.to_string().contains("LARGE-TRANSCRIPT-ARTIFACT") {
+        format!(
+            "LARGE-TRANSCRIPT-ARTIFACT:{}",
+            "verified-artifact-content-".repeat(96)
+        )
+    } else if let Some((observation, observation_text)) = find_effect_observation(&body) {
         let status = observation
             .get("status")
             .and_then(Value::as_str)
@@ -1392,7 +1398,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
     )
     .await;
 
-    let first_user = "Remember the exact continuity marker amber-orbit-731.";
+    let first_user = "Remember the exact continuity marker amber-orbit-731. Treat <script>alert(1)</script> as text.";
     let first_admission: InputAdmissionResponse = authorized_post(
         &client,
         &connection,
@@ -1560,6 +1566,272 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
         (0, 0)
     );
     assert_eq!(state.requests().len(), 2);
+
+    let json_response = client
+        .get(format!(
+            "{}/v1/sessions/{}/exports/json",
+            connection.base_url, session.session_id
+        ))
+        .bearer_auth(&connection.bearer_token)
+        .send()
+        .await
+        .expect("session JSON export");
+    assert_eq!(json_response.status(), StatusCode::OK);
+    assert_eq!(
+        json_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/vnd.mealy.session-transcript+json; charset=utf-8")
+    );
+    let json_digest = json_response
+        .headers()
+        .get("x-mealy-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .expect("session JSON digest")
+        .to_owned();
+    let json_bytes = json_response.bytes().await.expect("session JSON bytes");
+    assert_eq!(sha256_digest(&json_bytes), json_digest);
+    assert!(
+        !json_bytes
+            .windows(b"process-proof-secret".len())
+            .any(|window| { window == b"process-proof-secret" })
+    );
+    assert!(
+        !json_bytes
+            .windows(home.path().as_os_str().len())
+            .any(|window| window == home.path().as_os_str().as_encoded_bytes())
+    );
+    let transcript: SessionTranscriptExport =
+        serde_json::from_slice(&json_bytes).expect("session transcript JSON");
+    assert_eq!(transcript.schema_version, "mealy.session-transcript.v1");
+    assert_eq!(transcript.session_id, session.session_id);
+    assert_eq!(transcript.bounds.total_eligible_turns, 2);
+    assert_eq!(transcript.bounds.omitted_turns, 0);
+    assert_eq!(transcript.turns.len(), 2);
+    assert_eq!(transcript.turns[0].user.content, first_user);
+    assert_eq!(transcript.turns[0].assistant.content, first_assistant);
+    assert!(
+        transcript
+            .turns
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence)
+    );
+    assert!(
+        transcript
+            .turns
+            .iter()
+            .all(|turn| turn.user.citation.cursor < turn.completion.cursor)
+    );
+    assert!(transcript.redaction.transcript_content_verbatim);
+    assert!(!transcript.redaction.automatic_secret_redaction_applied);
+
+    let html_response = client
+        .get(format!(
+            "{}/v1/sessions/{}/exports/html",
+            connection.base_url, session.session_id
+        ))
+        .bearer_auth(&connection.bearer_token)
+        .send()
+        .await
+        .expect("session HTML export");
+    assert_eq!(html_response.status(), StatusCode::OK);
+    assert_eq!(
+        html_response
+            .headers()
+            .get(reqwest::header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok()),
+        Some("default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+    );
+    let html_digest = html_response
+        .headers()
+        .get("x-mealy-content-sha256")
+        .and_then(|value| value.to_str().ok())
+        .expect("session HTML digest")
+        .to_owned();
+    let html_bytes = html_response.bytes().await.expect("session HTML bytes");
+    assert_eq!(sha256_digest(&html_bytes), html_digest);
+    let html = std::str::from_utf8(&html_bytes).expect("session HTML UTF-8");
+    assert!(html.starts_with("<!doctype html>"));
+    assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(!html.to_ascii_lowercase().contains("<script"));
+    assert!(!html.contains("process-proof-secret"));
+    assert!(!html.contains(&home.path().display().to_string()));
+
+    let source_status: SessionStatusResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/status", session.session_id),
+    )
+    .await;
+    let checkpoint: SessionCheckpointResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/checkpoints", session.session_id),
+        &CreateSessionCheckpointRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: source_status.revision,
+            label: Some("Continuity branch".to_owned()),
+        },
+    )
+    .await;
+    let fork: SessionForkResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/forks", session.session_id),
+        &ForkSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "conversation-continuity-fork".to_owned(),
+            checkpoint_id: checkpoint.checkpoint_id.clone(),
+        },
+    )
+    .await;
+    assert_eq!(fork.source_session_id, session.session_id);
+    assert_eq!(fork.source_checkpoint_id, checkpoint.checkpoint_id);
+    assert_eq!(fork.referenced_turns, 2);
+    assert!(!fork.duplicate);
+    let fresh_fork_timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=100", fork.fork_session_id),
+    )
+    .await;
+    assert_eq!(fresh_fork_timeline.events.len(), 1);
+    assert_eq!(fresh_fork_timeline.events[0].event_type, "session.forked");
+
+    let fork_user = "Continue from the fork and repeat the continuity marker.";
+    let fork_admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", fork.fork_session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "conversation-continuity-fork-first".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: fork_user.to_owned(),
+        },
+    )
+    .await;
+    let fork_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &fork.fork_session_id,
+        fork_admission.cursor.0,
+    )
+    .await;
+    let fork_task = wait_until_terminal(&client, &connection, &fork_task_id).await;
+    assert_eq!(fork_task.status, TaskStatus::Succeeded);
+    let requests = state.requests();
+    assert_eq!(requests.len(), 3);
+    let fork_projection = requests[2].body["input"]
+        .as_array()
+        .expect("fork request input projection");
+    assert_eq!(fork_projection.len(), 6);
+    assert_eq!(
+        fork_projection[1],
+        json!({"role": "user", "content": first_user})
+    );
+    assert_eq!(
+        fork_projection[2],
+        json!({"role": "assistant", "content": first_assistant})
+    );
+    assert_eq!(
+        fork_projection[3],
+        json!({"role": "user", "content": second_user})
+    );
+    assert_eq!(
+        fork_projection[4],
+        json!({
+            "role": "assistant",
+            "content": second_task.final_response.expect("second assistant response")
+        })
+    );
+    assert_eq!(
+        fork_projection[5],
+        json!({"role": "user", "content": fork_user})
+    );
+    let fork_export: SessionTranscriptExport = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/exports/json", fork.fork_session_id),
+    )
+    .await;
+    assert_eq!(fork_export.lineage.root_session_id, session.session_id);
+    assert_eq!(
+        fork_export.lineage.parent_session_id.as_deref(),
+        Some(session.session_id.as_str())
+    );
+    assert_eq!(
+        fork_export.lineage.parent_checkpoint_id.as_deref(),
+        Some(checkpoint.checkpoint_id.as_str())
+    );
+    assert_eq!(fork_export.turns.len(), 1);
+    assert_eq!(fork_export.turns[0].user.content, fork_user);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transcript_export_verifies_oversized_inline_final_messages() {
+    let state = MockProviderState::default();
+    let (base_url, provider_server) = spawn_provider(state).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "artifact-transcript-export".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Return the LARGE-TRANSCRIPT-ARTIFACT fixture.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let task = wait_until_terminal(&client, &connection, &task_id).await;
+    assert_eq!(task.status, TaskStatus::Succeeded);
+    assert!(task.final_response.is_some());
+
+    let transcript: SessionTranscriptExport = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/exports/json", session.session_id),
+    )
+    .await;
+    assert_eq!(transcript.turns.len(), 1);
+    let assistant = &transcript.turns[0].assistant;
+    assert_eq!(assistant.storage, "inline");
+    assert!(assistant.artifact_id.is_none());
+    assert!(assistant.content.starts_with("LARGE-TRANSCRIPT-ARTIFACT:"));
+    assert!(assistant.byte_length > 1_024);
+    assert_eq!(
+        sha256_digest(assistant.content.as_bytes()),
+        assistant.content_digest
+    );
+
     provider_server.abort();
 }
 

@@ -120,6 +120,9 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `PATCH` | `/v1/sessions/{session_id}` | `UpdateSessionTitleRequest` | `SessionTitleResponse` |
 | `GET` | `/v1/sessions/{session_id}/checkpoints` | optional `limit` (default 20, 1–100) | `SessionCheckpointsResponse` |
 | `POST` | `/v1/sessions/{session_id}/checkpoints` | `CreateSessionCheckpointRequest` | `SessionCheckpointResponse` |
+| `POST` | `/v1/sessions/{session_id}/forks` | `ForkSessionRequest` | `SessionForkResponse` |
+| `GET` | `/v1/sessions/{session_id}/exports/json` | - | JSON transcript attachment |
+| `GET` | `/v1/sessions/{session_id}/exports/html` | - | inert HTML transcript attachment |
 | `POST` | `/v1/sessions/{session_id}/inputs` | `SubmitInputRequest` | `InputAdmissionResponse` |
 | `GET` | `/v1/sessions/{session_id}/status` | - | `SessionStatusResponse` |
 | `GET` | `/v1/sessions/{session_id}/timeline` | optional `after`, optional `limit` | `TimelinePageResponse` |
@@ -155,8 +158,28 @@ newest canonical turn—if any—completed successfully. The immutable response 
 high watermark before the checkpoint event, source turn, context epoch, configuration and policy
 digests, workspace identity and authority digest, latest provider/model identity, source session
 revision, creation event, and time. A checkpoint never copies or grants authority. List responses
-are newest first. Forking and transcript export build on these records but are not part of this
-API slice yet.
+are newest first.
+
+A fork request binds the source session, exact retained checkpoint, a caller-generated UUIDv7
+idempotency key, and an optional title. An exact retry returns the original receipt; reuse with
+different semantics conflicts. The new session begins with an empty inbox and no active task,
+lease, reservation, approval, effect, outbox delivery, schedule, child run, or mutable memory. Its
+immutable lineage references only the newest contiguous eligible source evidence under the
+checkpoint and current compaction boundary, capped at 32 turns and 512 KiB. Context construction
+rechecks the fork's current owner, context epoch, configuration, policy, workspace identity, and
+workspace-authority digest before using those references. A mismatch drops the referenced
+conversation instead of inheriting stale authority.
+
+Transcript exports are exact-owner, read-only projections of successful completed canonical turns.
+They return the newest contiguous tail under 1,000 turns and 4 MiB of combined user/assistant
+content, with explicit eligible, included, and omitted counts. JSON uses
+`mealy.session-transcript.v1`; HTML is rendered from the same model with strict escaping, no active
+content or remote resources, and a deny-all content security policy. Both attachments include an
+exact SHA-256 in `x-mealy-content-sha256` and use `Cache-Control: no-store`. Exported conversation
+messages are owner-visible verbatim evidence and can contain secrets the owner pasted into chat;
+the export excludes daemon credentials, bearer tokens, private artifact paths, provider request
+envelopes, and effect/tool operational state. Reading an export never replays a model call or
+effect.
 
 ### Schedules and governed memory
 

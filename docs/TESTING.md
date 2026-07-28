@@ -196,6 +196,16 @@ model-visible baseline permits only a clearly labeled `/remember` suggestion. Th
 Discord process scenarios search for completed remote-only markers using the local credential and
 prove the principal/channel-binding predicate prevents a cross-transport transcript leak.
 
+The same public real-provider scenario checkpoints a settled source session, creates a
+duplicate-safe fork, proves only bounded eligible source evidence reaches the child context, and
+checks that source operational authority is not cloned. JSON and HTML exports are compared against
+one canonical transcript model for lineage, order, event/cursor citations, omission bounds,
+per-message digests, strict escaping, CSP, and absence of daemon secrets/private artifact paths.
+Store tests cover empty root/fork snapshots and exact-owner denial; the daemon backend separately
+hydrates a digest-bound artifact and fails closed after blob corruption. API/CLI/dashboard tests
+cover attachment headers, response ceilings, digest verification, inert HTML, safe create-new
+files, and server-side bearer retention.
+
 The Phase 3 suite at `apps/mealyd/tests/phase3_effect_approval.rs` drives the authenticated public
 approval/effect commands and a real Bubblewrap worker. It proves deny, expiry, cancellation
 revocation, exact command deduplication/conflict behavior, budget settlement, and the crash matrix

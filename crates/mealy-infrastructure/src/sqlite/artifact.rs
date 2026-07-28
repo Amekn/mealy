@@ -90,7 +90,7 @@ impl ArtifactEvidenceStore for SqliteStore {
     }
 }
 
-fn load_authorized_artifact(
+pub(super) fn load_authorized_artifact(
     connection: &rusqlite::Connection,
     ownership: OwnershipContext,
     artifact_id: ArtifactId,

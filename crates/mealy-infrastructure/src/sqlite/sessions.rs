@@ -29,6 +29,14 @@ impl SessionStore for SqliteStore {
                 ],
             )
             .map_err(map_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO session_lineage(\
+                    session_id, root_session_id, parent_checkpoint_id, fork_event_id, created_at_ms\
+                 ) VALUES (?1, ?1, NULL, NULL, ?2)",
+                params![commit.session_id.to_string(), created_at_ms],
+            )
+            .map_err(map_sqlite_error)?;
 
         transaction
             .execute(

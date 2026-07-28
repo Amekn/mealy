@@ -1,13 +1,14 @@
 # ADR 0011: Canonical session lineage and thin workbench clients
 
-Status: Proposed
+Status: Accepted (2026-07-28)
 
 ## Context
 
-Mealy v0.2.1 has durable sessions, exact-binding transcript search, resumable
-timelines, a concurrent line REPL, and a temporary loopback dashboard. It does
+Mealy v0.2.1 had durable sessions, exact-binding transcript search, resumable
+timelines, a concurrent line REPL, and a temporary loopback dashboard, but did
 not have owner titles, checkpoints, conversation forks, a full-screen terminal
-workbench, or an ordinary transcript export.
+workbench, or an ordinary transcript export. The v0.3 work adopts the canonical
+lineage and thin-client boundary below.
 
 Adding these features independently to each client would create several risks:
 
@@ -21,7 +22,7 @@ Adding these features independently to each client would create several risks:
   context epoch, provider/config identity, or workspace authority; and
 - a richer interface could become a second scheduler or mutation authority.
 
-## Proposed decision
+## Decision
 
 ### Canonical session lineage
 
@@ -58,8 +59,10 @@ The daemon owns a versioned session-lineage graph.
 - JSON export contains versioned canonical conversation evidence, lineage,
   digests, timestamps, citation metadata, and explicit redaction metadata.
 - HTML export is generated from the same bounded export model and is inert:
-  strict escaping, no remote resources, no scripts, and no embedded bearer or
-  secret values.
+  strict escaping, no remote resources, no scripts, and no daemon credential,
+  bearer, private artifact path, or provider request envelope. Owner-visible
+  transcript messages remain verbatim and carry an explicit warning that they
+  can include a secret pasted into chat.
 - Export never implies that replaying the document will re-execute a provider
   or effect.
 
@@ -115,5 +118,7 @@ metadata and commands belong in the daemon contract.
   prior text can inform a new context, but prior authority cannot.
 - Checkpoint retention must be included in garbage collection, backup,
   restore, export, migrations, and evidence-deletion policy.
-- The ADR remains proposed until the schema, transition contracts, and
-  crash/authorization tests are accepted.
+- Schema 17, transition contracts, exact-owner authorization, duplicate/fork
+  tests, context-authority tests, and bounded export verification now implement
+  this decision. Full-screen TUI and provider-selection presentation work can
+  continue without changing the canonical boundary.

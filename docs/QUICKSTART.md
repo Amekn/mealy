@@ -939,6 +939,30 @@ timeline cursor, completed turn, context/configuration/workspace authority, and 
 identity. Pending input, an active turn, or a failed/cancelled latest turn must settle or be
 handled before capture.
 
+Start a separate conversation from that reviewed boundary, or save a bounded transcript:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session fork \
+  SESSION_ID CHECKPOINT_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session export \
+  SESSION_ID --format json --output ./release-planning.json
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" session export \
+  SESSION_ID --format html --output ./release-planning.html
+```
+
+The fork receipt contains the new session ID and the idempotency key needed for an exact retry. A
+fork references at most 32 settled source turns under 512 KiB, starts with no pending/running work,
+and rechecks the current context and workspace authority before source text can inform a new turn.
+It does not inherit approvals, effects, leases, reservations, schedules, child state, or mutable
+memory.
+
+Exports contain only successful canonical turns and are capped at the newest contiguous 1,000
+turns and 4 MiB of message content. The client verifies the returned SHA-256 and format before
+creating an owner-only file and never overwrites an existing path. HTML has no scripts, external
+resources, forms, or replay behavior. Message text is intentionally verbatim and can include a
+secret pasted into the conversation, so handle the downloaded file accordingly. The dashboard
+offers the same Fork, Export JSON, and Export HTML actions for its selected session.
+
 The same concise workflow is scriptable outside the REPL:
 
 ```sh

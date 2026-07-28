@@ -5,14 +5,15 @@ use mealy_application::{
     AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
     AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
     AgentStoreError, AgentTaskView, ContextDisposition, ContextEpoch, ContextManifestItem,
-    ContextMemoryEvidence, ContextMemorySourceCitation, MessageRole, ModelDispatchReceipt,
-    NormalizedMessage, OwnershipContext, PrepareModelAttemptCommit, ProviderCapabilities,
-    ProviderRequest, ProviderResponse, ReadToolDescriptor, estimate_tokens, sha256_digest,
-    validate_context_manifest, validate_fixture_read_arguments, web_url_authorized_by_capabilities,
+    ContextMemoryEvidence, ContextMemorySourceCitation, ForkContextBoundary, MessageRole,
+    ModelDispatchReceipt, NormalizedMessage, OwnershipContext, PrepareModelAttemptCommit,
+    ProviderCapabilities, ProviderRequest, ProviderResponse, ReadToolDescriptor, estimate_tokens,
+    is_sha256_digest, sha256_digest, validate_context_manifest, validate_fixture_read_arguments,
+    web_url_authorized_by_capabilities,
 };
 use mealy_domain::{
-    CapabilityGrant, CompactionId, ContextItemId, CorrelationId, EffectClass, EventId, LeaseFence,
-    MemoryId, MemoryRevisionId, PolicyProfile, RunId, TaskId,
+    CapabilityGrant, ChannelBindingId, CompactionId, ContextItemId, CorrelationId, EffectClass,
+    EventId, LeaseFence, MemoryId, MemoryRevisionId, PolicyProfile, PrincipalId, RunId, TaskId,
 };
 use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -24,8 +25,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-const MAXIMUM_CONVERSATION_HISTORY_TURNS: i64 = 32;
-const MAXIMUM_CONVERSATION_HISTORY_BYTES: i64 = 512 * 1_024;
+pub(super) const MAXIMUM_CONVERSATION_HISTORY_TURNS: i64 = 32;
+pub(super) const MAXIMUM_CONVERSATION_HISTORY_BYTES: i64 = 512 * 1_024;
 const MAXIMUM_RECORDED_READ_TOOL_DESCRIPTOR_BYTES: usize = 512 * 1_024;
 pub(super) const MAXIMUM_MODEL_REQUEST_JSON_BYTES: usize = 256 * 1_024;
 const MAXIMUM_CONTEXT_MANIFEST_BUNDLE_JSON_BYTES: usize = 2 * 1_024 * 1_024;
@@ -344,6 +345,8 @@ impl AgentExecutionStore for SqliteStore {
                 |result| result.get::<_, String>(0),
             )
             .map_err(map_sqlite_error)?;
+        let fork_context_boundary =
+            load_fork_context_boundary(&self.connection, &row, &channel_binding_id)?;
         let current_model_output = row
             .current_attempt_id
             .as_deref()
@@ -385,6 +388,7 @@ impl AgentExecutionStore for SqliteStore {
             usage,
             context_epoch,
             context_sources,
+            fork_context_boundary,
             current_attempt_id: row
                 .current_attempt_id
                 .as_deref()
@@ -1185,6 +1189,74 @@ fn load_context_sources(
     Ok(sources)
 }
 
+fn load_fork_context_boundary(
+    connection: &rusqlite::Connection,
+    row: &LoadedRunRow,
+    channel_binding_id: &str,
+) -> Result<Option<ForkContextBoundary>, AgentStoreError> {
+    let boundary = connection
+        .query_row(
+            "SELECT checkpoint.id, checkpoint.config_digest, checkpoint.policy_digest, \
+                    checkpoint.workspace_identity, checkpoint.workspace_authority_digest \
+             FROM session_lineage lineage \
+             JOIN session_checkpoint checkpoint ON checkpoint.id = lineage.parent_checkpoint_id \
+             JOIN session owner_session ON owner_session.id = lineage.session_id \
+             WHERE lineage.session_id = ?1 AND owner_session.principal_id = ?2 \
+               AND owner_session.channel_binding_id = ?3",
+            params![row.session_id, row.principal_id, channel_binding_id],
+            |result| {
+                Ok((
+                    result.get::<_, String>(0)?,
+                    result.get::<_, Option<String>>(1)?,
+                    result.get::<_, Option<String>>(2)?,
+                    result.get::<_, Option<String>>(3)?,
+                    result.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((checkpoint_id, config, policy, workspace, authority)) = boundary else {
+        return Ok(None);
+    };
+    let (Some(config_digest), Some(policy_digest), Some(workspace_identity)) =
+        (config, policy, workspace)
+    else {
+        let reference_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM session_fork_context_reference \
+                 WHERE fork_session_id = ?1",
+                [row.session_id.as_str()],
+                |result| result.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        return if reference_count == 0 {
+            Ok(None)
+        } else {
+            Err(invariant("fork references have no checkpoint context"))
+        };
+    };
+    let ownership = OwnershipContext::new(
+        parse_id(&row.principal_id, "fork principal ID")?,
+        parse_id(channel_binding_id, "fork channel binding ID")?,
+    );
+    if !is_sha256_digest(&config_digest)
+        || !is_sha256_digest(&policy_digest)
+        || !is_sha256_digest(&authority)
+        || authority
+            != super::workbench::authority_digest(ownership, Some(workspace_identity.as_str()))
+    {
+        return Err(invariant("stored fork context boundary is inconsistent"));
+    }
+    Ok(Some(ForkContextBoundary {
+        checkpoint_id: parse_id(&checkpoint_id, "fork checkpoint ID")?,
+        config_digest,
+        policy_digest,
+        workspace_identity,
+        workspace_authority_digest: authority,
+    }))
+}
+
 struct LoadedCompactionContextSource {
     source: AgentContextSource,
     source_last_cursor: i64,
@@ -1381,7 +1453,27 @@ fn load_conversation_context_sources(
         .map_err(map_sqlite_error)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_sqlite_error)?;
-    let mut sources = Vec::with_capacity(rows.len().saturating_mul(2));
+    let own_history_bytes = rows.iter().try_fold(0_i64, |total, row| {
+        let user_bytes = i64::try_from(row.1.len())
+            .map_err(|_| invariant("conversation user content exceeds SQLite range"))?;
+        total
+            .checked_add(user_bytes)
+            .and_then(|value| value.checked_add(row.5))
+            .ok_or_else(|| invariant("conversation history byte count overflow"))
+    })?;
+    let remaining_turns = MAXIMUM_CONVERSATION_HISTORY_TURNS
+        .saturating_sub(i64::try_from(rows.len()).unwrap_or(i64::MAX));
+    let remaining_bytes = MAXIMUM_CONVERSATION_HISTORY_BYTES.saturating_sub(own_history_bytes);
+    let mut sources = load_fork_context_sources(
+        connection,
+        current_turn_id,
+        session_id,
+        principal_id,
+        compaction_cutoff,
+        remaining_turns,
+        remaining_bytes,
+    )?;
+    sources.reserve(rows.len().saturating_mul(2));
     for (inbox_entry_id, user_content, message_id, assistant_content, digest, byte_length) in rows {
         if byte_length <= 0
             || usize::try_from(byte_length).ok() != Some(assistant_content.len())
@@ -1412,6 +1504,147 @@ fn load_conversation_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Assistant,
                 content: assistant_content,
+                tool_call_id: None,
+            },
+            sensitivity: "internal".to_owned(),
+            content_artifact_id: None,
+            memory_evidence: None,
+            compaction_id: None,
+        });
+    }
+    Ok(sources)
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn load_fork_context_sources(
+    connection: &rusqlite::Connection,
+    current_turn_id: &str,
+    session_id: &str,
+    principal_id: &str,
+    compaction_cutoff: i64,
+    remaining_turns: i64,
+    remaining_bytes: i64,
+) -> Result<Vec<AgentContextSource>, AgentStoreError> {
+    if remaining_turns <= 0 || remaining_bytes <= 0 {
+        return Ok(Vec::new());
+    }
+    let authority = connection
+        .query_row(
+            "SELECT checkpoint.workspace_identity, checkpoint.workspace_authority_digest, \
+                    owner_session.channel_binding_id, fork_timeline.cursor \
+             FROM turn current_turn \
+             JOIN session owner_session ON owner_session.id = current_turn.session_id \
+             JOIN session_lineage lineage ON lineage.session_id = owner_session.id \
+             JOIN session_checkpoint checkpoint ON checkpoint.id = lineage.parent_checkpoint_id \
+             JOIN timeline_event fork_timeline ON fork_timeline.event_id = lineage.fork_event_id \
+             WHERE current_turn.id = ?1 AND owner_session.id = ?2 \
+               AND owner_session.principal_id = ?3",
+            params![current_turn_id, session_id, principal_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((checkpoint_workspace, checkpoint_authority, channel_binding_id, fork_cursor)) =
+        authority
+    else {
+        return Ok(Vec::new());
+    };
+    let ownership = OwnershipContext::new(
+        parse_id::<PrincipalId>(principal_id, "fork principal ID")?,
+        parse_id::<ChannelBindingId>(&channel_binding_id, "fork channel binding ID")?,
+    );
+    if checkpoint_workspace.is_none()
+        || checkpoint_authority
+            != super::workbench::authority_digest(ownership, checkpoint_workspace.as_deref())
+    {
+        return Err(invariant("stored fork authority digest is inconsistent"));
+    }
+    if fork_cursor <= compaction_cutoff {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection
+        .prepare(
+            "WITH candidates AS (\
+                 SELECT reference.ordinal, reference.source_inbox_entry_id, inbox.content, \
+                        reference.source_user_content_digest, \
+                        reference.source_assistant_message_id, assistant.content_inline, \
+                        reference.source_assistant_content_digest, assistant.byte_length, \
+                        ROW_NUMBER() OVER (ORDER BY reference.ordinal DESC) AS recency_rank, \
+                        SUM(length(CAST(inbox.content AS BLOB)) + assistant.byte_length) OVER (\
+                            ORDER BY reference.ordinal DESC \
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\
+                        ) AS cumulative_bytes \
+                 FROM session_fork_context_reference reference \
+                 JOIN session_inbox inbox \
+                   ON inbox.inbox_entry_id = reference.source_inbox_entry_id \
+                 JOIN message assistant \
+                   ON assistant.id = reference.source_assistant_message_id \
+                 WHERE reference.fork_session_id = ?1\
+             ) \
+             SELECT source_inbox_entry_id, content, source_user_content_digest, \
+                    source_assistant_message_id, content_inline, \
+                    source_assistant_content_digest, byte_length \
+             FROM candidates \
+             WHERE recency_rank <= ?2 AND cumulative_bytes <= ?3 \
+             ORDER BY ordinal",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(
+            params![session_id, remaining_turns, remaining_bytes],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    let mut sources = Vec::with_capacity(rows.len().saturating_mul(2));
+    for (inbox_id, user, user_digest, message_id, assistant, assistant_digest, byte_length) in rows
+    {
+        if sha256_digest(user.as_bytes()) != user_digest
+            || byte_length <= 0
+            || usize::try_from(byte_length).ok() != Some(assistant.len())
+            || sha256_digest(assistant.as_bytes()) != assistant_digest
+        {
+            return Err(invariant("stored fork context evidence is inconsistent"));
+        }
+        sources.push(AgentContextSource {
+            source_type: "fork_conversation_user".to_owned(),
+            source_locator: format!("inbox://{inbox_id}"),
+            source_content_digest: user_digest,
+            message: NormalizedMessage {
+                role: MessageRole::User,
+                content: user,
+                tool_call_id: None,
+            },
+            sensitivity: "private".to_owned(),
+            content_artifact_id: None,
+            memory_evidence: None,
+            compaction_id: None,
+        });
+        sources.push(AgentContextSource {
+            source_type: "fork_conversation_assistant".to_owned(),
+            source_locator: format!("message://{message_id}"),
+            source_content_digest: assistant_digest,
+            message: NormalizedMessage {
+                role: MessageRole::Assistant,
+                content: assistant,
                 tool_call_id: None,
             },
             sensitivity: "internal".to_owned(),
