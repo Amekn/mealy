@@ -211,12 +211,20 @@ the public manifest's OpenPGP signature and exact tagged identity, verifies its 
 attestation bundle, and clean-installs the public repository package on Ubuntu, Debian ARM64,
 Fedora x86-64/ARM64, and Arch x86-64.
 
+If those dependent repository jobs fail before exercising the public artifacts because of a
+verifier-harness defect, merge the focused correction through protected `main` and dispatch
+`public-repository-acceptance.yml` for the unchanged tag. That workflow cannot publish or replace
+anything. It qualifies the original tag commit and attestation, uses the checked canonical
+repository identity, and must pass every clean-install lane. This exception does not apply to a
+runtime, package, repository-content, signature, provenance, or attestation failure.
+
 ## Verify and install a published release
 
 For the shortest native package-manager route, follow
 [LINUX_REPOSITORIES.md](LINUX_REPOSITORIES.md). That path is supported only when the exact release
-workflow's signed-repository deployment and public repository acceptance jobs are green. The
-rootless attested bootstrap below remains the portability and no-root path.
+workflow's signed-repository deployment is green and either its dependent public repository jobs
+or the protected post-publication repository-acceptance workflow is green for that immutable tag.
+The rootless attested bootstrap below remains the portability and no-root path.
 
 Install GitHub CLI, Bubblewrap, `jq`, GNU tar/coreutils, `flock` (normally from `util-linux`), glibc
 2.39 or newer, and
@@ -647,13 +655,17 @@ license, or documentation mismatch remains a hard failure requiring a verified r
    verify-asset`, then repeat tokenless bootstrap, archive lifecycle, and native package acceptance
    on clean Ubuntu, Debian, Fedora, and Arch environments against only the downloaded public assets.
    Independently download and inspect the retained verification evidence before declaring the
-   release complete.
+   release complete. If and only if a verifier defect prevented the dependent repository jobs from
+   reaching the artifacts after publication, correct that harness through protected `main` and
+   require a green `public-repository-acceptance.yml` run for the unchanged tag.
 7. Record clean-install, upgrade, backup/restore, rollback, uninstall, soak, and optional
    live-provider observations in the release notes. The workflow renders the exact soak metrics and
    live/release run links automatically; review that deterministic body and use the linked final
    workflow result as authority for the post-publication native install observations.
 
 The workflow does not publish from an untagged branch or silently invent a tag. A release is
-qualified only when its exact linked live-provider, tag, native-package, publication, and dependent
-public clean-host jobs are all green; an untagged checkout or partial workflow run never inherits
+qualified only when its exact linked live-provider, tag, native-package, publication, and public
+clean-host evidence are green. For a verifier-only failure after successful immutable publication,
+that last evidence may be a protected, non-publishing post-publication run bound to the same tag
+commit and original attestation. An untagged checkout, changed asset, or partial run never inherits
 that status.

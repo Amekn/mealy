@@ -110,6 +110,7 @@ jobs:
             scripts/fetch-cargo-deny.sh
             scripts/fetch-zizmor.sh
             scripts/generate-third-party-licenses.sh
+            scripts/install-public-linux-repository.sh
             scripts/installed-package-smoke.sh
             scripts/installed-update-rollback-smoke.sh
             scripts/installed-arch-smoke.sh
@@ -125,12 +126,15 @@ jobs:
             scripts/test-live-provider-acceptance-selector.sh
             scripts/test-documentation-validator.sh
             scripts/test-protected-ci-run-selector.sh
+            scripts/test-public-linux-repository-installer.sh
+            scripts/test-public-linux-repository-verifier.sh
             scripts/test-public-license-validator.sh
             scripts/test-release-environment-preflight.sh
             scripts/test-release-notes.sh
             scripts/test-release-soak-validator.sh
             scripts/test-release-tag-validator.sh
             scripts/validate-public-license.sh
+            scripts/verify-public-linux-repository.sh
             scripts/validate-release-soak.sh
             scripts/validate-release-tag.sh
           )
@@ -153,6 +157,10 @@ jobs:
         run: scripts/test-release-environment-preflight.sh
       - name: Verify public-release license gate
         run: scripts/test-public-license-validator.sh
+      - name: Verify checkout-free public repository acceptance
+        run: |
+          scripts/test-public-linux-repository-verifier.sh
+          scripts/test-public-linux-repository-installer.sh
       - name: Verify deterministic release notes
         run: scripts/test-release-notes.sh
       - run: packaging/test-packaging.sh

@@ -317,6 +317,14 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
 - repeats clean-host installed acceptance on Ubuntu, Debian, Fedora, and Arch and installs the
   tagged version through each public HTTPS repository before the workflow can pass.
 
+The tag workflow and `.github/workflows/public-repository-acceptance.yml` share checked manifest
+verification and package-manager installation scripts. Every GitHub release command supplies an
+explicit `OWNER/REPOSITORY`, so the verifier is independent of checkout discovery. The manual
+workflow is a non-publishing recovery path for an already published immutable tag when only the
+dependent verification harness was defective. It runs only from protected `main`, resolves the
+annotated tag to its exact commit, requires that commit in `main`, verifies the original release
+workflow attestation, and aggregates all five public repository lanes.
+
 The one-time Pages, signing Environment, offline-key, and rotation controls are in
 [LINUX_REPOSITORIES.md](LINUX_REPOSITORIES.md#maintainer-activation). A missing Pages site,
 unapproved signing Environment, empty key secret, base-URL mismatch, wrong fingerprint, unusable
@@ -329,12 +337,16 @@ the active production, packaging, and CI contract.
 
 ## Verification and promotion decision
 
-Monitor every tag job and do not announce production readiness until the workflow is fully green:
+Monitor every tag job and do not announce production readiness until the workflow is fully green,
+or until a verifier-only post-publication failure has a green protected revalidation run:
 
 ```sh
-gh run list --workflow release.yml --commit "$candidate"
-gh release verify "$tag" --format json
-gh release view "$tag" --json tagName,targetCommitish,url,assets
+gh run list --repo Amekn/mealy --workflow release.yml --commit "$candidate"
+gh release verify "$tag" --repo Amekn/mealy --format json
+gh release view "$tag" --repo Amekn/mealy \
+  --json tagName,targetCommitish,url,assets
+gh workflow run public-repository-acceptance.yml \
+  --repo Amekn/mealy --ref main -f release_tag="$tag"
 ```
 
 For each downloaded asset, run `gh release verify-asset`. For archives, packages, installers, and
@@ -349,8 +361,12 @@ The production decision is fail closed:
 - live-provider failure or SHA mismatch: do not tag; fix and rerun the reviewed gate;
 - tag workflow failure before publication: do not create assets manually; fix and publish a new
   version if the tag cannot be safely removed before any release exists;
-- public acceptance failure after publication: do not call that version production-ready; retain
-  evidence, open a corrective change, and publish a new version rather than replacing assets.
+- public acceptance harness failure after publication: retain the failed run, correct the harness
+  through protected `main`, and require the non-publishing post-publication workflow to pass against
+  the unchanged immutable tag;
+- public artifact, package, repository-content, signature, provenance, or runtime failure after
+  publication: do not call that version production-ready or replace assets; publish a corrected
+  version through every applicable gate.
 
 ## Roll forward, rollback, and incident evidence
 
