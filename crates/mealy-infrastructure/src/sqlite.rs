@@ -54,10 +54,11 @@ const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.
 const MIGRATION_0018: &str = include_str!("../migrations/0018_provider_selection.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_parallel_delegation_groups.sql");
 const MIGRATION_0020: &str = include_str!("../migrations/0020_slack_socket_channel.sql");
+const MIGRATION_0021: &str = include_str!("../migrations/0021_session_input_media.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 20;
+pub const LATEST_SCHEMA_VERSION: i64 = 21;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -346,6 +347,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0020)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (20, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 20;
+        }
+        if existing_version == 20 {
+            transaction.execute_batch(MIGRATION_0021)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (21, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -868,6 +877,7 @@ mod tests {
     }
 
     fn remove_slack_schema(connection: &Connection) {
+        remove_media_schema(connection);
         connection
             .execute_batch(
                 "DROP TABLE slack_envelope_receipt;
@@ -876,6 +886,25 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 20;",
             )
             .expect("remove v20 Slack channel schema");
+    }
+
+    fn remove_media_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER session_input_reference_immutable_delete;
+                 DROP TRIGGER session_input_reference_immutable_update;
+                 DROP TRIGGER session_input_reference_insert_guard;
+                 DROP TRIGGER session_input_blob_immutable_update;
+                 DROP TRIGGER session_input_artifact_immutable_update;
+                 DROP TRIGGER session_inbox_media_immutable_delete;
+                 DROP TRIGGER session_inbox_media_immutable_update;
+                 DROP TRIGGER session_inbox_media_create_reference;
+                 DROP TRIGGER session_inbox_media_insert_guard;
+                 DROP INDEX session_inbox_media_owner_idx;
+                 DROP TABLE session_inbox_media;
+                 DELETE FROM schema_version WHERE version = 21;",
+            )
+            .expect("remove v21 session input media schema");
     }
 
     fn journal(event_id: EventId, event_type: &str) -> JournalRecord {
@@ -2491,6 +2520,42 @@ mod tests {
                     |row| row.get(0),
                 )
                 .expect("query Slack schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v20_upgrade_installs_session_input_media_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_media_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v20 session input media schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "session_inbox_media",
+            "session_inbox_media_insert_guard",
+            "session_inbox_media_create_reference",
+            "session_inbox_media_immutable_update",
+            "session_input_artifact_immutable_update",
+            "session_input_blob_immutable_update",
+            "session_input_reference_insert_guard",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query session input media schema object");
             assert!(exists, "{object} was not installed");
         }
         upgraded

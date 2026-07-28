@@ -69,8 +69,9 @@ predictable across local OpenAI-compatible endpoints as well as those hosted API
     effect and must have its own provider contract, permission/policy decision, byte/cost
     reservation, artifact settlement, safe rendering, and ambiguous-outcome treatment.
 12. Public API, CLI, TUI, dashboard, and channel attachment support remains disabled until the
-    complete decode/re-encode, inbox linkage, context hydration, authorization, migration, export,
-    crash, corruption, and supported-provider tests are present.
+    complete context hydration, export, replay/corruption, route-activation, safe-rendering, and
+    supported-provider tests are present. Decode/re-encode and inbox linkage are necessary
+    foundations, not sufficient authority to activate those surfaces.
 
 This decision follows the current OpenAI
 [Images and vision guide](https://developers.openai.com/api/docs/guides/images-vision) and
@@ -90,6 +91,17 @@ deliberately selecting a smaller common denominator.
 - A provider may report fewer input tokens than reserved. Settlement charges reported usage but
   cannot exceed the durable reservation.
 - Existing text-only configurations and requests retain their serialized shape and authority.
+
+## Implementation status
+
+The isolated normalizer and schema-21 commit-before-link inbox boundary are implemented. Canonical
+PNG/JPEG output is published to the private SHA-256 store before an atomic transaction creates its
+owner/session-scoped artifact, ordered inbox link, immutable reference, versioned journal evidence,
+and acknowledgement. Exact duplicates return the original ordered artifact receipt; evidence drift
+conflicts; a late transaction failure leaves no database link; and a fresh precommitted orphan is
+retained by age-gated collection. The production capability remains disabled because context
+hydration, export/replay corruption coverage, public attachment surfaces, exact route activation,
+safe rendering, and image generation are separate unfinished slices.
 
 ## Rejected alternatives
 

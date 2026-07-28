@@ -1646,6 +1646,7 @@ mod tests {
                 delivery_mode: DeliveryMode::Queue,
                 dedupe_key: "phase4-parent".to_owned(),
                 content: "fixture.write_file {\"operation\":\"write_file\",\"relativePath\":\"delegated.txt\",\"content\":\"parent contract\"}".to_owned(),
+                images: Vec::new(),
                 provider_selection:
                     mealy_application::ProviderSelectionPreference::InheritSession,
                 maximum_pending_inputs: 1_024,

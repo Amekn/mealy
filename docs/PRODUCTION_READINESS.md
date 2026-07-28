@@ -519,10 +519,16 @@ home/workspace/secret mount, bounded protocol, OS resource limits, panic contain
 rejection, dimension/pixel caps, deterministic downscaling, and independent daemon-side
 signature/header/size/digest verification. Unit and real-namespace tests cover malformed data,
 media mismatch, APNG/animated WebP rejection, metadata removal, oversize denial, deterministic
-output, and successful normalization. This remains deliberately unavailable at user ingress:
-content-addressed inbox ownership/linkage, context hydration, migration/export/replay evidence,
-explicit per-route activation, image generation, and safe client/channel rendering remain
-required before image input can be enabled. Audio/video are not implemented.
+output, and successful normalization. Schema 21 now adds commit-before-link admission: canonical
+bytes are published to the private content-addressed store first, then an atomic SQLite transaction
+links at most four ordered owner/session-scoped artifacts to the durable inbox, journal, and
+acknowledgement. Exact retries bind artifact identity, digest, size, media type, and dimensions;
+late transaction failure rolls back every metadata/reference row while a fresh unlinked blob
+remains protected for age-gated collection. Upgrade, reopen, owner-denial, mutation, rollback, and
+real normalizer-to-blob-to-inbox tests cover this boundary. This remains deliberately unavailable
+at user ingress: context-manifest hydration, export/replay evidence, explicit per-route activation,
+image generation, and safe client/channel rendering remain required before image input can be
+enabled. Audio/video are not implemented.
 
 ## Required evidence per implementation slice
 

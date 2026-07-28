@@ -236,9 +236,10 @@ pub use promotion::{
 };
 pub use provider::{
     CancellationProbe, CapabilityRequirement, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole, ModelProvider, ModelUsage, NormalizedImageInput,
-    NormalizedMessage, PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, ProviderCapabilities, ProviderError,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole,
+    ModelProvider, ModelUsage, NormalizedImageInput, NormalizedMessage,
+    PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, ProviderCapabilities, ProviderError,
     ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy,
     ProviderImageInputError, ProviderLocality, ProviderOutput, ProviderPricing, ProviderProgress,
     ProviderProgressSink, ProviderRequest, ProviderResponse, ProviderRouteCandidate,
@@ -292,9 +293,9 @@ pub use session_workbench::{
 };
 pub use sessions::{
     AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,
-    InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
-    SessionStoreError, SessionUseCaseError, admit_input, create_session,
-    create_session_with_selection,
+    InputAdmissionReceipt, InputImageArtifactCommit, OwnershipContext, SessionCreationCommit,
+    SessionStore, SessionStoreError, SessionUseCaseError, admit_input, admit_input_with_images,
+    create_session, create_session_with_selection,
 };
 pub use slack::{
     SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,

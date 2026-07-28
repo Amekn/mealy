@@ -153,8 +153,14 @@ worker with no home/workspace/secret mount and hard process/protocol limits. The
 dimension/pixel enforcement and metadata-stripping re-encode; the daemon independently validates
 the complete returned evidence. This process boundary remains mandatory because supported decoder
 release notes acknowledge hostile inputs that can panic decoders. Content-addressed
-commit-before-link admission, exact owner/channel authorization, and crash/replay validation are
-still required before activation. A magic prefix alone is not accepted as public-ingress proof.
+commit-before-link admission is now enforced: the private blob is atomically published first and
+schema 21 links only contiguous ordered artifacts whose owner, session, inbox origin, producer,
+media type, bounds, and access policy match. Admission idempotency binds the exact ordered image
+evidence; SQLite triggers reject later media/artifact/content-metadata/reference mutation; and a
+late acknowledgement failure rolls every canonical link back while age-gated collection retains a
+fresh orphan for recovery. Context hydration, export/replay corruption coverage, and route/client
+activation are still required before public ingress. A magic prefix alone is not accepted as
+public-ingress proof.
 Remote image URLs and provider file IDs are outside the contract, preventing mutable fetches,
 ambient network authority, and provider-retention dependence. See
 [ADR 0017](decisions/0017-content-addressed-bounded-image-input.md).

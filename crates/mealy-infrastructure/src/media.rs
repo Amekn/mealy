@@ -4,6 +4,7 @@ use image::{
     DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder,
     imageops::FilterType,
 };
+use mealy_application::MAXIMUM_PROVIDER_IMAGE_DIMENSION;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -26,7 +27,6 @@ const MAXIMUM_RESPONSE_BYTES: usize = 3 * 1024 * 1024;
 const MAXIMUM_STDERR_BYTES: usize = 8 * 1024;
 const MAXIMUM_DIMENSION: u32 = 4_096;
 const MAXIMUM_PIXELS: u64 = 16 * 1024 * 1024;
-const MAXIMUM_CANONICAL_DIMENSION: u32 = 2_048;
 const MEDIA_WORKER_TIMEOUT: Duration = Duration::from_secs(20);
 const MEDIA_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -280,8 +280,8 @@ fn validate_worker_result(
     if !matches!(result.media_type.as_str(), "image/png" | "image/jpeg")
         || result.width == 0
         || result.height == 0
-        || result.width > MAXIMUM_CANONICAL_DIMENSION
-        || result.height > MAXIMUM_CANONICAL_DIMENSION
+        || result.width > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+        || result.height > MAXIMUM_PROVIDER_IMAGE_DIMENSION
         || result.size_bytes == 0
         || result.size_bytes > MAXIMUM_CANONICAL_BYTES
         || result.data_base64.len() > maximum_base64_length(MAXIMUM_CANONICAL_BYTES)
@@ -563,16 +563,16 @@ fn normalize_image(
     let decoded = reader
         .decode()
         .map_err(|_| MediaWorkerFailure::InvalidInput)?;
-    let normalized = if width > MAXIMUM_CANONICAL_DIMENSION || height > MAXIMUM_CANONICAL_DIMENSION
-    {
-        decoded.resize(
-            MAXIMUM_CANONICAL_DIMENSION,
-            MAXIMUM_CANONICAL_DIMENSION,
-            FilterType::Lanczos3,
-        )
-    } else {
-        decoded
-    };
+    let normalized =
+        if width > MAXIMUM_PROVIDER_IMAGE_DIMENSION || height > MAXIMUM_PROVIDER_IMAGE_DIMENSION {
+            decoded.resize(
+                MAXIMUM_PROVIDER_IMAGE_DIMENSION,
+                MAXIMUM_PROVIDER_IMAGE_DIMENSION,
+                FilterType::Lanczos3,
+            )
+        } else {
+            decoded
+        };
     let canonical_width = normalized.width();
     let canonical_height = normalized.height();
     let (media_type, bytes) = encode_canonical(&normalized)?;

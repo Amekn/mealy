@@ -26,8 +26,19 @@ Required checks:
 - idempotent duplicate input admission;
 - lease claim races and expiry;
 - artifact rename/link crash cleanup;
+- ordered owner-private image blob/link idempotency and rollback;
 - migration from every supported snapshot;
 - backup and restore integrity.
+
+Schema-21 storage tests bind up to four ordered canonical image artifacts to one durable inbox
+entry and verify exact duplicate receipts, evidence-drift conflicts, owner/channel denial,
+path-free artifact projection, journal versioning, immutable media/artifact/blob/reference
+metadata, and complete rollback after a late outbox collision. The v20-to-v21 migration is applied
+in place and passes integrity verification. The file-backed `durable_admission` integration test
+crosses the real Bubblewrap normalizer, atomically publishes its canonical bytes to the private
+SHA-256 store, links them to SQLite, reopens both evidence layers, verifies the bytes, and proves a
+rejected post-publication link leaves only a fresh unreferenced blob retained by age-gated garbage
+collection.
 
 ### Process-boundary tests
 

@@ -1589,7 +1589,8 @@ fn schedule_admission_failure(error: &SessionUseCaseError) -> &'static str {
         | SessionUseCaseError::EmptyContent
         | SessionUseCaseError::ContentTooLarge { .. }
         | SessionUseCaseError::InvalidQueueCapacity
-        | SessionUseCaseError::InvalidProviderSelection => "scheduled_input_invalid",
+        | SessionUseCaseError::InvalidProviderSelection
+        | SessionUseCaseError::InvalidImageInput => "scheduled_input_invalid",
     }
 }
 

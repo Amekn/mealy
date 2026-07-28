@@ -205,7 +205,18 @@ fn downgrade_to_schema_13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
         .execute_batch(
-            "DROP TRIGGER delegation_group_child_insert;
+            "DROP TRIGGER session_input_reference_immutable_delete;
+             DROP TRIGGER session_input_reference_immutable_update;
+             DROP TRIGGER session_input_reference_insert_guard;
+             DROP TRIGGER session_input_blob_immutable_update;
+             DROP TRIGGER session_input_artifact_immutable_update;
+             DROP TRIGGER session_inbox_media_immutable_delete;
+             DROP TRIGGER session_inbox_media_immutable_update;
+             DROP TRIGGER session_inbox_media_create_reference;
+             DROP TRIGGER session_inbox_media_insert_guard;
+             DROP INDEX session_inbox_media_owner_idx;
+             DROP TABLE session_inbox_media;
+             DROP TRIGGER delegation_group_child_insert;
              DROP TRIGGER delegation_group_identity_immutable;
              DROP TRIGGER delegation_group_contract_immutable;
              DROP TRIGGER delegation_group_settlement;
@@ -243,7 +254,7 @@ fn downgrade_to_schema_13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate v13");

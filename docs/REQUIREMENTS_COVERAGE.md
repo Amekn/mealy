@@ -48,6 +48,17 @@ disagreement. The CLI, TUI, and dashboard consume the same contracts and retain 
 authority. Focused storage, restart, duplicate-admission, API, browser-boundary, terminal, CLI, and
 real-provider tests cover the boundary.
 
+Schema 21 extends the DUR/AUTH/REC/ART/NFR-REL evidence above for the disabled v0.4 image-input
+foundation. Canonical decoder output is published to the owner-private SHA-256 store before an
+atomic inbox transaction creates exact-owner artifact metadata, a contiguous ordered media link,
+an immutable reference, versioned journal evidence, and the acknowledgement. Four-image,
+per-image, aggregate-byte, canonical-media, dimension, artifact-identity, and access-policy bounds
+are enforced in both application code and SQLite. Duplicate delivery binds order, digest, size,
+media type, and dimensions; evidence drift conflicts. Triggers reject mutation, late failure rolls
+all metadata links back, v20 upgrades in place, and a real normalizer/blob/file-database reopen test
+proves referenced retention plus safe young-orphan recovery. Public ingress and provider dispatch
+remain disabled until context hydration and the later ADR-0017 gates are complete.
+
 ## Release-one acceptance path
 
 The eleven acceptance steps are crossed by the process suites rather than mocked at the storage

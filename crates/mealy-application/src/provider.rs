@@ -14,6 +14,8 @@ pub const MAXIMUM_PROVIDER_IMAGE_INPUTS: usize = 4;
 pub const MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES: usize = 2 * 1024 * 1024;
 /// Maximum aggregate decoded image bytes in one normalized provider request.
 pub const MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum width or height of one canonical normalized image.
+pub const MAXIMUM_PROVIDER_IMAGE_DIMENSION: u32 = 2_048;
 /// Conservative provider-neutral token reservation for one low-detail normalized image.
 ///
 /// The first image contract deliberately requests `OpenAI` `low` detail. This ceiling also exceeds
