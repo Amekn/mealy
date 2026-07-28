@@ -888,12 +888,16 @@ step before handing program files back to the package manager. Preserve a verifi
 Before any supported forward migration, startup read-only inspects the old schema and publishes an
 online database/config snapshot under `migration-backups/`. Migrations and version markers run in
 one immediate SQLite transaction, preserve canonical history, and have forward tests from each
-phase snapshot. The current release-one schema version is 16. Schema 15 added the partial
+phase snapshot. The public v0.2.1 release schema is 16; the v0.3 development schema is 17.
+Schema 15 added the partial
 terminal-completion index used by bounded usage reports; migration tests preserve schema-14 state
 and assert the query plan uses that index. Schema 16 adds bounded, digest-bound compressed context
 manifest bundles plus sparse artifact/compaction/memory provenance. It leaves legacy row-per-item
 manifests in place and replayable instead of performing an eager multi-gigabyte rewrite. Provider
 requests and validation JSON continue to use compatibility-preserving envelope compression.
+Schema 17 adds the reconstructible owner-title projection and immutable exact-bound session
+checkpoints. Migration creates no title for existing sessions; their deterministic derived titles
+remain unchanged until the owner renames them.
 
 There is no in-place downgrade and an older binary must never open the newer database. For a
 package-managed rollback, inspect the exact automatic snapshot and compare its manifest SHA-256
@@ -901,7 +905,7 @@ with the `manifest_digest` recorded by the startup migration event. Then use the
 manager's explicit cross-schema path:
 
 ```sh
-SNAPSHOT='v15-to-v16-TIMESTAMP-SEQUENCE'
+SNAPSHOT='v16-to-v17-TIMESTAMP-SEQUENCE'
 MANIFEST="$HOME/.mealy/migration-backups/$SNAPSHOT/manifest.json"
 DIGEST=$(sha256sum "$MANIFEST" | awk '{print $1}')
 jq '{fromSchemaVersion,toSchemaVersion,createdAtMs,files}' "$MANIFEST"

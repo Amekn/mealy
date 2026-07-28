@@ -29,6 +29,7 @@ mod provider_config;
 mod recovery;
 mod schedule;
 mod scheduler;
+mod session_workbench;
 mod sessions;
 mod startup;
 mod telegram;
@@ -232,6 +233,13 @@ pub use scheduler::{
     RunCompletionReceipt, RunCompletionStatus, SchedulerStore, SchedulerStoreError,
     SchedulerUseCaseError, claim_next_work, claim_next_work_with_concurrency, claimed_run_id,
     complete_agent_run, complete_run, heartbeat_lease, release_lease,
+};
+pub use session_workbench::{
+    CreateSessionCheckpointCommand, CreateSessionCheckpointCommit, SESSION_METADATA_MAXIMUM_BYTES,
+    SESSION_METADATA_MAXIMUM_CHARACTERS, SessionCheckpointView, SessionTitleReceipt,
+    SessionWorkbenchStore, SessionWorkbenchStoreError, SessionWorkbenchUseCaseError,
+    UpdateSessionTitleCommand, UpdateSessionTitleCommit, create_session_checkpoint,
+    query_session_checkpoints, update_session_title, valid_session_metadata,
 };
 pub use sessions::{
     AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,

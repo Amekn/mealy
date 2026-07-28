@@ -120,6 +120,7 @@ fn valid_summary(session: &SessionSummaryResponse) -> bool {
         && !session.title.is_empty()
         && session.title.len() <= MAXIMUM_TITLE_BYTES
         && !session.title.chars().any(unsafe_terminal_character)
+        && matches!(session.title_source.as_str(), "owner" | "derived")
         && !session.status.is_empty()
         && session.status.len() <= MAXIMUM_STATUS_BYTES
         && !session.status.chars().any(unsafe_terminal_character)
@@ -188,6 +189,7 @@ mod tests {
         SessionSummaryResponse {
             session_id: session_id.to_owned(),
             title: "Review release readiness".to_owned(),
+            title_source: "derived".to_owned(),
             status: "idle".to_owned(),
             revision: 2,
             pending_inputs: 0,

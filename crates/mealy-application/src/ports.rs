@@ -2,8 +2,8 @@ use mealy_domain::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
     ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
     ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
-    MemoryRevisionId, MessageId, OutboxId, RunId, SessionId, TaskId, ToolCallId, TurnId,
-    ValidationId, WorkerId,
+    MemoryRevisionId, MessageId, OutboxId, RunId, SessionCheckpointId, SessionId, TaskId,
+    ToolCallId, TurnId, ValidationId, WorkerId,
 };
 use std::time::SystemTime;
 
@@ -20,6 +20,9 @@ pub trait IdGenerator {
 
     /// Generates a new session identifier.
     fn generate_session_id(&self) -> SessionId;
+
+    /// Generates an immutable session-checkpoint identifier.
+    fn generate_session_checkpoint_id(&self) -> SessionCheckpointId;
 
     /// Generates a new durable inbox-entry identifier.
     fn generate_inbox_entry_id(&self) -> InboxEntryId;

@@ -678,6 +678,7 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
         SessionSummaryResponse {
             session_id: SESSION_ID.to_owned(),
             title: "Investigate active release work".to_owned(),
+            title_source: "owner".to_owned(),
             status: "active".to_owned(),
             revision: 3,
             pending_inputs: 1,
@@ -688,6 +689,7 @@ async fn chat_picker_resumes_the_selected_exact_session_without_creating_another
         SessionSummaryResponse {
             session_id: SECOND_SESSION_ID.to_owned(),
             title: "Prepare package notes".to_owned(),
+            title_source: "derived".to_owned(),
             status: "idle".to_owned(),
             revision: 2,
             pending_inputs: 0,
@@ -964,6 +966,7 @@ async fn list_sessions(State(state): State<AdmissionState>) -> Json<SessionsResp
             .then(|| SessionSummaryResponse {
                 session_id: SESSION_ID.to_owned(),
                 title: "Latest conversation".to_owned(),
+                title_source: "derived".to_owned(),
                 status: "active".to_owned(),
                 revision: 1,
                 pending_inputs: 0,

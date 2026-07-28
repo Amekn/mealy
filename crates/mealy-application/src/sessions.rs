@@ -356,8 +356,8 @@ mod tests {
         ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
         ContextItemId, ContextManifestId, CorrelationId, DelegationId, DeliveryMode, EffectId,
         EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId,
-        MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, SessionId, TaskId,
-        ToolCallId, TurnId, ValidationId, WorkerId,
+        MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, SessionCheckpointId,
+        SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
     };
     use std::time::SystemTime;
 
@@ -444,6 +444,10 @@ mod tests {
 
         fn generate_session_id(&self) -> SessionId {
             self.session
+        }
+
+        fn generate_session_checkpoint_id(&self) -> SessionCheckpointId {
+            SessionCheckpointId::new()
         }
 
         fn generate_inbox_entry_id(&self) -> InboxEntryId {

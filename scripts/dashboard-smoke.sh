@@ -737,5 +737,5 @@ fi
 wait "$daemon_pid"
 daemon_pid=
 
-printf 'dashboard smoke: ok (schema 16, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
+printf 'dashboard smoke: ok (schema 17, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
   "$session_id" "$task_id" "$schedule_id" "$memory_id" "$extension_id"

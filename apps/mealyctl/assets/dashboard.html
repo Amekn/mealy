@@ -521,6 +521,10 @@
             <div class="conversation-status">
               <span id="conversation-id" class="conversation-id">Select or create a session</span>
               <span id="conversation-state">No live timeline</span>
+              <span class="command-actions">
+                <button id="rename-session" class="action" type="button" disabled>Rename</button>
+                <button id="checkpoint-session" class="action" type="button" disabled>Checkpoint</button>
+              </span>
             </div>
             <div id="timeline" class="timeline" aria-live="polite"><p class="empty">Choose a session to load its durable event timeline.</p></div>
             <div class="composer">
@@ -744,7 +748,7 @@
     </section>
 
     <footer class="footer">
-      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session input/control, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
+      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/input/control, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
       <p>Close the terminal command to destroy this dashboard capability. Data is never cached by this server.</p>
     </footer>
   </main>
@@ -755,6 +759,8 @@
     const refreshButton = document.getElementById("refresh");
     const errorBanner = document.getElementById("error");
     const newSessionButton = document.getElementById("new-session");
+    const renameSessionButton = document.getElementById("rename-session");
+    const checkpointSessionButton = document.getElementById("checkpoint-session");
     const promptInput = document.getElementById("prompt");
     const deliveryMode = document.getElementById("delivery-mode");
     const sendInputButton = document.getElementById("send-input");
@@ -819,6 +825,8 @@
     let conversationRefreshing = false;
     let selectedSessionId = null;
     let sessionTitles = new Map();
+    let currentSessionRevision = null;
+    let currentSessionQuiescent = false;
     let timelineCursor = 0;
     let timelineEvents = [];
     let activeTaskId = null;
@@ -1230,12 +1238,18 @@
       deliveryMode.disabled = !selected;
       sendInputButton.disabled = !selected;
       cancelTaskButton.disabled = !selected || !activeTaskId;
+      renameSessionButton.disabled = !selected || currentSessionRevision === null;
+      checkpointSessionButton.disabled = !selected || currentSessionRevision === null || !currentSessionQuiescent;
       document.getElementById("conversation-id").textContent = selectedSessionId
         ? (sessionTitles.get(selectedSessionId) || selectedSessionId)
         : "Select or create a session";
       if (!selected) {
         document.getElementById("conversation-state").textContent = "No live timeline";
       } else if (status) {
+        currentSessionRevision = asNumber(status.revision);
+        currentSessionQuiescent = asNumber(status.pendingInputs) === 0 && !status.activeTurnId;
+        renameSessionButton.disabled = false;
+        checkpointSessionButton.disabled = !currentSessionQuiescent;
         document.getElementById("conversation-state").textContent = `${formatCount(status.pendingInputs)} pending · revision ${formatCount(status.revision)}${status.activeTurnId ? " · active" : ""}`;
       }
     }
@@ -1249,6 +1263,8 @@
         timelineCursor = 0;
         timelineEvents = [];
         activeTaskId = null;
+        currentSessionRevision = null;
+        currentSessionQuiescent = false;
         if (pendingInputCommand) clearCommandKey(pendingInputCommand.scope);
         pendingInputCommand = null;
       }
@@ -1308,6 +1324,72 @@
         showError(error, "A new session could not be created.");
       } finally {
         newSessionButton.disabled = false;
+      }
+    }
+
+    function validSessionMetadata(value) {
+      return typeof value === "string"
+        && value.length > 0
+        && value === value.trim()
+        && Array.from(value).length <= 72
+        && new TextEncoder().encode(value).length <= 160
+        && !/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(value);
+    }
+
+    async function renameSelectedSession() {
+      if (!selectedSessionId || currentSessionRevision === null) return;
+      const current = sessionTitles.get(selectedSessionId) || "New conversation";
+      const title = window.prompt("Choose a title for this conversation.", current);
+      if (title === null) return;
+      if (!validSessionMetadata(title)) {
+        showError(new Error("Use 1–72 safe characters without surrounding whitespace or control characters."), "The title is invalid.");
+        return;
+      }
+      renameSessionButton.disabled = true;
+      clearError();
+      try {
+        const response = await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/title`, {
+          apiVersion: "v1",
+          expectedRevision: currentSessionRevision,
+          title
+        });
+        currentSessionRevision = asNumber(response.revision);
+        sessionTitles.set(selectedSessionId, response.title);
+        document.getElementById("conversation-id").textContent = response.title;
+        await refresh();
+        await refreshConversation(false);
+      } catch (error) {
+        showError(error, "The conversation could not be renamed.");
+      } finally {
+        renameSessionButton.disabled = !selectedSessionId;
+      }
+    }
+
+    async function checkpointSelectedSession() {
+      if (!selectedSessionId || currentSessionRevision === null || !currentSessionQuiescent) return;
+      const entered = window.prompt("Optional checkpoint label. Leave blank for no label.", "");
+      if (entered === null) return;
+      const label = entered.length ? entered : null;
+      if (label !== null && !validSessionMetadata(label)) {
+        showError(new Error("Use 1–72 safe characters without surrounding whitespace or control characters."), "The checkpoint label is invalid.");
+        return;
+      }
+      checkpointSessionButton.disabled = true;
+      clearError();
+      try {
+        const response = await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/checkpoints`, {
+          apiVersion: "v1",
+          expectedRevision: currentSessionRevision,
+          label
+        });
+        currentSessionRevision = asNumber(response.revision);
+        document.getElementById("conversation-state").textContent = `Checkpoint ${response.label || response.checkpointId} created · revision ${formatCount(response.revision)}`;
+        await refresh();
+        await refreshConversation(false);
+      } catch (error) {
+        showError(error, "A checkpoint can only be created after pending and active work has settled.");
+      } finally {
+        checkpointSessionButton.disabled = !selectedSessionId || !currentSessionQuiescent;
       }
     }
 
@@ -2501,6 +2583,8 @@
 
     refreshButton.addEventListener("click", refresh);
     newSessionButton.addEventListener("click", () => { void createSession(); });
+    renameSessionButton.addEventListener("click", () => { void renameSelectedSession(); });
+    checkpointSessionButton.addEventListener("click", () => { void checkpointSelectedSession(); });
     sendInputButton.addEventListener("click", () => { void submitInput(); });
     cancelTaskButton.addEventListener("click", () => { void cancelActiveTask(); });
     loadTaskUsageButton.addEventListener("click", () => { void loadTaskUsage(); });

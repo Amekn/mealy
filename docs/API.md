@@ -117,6 +117,9 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/sessions` | `limit` (default 20, 1–100) | `SessionsResponse` |
 | `POST` | `/v1/sessions` | `CreateSessionRequest` | `CreateSessionResponse` |
 | `GET` | `/v1/sessions/search` | `query`, optional `limit` (default 20, 1–100) | `SessionSearchResponse` |
+| `PATCH` | `/v1/sessions/{session_id}` | `UpdateSessionTitleRequest` | `SessionTitleResponse` |
+| `GET` | `/v1/sessions/{session_id}/checkpoints` | optional `limit` (default 20, 1–100) | `SessionCheckpointsResponse` |
+| `POST` | `/v1/sessions/{session_id}/checkpoints` | `CreateSessionCheckpointRequest` | `SessionCheckpointResponse` |
 | `POST` | `/v1/sessions/{session_id}/inputs` | `SubmitInputRequest` | `InputAdmissionResponse` |
 | `GET` | `/v1/sessions/{session_id}/status` | - | `SessionStatusResponse` |
 | `GET` | `/v1/sessions/{session_id}/timeline` | optional `after`, optional `limit` | `TimelinePageResponse` |
@@ -134,11 +137,26 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/artifacts/{artifact_id}` | - | `ArtifactMetadataResponse` |
 | `GET` | `/v1/artifacts/{artifact_id}/content` | - | bounded artifact bytes |
 
-`SessionsResponse` includes one bounded `title` for each exact-binding session. Until an
-owner-renaming lifecycle is activated, this is a deterministic, control-free projection of the
-first canonical owner input and is `New conversation` before the first input. Search hits include
-the same value as `sessionTitle`; deriving either value makes no provider request and creates no
-canonical mutation.
+`SessionsResponse` includes one bounded `title` and a `titleSource` of `owner` or `derived` for
+each exact-binding session. Before an owner title exists, this is a deterministic, control-free
+projection of the first canonical owner input and is `New conversation` before the first input.
+Search hits include the same values as `sessionTitle` and `sessionTitleSource`; deriving a fallback
+makes no provider request and creates no canonical mutation.
+
+An owner title update supplies the exact observed `expectedRevision`. It atomically commits the
+bounded title, advances the session revision, and appends `session.title_updated`; a stale
+revision returns `409` without changing the projection. Titles are 1–160 UTF-8 bytes, at most 72
+Unicode scalar values, trimmed, and reject terminal controls, bidirectional overrides, and
+zero-width direction controls.
+
+A checkpoint request also supplies `expectedRevision` and an optional title-safe label.
+Checkpoint creation is accepted only when the durable inbox is empty, no turn is active, and the
+newest canonical turn—if any—completed successfully. The immutable response binds the timeline
+high watermark before the checkpoint event, source turn, context epoch, configuration and policy
+digests, workspace identity and authority digest, latest provider/model identity, source session
+revision, creation event, and time. A checkpoint never copies or grants authority. List responses
+are newest first. Forking and transcript export build on these records but are not part of this
+API slice yet.
 
 ### Schedules and governed memory
 

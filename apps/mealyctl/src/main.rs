@@ -37,28 +37,30 @@ use mealy_protocol::{
     BackupActivationResponse, BackupResponse, BackupVerificationResponse, CancelTaskRequest,
     CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
     CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
-    CreateScheduleRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
-    DelegationResponse, DelegationsResponse, DeliveryMode, DiscordChannelResponse,
-    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
-    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
-    ExportKindRequest, ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
-    ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, GarbageCollectionResponse,
-    HealthResponse, InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest,
-    LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand, MemoryIndexRebuildResponse,
-    MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
-    MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand,
-    MemoryStatusResponse, MigrationBackupActivationResponse, MissedRunPolicyCommand,
-    PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeTelegramChannelRequest,
-    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
-    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse, SchedulesResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionsResponse, SetMemoryPinRequest,
-    StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
-    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
-    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse, VerifyBackupRequest,
-    WebhookChannelResponse, WebhookChannelsResponse,
+    CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
+    CreateSessionResponse, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
+    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DeliveryMode,
+    DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
+    DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
+    ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
+    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
+    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
+    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
+    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
+    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
+    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
+    SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    UpdateSessionTitleRequest, VerifyBackupRequest, WebhookChannelResponse,
+    WebhookChannelsResponse,
 };
 use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -2046,6 +2048,22 @@ enum SessionCommand {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// Set a canonical human-readable title under a revision fence.
+    Rename {
+        /// Opaque session ID.
+        session_id: String,
+        /// Bounded terminal-safe title.
+        title: String,
+        /// Exact revision; the current revision is fetched when omitted.
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+    /// Create or inspect immutable session checkpoints.
+    Checkpoint {
+        /// Checkpoint operation.
+        #[command(subcommand)]
+        command: SessionCheckpointCommand,
+    },
     /// Durably submit one input.
     Send {
         /// Opaque session ID returned by `session create`.
@@ -2092,6 +2110,29 @@ enum SessionCommand {
         after: Option<u64>,
         /// Exit after this many events; zero watches indefinitely.
         #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCheckpointCommand {
+    /// Capture the current quiescent canonical boundary.
+    Create {
+        /// Opaque session ID.
+        session_id: String,
+        /// Optional bounded owner label.
+        #[arg(long)]
+        label: Option<String>,
+        /// Exact revision; the current revision is fetched when omitted.
+        #[arg(long)]
+        expected_revision: Option<u64>,
+    },
+    /// List newest-first immutable checkpoints.
+    List {
+        /// Opaque session ID.
+        session_id: String,
+        /// Maximum checkpoints.
+        #[arg(long, default_value_t = 20)]
         limit: usize,
     },
 }
@@ -7520,6 +7561,14 @@ async fn run_session(
         SessionCommand::Search { query, limit } => {
             print_json(search_session_transcripts(client, connection, &query, limit).await?)?;
         }
+        SessionCommand::Rename {
+            session_id,
+            title,
+            expected_revision,
+        } => rename_session(client, connection, session_id, title, expected_revision).await?,
+        SessionCommand::Checkpoint { command } => {
+            run_session_checkpoint(client, connection, command).await?;
+        }
         SessionCommand::Send {
             session_id,
             content,
@@ -7583,6 +7632,96 @@ async fn run_session(
         } => watch(client, home, &session_id, after, limit).await?,
     }
     Ok(())
+}
+
+async fn rename_session(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    session_id: String,
+    title: String,
+    expected_revision: Option<u64>,
+) -> Result<(), CliError> {
+    let expected_revision = match expected_revision {
+        Some(revision) => revision,
+        None => current_session_revision(client, connection, &session_id).await?,
+    };
+    let response = authorized(
+        client.patch(format!("{}/v1/sessions/{session_id}", connection.base_url)),
+        connection,
+    )
+    .json(&UpdateSessionTitleRequest {
+        api_version: API_VERSION.to_owned(),
+        expected_revision,
+        title,
+    })
+    .send()
+    .await?;
+    print_json(decode::<SessionTitleResponse>(response).await?)
+}
+
+async fn run_session_checkpoint(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: SessionCheckpointCommand,
+) -> Result<(), CliError> {
+    match command {
+        SessionCheckpointCommand::Create {
+            session_id,
+            label,
+            expected_revision,
+        } => {
+            let expected_revision = match expected_revision {
+                Some(revision) => revision,
+                None => current_session_revision(client, connection, &session_id).await?,
+            };
+            let response = authorized(
+                client.post(format!(
+                    "{}/v1/sessions/{session_id}/checkpoints",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&CreateSessionCheckpointRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+                label,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SessionCheckpointResponse>(response).await?)
+        }
+        SessionCheckpointCommand::List { session_id, limit } => {
+            let response = authorized(
+                client
+                    .get(format!(
+                        "{}/v1/sessions/{session_id}/checkpoints",
+                        connection.base_url
+                    ))
+                    .query(&[("limit", limit)]),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SessionCheckpointsResponse>(response).await?)
+        }
+    }
+}
+
+async fn current_session_revision(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    session_id: &str,
+) -> Result<u64, CliError> {
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/sessions/{session_id}/status",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    Ok(decode::<SessionStatusResponse>(response).await?.revision)
 }
 
 async fn search_session_transcripts(

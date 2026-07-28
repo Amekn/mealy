@@ -63,12 +63,26 @@ public command cannot be added or removed without updating this reference.
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`
 interactively selects one of the 20 newest exact-binding sessions, and `chat --session-id
-SESSION_ID` selects a specific older session for scripts. The picker shows a bounded deterministic
-title derived from the first canonical owner input, plus status, relative recency, queued input
-count, and active-turn state without creating a session. An empty session is titled
-`New conversation`. Derived titles make no provider call and remain presentation data until an
-owner-renaming lifecycle is introduced. `--continue` and `--pick` never silently create a session
-when there is no history.
+SESSION_ID` selects a specific older session for scripts. The picker shows the bounded owner title
+when one exists and otherwise a deterministic title derived from the first canonical owner input,
+plus status, relative recency, queued input count, and active-turn state without creating a
+session. An empty session is titled `New conversation`. Derived titles make no provider call.
+`--continue` and `--pick` never silently create a session when there is no history.
+
+Rename a conversation or capture/list immutable resumable boundaries with:
+
+```sh
+mealyctl --home "$HOME/.mealy" session rename SESSION_ID "Release planning"
+mealyctl --home "$HOME/.mealy" session checkpoint create SESSION_ID --label "Before refactor"
+mealyctl --home "$HOME/.mealy" session checkpoint list SESSION_ID --limit 20
+```
+
+When `--expected-revision` is omitted, the client fetches current session status immediately
+before the mutation. Automation can pass the exact revision explicitly. A concurrent change then
+fails with a conflict rather than overwriting newer state. Checkpoint creation requires no pending
+input or active turn and rejects a failed/cancelled latest canonical turn. Owner titles and labels
+are trimmed, terminal-safe, at most 72 characters and 160 UTF-8 bytes. The dashboard exposes the
+same title and checkpoint commands through its fixed loopback allowlist.
 
 Most non-interactive commands emit one bounded JSON value on standard output and diagnostics on
 standard error. Scripts should validate `apiVersion`, named fields, and the process exit status;

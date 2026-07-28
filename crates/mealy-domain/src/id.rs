@@ -64,6 +64,10 @@ define_id!(
     SessionId
 );
 define_id!(
+    /// Identifies one immutable resumable boundary in a session lineage.
+    SessionCheckpointId
+);
+define_id!(
     /// Identifies one accepted session input.
     InboxEntryId
 );

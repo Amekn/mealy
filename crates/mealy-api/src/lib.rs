@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response, Sse, sse::Event},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::{
@@ -23,23 +23,25 @@ use mealy_protocol::{
     BackupVerificationResponse, CancelTaskRequest, CompactionResponse,
     ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
     CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
-    CreateScheduleRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
-    DelegationResponse, DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse,
-    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse,
-    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportResponse,
-    ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse, RebuildMemoryIndexRequest,
-    ReconcileEffectRequest, ResolveApprovalRequest, RevokeDiscordChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
-    ScheduleLifecycleRequest, ScheduleResponse, ScheduleRunsResponse, SchedulesResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionsResponse, SetMemoryPinRequest,
-    StageExtensionManifestRequest, SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt,
-    TaskReplayResponse, TaskResponse, TelegramChannelResponse, TelegramChannelsResponse,
-    TimelineCursor, TimelinePageResponse, VerifyBackupRequest, WebhookChannelResponse,
+    CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
+    CreateSessionResponse, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
+    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
+    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse,
+    ExtensionsResponse, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse,
+    MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
+    PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
+    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
+    RunGarbageCollectionRequest, ScheduleLifecycleRequest, ScheduleResponse, ScheduleRunsResponse,
+    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
+    SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
+    UpdateSessionTitleRequest, VerifyBackupRequest, WebhookChannelResponse,
     WebhookChannelsResponse,
 };
 use serde::Deserialize;
@@ -341,6 +343,49 @@ pub trait ApiBackend: Send + Sync + 'static {
         identity: AuthenticatedIdentity,
         limit: usize,
     ) -> Result<SessionsResponse, BackendError>;
+
+    /// Sets a canonical owner title under a session-revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, concurrency, or persistence fails.
+    fn update_session_title(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _request: UpdateSessionTitleRequest,
+    ) -> Result<SessionTitleResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Captures one immutable checkpoint at a quiescent canonical boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, concurrency, boundary, or
+    /// persistence checks fail.
+    fn create_session_checkpoint(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _request: CreateSessionCheckpointRequest,
+    ) -> Result<SessionCheckpointResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists newest-first immutable checkpoints for one exact owner binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, bounds, evidence, or persistence fails.
+    fn session_checkpoints(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _limit: usize,
+    ) -> Result<SessionCheckpointsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
 
     /// Searches canonical user/final-assistant transcript text for the exact binding.
     ///
@@ -1171,6 +1216,14 @@ fn build_router(
         )
         .route("/v1/sessions/search", get(session_search_handler))
         .route(
+            "/v1/sessions/{session_id}",
+            patch(update_session_title_handler),
+        )
+        .route(
+            "/v1/sessions/{session_id}/checkpoints",
+            get(session_checkpoints_handler).post(create_session_checkpoint_handler),
+        )
+        .route(
             "/v1/sessions/{session_id}/inputs",
             post(submit_input_handler),
         )
@@ -1626,6 +1679,62 @@ async fn sessions_handler(
         )));
     }
     let result = run_backend(state, move |backend| backend.sessions(identity, limit)).await?;
+    Ok(Json(result))
+}
+
+async fn update_session_title_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<UpdateSessionTitleRequest>, JsonRejection>,
+) -> Result<Json<SessionTitleResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.update_session_title(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn create_session_checkpoint_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<CreateSessionCheckpointRequest>, JsonRejection>,
+) -> Result<Json<SessionCheckpointResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_session_checkpoint(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionCheckpointListParameters {
+    limit: Option<usize>,
+}
+
+async fn session_checkpoints_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    parameters: Result<Query<SessionCheckpointListParameters>, QueryRejection>,
+) -> Result<Json<SessionCheckpointsResponse>, HttpError> {
+    let Query(parameters) = parameters.map_err(|rejection| map_query_rejection(&rejection))?;
+    let limit = parameters.limit.unwrap_or(20);
+    if !(1..=100).contains(&limit) {
+        return Err(HttpError(BackendError::InvalidRequest(
+            "session checkpoint limit must be between 1 and 100".to_owned(),
+        )));
+    }
+    let result = run_backend(state, move |backend| {
+        backend.session_checkpoints(identity, session_id, limit)
+    })
+    .await?;
     Ok(Json(result))
 }
 
@@ -2860,16 +2969,17 @@ mod tests {
         API_VERSION, ApiErrorResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
         ApprovalStatusResponse, ArtifactMetadataResponse, CancelTaskRequest, CompactionResponse,
         ContextItemDisposition, ContextManifestEvidenceItemResponse,
-        ContextManifestEvidenceResponse, CreateCompactionRequest, CreateSessionResponse,
-        EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, InputAdmissionResponse,
-        MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse,
-        MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
-        PromoteMemoryRequest, ProposeMemoryRequest, RebuildMemoryIndexRequest,
-        ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-        SessionStatusResponse, SessionSummaryResponse, SessionsResponse, SetMemoryPinRequest,
-        SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse,
-        TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor,
-        TimelinePageResponse,
+        ContextManifestEvidenceResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
+        CreateSessionResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+        InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
+        MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
+        PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+        RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+        ResolveApprovalRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
+        SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse, SessionsResponse,
+        SetMemoryPinRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
+        TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse,
+        TimelineCursor, TimelinePageResponse, UpdateSessionTitleRequest,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3005,6 +3115,7 @@ mod tests {
                     .then(|| SessionSummaryResponse {
                         session_id: "session-1".to_owned(),
                         title: "Review the release".to_owned(),
+                        title_source: "derived".to_owned(),
                         status: "active".to_owned(),
                         revision: 1,
                         pending_inputs: 0,
@@ -3014,6 +3125,90 @@ mod tests {
                     })
                     .into_iter()
                     .collect(),
+            })
+        }
+
+        fn update_session_title(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+            request: UpdateSessionTitleRequest,
+        ) -> Result<SessionTitleResponse, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionTitleResponse {
+                api_version: API_VERSION.to_owned(),
+                session_id,
+                title: request.title,
+                title_source: "owner".to_owned(),
+                revision: request.expected_revision + 1,
+                event_id: "event-title".to_owned(),
+                updated_at_ms: 3,
+            })
+        }
+
+        fn create_session_checkpoint(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+            request: CreateSessionCheckpointRequest,
+        ) -> Result<SessionCheckpointResponse, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionCheckpointResponse {
+                api_version: API_VERSION.to_owned(),
+                checkpoint_id: "checkpoint-1".to_owned(),
+                session_id,
+                source_cursor: TimelineCursor(8),
+                source_turn_id: Some("turn-1".to_owned()),
+                context_epoch_id: Some("epoch-1".to_owned()),
+                source_session_revision: request.expected_revision,
+                config_digest: Some("a".repeat(64)),
+                policy_digest: Some("b".repeat(64)),
+                workspace_identity: Some("workspace-1".to_owned()),
+                workspace_authority_digest: "c".repeat(64),
+                provider_id: Some("provider-1".to_owned()),
+                model_id: Some("model-1".to_owned()),
+                label: request.label,
+                event_id: "event-checkpoint".to_owned(),
+                revision: request.expected_revision + 1,
+                created_at_ms: 4,
+            })
+        }
+
+        fn session_checkpoints(
+            &self,
+            _identity: AuthenticatedIdentity,
+            session_id: String,
+            _limit: usize,
+        ) -> Result<SessionCheckpointsResponse, BackendError> {
+            if session_id != "session-1" {
+                return Err(BackendError::NotFound);
+            }
+            Ok(SessionCheckpointsResponse {
+                api_version: API_VERSION.to_owned(),
+                session_id: session_id.clone(),
+                checkpoints: vec![SessionCheckpointResponse {
+                    api_version: API_VERSION.to_owned(),
+                    checkpoint_id: "checkpoint-1".to_owned(),
+                    session_id,
+                    source_cursor: TimelineCursor(8),
+                    source_turn_id: None,
+                    context_epoch_id: None,
+                    source_session_revision: 1,
+                    config_digest: None,
+                    policy_digest: None,
+                    workspace_identity: None,
+                    workspace_authority_digest: "c".repeat(64),
+                    provider_id: None,
+                    model_id: None,
+                    label: Some("Before refactor".to_owned()),
+                    event_id: "event-checkpoint".to_owned(),
+                    revision: 2,
+                    created_at_ms: 4,
+                }],
             })
         }
 
@@ -3817,6 +4012,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&body).contains("session-1"));
 
         let listed = app
+            .clone()
             .oneshot(
                 Request::get("/v1/sessions?limit=10")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -3830,6 +4026,81 @@ mod tests {
         let sessions: SessionsResponse = serde_json::from_slice(&body).expect("sessions JSON");
         assert_eq!(sessions.sessions.len(), 1);
         assert_eq!(sessions.sessions[0].session_id, "session-1");
+
+        assert_session_workbench_routes(app, &token).await;
+    }
+
+    async fn assert_session_workbench_routes(app: axum::Router, token: &str) {
+        let renamed = app
+            .clone()
+            .oneshot(
+                Request::patch("/v1/sessions/session-1")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "apiVersion": API_VERSION,
+                            "expectedRevision": 1,
+                            "title": "Release planning",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("rename request"),
+            )
+            .await
+            .expect("rename response");
+        assert_eq!(renamed.status(), StatusCode::OK);
+        let body = to_bytes(renamed.into_body(), 4096)
+            .await
+            .expect("rename body");
+        let title = serde_json::from_slice::<SessionTitleResponse>(&body).expect("title response");
+        assert_eq!(title.title, "Release planning");
+        assert_eq!(title.title_source, "owner");
+        assert_eq!(title.revision, 2);
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/session-1/checkpoints")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "apiVersion": API_VERSION,
+                            "expectedRevision": 2,
+                            "label": "Before refactor",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("checkpoint request"),
+            )
+            .await
+            .expect("checkpoint response");
+        assert_eq!(created.status(), StatusCode::OK);
+        let body = to_bytes(created.into_body(), 4096)
+            .await
+            .expect("checkpoint body");
+        let checkpoint = serde_json::from_slice::<SessionCheckpointResponse>(&body)
+            .expect("checkpoint response");
+        assert_eq!(checkpoint.source_session_revision, 2);
+        assert_eq!(checkpoint.revision, 3);
+
+        let listed_checkpoints = app
+            .oneshot(
+                Request::get("/v1/sessions/session-1/checkpoints?limit=20")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("checkpoint list request"),
+            )
+            .await
+            .expect("checkpoint list response");
+        assert_eq!(listed_checkpoints.status(), StatusCode::OK);
+        let body = to_bytes(listed_checkpoints.into_body(), 4096)
+            .await
+            .expect("checkpoint list body");
+        let checkpoints = serde_json::from_slice::<SessionCheckpointsResponse>(&body)
+            .expect("checkpoint list response");
+        assert_eq!(checkpoints.checkpoints.len(), 1);
     }
 
     #[tokio::test]

@@ -29,6 +29,7 @@ mod sessions;
 mod telegram;
 mod timeline;
 mod validation;
+mod workbench;
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_foundation.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_runtime.sql");
@@ -46,10 +47,11 @@ const MIGRATION_0013: &str = include_str!("../migrations/0013_telegram_channel.s
 const MIGRATION_0014: &str = include_str!("../migrations/0014_discord_dm_channel.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_usage_reporting.sql");
 const MIGRATION_0016: &str = include_str!("../migrations/0016_context_manifest_bundles.sql");
+const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 16;
+pub const LATEST_SCHEMA_VERSION: i64 = 17;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -306,6 +308,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0016)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (16, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 16;
+        }
+        if existing_version == 16 {
+            transaction.execute_batch(MIGRATION_0017)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (17, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -2201,7 +2211,7 @@ mod tests {
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
-                 DELETE FROM schema_version WHERE version IN (15, 16);",
+                 DELETE FROM schema_version WHERE version IN (15, 16, 17);",
             )
             .expect("construct exact v14 predecessor");
         let connection = store.connection;
@@ -2244,6 +2254,60 @@ mod tests {
             Err(StoreError::NotReady(message))
                 if message == "terminal usage-report index is missing or malformed"
         ));
+    }
+
+    #[test]
+    fn v16_upgrade_installs_session_metadata_and_immutable_checkpoints() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute_batch(
+                "DROP TABLE session_checkpoint;
+                 DROP TABLE session_metadata;
+                 DELETE FROM schema_version WHERE version = 17;",
+            )
+            .expect("construct exact v16 predecessor");
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v16 session workbench schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for table in ["session_metadata", "session_checkpoint"] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema \
+                     WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("query workbench table");
+            assert!(exists, "{table} was not installed");
+        }
+        for trigger in [
+            "session_metadata_time_insert",
+            "session_metadata_time_update",
+            "session_checkpoint_binding_insert",
+            "session_checkpoint_immutable_update",
+            "session_checkpoint_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema \
+                     WHERE type = 'trigger' AND name = ?1)",
+                    [trigger],
+                    |row| row.get(0),
+                )
+                .expect("query workbench trigger");
+            assert!(exists, "{trigger} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
     }
 
     #[test]

@@ -287,7 +287,7 @@ The initial schema is organized by responsibility:
 | Area | Canonical tables |
 |---|---|
 | Identity | `principals`, `channel_bindings`, `auth_credentials`, `revocations` |
-| Conversation | `sessions`, `session_inbox`, `turns`, `messages` |
+| Conversation | `sessions`, `session_metadata`, `session_inbox`, `turns`, `messages`, `session_checkpoint` |
 | Work | `tasks`, `runs`, `run_edges`, `attempts`, `work_leases`, `resource_claims` |
 | Effects | `tool_calls`, `effect_intents`, `approvals`, `effect_outcomes` |
 | Context | `context_epoch`, `context_manifest`, schema-16 `context_manifest_bundle`, sparse bundle provenance, legacy `context_manifest_item`, compactions |

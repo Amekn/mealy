@@ -135,7 +135,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         .expect("provider secret");
 
     downgrade_to_schema_13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 16, SystemTime::now())
+    let migration = create_pre_migration_backup(&home, &database, 13, 17, SystemTime::now())
         .expect("migration backup");
     let migration_name = migration
         .path
@@ -155,7 +155,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
     assert!(!denied.status.success());
     assert_eq!(
         inspect_existing_schema_version(&database).expect("denied schema"),
-        Some(16)
+        Some(17)
     );
 
     let inherited_lock = lock_home(&home);
@@ -175,7 +175,7 @@ fn migration_home_activation_accepts_only_an_approved_exact_snapshot_and_inherit
         serde_json::from_slice(&activated.stdout).expect("activation response");
     assert_eq!(response.manifest_digest, migration.manifest_digest);
     assert_eq!(response.from_schema_version, 13);
-    assert_eq!(response.to_schema_version, 16);
+    assert_eq!(response.to_schema_version, 17);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("activated schema"),
         Some(13)
@@ -207,7 +207,7 @@ fn downgrade_to_schema_13(database: &Path) {
              DROP TABLE discord_channel_health;
              DROP TABLE discord_channel_cursor;
              DROP TABLE discord_channel_binding;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate v13");
@@ -254,7 +254,7 @@ fn migration_command(
         .arg("--expected-from-schema-version")
         .arg("13")
         .arg("--expected-to-schema-version")
-        .arg("16");
+        .arg("17");
     if approve {
         command.arg("--approve");
     }
