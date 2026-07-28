@@ -56,7 +56,8 @@ and an active-route model picker with separate conversation and next-turn scope.
 proofs cover terminal enforcement, alternate-screen cleanup, Ctrl-C during stalled admission, and
 persistent daemon loss. Focused storage, API, process, real-provider, artifact-integrity,
 exact-owner, terminal, and browser-boundary tests are green. Plan-first transactional route-set
-switching, full-workspace qualification, and final v0.3 release gates remain in progress.
+switching and its installed-package service-manager acceptance are implemented; final package,
+upgrade, soak, protected-CI, live-provider, and publication gates remain in progress.
 
 ### Session workbench
 

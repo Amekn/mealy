@@ -43,7 +43,13 @@ active configuration.
    mode-`0600` previous/candidate configuration snapshots.
 4. A transient user service supervises that exact helper outside the invoking
    terminal. A home-scoped service-mutation lock serializes it with program
-   updates.
+   updates. The unit retains `NoNewPrivileges`, a private umask, and bounded
+   tasks/memory, but deliberately does not request `PrivateTmp`: some user
+   managers implement that setting with a one-entry user namespace that
+   exposes root-owned `systemctl` through an overflow identity on a writable
+   root filesystem. That makes the helper's trusted-system-executable check
+   fail and prevents recovery. The helper creates no temporary files and
+   re-verifies the exact system manager executable before every service action.
 5. The helper resolves only a brokered credential, a credential-free
    literal-loopback route, or the official subscription client and performs
    the existing bounded exact-model connectivity probe before closing

@@ -34,7 +34,10 @@ An approved managed-archive update is a restartable transaction with one durable
    executable and home. It copies that already-qualified client into the private transaction
    directory, records its SHA-256, and asks the trusted user service manager to launch that exact
    copy as a dedicated `mealy-update-<transaction-uuid>.service` helper outside both the daemon and
-   terminal process trees. Restart never resolves through the newly activated program slot.
+   terminal process trees. Restart never resolves through the newly activated program slot. The
+   helper retains `NoNewPrivileges`, a private umask, and resource limits, but omits `PrivateTmp`;
+   user-namespace-backed implementations can otherwise hide the trusted root ownership identity of
+   `systemctl`, while the helper itself creates no temporary files.
 3. The helper independently repeats the exact candidate verification. Command-line arguments carry
    only non-secret identity; provider, channel, and backup secrets are never inherited. A private
    advisory lock serializes update helpers for one home, including after process restart.

@@ -144,8 +144,13 @@ config from exact file digests so a crash between activation and phase persisten
 mistaken for untouched state. The ordinary application/config/adapter/storage tests share the
 128-byte model-identity bound. The complete process suite continues to prove drain, owner-service
 restart/readiness, provider probe redaction, exact catalog projection, and configuration-history
-atomic writes used by the composed transaction; installed-package qualification will exercise the
-full approved service-manager path before the v0.3 release gate is signed.
+atomic writes used by the composed transaction. `scripts/installed-provider-switch-smoke.sh`
+additionally installs two credential-free loopback routes under an exact verified archive or native
+package, proves review mode is byte-nonmutating, approves the switch through an independently
+supervised helper, observes a distinct installed daemon after restart, and verifies the committed
+catalog/config order plus private retained transaction evidence. The tag workflow runs this proof
+against a just-built Debian package, and post-publication acceptance repeats it against the
+downloaded managed archive.
 
 `apps/mealyctl/tests/skill_configuration.rs` crosses the client process boundary for data-only
 skills. It proves read-only inspection, no mutation without approval, immutable digest publication,

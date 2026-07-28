@@ -2634,6 +2634,19 @@ async fn launch_update_transaction(
     }
 }
 
+#[cfg(target_os = "linux")]
+const RECOVERY_HELPER_SYSTEMD_PROPERTIES: &[&str] = &[
+    "--property=Type=exec",
+    "--property=Restart=on-failure",
+    "--property=RestartSec=2s",
+    "--property=StartLimitIntervalSec=60s",
+    "--property=StartLimitBurst=5",
+    "--property=NoNewPrivileges=yes",
+    "--property=UMask=0077",
+    "--property=TasksMax=64",
+    "--property=MemoryMax=1G",
+];
+
 fn launch_update_helper(transaction: &lifecycle::UpdateTransaction) -> Result<(), CliError> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -2656,21 +2669,16 @@ fn launch_update_helper(transaction: &lifecycle::UpdateTransaction) -> Result<()
             "mealy-update-{}.service",
             transaction.transaction_id.replace('-', "")
         );
-        let output = ProcessCommand::new(systemd_run)
+        let mut command = ProcessCommand::new(systemd_run);
+        command
             .arg("--user")
             .arg("--quiet")
             .arg("--collect")
             .arg(format!("--unit={unit}"))
-            .arg("--property=Type=exec")
-            .arg("--property=Restart=on-failure")
-            .arg("--property=RestartSec=2s")
-            .arg("--property=StartLimitIntervalSec=60s")
-            .arg("--property=StartLimitBurst=5")
-            .arg("--property=NoNewPrivileges=yes")
-            .arg("--property=PrivateTmp=yes")
-            .arg("--property=UMask=0077")
-            .arg("--property=TasksMax=64")
-            .arg("--property=MemoryMax=1G")
+            .args(RECOVERY_HELPER_SYSTEMD_PROPERTIES)
+            // PrivateTmp is intentionally absent. On user managers that implement it with a
+            // one-entry user namespace, root-owned systemctl is exposed as the overflow UID.
+            // The helper must re-verify and invoke that trusted host executable for recovery.
             .arg("--property=TimeoutStartSec=30min")
             .arg(executable)
             .arg("--home")
@@ -2679,8 +2687,8 @@ fn launch_update_helper(transaction: &lifecycle::UpdateTransaction) -> Result<()
             .arg(&transaction.transaction_id)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+            .stderr(Stdio::piped());
+        let output = command.output()?;
         if output.stdout.len() > 64 * 1024 || output.stderr.len() > 64 * 1024 {
             return Err(CliError::InvalidService(
                 "systemd update-helper response exceeded its bound".to_owned(),
@@ -8221,21 +8229,15 @@ fn schedule_provider_switch_helper(
             "mealy-provider-switch-{}.service",
             transaction.transaction_id.replace('-', "")
         );
-        let output = ProcessCommand::new(systemd_run)
+        let mut command = ProcessCommand::new(systemd_run);
+        command
             .arg("--user")
             .arg("--quiet")
             .arg("--collect")
             .arg(format!("--unit={unit}"))
-            .arg("--property=Type=exec")
-            .arg("--property=Restart=on-failure")
-            .arg("--property=RestartSec=2s")
-            .arg("--property=StartLimitIntervalSec=60s")
-            .arg("--property=StartLimitBurst=5")
-            .arg("--property=NoNewPrivileges=yes")
-            .arg("--property=PrivateTmp=yes")
-            .arg("--property=UMask=0077")
-            .arg("--property=TasksMax=64")
-            .arg("--property=MemoryMax=1G")
+            .args(RECOVERY_HELPER_SYSTEMD_PROPERTIES)
+            // See the update helper above: PrivateTmp can hide the trusted ownership identity
+            // required to stop/start and qualify the exact owner service.
             .arg("--property=TimeoutStartSec=10min")
             .arg(&transaction.helper_executable)
             .arg("--home")
@@ -8244,8 +8246,8 @@ fn schedule_provider_switch_helper(
             .arg(&transaction.transaction_id)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()?;
+            .stderr(Stdio::piped());
+        let output = command.output()?;
         if output.stdout.len() > 64 * 1024 || output.stderr.len() > 64 * 1024 {
             return Err(CliError::InvalidService(
                 "provider-switch helper response exceeded its bound".to_owned(),
@@ -8277,6 +8279,7 @@ fn provider_switch_terminal_result(
 
 #[derive(Clone, Copy, Debug)]
 enum ProviderSwitchFailure {
+    DaemonIdentity,
     ServiceIdentity,
     ConfigurationChanged,
     Probe,
@@ -8290,6 +8293,7 @@ enum ProviderSwitchFailure {
 impl ProviderSwitchFailure {
     const fn code(self) -> &'static str {
         match self {
+            Self::DaemonIdentity => "installed-daemon-identity-failed",
             Self::ServiceIdentity => "owner-service-identity-failed",
             Self::ConfigurationChanged => "configuration-fence-failed",
             Self::Probe => "candidate-probe-failed",
@@ -8369,8 +8373,7 @@ async fn resume_provider_switch_transaction(
     loop {
         match transaction.phase {
             Phase::Scheduled => {
-                verify_provider_switch_transaction_service(transaction, true)
-                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                verify_provider_switch_helper_service(transaction, true)?;
                 if provider_switch::active_config_slot(transaction)
                     .map_err(|_| ProviderSwitchFailure::ConfigurationChanged)?
                     != Some(provider_switch::ProviderSwitchConfigSlot::Previous)
@@ -8396,8 +8399,7 @@ async fn resume_provider_switch_transaction(
                     .map_err(|_| ProviderSwitchFailure::Probe)?;
             }
             Phase::Prepared => {
-                verify_provider_switch_transaction_service(transaction, true)
-                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                verify_provider_switch_helper_service(transaction, true)?;
                 transaction.phase = Phase::Draining;
                 provider_switch::persist_transaction(transaction)
                     .map_err(|_| ProviderSwitchFailure::Drain)?;
@@ -8411,8 +8413,7 @@ async fn resume_provider_switch_transaction(
                     .map_err(|_| ProviderSwitchFailure::Drain)?;
             }
             Phase::Stopped => {
-                verify_provider_switch_transaction_service(transaction, false)
-                    .map_err(|_| ProviderSwitchFailure::ServiceIdentity)?;
+                verify_provider_switch_helper_service(transaction, false)?;
                 activate_provider_switch_candidate(transaction)
                     .map_err(|_| ProviderSwitchFailure::Activation)?;
                 transaction.phase = Phase::Activated;
@@ -8449,6 +8450,33 @@ async fn resume_provider_switch_transaction(
             }
         }
     }
+}
+
+fn verify_provider_switch_helper_service(
+    transaction: &provider_switch::ProviderSwitchTransaction,
+    require_active: bool,
+) -> Result<(), ProviderSwitchFailure> {
+    provider_switch::verify_daemon_identity(transaction).map_err(|error| {
+        eprintln!(
+            "provider-switch installed-daemon verification failed: {}",
+            terminal_safe_single_line(&error.to_string())
+        );
+        ProviderSwitchFailure::DaemonIdentity
+    })?;
+    verify_provider_switch_service(
+        &transaction.home,
+        &transaction.daemon_executable,
+        Some(&transaction.service_fragment),
+        require_active,
+    )
+    .map_err(|error| {
+        eprintln!(
+            "provider-switch owner-service verification failed: {}",
+            terminal_safe_single_line(&error.to_string())
+        );
+        ProviderSwitchFailure::ServiceIdentity
+    })?;
+    Ok(())
 }
 
 fn verify_provider_switch_transaction_service(
@@ -16949,9 +16977,10 @@ mod tests {
     };
     #[cfg(target_os = "linux")]
     use super::{
-        decode_systemd_quoted_argument, generated_linux_service_daemon, linux_activation_command,
-        linux_service_body, remove_reviewed_loader_fragment, resolve_loaded_owner_service_fragment,
-        service_definition, service_read_write_paths, systemd_quote,
+        RECOVERY_HELPER_SYSTEMD_PROPERTIES, decode_systemd_quoted_argument,
+        generated_linux_service_daemon, linux_activation_command, linux_service_body,
+        remove_reviewed_loader_fragment, resolve_loaded_owner_service_fragment, service_definition,
+        service_read_write_paths, systemd_quote,
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
@@ -17873,6 +17902,23 @@ mod tests {
         assert!(
             quoted_activation
                 .starts_with("systemctl --user link '/srv/owner'\\''s services/mealy.service' && ")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn recovery_helper_properties_preserve_trusted_system_executable_identity() {
+        assert!(RECOVERY_HELPER_SYSTEMD_PROPERTIES.contains(&"--property=NoNewPrivileges=yes"));
+        assert!(RECOVERY_HELPER_SYSTEMD_PROPERTIES.contains(&"--property=UMask=0077"));
+        assert!(RECOVERY_HELPER_SYSTEMD_PROPERTIES.contains(&"--property=TasksMax=64"));
+        assert!(RECOVERY_HELPER_SYSTEMD_PROPERTIES.contains(&"--property=MemoryMax=1G"));
+        assert!(
+            RECOVERY_HELPER_SYSTEMD_PROPERTIES.iter().all(|property| {
+                !property.starts_with("--property=PrivateTmp=")
+                    && !property.starts_with("--property=PrivateUsers=")
+                    && !property.starts_with("--property=ProtectSystem=")
+            }),
+            "namespace-backed helper properties can obscure root-owned systemctl identity"
         );
     }
 

@@ -348,6 +348,13 @@ crash. Pre-activation failure requalifies the original route; post-activation fa
 exact prior bytes and original catalog digest before reporting rollback. Environment-only secrets
 are rejected because the helper does not inherit caller shell state.
 
+The transient provider-switch and archive-update helpers keep `NoNewPrivileges`, a private umask,
+and resource bounds, but create no temporary files and deliberately omit `PrivateTmp`. On some user
+managers that setting creates a one-entry user namespace and exposes root-owned `systemctl` through
+an overflow identity on a writable root filesystem, causing the helper's trusted-executable check
+to reject recovery. Both helpers instead re-verify the canonical root-protected system manager
+executable before every service action.
+
 The transaction reorders the complete validated chain and removes no route, so persisted exact
 session defaults remain resolvable. Trust-boundary validation rejects unsafe reorderings. Changing
 the route set, endpoint, model, credential, configured price, locality, or residency remains a
