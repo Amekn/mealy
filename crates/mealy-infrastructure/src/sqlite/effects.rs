@@ -2,10 +2,10 @@
 
 use super::SqliteStore;
 use mealy_application::{
-    ApprovalRequestDraft, ApprovalRequestView, ApprovalResolutionReceipt, EffectAttemptBoundary,
-    EffectAttemptOutcome, EffectAttemptState, EffectAttemptView, EffectCommandRequestError,
-    EffectLedgerStore, EffectLedgerStoreError, EffectLedgerView, EffectOutcomeKind,
-    EffectOutcomeView, EffectReconciliationOutcome, EffectReconciliationReceipt,
+    AgentArtifactCommit, ApprovalRequestDraft, ApprovalRequestView, ApprovalResolutionReceipt,
+    EffectAttemptBoundary, EffectAttemptOutcome, EffectAttemptState, EffectAttemptView,
+    EffectCommandRequestError, EffectLedgerStore, EffectLedgerStoreError, EffectLedgerView,
+    EffectOutcomeKind, EffectOutcomeView, EffectReconciliationOutcome, EffectReconciliationReceipt,
     EffectRecoveryCandidate, EffectRecoveryDisposition, ExpireApprovalCommit,
     INTERRUPTED_EFFECT_OUTCOME_CLASSIFICATION, INTERRUPTED_EFFECT_OUTCOME_ERROR_CLASS,
     INTERRUPTED_EFFECT_RETRY_CLASSIFICATION, INTERRUPTED_EFFECT_RETRY_ERROR_CLASS,
@@ -1504,22 +1504,62 @@ fn canonical_outcome_evidence(
 fn validate_initial_outcome(
     commit: &RecordEffectAttemptOutcomeCommit,
 ) -> Result<(), EffectLedgerStoreError> {
-    let valid = match commit.outcome {
+    let outcome_valid = match commit.outcome {
         EffectAttemptOutcome::Succeeded => commit.error_class.is_none(),
         EffectAttemptOutcome::Failed | EffectAttemptOutcome::OutcomeUnknown => commit
             .error_class
             .as_deref()
             .is_some_and(|value| !value.is_empty() && value.len() <= 128),
     };
-    if valid {
-        Ok(())
-    } else {
-        Err(invalid(
+    if !outcome_valid {
+        return Err(invalid(
             "success forbids an error class; failed and unknown outcomes require one",
-        ))
+        ));
     }
+    if commit.output_artifact.is_some() != commit.artifact_event_id.is_some() {
+        return Err(invalid(
+            "an output artifact and its journal event must be supplied together",
+        ));
+    }
+    if commit.output_artifact.is_some() && commit.outcome != EffectAttemptOutcome::Succeeded {
+        return Err(invalid(
+            "only a successful effect attempt may commit an output artifact",
+        ));
+    }
+    if let Some(artifact) = &commit.output_artifact {
+        validate_effect_output_artifact(artifact)?;
+    }
+    if commit
+        .output_artifact
+        .as_ref()
+        .map_or(0, |artifact| artifact.size_bytes)
+        != commit.settled_output_bytes
+    {
+        return Err(invalid(
+            "settled effect output bytes do not match the committed artifact",
+        ));
+    }
+    Ok(())
 }
 
+fn validate_effect_output_artifact(
+    artifact: &AgentArtifactCommit,
+) -> Result<(), EffectLedgerStoreError> {
+    if artifact.algorithm != "sha256"
+        || !is_sha256_digest(&artifact.digest)
+        || artifact.relative_path != format!("sha256/{}", artifact.digest)
+        || artifact.size_bytes == 0
+        || artifact.media_type != "image/jpeg"
+        || !matches!(artifact.sensitivity.as_str(), "internal" | "private")
+    {
+        return Err(invalid(
+            "effect output artifact metadata is outside the governed image contract",
+        ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)] // The effect, artifact, and budget settlement remain one boundary.
 fn record_effect_attempt_outcome_transaction(
     transaction: &Transaction<'_>,
     commit: &RecordEffectAttemptOutcomeCommit,
@@ -1579,6 +1619,20 @@ fn record_effect_attempt_outcome_transaction(
             recorded_at_ms: completed_at_ms,
         },
     )?;
+    if let (Some(artifact), Some(artifact_event_id)) =
+        (&commit.output_artifact, commit.artifact_event_id)
+    {
+        insert_effect_output_artifact(
+            transaction,
+            artifact,
+            artifact_event_id,
+            commit.effect_id,
+            commit.attempt_id,
+            commit.correlation_id,
+            completed_at_ms,
+        )?;
+    }
+    settle_effect_budget_reservation(transaction, commit, completed_at_ms)?;
     let effect_changed = transaction
         .execute(
             "UPDATE effect \
@@ -1614,6 +1668,253 @@ fn record_effect_attempt_outcome_transaction(
         return Err(EffectLedgerStoreError::Conflict);
     }
     set_sequence(transaction, "effect", &effect_id, sequence)
+}
+
+fn settle_effect_budget_reservation(
+    transaction: &Transaction<'_>,
+    commit: &RecordEffectAttemptOutcomeCommit,
+    completed_at_ms: i64,
+) -> Result<(), EffectLedgerStoreError> {
+    let reservation_schema_exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema \
+             WHERE type = 'table' AND name = 'agent_effect_budget_reservation')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if !reservation_schema_exists {
+        if commit.settled_cost_microunits != 0 || commit.settled_output_bytes != 0 {
+            return Err(invalid(
+                "historical effect schema cannot settle an external budget reservation",
+            ));
+        }
+        return Ok(());
+    }
+    let reservation = transaction
+        .query_row(
+            "SELECT run_id, maximum_cost_microunits, maximum_output_bytes, state \
+             FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+            [commit.effect_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((run_id, maximum_cost, maximum_output, state)) = reservation else {
+        if commit.settled_cost_microunits != 0 || commit.settled_output_bytes != 0 {
+            return Err(invalid(
+                "effect has no durable budget reservation to settle",
+            ));
+        }
+        return Ok(());
+    };
+    let settled_cost = i64::try_from(commit.settled_cost_microunits)
+        .map_err(|_| invalid("settled effect cost exceeds SQLite range"))?;
+    let settled_output = i64::try_from(commit.settled_output_bytes)
+        .map_err(|_| invalid("settled effect output exceeds SQLite range"))?;
+    if state != "reserved"
+        || settled_cost > maximum_cost
+        || settled_output > maximum_output
+        || (commit.outcome == EffectAttemptOutcome::OutcomeUnknown
+            && (settled_cost != maximum_cost || settled_output != 0))
+        || (commit.outcome == EffectAttemptOutcome::Succeeded && commit.output_artifact.is_none())
+    {
+        return Err(invalid(
+            "external effect budget settlement does not match its durable reservation",
+        ));
+    }
+    let budget_changed = transaction
+        .execute(
+            "UPDATE run_budget_usage SET revision = revision + 1, \
+                reserved_cost_microunits = reserved_cost_microunits - ?1, \
+                reserved_output_bytes = reserved_output_bytes - ?2, \
+                used_cost_microunits = used_cost_microunits + ?3, \
+                used_output_bytes = used_output_bytes + ?4 \
+             WHERE run_id = ?5 \
+               AND reserved_cost_microunits >= ?1 \
+               AND reserved_output_bytes >= ?2 \
+               AND used_cost_microunits + ?3 <= maximum_cost_microunits \
+               AND used_output_bytes + ?4 <= maximum_output_bytes",
+            params![
+                maximum_cost,
+                maximum_output,
+                settled_cost,
+                settled_output,
+                run_id,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    let reservation_changed = transaction
+        .execute(
+            "UPDATE agent_effect_budget_reservation \
+             SET state = 'settled', charged_cost_microunits = ?1, \
+                 charged_output_bytes = ?2, settled_at_ms = ?3 \
+             WHERE effect_id = ?4 AND state = 'reserved'",
+            params![
+                settled_cost,
+                settled_output,
+                completed_at_ms,
+                commit.effect_id.to_string(),
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    if [budget_changed, reservation_changed] != [1, 1] {
+        return Err(EffectLedgerStoreError::Conflict);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn insert_effect_output_artifact(
+    transaction: &Transaction<'_>,
+    artifact: &AgentArtifactCommit,
+    event_id: EventId,
+    effect_id: EffectId,
+    attempt_id: AttemptId,
+    correlation_id: CorrelationId,
+    created_at_ms: i64,
+) -> Result<(), EffectLedgerStoreError> {
+    let (principal_id, session_id, tool_id, effect_class, idempotency, recovery, executor) =
+        transaction
+            .query_row(
+                "SELECT principal_id, session_id, json_extract(descriptor_json, '$.toolId'), \
+                    effect_class, idempotency_class, recovery_strategy, executor_kind \
+             FROM effect_intent WHERE effect_id = ?1",
+                [effect_id.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(map_sqlite_error)?
+            .ok_or(EffectLedgerStoreError::Conflict)?;
+    if tool_id != mealy_application::IMAGE_GENERATION_TOOL_ID
+        || effect_class != "non_idempotent"
+        || idempotency != "non_idempotent"
+        || recovery != "never_retry"
+        || executor != "builtin"
+    {
+        return Err(invariant(
+            "only the governed non-idempotent image generator may commit an effect artifact",
+        ));
+    }
+    let artifact_size = i64::try_from(artifact.size_bytes)
+        .map_err(|_| invalid("effect output artifact size exceeds SQLite range"))?;
+    let committed_at_ms = epoch_milliseconds(artifact.committed_at)?;
+    transaction
+        .execute(
+            "INSERT INTO artifact_blob(algorithm, digest, size_bytes, relative_path, committed_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(algorithm, digest) DO UPDATE SET \
+               committed_at_ms = MIN(artifact_blob.committed_at_ms, excluded.committed_at_ms)",
+            params![
+                artifact.algorithm,
+                artifact.digest,
+                artifact_size,
+                artifact.relative_path,
+                committed_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    let blob_matches = transaction
+        .query_row(
+            "SELECT size_bytes = ?1 AND relative_path = ?2 \
+             FROM artifact_blob WHERE algorithm = ?3 AND digest = ?4",
+            params![
+                artifact_size,
+                artifact.relative_path,
+                artifact.algorithm,
+                artifact.digest,
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if !blob_matches {
+        return Err(invariant(
+            "effect output blob metadata conflicts with its content address",
+        ));
+    }
+    let access_policy_json =
+        json!({"principalId": principal_id, "sessionId": session_id}).to_string();
+    transaction
+        .execute(
+            "INSERT INTO artifact(\
+                id, blob_algorithm, blob_digest, principal_id, session_id, media_type, \
+                origin_kind, origin_id, producer_kind, producer_id, sensitivity, \
+                retention_class, access_policy_json, access_policy_digest, created_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'effect_attempt', ?7, 'builtin', \
+                       'mealyd.image-generation.v1', ?8, 'task_history', ?9, ?10, ?11)",
+            params![
+                artifact.artifact_id.to_string(),
+                artifact.algorithm,
+                artifact.digest,
+                principal_id,
+                session_id,
+                artifact.media_type,
+                attempt_id.to_string(),
+                artifact.sensitivity,
+                access_policy_json,
+                sha256_digest(access_policy_json.as_bytes()),
+                created_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    transaction
+        .execute(
+            "INSERT INTO artifact_reference(\
+                artifact_id, principal_id, session_id, owner_kind, owner_id, relation, created_at_ms\
+             ) VALUES (?1, ?2, ?3, 'effect', ?4, 'output', ?5)",
+            params![
+                artifact.artifact_id.to_string(),
+                principal_id,
+                session_id,
+                effect_id.to_string(),
+                created_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    let artifact_id = artifact.artifact_id.to_string();
+    let sequence = next_sequence(transaction, "artifact", &artifact_id)?;
+    append_event(
+        transaction,
+        &EventAppend {
+            event_id,
+            aggregate_kind: "artifact",
+            aggregate_id: &artifact_id,
+            sequence,
+            event_type: "artifact.committed",
+            occurred_at_ms: created_at_ms,
+            actor_principal_id: None,
+            correlation_id,
+            policy_version: Some("mealy.image-generation-policy.v1"),
+            payload: json!({
+                "algorithm": artifact.algorithm,
+                "digest": artifact.digest,
+                "effect_id": effect_id,
+                "attempt_id": attempt_id,
+                "media_type": artifact.media_type,
+                "owner_kind": "effect",
+                "owner_id": effect_id,
+                "size_bytes": artifact.size_bytes,
+            }),
+        },
+    )?;
+    set_sequence(transaction, "artifact", &artifact_id, sequence)
 }
 
 fn interrupted_recovery_already_committed(
@@ -1766,6 +2067,7 @@ pub(super) fn recover_interrupted_effect_transaction(
             recorded_at_ms: recovered_at_ms,
         },
     )?;
+    settle_interrupted_effect_budget_reservation(transaction, commit.effect_id, recovered_at_ms)?;
     let effect_changed = transaction
         .execute(
             "UPDATE effect \
@@ -1797,6 +2099,102 @@ pub(super) fn recover_interrupted_effect_transaction(
         return Err(EffectLedgerStoreError::Conflict);
     }
     set_sequence(transaction, "effect", &effect_id, sequence)
+}
+
+fn settle_interrupted_effect_budget_reservation(
+    transaction: &Transaction<'_>,
+    effect_id: EffectId,
+    recovered_at_ms: i64,
+) -> Result<(), EffectLedgerStoreError> {
+    let schema_exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema \
+             WHERE type = 'table' AND name = 'agent_effect_budget_reservation')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if !schema_exists {
+        return Ok(());
+    }
+    let reservation = transaction
+        .query_row(
+            "SELECT reservation.run_id, reservation.maximum_cost_microunits, \
+                    reservation.maximum_output_bytes, reservation.state, \
+                    json_extract(intent.descriptor_json, '$.toolId'), \
+                    intent.effect_class, intent.idempotency_class, intent.recovery_strategy, \
+                    intent.executor_kind \
+             FROM agent_effect_budget_reservation reservation \
+             JOIN effect_intent intent ON intent.effect_id = reservation.effect_id \
+             WHERE reservation.effect_id = ?1",
+            [effect_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((
+        run_id,
+        maximum_cost,
+        maximum_output,
+        state,
+        tool_id,
+        effect_class,
+        idempotency,
+        recovery,
+        executor,
+    )) = reservation
+    else {
+        return Ok(());
+    };
+    if state != "reserved"
+        || tool_id != mealy_application::IMAGE_GENERATION_TOOL_ID
+        || effect_class != "non_idempotent"
+        || idempotency != "non_idempotent"
+        || recovery != "never_retry"
+        || executor != "builtin"
+    {
+        return Err(invariant(
+            "interrupted image budget reservation does not match durable never-retry authority",
+        ));
+    }
+    let budget_changed = transaction
+        .execute(
+            "UPDATE run_budget_usage SET revision = revision + 1, \
+                reserved_cost_microunits = reserved_cost_microunits - ?1, \
+                reserved_output_bytes = reserved_output_bytes - ?2, \
+                used_cost_microunits = used_cost_microunits + ?1 \
+             WHERE run_id = ?3 \
+               AND reserved_cost_microunits >= ?1 \
+               AND reserved_output_bytes >= ?2 \
+               AND used_cost_microunits + ?1 <= maximum_cost_microunits",
+            params![maximum_cost, maximum_output, run_id],
+        )
+        .map_err(map_sqlite_error)?;
+    let reservation_changed = transaction
+        .execute(
+            "UPDATE agent_effect_budget_reservation \
+             SET state = 'settled', charged_cost_microunits = maximum_cost_microunits, \
+                 charged_output_bytes = 0, settled_at_ms = ?1 \
+             WHERE effect_id = ?2 AND state = 'reserved'",
+            params![recovered_at_ms, effect_id.to_string()],
+        )
+        .map_err(map_sqlite_error)?;
+    if [budget_changed, reservation_changed] != [1, 1] {
+        return Err(EffectLedgerStoreError::Conflict);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)] // One transaction intentionally exposes every undispatched invariant.
@@ -4330,6 +4728,10 @@ mod tests {
                     "reason": "connection_reset",
                 }),
                 error_class: Some("transport_ambiguous".to_owned()),
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),
@@ -4730,6 +5132,10 @@ mod tests {
                     "resourceVersion": "8",
                 }),
                 error_class: None,
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),
@@ -4924,6 +5330,10 @@ mod tests {
                     "reason": "connection_reset",
                 }),
                 error_class: Some("transport_ambiguous".to_owned()),
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),
@@ -5132,6 +5542,10 @@ mod tests {
                 outcome: EffectAttemptOutcome::Succeeded,
                 evidence_details: serde_json::json!({"receipt": "immutable"}),
                 error_class: None,
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),
@@ -5211,6 +5625,10 @@ mod tests {
             outcome: EffectAttemptOutcome::Failed,
             evidence_details: serde_json::json!({"serviceCode": "rejected"}),
             error_class: None,
+            output_artifact: None,
+            artifact_event_id: None,
+            settled_cost_microunits: 0,
+            settled_output_bytes: 0,
             event_id: EventId::new(),
             correlation_id: CorrelationId::new(),
             completed_at: time(NOW_MS + 30),
@@ -5620,6 +6038,10 @@ mod tests {
                 outcome: EffectAttemptOutcome::OutcomeUnknown,
                 evidence_details: serde_json::json!({"reason": "adapter_timeout"}),
                 error_class: Some("adapter_timeout_ambiguous".to_owned()),
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),
@@ -5690,6 +6112,10 @@ mod tests {
                 outcome: EffectAttemptOutcome::Succeeded,
                 evidence_details: serde_json::json!({"receipt": "terminal-before-crash"}),
                 error_class: None,
+                output_artifact: None,
+                artifact_event_id: None,
+                settled_cost_microunits: 0,
+                settled_output_bytes: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 completed_at: time(NOW_MS + 30),

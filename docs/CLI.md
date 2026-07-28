@@ -199,6 +199,48 @@ an ambiguous client failure, retry with the exact printed values using `--idempo
 evidence fails closed. TUI, dashboard, chat-native, and channel image attachment/rendering are not
 enabled by this command.
 
+Image generation is a separate high-risk capability. While the daemon is stopped, enable one exact
+adapter and optionally import its credential from a one-shot environment variable into the private
+broker:
+
+```sh
+export OPENROUTER_API_KEY='replace-with-your-key'
+mealyctl --home "$HOME/.mealy" media image-generation --enable \
+  --protocol open-router-images \
+  --provider-id openrouter.images \
+  --base-url https://openrouter.ai/api/v1 \
+  --model 'OWNER_VERIFIED_IMAGE_MODEL:free' \
+  --residency openrouter \
+  --secret-id openrouter-images \
+  --credential-env OPENROUTER_API_KEY \
+  --size 1024x1024 \
+  --quality low \
+  --maximum-cost-microunits 50000 \
+  --maximum-output-bytes 2097152 \
+  --timeout-ms 120000 \
+  --approve
+unset OPENROUTER_API_KEY
+
+# Disable while stopped; the brokered key remains until explicitly unreferenced and revoked.
+mealyctl --home "$HOME/.mealy" media image-generation --disable --approve
+```
+
+Use `open-ai-images` with an OpenAI-compatible `/v1` base, including a credential-free literal
+loopback server. Reuse an existing broker entry by supplying `--secret-id` without
+`--credential-env`. The command validates and archives the complete prior configuration but
+deliberately performs no generation probe: probing is itself potentially billable and
+non-idempotent. For OpenRouter under a free-only policy, independently verify that the exact
+image-output model ends in `:free` and still reports zero prices immediately before activation;
+do not substitute a moving paid alias.
+
+The agent sees only `image.generate` with one prompt. Every invocation parks for exact local owner
+approval after reserving the configured cost/output ceilings. Denial makes no provider request.
+An interrupted dispatch is never retried and becomes `outcome_unknown`; inspect it with
+`effect status` and reconcile only from external evidence. A confirmed output is normalized to a
+private canonical JPEG and identified by an artifact ID in the tool observation. Retrieve it
+through the authenticated artifact metadata/content API. TUI/dashboard/channel previews and image
+edits are not enabled by this backend command.
+
 `provider switch` is different from scoped selection: it changes which compatible configured
 route automatic routing prefers. Without `--approve`, it emits a non-mutating
 `mealy.provider-switch-plan.v1`. Approved apply is supported only for a verified production Linux

@@ -115,8 +115,10 @@ A real daemon/provider process proof covers isolated PNG normalization, canonica
 duplicate admission, context-manifest evidence, transcript export, and zero-live-call replay.
 
 TUI, dashboard, and channel image attachment/rendering remain disabled. Forked lineage does not
-yet project source-turn images, and image generation, audio, and video are separate unfinished
-capabilities. Those limitations keep the broader multimodal production gate open.
+yet project source-turn images, and audio and video are separate unfinished capabilities. Image
+generation is now implemented through the independent high-risk effect contract in
+[ADR 0018](0018-governed-image-generation-effect.md); its backend artifact support does not
+activate any client preview. Those limitations keep the broader multimodal production gate open.
 
 ## Rejected alternatives
 

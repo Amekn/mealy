@@ -199,10 +199,20 @@ OpenAI/Anthropic route chains; individual admissions require an exact image-capa
 has a 6 MiB transport boundary and `session send-image` uses no-follow local files plus
 retry-stable delivery/artifact IDs.
 
+The separately permissioned image-generation backend is also implemented. One exact stopped-home
+OpenAI Images or OpenRouter Images adapter pins provider/model, origin, credential reference,
+JPEG/size/quality, maximum cost/output bytes, and deadline. `image.generate` is a high-risk
+non-idempotent effect: the model supplies only the prompt, the owner approves the complete injected
+authority, cost/output are reserved before parking, denial makes no provider call, and a dispatch
+crash never retries. Confirmed output passes through the isolated normalizer before one atomic
+effect/artifact/usage settlement; recorded replay verifies the graph and blob without live calls.
+Schema 22 and real-process happy/denied/crash/reconcile/corruption tests cover the boundary.
+[ADR 0018](decisions/0018-governed-image-generation-effect.md) records the contract.
+
 TUI/dashboard/chat/channel image upload and safe rendering, fork-lineage image projection,
-separately permissioned image generation, and audio/video remain incomplete.
-[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines those remaining
-boundaries.
+reference/edit workflows, and audio/video remain
+incomplete. [ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines the input
+and rendering boundaries.
 
 ### Channels and browser
 

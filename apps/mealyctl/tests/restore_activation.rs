@@ -205,7 +205,31 @@ fn downgrade_to_schema_13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
         .execute_batch(
-            "DROP TRIGGER session_input_reference_immutable_delete;
+            "DROP TABLE agent_effect_budget_reservation;
+             DROP TRIGGER agent_effect_invocation_origin_insert;
+             CREATE TRIGGER agent_effect_invocation_origin_insert
+             BEFORE INSERT ON agent_effect_invocation
+             BEGIN
+                 SELECT CASE WHEN NOT EXISTS(
+                     SELECT 1
+                     FROM effect_intent intent
+                     JOIN effect ON effect.id = intent.effect_id
+                     JOIN model_attempt attempt ON attempt.attempt_id = NEW.model_attempt_id
+                     WHERE intent.effect_id = NEW.effect_id
+                       AND intent.run_id = NEW.run_id
+                       AND intent.task_id = NEW.task_id
+                       AND effect.task_id = NEW.task_id
+                       AND effect.run_id = NEW.run_id
+                       AND attempt.run_id = NEW.run_id
+                       AND attempt.state = 'completed'
+                       AND attempt.response_kind = 'tool_call'
+                       AND json_extract(attempt.response_json, '$.kind') = 'tool_call'
+                       AND json_extract(attempt.response_json, '$.tool_id') = effect.tool_id
+                       AND json(json_extract(attempt.response_json, '$.arguments'))
+                           = json(intent.normalized_arguments_json)
+                 ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
+             END;
+             DROP TRIGGER session_input_reference_immutable_delete;
              DROP TRIGGER session_input_reference_immutable_update;
              DROP TRIGGER session_input_reference_insert_guard;
              DROP TRIGGER session_input_blob_immutable_update;
@@ -254,7 +278,7 @@ fn downgrade_to_schema_13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21);
+             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22);
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate v13");

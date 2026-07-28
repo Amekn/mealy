@@ -34,8 +34,24 @@ The CLI accepts one to four no-follow PNG/JPEG/WebP files outside the Mealy home
 each and 4 MiB total. Preserve the generated delivery/artifact IDs until receipt so an ambiguous
 admission can be retried exactly. The daemon normalizes in a fresh no-network worker, stores only
 canonical owner-private artifacts, and exports path-free metadata. Chat/TUI/dashboard/channel
-image upload/rendering and image generation remain unavailable. See the
+image upload/rendering remains unavailable. See the
 [CLI reference](CLI.md) for the complete retry contract.
+
+The separate `media image-generation` transaction enables or disables one exact OpenAI Images or
+OpenRouter Images backend while the daemon is stopped. Enablement pins the provider/model,
+protocol/origin, broker secret reference when remote, residency, JPEG/size/quality, maximum
+cost/output, and deadline, archives the prior complete configuration, and requires `--approve`.
+It performs no connectivity probe because generation can be billable and non-idempotent. Restart
+the service and run `doctor` after the change.
+
+Every generated image requires a new exact local approval and immutable cost/output reservation.
+Denial sends nothing. A crash or transport ambiguity after dispatch is never retried; it appears as
+`outcome_unknown`, is conservatively charged to the full approved maximum, and requires external
+provider evidence plus the normal revision-fenced `effect reconcile` workflow. Confirmed output is
+isolated-normalized to a canonical private JPEG before atomic artifact/effect/usage settlement.
+Use the authenticated artifact API for retrieval. Client previews, edits, masks, reference inputs,
+multiple outputs, and provider fallback remain disabled in this slice. The complete setup command,
+including a free-only OpenRouter warning, is in the [quickstart](QUICKSTART.md).
 
 For an owner-local interactive overview, run `mealyctl --home "$HOME/.mealy" dashboard` and open the
 printed `127.0.0.1` URL. The foreground command must remain running. It preflights status, doctor,

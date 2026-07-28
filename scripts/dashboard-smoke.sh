@@ -310,9 +310,9 @@ for format in json html; do
 done
 jq -e --arg fork "$fork_session_id" --arg source "$session_id" \
   --arg checkpoint "$checkpoint_id" \
-  '.apiVersion == "v1" and .schemaVersion == "mealy.session-transcript.v1" and .sessionId == $fork and .lineage.rootSessionId == $source and .lineage.parentSessionId == $source and .lineage.parentCheckpointId == $checkpoint and .bounds.totalEligibleTurns == 0 and .turns == []' \
+  '.apiVersion == "v1" and .schemaVersion == "mealy.session-transcript.v2" and .sessionId == $fork and .lineage.rootSessionId == $source and .lineage.parentSessionId == $source and .lineage.parentCheckpointId == $checkpoint and .bounds.totalEligibleTurns == 0 and .turns == []' \
   "$home/session-export.json" >/dev/null
-grep -Fq 'mealy.session-transcript.v1' "$home/session-export.html"
+grep -Fq 'mealy.session-transcript.v2' "$home/session-export.html"
 grep -Fq "$fork_session_id" "$home/session-export.html"
 grep -Fq "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">" \
   "$home/session-export.html"

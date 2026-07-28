@@ -17,6 +17,7 @@ mod effect_ledger;
 mod executor;
 mod extension;
 mod fixture_write;
+mod image_generation;
 mod mcp;
 mod mcp_oauth;
 mod memory;
@@ -176,6 +177,15 @@ pub use fixture_write::{
     build_fixture_write_executor_request, evaluate_fixture_write_policy,
     fixture_write_approval_subject, fixture_write_file_descriptor,
     normalize_fixture_write_file_arguments,
+};
+pub use image_generation::{
+    IMAGE_GENERATION_APPROVAL_EXPLANATION, IMAGE_GENERATION_CAPABILITY_PREFIX,
+    IMAGE_GENERATION_MAXIMUM_OUTPUT_BYTES, IMAGE_GENERATION_MAXIMUM_PROMPT_BYTES,
+    IMAGE_GENERATION_MAXIMUM_TIMEOUT_MS, IMAGE_GENERATION_MINIMUM_TIMEOUT_MS,
+    IMAGE_GENERATION_POLICY_VERSION, IMAGE_GENERATION_TOOL_ID, ImageGenerationConfig,
+    ImageGenerationContractError, ImageGenerationPolicyGrant, ImageGenerationProtocol,
+    evaluate_image_generation_policy, image_generation_approval_subject,
+    image_generation_tool_descriptor, normalize_image_generation_arguments,
 };
 pub use mcp::{
     MCP_EFFECT_APPROVAL_EXPLANATION, MCP_EFFECT_POLICY_VERSION, MCP_MAXIMUM_ARGUMENTS,

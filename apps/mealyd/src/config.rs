@@ -1,9 +1,9 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use mealy_application::ProviderConfig;
 use mealy_application::{
-    AgentLoopLimits, BrowserConfig, LeaseConcurrencyLimits, McpHttpServerConfig, McpServerConfig,
-    WebAccessConfig, is_sha256_digest, sha256_digest, validate_mcp_http_server_set,
-    validate_mcp_server_set, validate_provider_chain,
+    AgentLoopLimits, BrowserConfig, ImageGenerationConfig, LeaseConcurrencyLimits,
+    McpHttpServerConfig, McpServerConfig, WebAccessConfig, is_sha256_digest, sha256_digest,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_chain,
 };
 use mealy_domain::{ChannelBindingId, CorrelationId, PrincipalId};
 use mealy_infrastructure::{inspect_browser_bundle, is_trusted_system_executable};
@@ -57,6 +57,8 @@ pub struct DaemonConfig {
     provider_fallbacks: Vec<ProviderConfig>,
     #[serde(default, skip_serializing_if = "is_false")]
     image_input_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_generation: Option<ImageGenerationConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_roots: Vec<WorkspaceRootConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -253,6 +255,7 @@ impl Default for DaemonConfig {
             provider: ProviderConfig::default(),
             provider_fallbacks: Vec::new(),
             image_input_enabled: false,
+            image_generation: None,
             workspace_roots: Vec::new(),
             command_tools: Vec::new(),
             web_access: WebAccessConfig::default(),
@@ -342,6 +345,12 @@ impl DaemonConfig {
     #[must_use]
     pub const fn image_input_enabled(&self) -> bool {
         self.image_input_enabled
+    }
+
+    /// Returns the optional exact governed image-generation authority.
+    #[must_use]
+    pub const fn image_generation(&self) -> Option<&ImageGenerationConfig> {
+        self.image_generation.as_ref()
     }
 
     /// Returns explicitly granted workspace roots in deterministic configuration order.
@@ -443,6 +452,10 @@ impl DaemonConfig {
                                 | ProviderConfig::AnthropicMessages { .. }
                         )
                     })
+            || self
+                .image_generation
+                .as_ref()
+                .is_some_and(|config| config.validate().is_err())
             || !valid_workspace_roots(&self.workspace_roots)
             || !valid_command_tools(&self.command_tools)
             || !self.command_tools.is_empty()
@@ -1230,6 +1243,50 @@ mod tests {
         let serialized = serde_json::to_string(&remote).expect("serialize provider config");
         assert!(serialized.contains("openai-primary"));
         assert!(!serialized.contains("Bearer"));
+    }
+
+    #[test]
+    fn image_generation_configuration_is_explicit_bounded_and_credential_scoped() {
+        let home = tempfile::tempdir().expect("home");
+        let config = load_or_create_daemon_config(home.path()).expect("default config");
+        let mut value = serde_json::to_value(config).expect("config JSON");
+        value["imageGeneration"] = json!({
+            "providerId": "local.images",
+            "protocol": "open_ai_images",
+            "baseUrl": "http://127.0.0.1:11434/v1",
+            "model": "local-image-model",
+            "residency": "local",
+            "size": "1024x1024",
+            "quality": "low",
+            "maximumCostMicrounits": 50_000,
+            "maximumOutputBytes": 2_097_152,
+            "timeoutMs": 120_000
+        });
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("config bytes"),
+        )
+        .expect("write local image config");
+        let loaded = load_or_create_daemon_config(home.path()).expect("image config");
+        let image = loaded.image_generation().expect("configured generator");
+        assert_eq!(image.provider_id(), "local.images");
+        assert_eq!(
+            image.endpoint().expect("generation endpoint"),
+            "http://127.0.0.1:11434/v1/images/generations"
+        );
+
+        let mut missing_remote_credential = value;
+        missing_remote_credential["imageGeneration"]["baseUrl"] =
+            json!("https://images.example.test/v1");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&missing_remote_credential).expect("config bytes"),
+        )
+        .expect("write unsafe remote image config");
+        assert!(matches!(
+            load_or_create_daemon_config(home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
     }
 
     #[test]

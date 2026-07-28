@@ -542,9 +542,23 @@ serialization, schema-v3 context evidence, transcript-v2 export, and zero-redisp
 Upgrade, reopen, owner-denial, mutation, rollback, corrupt/dangling evidence, local-file, body-limit,
 and configuration-activation tests cover the supporting boundaries.
 
-The broader gate remains open: TUI, dashboard, chat-native, and channel image upload/rendering,
-fork-lineage image projection, separately permissioned image generation, audio, and video are not
-implemented.
+The separately permissioned image-generation backend is implemented behind one exact configured
+OpenAI Images or OpenRouter Images adapter. The high-risk `image.generate` effect binds a
+prompt-only model proposal to operator-injected provider/model/JPEG/size/quality/cost/output
+constraints, an exact owner approval, and a schema-22 immutable reservation. Denial crosses no
+provider boundary. Dispatch is non-idempotent and never retried: an interrupted running request
+parks `outcome_unknown`, conservatively charges the complete approved cost reservation, and
+requires authenticated revision-fenced owner reconciliation. Confirmed bytes pass through the
+isolated media normalizer before an atomic effect/outcome/usage/artifact/reference/event commit.
+Real daemon/provider tests cover success and authenticated retrieval, denial, crash/restart,
+no-redispatch reconciliation, exact request bounds, immutable reservation, zero-live-call replay,
+and missing-blob corruption. [ADR 0018](decisions/0018-governed-image-generation-effect.md)
+defines the boundary.
+
+The broader gate remains open: TUI/dashboard/chat-native/channel image upload and safe rendering,
+fork-lineage image projection, generation previews,
+reference/edit workflows, audio, and video are not implemented. The backend slice is therefore
+implementation evidence for v0.4, not a production-qualified v0.4 release.
 
 ## Required evidence per implementation slice
 

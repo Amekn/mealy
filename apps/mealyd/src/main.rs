@@ -58,11 +58,11 @@ use mealy_domain::{
 };
 use mealy_infrastructure::{
     BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
-    FileProviderSecretStore, LATEST_SCHEMA_VERSION, LinuxBubblewrapMediaNormalizer,
-    ProviderSecretStoreError, SqliteStore, StoreError, SystemClock, SystemIdGenerator, WebReadTool,
-    WorkspaceGrant, WorkspaceReadTool, browser_worker_main, create_pre_migration_backup,
-    inspect_existing_schema_version, load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main,
-    media_worker_main, preserve_forensic_database,
+    FileProviderSecretStore, ImageGenerationAdapter, LATEST_SCHEMA_VERSION,
+    LinuxBubblewrapMediaNormalizer, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
+    SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
+    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_tools,
+    load_mcp_tools, mcp_stdio_launcher_main, media_worker_main, preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -431,6 +431,25 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     let provider_secret_store = (!arguments.safe_mode)
         .then(|| FileProviderSecretStore::new(arguments.home.join("provider-secrets")))
         .transpose()?;
+    let image_generation = if arguments.safe_mode {
+        None
+    } else if let Some(config) = daemon_config.image_generation().cloned() {
+        let credential = match config.credential() {
+            None => None,
+            Some(ProviderCredentialReference::Broker { secret_id }) => Some(
+                FileProviderSecretStore::new(arguments.home.join("provider-secrets"))?
+                    .read(secret_id)?,
+            ),
+            Some(ProviderCredentialReference::Environment { variable }) => {
+                Some(std::env::var(variable).map(Zeroizing::new).map_err(
+                    |_| "image-generation credential environment variable is unavailable",
+                )?)
+            }
+        };
+        Some(ImageGenerationAdapter::new(config, credential)?)
+    } else {
+        None
+    };
     let fake_provider_delay = Duration::from_millis(arguments.fake_provider_delay_ms);
     let fake_provider_estimated_latency_ms = arguments.fake_provider_estimated_latency_ms;
     let maximum_provider_requests = daemon_config.maximum_provider_requests();
@@ -474,10 +493,11 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         .map_err(|_| "provider initialization worker failed")??,
     );
     let image_route_active = !arguments.safe_mode
-        && provider
-            .policy_capabilities()
-            .iter()
-            .any(|capabilities| capabilities.input_modalities.contains("image"));
+        && (image_generation.is_some()
+            || provider
+                .policy_capabilities()
+                .iter()
+                .any(|capabilities| capabilities.input_modalities.contains("image")));
     let media_normalizer = if image_route_active {
         let worker_path = std::env::current_exe()?;
         Some(Arc::new(
@@ -775,7 +795,20 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     };
     let effect_runtime = effect_runtime
-        .map(|runtime| runtime.with_mcp_effect_tools(mcp_effect_tools))
+        .map(|runtime| {
+            let runtime = runtime.with_mcp_effect_tools(mcp_effect_tools)?;
+            match image_generation {
+                Some(adapter) => runtime.with_image_generation(
+                    adapter,
+                    Arc::clone(
+                        media_normalizer
+                            .as_ref()
+                            .ok_or("image-generation normalizer is unavailable")?,
+                    ),
+                ),
+                None => Ok(runtime),
+            }
+        })
         .transpose()?
         .map(Arc::new);
     let reader_capacity = usize::try_from(daemon_config.maximum_daemon_agent_runs())
@@ -960,6 +993,8 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 .into_iter()
                 .any(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
         });
+        let has_image_generation =
+            effect_tools_runtime.is_some_and(|runtime| runtime.image_generation().is_some());
         let mut effect_classes = BTreeSet::new();
         let mut profiles = BTreeSet::new();
         if has_read_tools {
@@ -974,13 +1009,16 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             effect_classes.insert(EffectClass::NonIdempotent);
             profiles.insert(PolicyProfile::WorkspaceWrite);
         }
-        if has_mcp_effect_tool {
+        if has_mcp_effect_tool || has_image_generation {
             if let Some(runtime) = effect_tools_runtime {
                 effect_classes.extend(
                     runtime
                         .descriptors()
                         .into_iter()
-                        .filter(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
+                        .filter(|descriptor| {
+                            runtime.mcp_effect_tool(&descriptor.tool_id).is_some()
+                                || descriptor.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID
+                        })
                         .map(|descriptor| descriptor.effect_class),
                 );
             }
@@ -998,6 +1036,12 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 secret_references.insert(secret_reference);
             }
         }
+        if let Some(config) = daemon_config.image_generation() {
+            network_destinations.insert(config.capability_network_destination()?);
+            if let Some(secret_reference) = config.capability_secret_reference() {
+                secret_references.insert(secret_reference);
+            }
+        }
         let mut executable_identity_digests = write_runtime
             .into_iter()
             .flat_map(PhaseThreeRuntime::command_ids)
@@ -1012,7 +1056,10 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 runtime
                     .descriptors()
                     .into_iter()
-                    .filter(|descriptor| runtime.mcp_effect_tool(&descriptor.tool_id).is_some())
+                    .filter(|descriptor| {
+                        runtime.mcp_effect_tool(&descriptor.tool_id).is_some()
+                            || descriptor.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID
+                    })
                     .map(|descriptor| descriptor.executable_identity_digest.clone()),
             );
         }

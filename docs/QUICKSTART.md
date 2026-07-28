@@ -1084,6 +1084,59 @@ lines until the admission receipt arrives; after an ambiguous failure, pass the 
 reorder paths, or change content for that retry. To disable the capability, stop the service, run
 `media image-input --disable --approve`, and start the service again.
 
+### Optional v0.4 governed image generation
+
+Image generation is independent from image input and defaults off. Stop the service and activate
+one exact provider/model contract. This OpenRouter example deliberately uses a placeholder free
+model: first verify from the live catalog that the exact image-output model ends in `:free` and
+still has zero input, output, and auxiliary prices. If no such model is currently available, do
+not enable this route under a free-only policy.
+
+```sh
+systemctl --user stop mealy.service
+export OPENROUTER_API_KEY='replace-with-your-key'
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-generation --enable \
+  --protocol open-router-images \
+  --provider-id openrouter.images \
+  --base-url https://openrouter.ai/api/v1 \
+  --model 'OWNER_VERIFIED_IMAGE_MODEL:free' \
+  --residency openrouter \
+  --secret-id openrouter-images \
+  --credential-env OPENROUTER_API_KEY \
+  --size 1024x1024 \
+  --quality low \
+  --maximum-cost-microunits 50000 \
+  --maximum-output-bytes 2097152 \
+  --timeout-ms 120000 \
+  --approve
+unset OPENROUTER_API_KEY
+systemctl --user start mealy.service
+```
+
+For a local OpenAI-compatible image server, select `--protocol open-ai-images`, use a literal
+loopback base such as `http://127.0.0.1:11434/v1`, and omit both credential flags. A remote
+OpenAI-compatible endpoint requires HTTPS plus `--secret-id`; add `--credential-env` to import a
+new key, or omit it to reuse an existing broker entry. Configuration performs no image-generation
+probe because that operation can itself create billable, non-idempotent work.
+
+Ask the agent to create an image in an ordinary turn. It may propose `image.generate` with one
+prompt, but the provider call cannot occur until the local owner approves the exact provider,
+model, prompt, JPEG/size/quality, maximum cost, and output bound. Denial makes no image call. A
+successful tool observation contains the private artifact identity; use the authenticated
+`GET /v1/artifacts/{artifact_id}` and `/content` endpoints to inspect or retrieve it. An interrupted
+dispatch is never retried automatically. It parks `outcome_unknown`, conservatively charges the
+approved maximum in local accounting, and must be reconciled from external provider evidence.
+
+This backend slice accepts one canonical JPEG only. It does not yet add dashboard/TUI/channel
+previews, edits, masks, reference images, multiple outputs, streaming, or fallback. Disable it
+while stopped with:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-generation --disable --approve
+```
+
 Use `mealyctl chat` or the lower-level session commands shown above. A real-provider turn makes one
 bounded request, commits the normalized response and usage, runs deterministic integrity
 validation, and supports recorded-only replay without another network call. Definite transient

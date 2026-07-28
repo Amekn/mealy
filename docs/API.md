@@ -159,6 +159,13 @@ JSON request body. Path IDs are opaque and must not be parsed for policy decisio
 | `GET` | `/v1/artifacts/{artifact_id}` | - | `ArtifactMetadataResponse` |
 | `GET` | `/v1/artifacts/{artifact_id}/content` | - | bounded artifact bytes |
 
+The optional v0.4 `image.generate` tool has no unauthenticated or direct “generate now” HTTP
+shortcut. An ordinary agent turn may propose it, then the existing approval/effect endpoints expose
+the exact subject and lifecycle. A confirmed result is an owner-private canonical JPEG artifact
+whose ID appears in the recorded tool observation. The two artifact routes above return its
+path-free metadata and bounded digest-verified bytes under the same owner/channel authorization.
+Recorded replay reads that evidence only and never contacts the image provider.
+
 `SessionsResponse` includes one bounded `title` and a `titleSource` of `owner` or `derived` for
 each exact-binding session. Before an owner title exists, this is a deterministic, control-free
 projection of the first canonical owner input and is `New conversation` before the first input.

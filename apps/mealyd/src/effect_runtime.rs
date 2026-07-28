@@ -9,19 +9,20 @@ use mealy_application::{
     evaluate_fixture_write_policy, evaluate_process_run_policy, evaluate_workspace_create_policy,
     evaluate_workspace_manage_policy, evaluate_workspace_replace_policy,
     fixture_write_approval_subject, fixture_write_file_descriptor,
-    normalize_fixture_write_file_arguments, normalize_process_run_arguments,
-    normalize_workspace_create_file_arguments, normalize_workspace_manage_path_arguments,
-    normalize_workspace_replace_file_arguments, process_run_approval_subject,
-    process_run_descriptor, sha256_digest, workspace_create_approval_subject,
-    workspace_create_file_descriptor, workspace_manage_approval_subject,
-    workspace_manage_path_descriptor, workspace_replace_approval_subject,
-    workspace_replace_file_descriptor,
+    image_generation_tool_descriptor, normalize_fixture_write_file_arguments,
+    normalize_process_run_arguments, normalize_workspace_create_file_arguments,
+    normalize_workspace_manage_path_arguments, normalize_workspace_replace_file_arguments,
+    process_run_approval_subject, process_run_descriptor, sha256_digest,
+    workspace_create_approval_subject, workspace_create_file_descriptor,
+    workspace_manage_approval_subject, workspace_manage_path_descriptor,
+    workspace_replace_approval_subject, workspace_replace_file_descriptor,
 };
 use mealy_domain::{
     AttemptId, ChannelBindingId, EffectId, FencingToken, PolicyProfile, PrincipalId, RunId, TaskId,
 };
 use mealy_infrastructure::{
-    LinuxBubblewrapConfig, LinuxBubblewrapExecutor, McpEffectTool, SandboxRuntimeBinding,
+    ImageGenerationAdapter, LinuxBubblewrapConfig, LinuxBubblewrapExecutor,
+    LinuxBubblewrapMediaNormalizer, McpEffectTool, SandboxRuntimeBinding,
     is_trusted_system_executable,
 };
 use serde_json::Value;
@@ -84,6 +85,8 @@ pub struct PhaseThreeRuntime {
     workspace_roots: BTreeMap<String, String>,
     commands: BTreeMap<String, RuntimeCommand>,
     mcp_effect_tools: BTreeMap<String, McpEffectTool>,
+    image_generation: Option<ImageGenerationAdapter>,
+    image_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
     kind: WriteRuntimeKind,
     outcome_commit_delay: std::time::Duration,
     dispatch_commit_delay: std::time::Duration,
@@ -129,6 +132,8 @@ impl PhaseThreeRuntime {
             workspace_roots: BTreeMap::from([("fixture".to_owned(), workspace_root)]),
             commands: BTreeMap::new(),
             mcp_effect_tools: BTreeMap::new(),
+            image_generation: None,
+            image_normalizer: None,
             kind: WriteRuntimeKind::Fixture,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -204,6 +209,8 @@ impl PhaseThreeRuntime {
             workspace_roots,
             commands,
             mcp_effect_tools: BTreeMap::new(),
+            image_generation: None,
+            image_normalizer: None,
             kind: WriteRuntimeKind::WorkspaceCreate,
             outcome_commit_delay,
             dispatch_commit_delay,
@@ -255,6 +262,42 @@ impl PhaseThreeRuntime {
         self.mcp_effect_tools.get(tool_id)
     }
 
+    /// Adds one exact image-generation adapter and its isolated output normalizer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for descriptor collision or invalid adapter evidence.
+    pub fn with_image_generation(
+        mut self,
+        adapter: ImageGenerationAdapter,
+        normalizer: Arc<LinuxBubblewrapMediaNormalizer>,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
+        let descriptor = image_generation_tool_descriptor(adapter.config())?;
+        descriptor.validate()?;
+        if self
+            .descriptors
+            .insert(descriptor.tool_id.clone(), descriptor)
+            .is_some()
+            || self.image_generation.replace(adapter).is_some()
+            || self.image_normalizer.replace(normalizer).is_some()
+        {
+            return Err("image-generation authority collides with configured effects".into());
+        }
+        Ok(self)
+    }
+
+    /// Startup-validated image-generation adapter, when configured.
+    #[must_use]
+    pub const fn image_generation(&self) -> Option<&ImageGenerationAdapter> {
+        self.image_generation.as_ref()
+    }
+
+    /// Identity-pinned isolated normalizer for generated provider bytes.
+    #[must_use]
+    pub fn image_normalizer(&self) -> Option<&LinuxBubblewrapMediaNormalizer> {
+        self.image_normalizer.as_deref()
+    }
+
     /// Configured logical command identities in stable order.
     #[must_use]
     pub fn command_ids(&self) -> Vec<String> {
@@ -302,6 +345,15 @@ impl PhaseThreeRuntime {
         }
         if let Some(tool) = self.mcp_effect_tool(tool_id) {
             return Ok(tool.normalize_arguments(arguments)?);
+        }
+        if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            let adapter = self
+                .image_generation()
+                .ok_or("image-generation adapter disappeared")?;
+            return Ok(mealy_application::normalize_image_generation_arguments(
+                adapter.config(),
+                arguments,
+            )?);
         }
         match tool_id {
             mealy_application::FIXTURE_WRITE_FILE_TOOL_ID if self.is_fixture() => {

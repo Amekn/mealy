@@ -7,6 +7,7 @@ mod channel_secret;
 mod codex_app_server;
 mod extension_host;
 mod fixture;
+mod image_generation;
 mod maintenance;
 mod mcp;
 mod mcp_oauth;
@@ -40,6 +41,9 @@ pub use extension_host::{
     InstalledExtensionPackage, LinuxBubblewrapExtensionHost, inspect_extension_package,
 };
 pub use fixture::{FixtureReadTool, FixtureResource, FixtureToolConfigurationError};
+pub use image_generation::{
+    ImageGenerationAdapter, ImageGenerationAdapterError, RemoteGeneratedImage,
+};
 pub use maintenance::{
     BackupActivationReport, BackupManifest, BackupReport, BackupVerificationReport, ExportReport,
     ForensicBackupReport, MaintenanceError, MigrationBackupActivationReport, MigrationBackupReport,

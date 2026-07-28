@@ -41,7 +41,15 @@ impl ArtifactEvidenceStore for SqliteStore {
                    AND ((a.origin_kind = 'tool_call' AND a.origin_id IN \
                             (SELECT tool_call_id FROM tool_call WHERE run_id = t.run_id)) \
                      OR (a.origin_kind = 'model_attempt' AND a.origin_id IN \
-                            (SELECT attempt_id FROM model_attempt WHERE run_id = t.run_id))) \
+                            (SELECT attempt_id FROM model_attempt WHERE run_id = t.run_id)) \
+                     OR (a.origin_kind = 'effect_attempt' AND EXISTS(\
+                            SELECT 1 FROM artifact_reference reference \
+                            JOIN agent_effect_invocation invocation \
+                              ON invocation.effect_id = reference.owner_id \
+                            WHERE reference.artifact_id = a.id \
+                              AND reference.owner_kind = 'effect' \
+                              AND reference.relation = 'output' \
+                              AND invocation.run_id = t.run_id))) \
                  ORDER BY a.created_at_ms, a.id",
             )
             .map_err(|error| map_sqlite_error(&error))?;

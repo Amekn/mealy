@@ -7,6 +7,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use image::{DynamicImage, ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
 use mealy_application::{
     BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
     MCP_PROTOCOL_VERSION, McpServerConfig, McpToolEffect, McpToolGrant, sha256_digest,
@@ -19,17 +21,18 @@ use mealy_infrastructure::{
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
-    CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
-    CreateSessionRequest, CreateSessionResponse, DelegationResponse, DelegationsResponse,
-    DeliveryMode, DoctorResponse, EffectReconciliationReceipt, EffectResponse,
-    EffectStatusResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
-    PendingApprovalsResponse, ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    SessionCheckpointResponse, SessionForkResponse, SessionProviderSelectionResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionTranscriptExport, SubmitImageInputRequest,
-    SubmitInputRequest, SubmittedImageInput, TaskCancellationReceipt, TaskReplayResponse,
-    TaskResponse, TaskStatus, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    ValidationMethodResponse, ValidationOutcomeResponse,
+    ArtifactMetadataResponse, CancelTaskRequest, CompactionResponse, CreateCompactionRequest,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
+    DelegationResponse, DelegationsResponse, DeliveryMode, DoctorResponse,
+    EffectReconciliationReceipt, EffectResponse, EffectStatusResponse, ForkSessionRequest,
+    InputAdmissionResponse, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
+    ProviderSelectionCommand, ReadinessResponse, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, SessionCheckpointResponse,
+    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionTranscriptExport, SubmitImageInputRequest, SubmitInputRequest,
+    SubmittedImageInput, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, ValidationMethodResponse,
+    ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -128,6 +131,7 @@ struct CapturedRequest {
 #[derive(Default)]
 struct MockProviderInner {
     requests: Vec<CapturedRequest>,
+    image_requests: Vec<CapturedRequest>,
     transient_failures_remaining: usize,
     pending_tool_call: PendingToolCall,
     web_tool_steps_remaining: u8,
@@ -150,6 +154,7 @@ enum PendingToolCall {
     ParallelDelegation,
     ParallelAfterChild,
     Mcp,
+    ImageGeneration,
     Browser,
 }
 
@@ -160,6 +165,7 @@ impl MockProviderState {
     fn with_transient_failures(count: usize) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: count,
             pending_tool_call: PendingToolCall::None,
             web_tool_steps_remaining: 0,
@@ -171,6 +177,7 @@ impl MockProviderState {
     fn with_workspace_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceRead,
             web_tool_steps_remaining: 0,
@@ -182,6 +189,7 @@ impl MockProviderState {
     fn with_workspace_create_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceCreate,
             web_tool_steps_remaining: 0,
@@ -193,6 +201,7 @@ impl MockProviderState {
     fn with_workspace_replace_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceReplace,
             web_tool_steps_remaining: 0,
@@ -204,6 +213,7 @@ impl MockProviderState {
     fn with_workspace_manage_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceManage,
             web_tool_steps_remaining: 0,
@@ -215,6 +225,7 @@ impl MockProviderState {
     fn with_process_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Process,
             web_tool_steps_remaining: 0,
@@ -226,6 +237,7 @@ impl MockProviderState {
     fn with_skill_resource_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::SkillResource,
             web_tool_steps_remaining: 0,
@@ -237,6 +249,7 @@ impl MockProviderState {
     fn with_delegation_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Delegation,
             web_tool_steps_remaining: 0,
@@ -248,6 +261,7 @@ impl MockProviderState {
     fn with_parallel_delegation_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::ParallelDelegation,
             web_tool_steps_remaining: 0,
@@ -259,6 +273,7 @@ impl MockProviderState {
     fn with_serial_then_over_budget_parallel_delegation() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::DelegationThenParallel,
             web_tool_steps_remaining: 0,
@@ -270,8 +285,21 @@ impl MockProviderState {
     fn with_mcp_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Mcp,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_image_generation_tool_call() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::ImageGeneration,
             web_tool_steps_remaining: 0,
             web_origin: None,
             delegated_child_delay_ms: 0,
@@ -281,6 +309,7 @@ impl MockProviderState {
     fn with_browser_tool_call(web_origin: String) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Browser,
             web_tool_steps_remaining: 0,
@@ -314,6 +343,7 @@ impl MockProviderState {
     fn with_web_tool_calls(web_origin: String) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::None,
             web_tool_steps_remaining: 2,
@@ -327,6 +357,14 @@ impl MockProviderState {
             .lock()
             .expect("provider capture lock")
             .requests
+            .clone()
+    }
+
+    fn image_requests(&self) -> Vec<CapturedRequest> {
+        self.0
+            .lock()
+            .expect("provider capture lock")
+            .image_requests
             .clone()
     }
 }
@@ -356,6 +394,7 @@ async fn responses_handler(
         call_delegation,
         call_parallel_delegation,
         call_mcp,
+        call_image_generation,
         call_browser,
         web_tool_call,
         delegated_child_delay_ms,
@@ -407,6 +446,7 @@ async fn responses_handler(
                 PendingToolCall::ParallelDelegation | PendingToolCall::ParallelAfterChild
             ),
             pending_tool_call == PendingToolCall::Mcp,
+            pending_tool_call == PendingToolCall::ImageGeneration,
             pending_tool_call == PendingToolCall::Browser,
             web_tool_call,
             delegated_child_delay_ms,
@@ -769,6 +809,38 @@ async fn responses_handler(
             .insert("x-request-id", HeaderValue::from_static("req-mcp-call"));
         return response;
     }
+    if call_image_generation {
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"]
+                        .as_str()
+                        .is_some_and(|description| description.contains("Generates one JPEG"))
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .unwrap_or_else(|| panic!("image-generation provider tool name: {body}"));
+        let mut response = Json(json!({
+            "id": "resp-image-generation-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-image-generation",
+                "name": tool_name,
+                "arguments": "{\"prompt\":\"A quiet harbor at dawn\"}"
+            }],
+            "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-image-generation-call"),
+        );
+        return response;
+    }
     if call_browser {
         let web_origin = state
             .0
@@ -954,6 +1026,44 @@ async fn responses_handler(
     response.headers_mut().insert(
         "x-request-id",
         HeaderValue::from_static("req-process-proof"),
+    );
+    response
+}
+
+async fn image_generation_handler(
+    State(state): State<MockProviderState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let authorization = headers
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    state
+        .0
+        .lock()
+        .expect("provider capture lock")
+        .image_requests
+        .push(CapturedRequest {
+            authorization,
+            body: body.clone(),
+        });
+    let image =
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(16, 16, Rgb([24_u8, 96_u8, 160_u8])));
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode_image(&image)
+        .expect("encode mock generated JPEG");
+    let mut response = Json(json!({
+        "data": [{
+            "b64_json": BASE64_STANDARD.encode(jpeg)
+        }],
+        "usage": {"cost": "0.012345"}
+    }))
+    .into_response();
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_static("req-image-generation-result"),
     );
     response
 }
@@ -3571,6 +3681,628 @@ async fn owner_classified_mcp_effect_requires_exact_approval_dispatches_once_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines, clippy::type_complexity)]
+async fn image_generation_reserves_budget_requires_approval_commits_artifact_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &connection, "/v1/admin/status").await;
+    assert_eq!(status.enabled_action_tools, ["image.generate"]);
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "real-provider-image-generation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Generate one approved image of a quiet harbor at dawn.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let approval_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    let pending = loop {
+        let pending: PendingApprovalsResponse =
+            authorized_get(&client, &connection, "/v1/approvals").await;
+        if !pending.approvals.is_empty() {
+            break pending;
+        }
+        let current: TaskResponse =
+            authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+        if matches!(
+            current.status,
+            TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+        ) {
+            let timeline: TimelinePageResponse = authorized_get(
+                &client,
+                &connection,
+                &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+            )
+            .await;
+            panic!(
+                "image-generation task terminated before approval: {current:?}; requests: {:?}; \
+                 timeline: {:?}",
+                state.requests(),
+                timeline.events
+            );
+        }
+        assert!(
+            Instant::now() < approval_deadline,
+            "image-generation approval was not requested; task: {current:?}; requests: {:?}",
+            state.requests()
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
+    let approval = pending
+        .approvals
+        .first()
+        .expect("image generation must request approval");
+    assert_eq!(approval.subject.tool_id, "image.generate");
+    assert_eq!(
+        approval.subject.target_resources,
+        ["image-provider://process-proof.images/model/process-proof-image-model"]
+    );
+    assert!(
+        approval
+            .subject
+            .capability_scope
+            .starts_with("media.image.generate:process-proof.images:process-proof-image-model:")
+    );
+    let waiting: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(waiting.usage.reserved_cost_microunits, 50_000);
+    assert_eq!(waiting.usage.reserved_output_bytes, 2_097_152);
+    assert!(state.image_requests().is_empty());
+
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-real-provider-image-generation".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "image-generation task: {task:?}; provider requests: {:?}; image requests: {:?}",
+        state.requests(),
+        state.image_requests()
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    assert_eq!(task.usage.reserved_cost_microunits, 0);
+    assert_eq!(task.usage.reserved_output_bytes, 0);
+    assert!(task.usage.used_cost_microunits >= 12_345);
+    assert!(task.usage.used_output_bytes > 0);
+
+    let requests = state.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].body.to_string().contains("image.generate"));
+    assert!(requests[1].body.to_string().contains("artifactId"));
+    assert!(requests.iter().all(|request| {
+        !request.body.to_string().contains("process-proof-secret")
+            && !request
+                .body
+                .to_string()
+                .contains(&home.path().display().to_string())
+    }));
+    let image_requests = state.image_requests();
+    assert_eq!(image_requests.len(), 1);
+    assert_eq!(image_requests[0].authorization, None);
+    assert_eq!(
+        image_requests[0].body,
+        json!({
+            "model": "process-proof-image-model",
+            "n": 1,
+            "output_format": "jpeg",
+            "prompt": "A quiet harbor at dawn",
+            "quality": "low",
+            "size": "1024x1024",
+            "stream": false
+        })
+    );
+
+    let database =
+        rusqlite::Connection::open(home.path().join("mealy.sqlite3")).expect("open daemon store");
+    let (
+        reservation_state,
+        maximum_cost,
+        maximum_output,
+        charged_cost,
+        charged_output,
+        artifact_id,
+        artifact_digest,
+        artifact_size,
+        media_type,
+        origin_kind,
+        producer_kind,
+        producer_id,
+        owner_kind,
+        relation,
+        artifact_event_type,
+    ): (
+        String,
+        i64,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = database
+        .query_row(
+            "SELECT reservation.state, reservation.maximum_cost_microunits, \
+                    reservation.maximum_output_bytes, reservation.charged_cost_microunits, \
+                    reservation.charged_output_bytes, artifact.id, artifact.blob_digest, \
+                    blob.size_bytes, artifact.media_type, artifact.origin_kind, \
+                    artifact.producer_kind, artifact.producer_id, reference.owner_kind, \
+                    reference.relation, event.event_type \
+             FROM agent_effect_budget_reservation reservation \
+             JOIN artifact_reference reference \
+               ON reference.owner_kind = 'effect' \
+              AND reference.owner_id = reservation.effect_id \
+             JOIN artifact ON artifact.id = reference.artifact_id \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = artifact.blob_algorithm \
+              AND blob.digest = artifact.blob_digest \
+             JOIN journal_event event \
+               ON event.aggregate_kind = 'artifact' \
+              AND event.aggregate_id = artifact.id \
+              AND event.event_type = 'artifact.committed' \
+             WHERE reservation.effect_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
+        )
+        .expect("settled image-generation artifact evidence");
+    assert_eq!(reservation_state, "settled");
+    assert_eq!((maximum_cost, maximum_output), (50_000, 2_097_152));
+    assert_eq!(charged_cost, 12_345);
+    assert_eq!(charged_output, artifact_size);
+    assert!(artifact_size > 0 && artifact_size <= 2_097_152);
+    assert_eq!(media_type, "image/jpeg");
+    assert_eq!(origin_kind, "effect_attempt");
+    assert_eq!(producer_kind, "builtin");
+    assert_eq!(producer_id, "mealyd.image-generation.v1");
+    assert_eq!(
+        (owner_kind.as_str(), relation.as_str()),
+        ("effect", "output")
+    );
+    assert_eq!(artifact_event_type, "artifact.committed");
+    assert!(
+        database
+            .execute(
+                "UPDATE agent_effect_budget_reservation \
+                 SET charged_cost_microunits = charged_cost_microunits + 1 \
+                 WHERE effect_id = ?1",
+                [approval.effect_id.as_str()],
+            )
+            .is_err(),
+        "settled financial evidence must be immutable"
+    );
+    assert!(
+        database
+            .execute(
+                "DELETE FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+                [approval.effect_id.as_str()],
+            )
+            .is_err(),
+        "settled financial evidence must not be deletable"
+    );
+    let artifact_path = home.path().join("artifacts/sha256").join(&artifact_digest);
+    let artifact_bytes = fs::read(&artifact_path).expect("content-addressed generated artifact");
+    assert_eq!(
+        i64::try_from(artifact_bytes.len()).expect("artifact size"),
+        artifact_size
+    );
+    assert!(artifact_bytes.starts_with(&[0xff, 0xd8, 0xff]));
+    assert!(artifact_bytes.ends_with(&[0xff, 0xd9]));
+
+    let metadata: ArtifactMetadataResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/artifacts/{artifact_id}"),
+    )
+    .await;
+    assert_eq!(metadata.digest, artifact_digest);
+    assert_eq!(metadata.size_bytes, u64::try_from(artifact_size).unwrap());
+    assert_eq!(metadata.media_type, "image/jpeg");
+    assert_eq!(metadata.origin_kind, "effect_attempt");
+    assert_eq!(metadata.producer_id, "mealyd.image-generation.v1");
+    let content_response = client
+        .get(format!(
+            "{}/v1/artifacts/{artifact_id}/content",
+            connection.base_url
+        ))
+        .bearer_auth(&connection.bearer_token)
+        .send()
+        .await
+        .expect("authorized artifact content");
+    assert_eq!(content_response.status(), StatusCode::OK);
+    assert_eq!(
+        content_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    assert_eq!(
+        content_response
+            .bytes()
+            .await
+            .expect("artifact bytes")
+            .as_ref(),
+        artifact_bytes
+    );
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.requests().len(), 2);
+    assert_eq!(state.image_requests().len(), 1);
+    fs::remove_file(&artifact_path).expect("remove generated blob for replay corruption proof");
+    let missing_blob_replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(!missing_blob_replay.evidence_complete);
+    assert_eq!(state.requests().len(), 2);
+    assert_eq!(state.image_requests().len(), 1);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn denied_image_generation_releases_budget_without_crossing_the_provider_boundary() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "deny-real-provider-image-generation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Propose one image, but do not dispatch it without my approval.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &connection).await;
+    let approval = pending.approvals.first().expect("image approval");
+    assert_eq!(approval.subject.tool_id, "image.generate");
+    let waiting: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(waiting.usage.reserved_cost_microunits, 50_000);
+    assert_eq!(waiting.usage.reserved_output_bytes, 2_097_152);
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "deny-image-generation-exact-subject".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Deny,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "denied task: {task:?}");
+    assert_eq!(task.usage.reserved_cost_microunits, 0);
+    assert_eq!(task.usage.reserved_output_bytes, 0);
+    assert_eq!(state.image_requests().len(), 0);
+
+    let database =
+        rusqlite::Connection::open(home.path().join("mealy.sqlite3")).expect("open daemon store");
+    let reservation: (String, i64, i64, Option<i64>) = database
+        .query_row(
+            "SELECT state, charged_cost_microunits, charged_output_bytes, settled_at_ms \
+             FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("denied reservation settlement");
+    assert_eq!(reservation.0, "settled");
+    assert_eq!((reservation.1, reservation.2), (0, 0));
+    assert!(reservation.3.is_some());
+    let artifact_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM artifact_reference \
+             WHERE owner_kind = 'effect' AND owner_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("denied artifact count");
+    assert_eq!(artifact_count, 0);
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "denied replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.image_requests().len(), 0);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn image_generation_dispatch_crash_never_retries_and_charges_the_full_reserved_cost() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "image-generation-dispatch-crash".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Generate one image after exact approval.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("image approval");
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-image-generation-dispatch-crash".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let dispatch_deadline = Instant::now() + Duration::from_secs(15);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if state.image_requests().len() == 1
+            && let Some(event) = timeline
+                .events
+                .iter()
+                .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("image dispatch attempt")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < dispatch_deadline,
+            "image generation never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    assert_eq!(parked.usage.reserved_cost_microunits, 0);
+    assert_eq!(parked.usage.reserved_output_bytes, 0);
+    assert!(parked.usage.used_cost_microunits >= 50_000);
+    assert_eq!(state.image_requests().len(), 1);
+    let database = rusqlite::Connection::open(home.path().join("mealy.sqlite3"))
+        .expect("open recovered store");
+    let reservation: (String, i64, i64) = database
+        .query_row(
+            "SELECT state, charged_cost_microunits, charged_output_bytes \
+             FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+            [effect_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("recovered image reservation");
+    assert_eq!(reservation, ("settled".to_owned(), 50_000, 0));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "never-retry image generation must not redispatch after recovery"
+    );
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-image-generation-dispatch-crash".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Failed,
+            evidence: json!({
+                "basis": "owner could not establish a retrievable generated artifact",
+                "providerRequestCount": 1,
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Failed);
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "reconciled task: {task:?}"
+    );
+    assert!(task.usage.used_cost_microunits >= 50_000);
+    assert_eq!(state.image_requests().len(), 1);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "crash replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.image_requests().len(), 1);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
 async fn idempotent_mcp_effect_retries_after_crash_at_dispatch_boundary_and_replays() {
     if !Path::new("/usr/bin/bwrap").is_file() {
@@ -5497,6 +6229,7 @@ async fn spawn_provider(state: MockProviderState) -> (String, JoinHandle<()>) {
     let address = listener.local_addr().expect("provider address");
     let app = Router::new()
         .route("/v1/responses", post(responses_handler))
+        .route("/v1/images/generations", post(image_generation_handler))
         .with_state(state);
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -5684,6 +6417,29 @@ fn enable_provider_image_input(home: &Path) {
         serde_json::to_vec_pretty(&config).expect("encode image provider config"),
     )
     .expect("write image provider config");
+}
+
+fn enable_image_generation(home: &Path, base_url: &str) {
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read provider config"))
+        .expect("decode provider config");
+    config["imageGeneration"] = json!({
+        "providerId": "process-proof.images",
+        "protocol": "open_ai_images",
+        "baseUrl": base_url,
+        "model": "process-proof-image-model",
+        "residency": "local-test",
+        "size": "1024x1024",
+        "quality": "low",
+        "maximumCostMicrounits": 50_000,
+        "maximumOutputBytes": 2_097_152,
+        "timeoutMs": 5_000
+    });
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode image-generation config"),
+    )
+    .expect("write image-generation config");
 }
 
 fn add_skill_config(home: &Path) -> String {

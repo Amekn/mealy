@@ -521,6 +521,7 @@ impl PromotionDefaults {
 
 /// Returns whether a configured conversational root grant is an exact supported governed shape.
 #[must_use]
+#[allow(clippy::too_many_lines)] // Keep the complete root-authority allowlist auditable together.
 pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bool {
     let has_workspace_read = grant
         .tools
@@ -536,6 +537,7 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         .iter()
         .any(|tool| tool.starts_with("web.") || tool == crate::BROWSER_SNAPSHOT_TOOL_ID);
     let has_mcp = grant.tools.iter().any(|tool| valid_mcp_tool_id(tool));
+    let has_image_generation = grant.tools.contains(crate::IMAGE_GENERATION_TOOL_ID);
     let has_delegation = grant.tools.contains(crate::AGENT_DELEGATE_TOOL_ID)
         || grant.tools.contains(crate::AGENT_DELEGATE_PARALLEL_TOOL_ID);
     let has_non_mcp_read = grant.tools.iter().any(|tool| {
@@ -575,6 +577,10 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
         }));
         expected_profiles.insert(PolicyProfile::ServiceOperator);
     }
+    if has_image_generation {
+        expected_effect_classes.insert(EffectClass::NonIdempotent);
+        expected_profiles.insert(PolicyProfile::ServiceOperator);
+    }
     grant.validate().is_ok()
         && grant.tools.iter().all(|tool| {
             valid_mcp_tool_id(tool)
@@ -594,6 +600,7 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
                         | "web.fetch"
                         | "web.search"
                         | crate::BROWSER_SNAPSHOT_TOOL_ID
+                        | crate::IMAGE_GENERATION_TOOL_ID
                 )
         })
         && grant.effect_classes == expected_effect_classes
@@ -614,11 +621,17 @@ pub fn valid_general_assistant_capability_ceiling(grant: &CapabilityGrant) -> bo
             .iter()
             .all(|root| root.starts_with("workspace://") && root.ends_with('/'))
         && (!has_web || !grant.network_destinations.is_empty())
-        && (grant.network_destinations.is_empty() || has_web || has_mcp)
-        && valid_general_assistant_executable_identities(grant, has_process, mcp_service)
+        && (!has_image_generation || !grant.network_destinations.is_empty())
+        && (grant.network_destinations.is_empty() || has_web || has_mcp || has_image_generation)
+        && valid_general_assistant_executable_identities(
+            grant,
+            has_process,
+            mcp_service || has_image_generation,
+        )
         && (grant.secret_references.is_empty()
             || grant.tools.contains("web.search")
-            || (has_mcp && !grant.network_destinations.is_empty()))
+            || (has_mcp && !grant.network_destinations.is_empty())
+            || has_image_generation)
 }
 
 fn valid_general_assistant_workspace_roots(grant: &CapabilityGrant, has_workspace: bool) -> bool {
@@ -632,9 +645,9 @@ fn valid_general_assistant_workspace_roots(grant: &CapabilityGrant, has_workspac
 fn valid_general_assistant_executable_identities(
     grant: &CapabilityGrant,
     has_process: bool,
-    mcp_service: bool,
+    has_service_effect: bool,
 ) -> bool {
-    (has_process || mcp_service) != grant.executable_identity_digests.is_empty()
+    (has_process || has_service_effect) != grant.executable_identity_digests.is_empty()
         && grant
             .executable_identity_digests
             .iter()
@@ -733,8 +746,8 @@ mod tests {
     };
     use crate::{
         AgentLoopLimits, FIXTURE_WRITE_FILE_TOOL_ID, FIXTURE_WRITE_INPUT_PREFIX,
-        WORKSPACE_ACTION_INPUT_PREFIX, WORKSPACE_CREATE_FILE_TOOL_ID, WORKSPACE_EDIT_INPUT_PREFIX,
-        WORKSPACE_MANAGE_INPUT_PREFIX, WORKSPACE_MANAGE_PATH_TOOL_ID,
+        IMAGE_GENERATION_TOOL_ID, WORKSPACE_ACTION_INPUT_PREFIX, WORKSPACE_CREATE_FILE_TOOL_ID,
+        WORKSPACE_EDIT_INPUT_PREFIX, WORKSPACE_MANAGE_INPUT_PREFIX, WORKSPACE_MANAGE_PATH_TOOL_ID,
     };
     use mealy_domain::{CapabilityGrant, EffectClass, PolicyProfile, RiskClass};
     use std::collections::BTreeSet;
@@ -911,6 +924,39 @@ mod tests {
                 .clone()
                 .with_general_assistant_capability_ceiling(valid_effectful_http_mcp)
                 .is_ok()
+        );
+        let valid_image_generation = CapabilityGrant {
+            tools: BTreeSet::from([IMAGE_GENERATION_TOOL_ID.to_owned()]),
+            effect_classes: BTreeSet::from([EffectClass::NonIdempotent]),
+            network_destinations: BTreeSet::from(["origin:https://images.example.test".to_owned()]),
+            executable_identity_digests: BTreeSet::from([crate::sha256_digest(
+                b"reviewed image adapter and configuration",
+            )]),
+            secret_references: BTreeSet::from(["broker:images-primary".to_owned()]),
+            profiles: BTreeSet::from([PolicyProfile::ServiceOperator]),
+            ..CapabilityGrant::default()
+        };
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(valid_image_generation.clone())
+                .is_ok()
+        );
+        let mut missing_image_destination = valid_image_generation.clone();
+        missing_image_destination.network_destinations.clear();
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(missing_image_destination)
+                .is_err()
+        );
+        let mut missing_image_adapter = valid_image_generation;
+        missing_image_adapter.executable_identity_digests.clear();
+        assert!(
+            defaults
+                .clone()
+                .with_general_assistant_capability_ceiling(missing_image_adapter)
+                .is_err()
         );
         let mut missing_effect_executable = valid_effectful_mcp.clone();
         missing_effect_executable

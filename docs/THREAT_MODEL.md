@@ -35,6 +35,7 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item/effect-class grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
+| Image-generation provider and output | External billable effect; response metadata and binary bytes are untrusted |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
 | Sandbox worker | Disposable, lower-trust process |
 
@@ -53,7 +54,10 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
    separate budget, depth zero, durable result fence, and cancellation propagation.
 9. Browser/page to evidence: complete runtime pin, private profile/network namespace, scoped
    Unix-socket proxy, GET/HEAD plus upgrade denial, CDP filtering, output normalization, and cleanup.
-10. SQLite/artifacts to presentation: authorization and redaction.
+10. Image-generation provider to artifact: exact approved adapter authority, non-idempotent effect
+    fencing, cost/output reservation, bounded response parsing, isolated media normalization, and
+    atomic content-addressed settlement.
+11. SQLite/artifacts to presentation: authorization and redaction.
 
 Session IDs, task IDs, continuation tokens, and shared gateway secrets are never principal boundaries by themselves.
 
@@ -66,6 +70,33 @@ Controls: model is untrusted; typed tool schema; default-deny policy; exact appr
 ### Duplicate external effect after crash
 
 Controls: durable intent-before-dispatch; stable idempotency key where supported; effect outcome state; stale-lease fencing; `outcome_unknown` reconciliation; no automatic non-idempotent retry.
+
+### Image generation duplicates spend or publishes hostile output
+
+Controls: image generation is absent by default and exposed only as the exact high-risk
+`image.generate` effect. Stopped-home configuration pins one OpenAI Images or OpenRouter Images
+protocol, canonical HTTPS origin or literal-loopback HTTP origin, provider/model, opaque
+credential reference, residency, JPEG output, size, quality, maximum cost/output bytes, and
+deadline. Proxies, redirects, URL-only results, multiple outputs, fallback, edits, masks, and
+streaming are disabled. The model supplies only a bounded prompt; trusted normalization injects
+the remaining authority, and the durable origin trigger proves both separately.
+
+The immutable run ceiling, policy, and exact owner approval bind the adapter/descriptor digests,
+target, network/secret authority, prompt, injected constraints, non-idempotent class, and
+never-retry recovery. A complete cost/output reservation exists before the run parks. Denial
+settles it at zero and performs no HTTP call. Dispatch records a fenced running attempt first. A
+5xx, transport ambiguity, or crash after dispatch parks `outcome_unknown`, conservatively charges
+the full approved cost ceiling, and can proceed only through authenticated revision-fenced
+external-evidence reconciliation; restart never redispatches.
+
+A confirmed response must contain one bounded base64 body and an in-budget nonnegative reported
+cost. The bytes are not decoded in the daemon. A fresh empty-environment, no-network media worker
+applies decode/pixel/resource limits and metadata-stripping canonical JPEG re-encoding; the daemon
+then rechecks signature, dimensions, digest, media type, and byte ceilings. Outcome, charge,
+artifact metadata/reference, and event settle atomically after content-addressed blob publication.
+Artifact access is exact-owner authenticated. Recorded replay resolves no credential and makes no
+network or approval call; changed/missing prompt, authority, charge, metadata, reference, event, or
+blob evidence fails closed. Safe backend storage does not authorize a client to render the bytes.
 
 ### Forged approval through a chat message or client history
 
@@ -607,6 +638,11 @@ transport, not authority: mutating or replacing either cannot satisfy the commit
   OAuth fixtures additionally prove bounded challenge parsing, path/root and OAuth/OIDC discovery
   order, exact resource/issuer binding, explicit multi-issuer selection, PKCE S256 enforcement, and
   metadata inspection without home or broker mutation.
+- Image-generation process tests prove approval and immutable budget reservation before one
+  dispatch, denial without dispatch, exact pinned provider requests, bounded isolated JPEG
+  normalization, atomic private artifact settlement, crash-after-dispatch with zero retry and
+  conservative full-cost accounting, explicit reconciliation, recorded-only replay, and
+  missing-blob corruption denial.
 - The pinned real Headless Shell gate proves fresh-profile/CDP identity, rendering, safe exact-link
   same-origin navigation, exact form-free button activation plus submit-button denial, native
   text-control fill plus selected-field-only GET and POST/password/hidden-field denial, one bounded

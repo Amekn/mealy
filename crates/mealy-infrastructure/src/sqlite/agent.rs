@@ -6018,6 +6018,15 @@ fn declared_tool_within_capability(tool_id: &str, capability: &CapabilityGrant) 
                 && capability.profiles.contains(&PolicyProfile::WorkspaceWrite)
                 && !capability.writable_workspace_roots.is_empty()
                 && !capability.executable_identity_digests.is_empty()
+        } else if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            capability
+                .effect_classes
+                .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && !capability.network_destinations.is_empty()
+                && !capability.executable_identity_digests.is_empty()
         } else {
             declared_read_tool_within_capability(tool_id, capability)
         }
@@ -6077,6 +6086,28 @@ fn recorded_effect_within_capability(
         } else if effect.tool_id == mealy_application::PROCESS_RUN_TOOL_ID {
             effect_workspace_authorized(effect, capability)
                 && effect_command_authorized(effect, capability)
+        } else if effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            effect.effect_class == EffectClass::NonIdempotent
+                && capability
+                    .effect_classes
+                    .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect.target_resources.len() == 1
+                && effect.target_resources[0].starts_with("image-provider://")
+                && effect.network_destinations.len() == 1
+                && capability
+                    .network_destinations
+                    .contains(&effect.network_destinations[0])
+                && effect.secret_references.len() <= 1
+                && effect
+                    .secret_references
+                    .iter()
+                    .all(|reference| capability.secret_references.contains(reference))
         } else if effect.tool_id.starts_with("mcp.") {
             capability.effect_classes.contains(&effect.effect_class)
                 && effect.effect_class != EffectClass::ReadOnly
@@ -6201,8 +6232,15 @@ fn verify_model_tool_linkage(
         let Some(ProviderResponse::ToolCall { tool_id, arguments }) = &parent.response else {
             return false;
         };
+        let arguments_match = if effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            arguments.as_object().is_some_and(|arguments| {
+                arguments.len() == 1 && arguments.get("prompt") == effect.arguments.get("prompt")
+            })
+        } else {
+            arguments == &effect.arguments
+        };
         if tool_id != &effect.tool_id
-            || arguments != &effect.arguments
+            || !arguments_match
             || !parent
                 .request
                 .tools
@@ -6317,6 +6355,10 @@ fn verify_budget_usage(
     }) else {
         return Ok(false);
     };
+    let Some(image_charge) = verify_image_effect_budget_charges(connection, run_id, effects)?
+    else {
+        return Ok(false);
+    };
     let retries = connection
         .query_row(
             "SELECT COUNT(*) FROM loop_checkpoint \
@@ -6335,6 +6377,13 @@ fn verify_budget_usage(
         .output_bytes
         .checked_add(tool_output_bytes)
         .and_then(|total| total.checked_add(effect_output_bytes))
+        .and_then(|total| total.checked_add(image_charge.output_bytes))
+    else {
+        return Ok(false);
+    };
+    let Some(expected_cost_microunits) = model
+        .cost_microunits
+        .checked_add(image_charge.cost_microunits)
     else {
         return Ok(false);
     };
@@ -6343,8 +6392,334 @@ fn verify_budget_usage(
         && task.usage.used_retries == u64::try_from(retries).unwrap_or(u64::MAX)
         && task.usage.used_input_tokens == model.input_tokens
         && task.usage.used_output_tokens == model.output_tokens
-        && task.usage.used_cost_microunits == model.cost_microunits
+        && task.usage.used_cost_microunits == expected_cost_microunits
         && task.usage.used_output_bytes == expected_output_bytes)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ReplayImageCharge {
+    cost_microunits: u64,
+    output_bytes: u64,
+}
+
+#[allow(clippy::too_many_lines)] // Keep reservation, outcome, and artifact replay checks together.
+fn verify_image_effect_budget_charges(
+    connection: &rusqlite::Connection,
+    run_id: RunId,
+    effects: &[agent_effect::ReplayAgentEffect],
+) -> Result<Option<ReplayImageCharge>, AgentStoreError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT effect_id, maximum_cost_microunits, maximum_output_bytes, state, \
+                    charged_cost_microunits, charged_output_bytes, created_at_ms, settled_at_ms \
+             FROM agent_effect_budget_reservation WHERE run_id = ?1 ORDER BY effect_id",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([run_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    let image_effects = effects
+        .iter()
+        .filter(|effect| effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID)
+        .map(|effect| (effect.effect_id.as_str(), effect))
+        .collect::<HashMap<_, _>>();
+    if rows.len() != image_effects.len() {
+        return Ok(None);
+    }
+    let mut total = ReplayImageCharge::default();
+    for (
+        effect_id,
+        maximum_cost,
+        maximum_output,
+        state,
+        charged_cost,
+        charged_output,
+        created_at_ms,
+        settled_at_ms,
+    ) in rows
+    {
+        let Some(effect) = image_effects.get(effect_id.as_str()).copied() else {
+            return Ok(None);
+        };
+        let (Some(maximum_cost), Some(maximum_output), Some(charged_cost), Some(charged_output)) = (
+            u64::try_from(maximum_cost).ok(),
+            u64::try_from(maximum_output).ok(),
+            u64::try_from(charged_cost).ok(),
+            u64::try_from(charged_output).ok(),
+        ) else {
+            return Ok(None);
+        };
+        if state != "settled"
+            || settled_at_ms.is_none_or(|settled| settled < created_at_ms)
+            || effect
+                .arguments
+                .get("maximumCostMicrounits")
+                .and_then(Value::as_u64)
+                != Some(maximum_cost)
+            || effect.maximum_output_bytes != maximum_output
+        {
+            return Ok(None);
+        }
+        let Ok(observation) = serde_json::from_str::<Value>(&effect.content) else {
+            return Ok(None);
+        };
+        let details = &observation["outcome"]["evidence"]["evidence"];
+        let (expected_cost, expected_output) = match effect.status {
+            mealy_domain::EffectStatus::Succeeded => {
+                let expected_cost = details
+                    .get("reportedCostMicrounits")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(maximum_cost);
+                let Some(expected_output) = details.get("sizeBytes").and_then(Value::as_u64) else {
+                    return Ok(None);
+                };
+                if details.get("artifactId").and_then(Value::as_str).is_none()
+                    || details
+                        .get("digest")
+                        .and_then(Value::as_str)
+                        .is_none_or(|digest| !valid_sha256_digest(digest))
+                    || details.get("mediaType").and_then(Value::as_str) != Some("image/jpeg")
+                    || !verify_image_effect_output_artifact(
+                        connection,
+                        run_id,
+                        effect,
+                        details,
+                        observation["outcome"]["attemptId"]
+                            .as_str()
+                            .unwrap_or_default(),
+                    )?
+                {
+                    return Ok(None);
+                }
+                (expected_cost, expected_output)
+            }
+            mealy_domain::EffectStatus::Failed => {
+                let definitely_uncharged = details
+                    .get("classification")
+                    .and_then(Value::as_str)
+                    .is_some_and(|classification| {
+                        matches!(
+                            classification,
+                            "provider_confirmed_rejection"
+                                | "cancelled_before_http_dispatch"
+                                | "adapter_configuration_drift"
+                                | "durable_arguments_failed_dispatch_revalidation"
+                        )
+                    });
+                (
+                    if definitely_uncharged {
+                        0
+                    } else {
+                        maximum_cost
+                    },
+                    0,
+                )
+            }
+            mealy_domain::EffectStatus::Denied => (0, 0),
+            _ => return Ok(None),
+        };
+        if charged_cost != expected_cost
+            || charged_output != expected_output
+            || charged_cost > maximum_cost
+            || charged_output > maximum_output
+        {
+            return Ok(None);
+        }
+        total.cost_microunits = match total.cost_microunits.checked_add(charged_cost) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        total.output_bytes = match total.output_bytes.checked_add(charged_output) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+    }
+    Ok(Some(total))
+}
+
+#[allow(clippy::too_many_lines)]
+fn verify_image_effect_output_artifact(
+    connection: &rusqlite::Connection,
+    run_id: RunId,
+    effect: &agent_effect::ReplayAgentEffect,
+    details: &Value,
+    attempt_id: &str,
+) -> Result<bool, AgentStoreError> {
+    let (Some(artifact_id), Some(expected_digest), Some(expected_size)) = (
+        details.get("artifactId").and_then(Value::as_str),
+        details.get("digest").and_then(Value::as_str),
+        details.get("sizeBytes").and_then(Value::as_u64),
+    ) else {
+        return Ok(false);
+    };
+    if attempt_id.is_empty() {
+        return Ok(false);
+    }
+    let row = connection
+        .query_row(
+            "SELECT artifact.blob_algorithm, artifact.blob_digest, blob.size_bytes, \
+                    blob.relative_path, artifact.media_type, artifact.origin_kind, \
+                    artifact.origin_id, artifact.producer_kind, artifact.producer_id, \
+                    artifact.sensitivity, artifact.retention_class, \
+                    artifact.access_policy_json, artifact.access_policy_digest, \
+                    artifact.principal_id, artifact.session_id, artifact.created_at_ms, \
+                    blob.committed_at_ms, reference.created_at_ms, event.payload_json, \
+                    event.occurred_at_ms, event.policy_version, event.correlation_id, \
+                    event.event_version, timeline.cursor, outcome_timeline.cursor, \
+                    outcome_event.correlation_id, \
+                    (SELECT COUNT(*) FROM artifact_reference all_reference \
+                     WHERE all_reference.artifact_id = artifact.id) \
+             FROM artifact \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = artifact.blob_algorithm \
+              AND blob.digest = artifact.blob_digest \
+             JOIN artifact_reference reference \
+               ON reference.artifact_id = artifact.id \
+              AND reference.owner_kind = 'effect' \
+              AND reference.owner_id = ?2 \
+              AND reference.relation = 'output' \
+             JOIN agent_effect_invocation invocation \
+               ON invocation.effect_id = reference.owner_id AND invocation.run_id = ?3 \
+             JOIN effect_attempt attempt \
+               ON attempt.attempt_id = artifact.origin_id \
+              AND attempt.effect_id = invocation.effect_id \
+             JOIN journal_event event \
+               ON event.aggregate_kind = 'artifact' \
+              AND event.aggregate_id = artifact.id \
+              AND event.event_type = 'artifact.committed' \
+             JOIN timeline_event timeline ON timeline.event_id = event.event_id \
+             JOIN journal_event outcome_event ON outcome_event.event_id = attempt.terminal_event_id \
+             JOIN timeline_event outcome_timeline \
+               ON outcome_timeline.event_id = outcome_event.event_id \
+             WHERE artifact.id = ?1",
+            params![artifact_id, effect.effect_id.as_str(), run_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, String>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
+                    row.get::<_, String>(18)?,
+                    row.get::<_, i64>(19)?,
+                    row.get::<_, Option<String>>(20)?,
+                    row.get::<_, String>(21)?,
+                    row.get::<_, i64>(22)?,
+                    row.get::<_, i64>(23)?,
+                    row.get::<_, i64>(24)?,
+                    row.get::<_, String>(25)?,
+                    row.get::<_, i64>(26)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((
+        algorithm,
+        digest,
+        size,
+        relative_path,
+        media_type,
+        origin_kind,
+        origin_id,
+        producer_kind,
+        producer_id,
+        sensitivity,
+        retention_class,
+        access_policy_json,
+        access_policy_digest,
+        principal_id,
+        session_id,
+        created_at_ms,
+        blob_committed_at_ms,
+        reference_created_at_ms,
+        event_payload_json,
+        event_occurred_at_ms,
+        event_policy_version,
+        event_correlation_id,
+        event_version,
+        artifact_cursor,
+        outcome_cursor,
+        outcome_correlation_id,
+        reference_count,
+    )) = row
+    else {
+        return Ok(false);
+    };
+    let Some(size) = u64::try_from(size).ok() else {
+        return Ok(false);
+    };
+    let expected_access_policy = json!({
+        "principalId": principal_id,
+        "sessionId": session_id,
+    })
+    .to_string();
+    let Ok(event_payload) = serde_json::from_str::<Value>(&event_payload_json) else {
+        return Ok(false);
+    };
+    Ok(algorithm == "sha256"
+        && digest == expected_digest
+        && valid_sha256_digest(&digest)
+        && size == expected_size
+        && relative_path == format!("sha256/{digest}")
+        && media_type == "image/jpeg"
+        && origin_kind == "effect_attempt"
+        && origin_id == attempt_id
+        && producer_kind == "builtin"
+        && producer_id == "mealyd.image-generation.v1"
+        && sensitivity == "private"
+        && retention_class == "task_history"
+        && access_policy_json == expected_access_policy
+        && valid_sha256_digest(&access_policy_digest)
+        && sha256_digest(access_policy_json.as_bytes()) == access_policy_digest
+        && created_at_ms == blob_committed_at_ms
+        && created_at_ms == reference_created_at_ms
+        && event_occurred_at_ms == created_at_ms
+        && event_policy_version.as_deref()
+            == Some(mealy_application::IMAGE_GENERATION_POLICY_VERSION)
+        && event_correlation_id == outcome_correlation_id
+        && event_version == 1
+        && artifact_cursor > outcome_cursor
+        && reference_count == 1
+        && event_payload
+            == json!({
+                "algorithm": "sha256",
+                "attempt_id": attempt_id,
+                "digest": digest,
+                "effect_id": effect.effect_id,
+                "media_type": "image/jpeg",
+                "owner_id": effect.effect_id,
+                "owner_kind": "effect",
+                "size_bytes": size,
+            })
+        && count_aggregate_events(connection, "artifact", artifact_id)? == 1
+        && verify_aggregate_sequence_chain(connection, "artifact", artifact_id)?)
 }
 
 fn valid_sha256_digest(value: &str) -> bool {

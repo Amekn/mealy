@@ -104,6 +104,7 @@ release_documents=(
   decisions/0015-crash-safe-slack-channel-boundary.md
   decisions/0016-owner-classified-effectful-mcp.md
   decisions/0017-content-addressed-bounded-image-input.md
+  decisions/0018-governed-image-generation-effect.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md

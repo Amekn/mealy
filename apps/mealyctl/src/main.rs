@@ -15,7 +15,7 @@ use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    BrowserConfig, CancellationProbe, ImageGenerationConfig, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
     MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
     MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
@@ -114,9 +114,10 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 9] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 10] = [
     "browser",
     "commandTools",
+    "imageGeneration",
     "imageInputEnabled",
     "mcpHttpServers",
     "mcpServers",
@@ -249,12 +250,58 @@ struct MediaOptions {
     /// Confirm this stopped-daemon configuration change.
     #[arg(long)]
     approve: bool,
+    /// Exact image API protocol for image-generation enablement.
+    #[arg(long, value_enum)]
+    protocol: Option<ImageGenerationProtocolArgument>,
+    /// Stable image provider identity.
+    #[arg(long)]
+    provider_id: Option<String>,
+    /// Canonical API base ending at the version prefix.
+    #[arg(long)]
+    base_url: Option<String>,
+    /// Exact image-generation model.
+    #[arg(long)]
+    model: Option<String>,
+    /// Owner-declared provider residency label.
+    #[arg(long)]
+    residency: Option<String>,
+    /// Broker identity for a remote credential; optional on literal loopback.
+    #[arg(long)]
+    secret_id: Option<String>,
+    /// One-shot environment variable imported into the provider-secret broker.
+    #[arg(long)]
+    credential_env: Option<String>,
+    /// Pinned generated-image dimensions.
+    #[arg(long)]
+    size: Option<String>,
+    /// Pinned generated-image quality.
+    #[arg(long)]
+    quality: Option<String>,
+    /// Maximum approved provider charge reserved for one generation.
+    #[arg(long)]
+    maximum_cost_microunits: Option<u64>,
+    /// Maximum canonical JPEG bytes admitted to private artifact storage.
+    #[arg(long)]
+    maximum_output_bytes: Option<u64>,
+    /// Exact provider request deadline.
+    #[arg(long)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum MediaAction {
     /// Bounded owner-supplied image input.
     ImageInput,
+    /// Exact-approved, non-idempotent provider image generation.
+    ImageGeneration,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ImageGenerationProtocolArgument {
+    /// OpenAI-compatible `POST /images/generations`.
+    OpenAiImages,
+    /// `OpenRouter` dedicated `POST /images`.
+    OpenRouterImages,
 }
 
 #[derive(Debug, Subcommand)]
@@ -3665,14 +3712,16 @@ async fn run() -> Result<(), CliError> {
         let mut arguments = MediaArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
         let MediaNamespace::Media(options) = arguments.command;
-        let MediaOptions {
-            action: MediaAction::ImageInput,
-            enable,
-            disable: _,
-            approve,
-        } = options;
-        return tokio::task::block_in_place(|| {
-            configure_provider_image_input(&arguments.home, enable, approve)
+        return tokio::task::block_in_place(|| match options.action {
+            MediaAction::ImageInput => {
+                if image_generation_options_present(&options) {
+                    return Err(CliError::InvalidProviderConfiguration);
+                }
+                configure_provider_image_input(&arguments.home, options.enable, options.approve)
+            }
+            MediaAction::ImageGeneration => {
+                configure_provider_image_generation(&arguments.home, &options)
+            }
         });
     }
     if mcp_http_invocation(&raw_arguments) {
@@ -11802,6 +11851,21 @@ struct ProviderImageInputConfigurationResponse {
     restart_required: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderImageGenerationConfigurationResponse {
+    enabled: bool,
+    protocol: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    secret_id: Option<String>,
+    configuration_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    connectivity_tested: bool,
+    restart_required: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ProviderCredentialImport<'a> {
     secret_id: &'a str,
@@ -13939,6 +14003,212 @@ fn list_provider_chain(home: &Path) -> Result<(), CliError> {
         credential_values_resolved: false,
         configuration_path: current.display().to_string(),
     })
+}
+
+fn image_generation_options_present(options: &MediaOptions) -> bool {
+    options.protocol.is_some()
+        || options.provider_id.is_some()
+        || options.base_url.is_some()
+        || options.model.is_some()
+        || options.residency.is_some()
+        || options.secret_id.is_some()
+        || options.credential_env.is_some()
+        || options.size.is_some()
+        || options.quality.is_some()
+        || options.maximum_cost_microunits.is_some()
+        || options.maximum_output_bytes.is_some()
+        || options.timeout_ms.is_some()
+}
+
+#[allow(clippy::too_many_lines)]
+fn configure_provider_image_generation(
+    home: &Path,
+    options: &MediaOptions,
+) -> Result<(), CliError> {
+    if !options.approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if options.enable == options.disable {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if options.disable {
+        if image_generation_options_present(options) {
+            return Err(CliError::InvalidProviderConfiguration);
+        }
+        return publish_provider_image_generation(home, None, None);
+    }
+
+    let protocol = options
+        .protocol
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let protocol_name = match protocol {
+        ImageGenerationProtocolArgument::OpenAiImages => "open_ai_images",
+        ImageGenerationProtocolArgument::OpenRouterImages => "open_router_images",
+    };
+    let provider_id = options
+        .provider_id
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let base_url = options
+        .base_url
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let model = options
+        .model
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let residency = options
+        .residency
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let size = options
+        .size
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let quality = options
+        .quality
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let maximum_cost_microunits = options
+        .maximum_cost_microunits
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let maximum_output_bytes = options
+        .maximum_output_bytes
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let timeout_ms = options
+        .timeout_ms
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if options.credential_env.is_some() && options.secret_id.is_none() {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    let credential_reference = options.secret_id.as_deref().map(|secret_id| {
+        json!({
+            "source": "broker",
+            "secretId": secret_id,
+        })
+    });
+    let configuration = serde_json::from_value::<ImageGenerationConfig>(json!({
+        "providerId": provider_id,
+        "protocol": protocol_name,
+        "baseUrl": base_url,
+        "model": model,
+        "credential": credential_reference,
+        "residency": residency,
+        "size": size,
+        "quality": quality,
+        "maximumCostMicrounits": maximum_cost_microunits,
+        "maximumOutputBytes": maximum_output_bytes,
+        "timeoutMs": timeout_ms,
+    }))?;
+    configuration
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let credential = options
+        .credential_env
+        .as_deref()
+        .map(read_provider_credential_environment)
+        .transpose()?;
+    publish_provider_image_generation(
+        home,
+        Some(&configuration),
+        credential.as_deref().map(String::as_str),
+    )
+}
+
+fn publish_provider_image_generation(
+    home: &Path,
+    configuration: Option<&ImageGenerationConfig>,
+    imported_credential: Option<&str>,
+) -> Result<(), CliError> {
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+
+    let secret_id = configuration.and_then(|config| {
+        config
+            .credential()
+            .and_then(provider_credential_broker_secret_id)
+    });
+    if imported_credential.is_some() && secret_id.is_none() {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if let Some(secret_id) = secret_id {
+        let store = FileProviderSecretStore::new(home.join("provider-secrets"))?;
+        if let Some(credential) = imported_credential {
+            verify_provider_secret_preflight(&store, secret_id, credential)?;
+            store.put(secret_id, credential)?;
+        } else {
+            store.read(secret_id)?;
+        }
+    }
+
+    let prior = object.get("imageGeneration").cloned();
+    match configuration {
+        Some(configuration) => {
+            object.insert(
+                "imageGeneration".to_owned(),
+                serde_json::to_value(configuration)?,
+            );
+        }
+        None => {
+            if object.remove("imageGeneration").is_none() {
+                return Err(CliError::InvalidProviderConfiguration);
+            }
+        }
+    }
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let timestamp = unix_timestamp_millis()?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-provider-image-generation-{timestamp}-{}.json",
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    let prior_config = prior
+        .map(serde_json::from_value::<ImageGenerationConfig>)
+        .transpose()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let report_config = configuration.or(prior_config.as_ref());
+    let report_protocol = report_config.map(|config| match config.protocol() {
+        mealy_application::ImageGenerationProtocol::OpenAiImages => "open_ai_images".to_owned(),
+        mealy_application::ImageGenerationProtocol::OpenRouterImages => {
+            "open_router_images".to_owned()
+        }
+    });
+    print_json(ProviderImageGenerationConfigurationResponse {
+        enabled: configuration.is_some(),
+        protocol: report_protocol,
+        provider_id: report_config.map(|config| config.provider_id().to_owned()),
+        model: report_config.map(|config| config.model().to_owned()),
+        secret_id: report_config.and_then(|config| {
+            config
+                .credential()
+                .and_then(provider_credential_broker_secret_id)
+                .map(str::to_owned)
+        }),
+        configuration_digest: sha256_digest(&updated),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: false,
+        restart_required: true,
+    })
+}
+
+fn provider_credential_broker_secret_id(credential: &ProviderCredentialReference) -> Option<&str> {
+    match credential {
+        ProviderCredentialReference::Broker { secret_id } => Some(secret_id),
+        ProviderCredentialReference::Environment { .. } => None,
+    }
 }
 
 fn configure_provider_image_input(
@@ -18713,28 +18983,28 @@ mod tests {
     use super::{
         ApprovalCommand, Arguments, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
         CompactionCommand, ConfigCommand, DelegationCommand, DiscordPairMessage, DiscordPairUser,
-        EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
+        EffectCommand, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
+        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
         MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
-        MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions,
-        ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
+        MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
+        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
         SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
         SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
         TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, chat_usage_line, configure_workspace_grant, decode,
-        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
-        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
-        normalize_openrouter_display_name, observe_discord_pair_messages,
-        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
-        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
-        prepare_local_image_attachment, prepare_local_text_attachment,
+        UpdateRecoveryRoute, chat_usage_line, configure_provider_image_generation,
+        configure_workspace_grant, decode, generate_discord_pair_challenge,
+        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
+        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
+        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
+        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
+        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
         provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
         select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
         stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
-        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
-        validate_discord_pair_base_url, validate_provider_probe_envelope,
-        validate_provider_probe_stream, validate_session_transcript_html,
-        validate_session_transcript_json, write_private_new_file,
+        valid_daemon_config_keys, validate_anthropic_probe_envelope,
+        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
+        validate_provider_probe_envelope, validate_provider_probe_stream,
+        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -18745,18 +19015,18 @@ mod tests {
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
-    use mealy_application::{AgentLoopLimits, ProviderConfig};
+    use mealy_application::{AgentLoopLimits, ProviderConfig, default_daemon_config_document};
     use mealy_infrastructure::CodexSubscriptionModel;
     use mealy_protocol::{
         API_VERSION, DeliveryMode, LocalConnectionInfo, TaskBudgetUsage, TimelineCursor,
         TimelineEvent,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     #[cfg(target_os = "linux")]
     use std::path::Path;
-    use std::{collections::BTreeMap, ffi::OsString, io::Cursor, path::PathBuf};
+    use std::{collections::BTreeMap, ffi::OsString, fs, io::Cursor, path::PathBuf};
 
     fn connection(base_url: &str) -> LocalConnectionInfo {
         LocalConnectionInfo {
@@ -19420,6 +19690,162 @@ mod tests {
                     && !options.disable
                     && options.approve
         ));
+
+        let generation = MediaArguments::try_parse_from([
+            "mealyctl",
+            "--home",
+            "/srv/mealy",
+            "media",
+            "image-generation",
+            "--enable",
+            "--protocol",
+            "open-router-images",
+            "--provider-id",
+            "openrouter.images",
+            "--base-url",
+            "https://openrouter.ai/api/v1",
+            "--model",
+            "owner-selected-image-model:free",
+            "--residency",
+            "openrouter",
+            "--secret-id",
+            "openrouter-primary",
+            "--size",
+            "1024x1024",
+            "--quality",
+            "low",
+            "--maximum-cost-microunits",
+            "50000",
+            "--maximum-output-bytes",
+            "2097152",
+            "--timeout-ms",
+            "120000",
+            "--approve",
+        ])
+        .expect("image-generation media command");
+        assert!(matches!(
+            generation.command,
+            MediaNamespace::Media(options)
+                if matches!(options.action, MediaAction::ImageGeneration)
+                    && matches!(
+                        options.protocol,
+                        Some(ImageGenerationProtocolArgument::OpenRouterImages)
+                    )
+                    && options.secret_id.as_deref() == Some("openrouter-primary")
+                    && options.approve
+        ));
+    }
+
+    #[test]
+    fn stopped_home_configuration_commands_preserve_image_generation_authority() {
+        let mut config = serde_json::json!({
+            "agentLoopLimits": {},
+            "artifactGcMinimumAgeHours": 24,
+            "concurrencyLimits": {},
+            "drainDeadlineMs": 10_000,
+            "forensicBackupOnOpenFailure": true,
+            "formatVersion": 1,
+            "maximumPendingInputsPerSession": 64,
+            "provider": {"kind": "builtin_fixture"},
+            "retentionPolicy": {},
+            "imageGeneration": {
+                "providerId": "local.images",
+                "protocol": "open_ai_images",
+                "baseUrl": "http://127.0.0.1:11434/v1",
+                "model": "local-image-model",
+                "residency": "local",
+                "size": "1024x1024",
+                "quality": "low",
+                "maximumCostMicrounits": 50_000,
+                "maximumOutputBytes": 2_097_152,
+                "timeoutMs": 120_000
+            }
+        });
+        assert!(valid_daemon_config_keys(
+            config.as_object().expect("configuration object")
+        ));
+        config
+            .as_object_mut()
+            .expect("configuration object")
+            .insert("ambientImageCredential".to_owned(), Value::Bool(true));
+        assert!(!valid_daemon_config_keys(
+            config.as_object().expect("configuration object")
+        ));
+    }
+
+    #[test]
+    fn image_generation_configuration_is_approved_archived_and_reversible() {
+        let home = tempfile::tempdir().expect("daemon home");
+        fs::create_dir(home.path().join("config-history")).expect("configuration history");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let enable = MediaOptions {
+            action: MediaAction::ImageGeneration,
+            enable: true,
+            disable: false,
+            approve: true,
+            protocol: Some(ImageGenerationProtocolArgument::OpenAiImages),
+            provider_id: Some("local.images".to_owned()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_owned()),
+            model: Some("local-image-model".to_owned()),
+            residency: Some("local".to_owned()),
+            secret_id: None,
+            credential_env: None,
+            size: Some("1024x1024".to_owned()),
+            quality: Some("low".to_owned()),
+            maximum_cost_microunits: Some(50_000),
+            maximum_output_bytes: Some(2_097_152),
+            timeout_ms: Some(120_000),
+        };
+        configure_provider_image_generation(home.path(), &enable).expect("enable image generation");
+        let configured: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("configured bytes"),
+        )
+        .expect("configured JSON");
+        assert_eq!(
+            configured.pointer("/imageGeneration/providerId"),
+            Some(&Value::String("local.images".to_owned()))
+        );
+        assert_eq!(
+            configured.pointer("/imageGeneration/protocol"),
+            Some(&Value::String("open_ai_images".to_owned()))
+        );
+
+        let disable = MediaOptions {
+            action: MediaAction::ImageGeneration,
+            enable: false,
+            disable: true,
+            approve: true,
+            protocol: None,
+            provider_id: None,
+            base_url: None,
+            model: None,
+            residency: None,
+            secret_id: None,
+            credential_env: None,
+            size: None,
+            quality: None,
+            maximum_cost_microunits: None,
+            maximum_output_bytes: None,
+            timeout_ms: None,
+        };
+        configure_provider_image_generation(home.path(), &disable)
+            .expect("disable image generation");
+        let disabled: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("disabled bytes"),
+        )
+        .expect("disabled JSON");
+        assert!(disabled.get("imageGeneration").is_none());
+        assert_eq!(
+            fs::read_dir(home.path().join("config-history"))
+                .expect("history")
+                .count(),
+            2
+        );
     }
 
     #[test]
