@@ -101,8 +101,9 @@ The failed
 is retained separately as the next negative delivery observation. Both native package lifecycles
 passed, but the release-only Lintian gate rejected an 87-column Debian extended-description line
 before signing or publication. Protected CI now runs Lintian and the builder independently bounds
-those lines. The immutable tag is retained; the canonical v0.2.1 report above now qualifies its
-own exact versioned binaries, while protected report promotion and public release gates remain.
+those lines. The immutable tag is retained; the canonical v0.2.1 report above qualifies its own
+exact versioned binaries. Its protected report promotion, owner-reviewed free-provider gate,
+attested publication, and protected public repository acceptance subsequently passed.
 The [superseded schema-14 long-soak failure](2026-07-13-schema14-long-soak-failure.md) is retained
 as negative evidence: it cannot satisfy a durability gate and motivated failure-report retention.
 That retained path reproduced a current one-second read-tool timeout under contention. After both

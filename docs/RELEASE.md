@@ -98,8 +98,14 @@ and 48 hard restarts. It recovered 53 interrupted-provider turns, retained compl
 replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names the
 parent of this evidence tree directly, so no lineage proof is required. Two clean auditable builds
 were byte-identical, exact archive/Debian/RPM/Arch installed lifecycles passed, and the observed
-commit's protected-main run passed all 16 jobs. Report-bearing protected CI, exact final
-live-provider acceptance, and public tag publication remain.
+commit's protected-main run passed all 16 jobs. The exact report was promoted, the owner-reviewed
+free-model live-provider run passed, and the immutable v0.2.1 tag published 17 digest-bearing assets
+plus the signed Pages repositories. The original release workflow's checkout-free repository
+verifier failed before reading an artifact; the corrected verifier passed protected-main
+[CI run 30324063774](https://github.com/Amekn/mealy/actions/runs/30324063774), then the
+non-publishing [acceptance run
+30324688498](https://github.com/Amekn/mealy/actions/runs/30324688498) qualified the unchanged tag,
+attestation, manifest, and all five public package-manager lanes.
 
 The v0.2.0 report and subject remain preserved as
 [historical evidence](benchmarks/2026-07-25-v0.2.0-release-soak.json). Its exact private
