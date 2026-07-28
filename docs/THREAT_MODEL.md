@@ -607,19 +607,32 @@ manifest/archive media type, size and SHA-256, publication time, and the complet
 release-envelope digest closure. Exact decoded payload bytes are domain-separated before strict
 signature verification, so parser reserialization cannot change signature meaning.
 
-Discovery remains inert. It performs no fetch, extraction, extension import, skill activation,
-configuration write, staging, or grant. A candidate must later pass the existing full-inventory
-skill/extension inspector and present an exact permission diff; an old grant is never inherited.
+Discovery remains inert. Optional snapshot retrieval fetches only signed data; it performs no
+package extraction, extension import, skill activation, configuration write, staging, or grant. A
+candidate must later pass the existing full-inventory skill/extension inspector and present an
+exact permission diff; an old grant is never inherited.
 An initial root is exact out-of-band owner input. A rotation envelope must satisfy both current and
 candidate thresholds and advance exactly one version. Schema 24 stores immutable exact root and
 snapshot bytes plus monotonic heads; acceptance reloads the active root and prior fence and repeats
 verification inside one immediate transaction. The stopped-home CLI reads only bounded nonempty
 no-follow regular files, requires separate approval for root/snapshot state changes, excludes a
 live daemon with the canonical home lock, and refuses to create or migrate the database. Summary
-output withholds public-key bodies and signed payloads. It has no network path and grants no
-package authority. Bounded mirror transport, durable package evidence, permission-diff staging,
-and withdrawal propagation to installed packages remain explicit follow-on boundaries and are not
-yet claimed.
+output withholds public-key bodies and signed payloads.
+
+Mirror access requires a canonical owner-selected HTTPS directory and derives only the fixed
+current-snapshot path or a SHA-256 object path from signed metadata. Credentials, queries,
+fragments, ambiguous paths, HTTP, loopback, private/special addresses, and mixed public/private
+DNS answers are rejected. The complete DNS answer is pinned into TLS and the response peer must
+match; proxy, redirect, referrer, ambient authentication, content decoding, non-200 status, media
+type drift, timeout, and byte-limit violations fail closed. Snapshot bytes are still untrusted
+until local threshold, expiry, identity, rollback, and equivocation verification succeeds.
+Content-addressed objects additionally require exact signed type, length, and digest. Transport
+failure cannot advance state, and refresh holds the stopped-home lock across network and commit.
+Refresh additionally requires the exact envelope digest printed by the preceding fetch, so the
+mutable current path cannot change between owner review and apply. The implementation shares the
+same reviewed IANA special-address policy as web, MCP, and browser egress so the deny list cannot
+drift independently. Durable package evidence, permission-diff staging, and withdrawal
+propagation to installed packages remain explicit follow-on boundaries and are not yet claimed.
 
 ### A staging asset substitutes a different release daemon
 

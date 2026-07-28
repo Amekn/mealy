@@ -215,14 +215,18 @@ bounds. Passive resources remain unloaded until the separately governed, read-on
 and never grant authority. See [`docs/QUICKSTART.md`](../../docs/QUICKSTART.md) for the manifest and
 copy-paste lifecycle.
 
-`registry root-inspect/root-add/root-rotate/status/snapshot-inspect/snapshot-accept` governs the
-v0.5 signed registry trust root and monotonic snapshot fence. Initial roots remain an explicit
-out-of-band owner trust decision; mutations require `--approve`, all canonical-state operations
-require the daemon to be stopped, and existing databases must already be on the exact schema
-supported by the binary. Inputs are bounded no-follow files. The namespace makes no network
-request and grants no package, extension, skill, or tool authority. See
+The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `status`,
+`snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, and `snapshot-refresh` for the v0.5 signed
+registry trust root and monotonic snapshot fence.
+Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
+all canonical-state operations require the daemon to be stopped, and existing databases must
+already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
+The optional snapshot mirror path is fixed-layout, HTTPS-only, proxy/redirect-free, DNS-pinned,
+public-address-only, response-bounded, exact-review-digest-fenced, and rechecked against local
+signature/anti-rollback state.
+The namespace still grants no package, extension, skill, or tool authority. See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
-lifecycle and current local-file-only boundary.
+lifecycle and current mirror boundary.
 
 `config mcp-inspect` executes one exact native ELF MCP stdio server in the Linux no-network
 Bubblewrap boundary and prints its complete `2025-11-25` tool inventory without changing

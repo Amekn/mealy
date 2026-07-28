@@ -22,6 +22,15 @@ rollback, and freeze attacks. OCI descriptors bind content by media type, byte l
 before it is consumed. Sigstore/in-toto distinguish artifact identity and publisher/build
 provenance from the policy that decides whether that identity is acceptable.
 
+The design was checked against the current
+[TUF specification](https://theupdateframework.github.io/specification/latest/), the
+[HTTP semantics standard](https://www.rfc-editor.org/rfc/rfc9110), and IANA's
+[IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/) and
+[IPv6](https://www.iana.org/assignments/iana-ipv6-special-registry/) special-purpose address
+registries. Mealy adopts TUF's separation of initial root trust, expiring monotonic metadata, and
+hash/length-bound targets, while retaining its own smaller registry roles and least-authority
+activation model.
+
 ## Decision
 
 Mealy introduces a versioned registry contract in independent, inert layers.
@@ -68,10 +77,22 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     explicit approval for durable changes, takes the daemon's exclusive home lock, and refuses
     database creation or implicit migration. It exposes root/snapshot inspection, root
     bootstrap/rotation, status, and monotonic snapshot acceptance while withholding key bodies and
-    signed payloads from summary output. Mirror transport, download resumption, release/package
-    evidence, package publication tooling, staged activation, withdrawal propagation to installed
-    revisions, and rollback orchestration remain later slices. Durable metadata acceptance still
-    performs no network request or package execution and grants no runtime authority.
+    signed payloads from summary output. File-based operations remain offline.
+11. Mirror transport accepts one canonical owner-selected HTTPS directory but never arbitrary
+    request paths. Snapshot retrieval uses only `metadata/snapshot.json`; immutable content uses
+    only `objects/sha256/DIGEST`, where `DIGEST` came from authenticated metadata. The adapter
+    rejects credentials, query/fragment ambiguity, HTTP, redirects, proxies, referrers, ambient
+    authentication, content decoding, non-public or mixed DNS answers, connected-peer drift,
+    non-200 responses, media-type drift, timeouts, and body overflow. DNS is resolved once and
+    pinned into TLS establishment. Snapshot fetch/refresh retains the stopped-home lock and repeats
+    the complete local trust/anti-rollback verification before output or an approved atomic
+    acceptance. Refresh requires the exact envelope digest printed by the reviewed fetch, so a
+    mutable-current change between review and apply fails closed. Content requests additionally
+    verify signed exact media type, length, and SHA-256 before parsing.
+12. Download resumption, durable release/package evidence, package publication tooling, staged
+    activation, withdrawal propagation to installed revisions, and rollback orchestration remain
+    later slices. Mirror retrieval still performs no package execution and grants no runtime
+    authority.
 
 ## Consequences
 
@@ -84,8 +105,8 @@ Mealy introduces a versioned registry contract in independent, inert layers.
   snapshot cannot authorize a new install.
 - Root and snapshot history are append-only canonical evidence; only small current-head rows may
   advance, under exact monotonic SQLite triggers and application compare-and-swap fences.
-- The first slices add verification, durable anti-rollback state, and review primitives, not a
-  public marketplace or automatic update path.
+- The first slices add verification, durable anti-rollback state, bounded mirror retrieval, and
+  review primitives, not a public marketplace or automatic update path.
 - Ed25519 verification adds a small audited cryptographic dependency to the production graph and
   remains subject to the existing advisory, license, duplicate-version, SBOM, and provenance
   gates.

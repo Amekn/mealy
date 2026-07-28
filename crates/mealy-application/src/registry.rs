@@ -11,6 +11,7 @@ use serde::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+use url::Url;
 
 /// Exact contract identifier for one signed registry snapshot payload.
 pub const REGISTRY_SNAPSHOT_CONTRACT_VERSION: &str = "mealy.registry.snapshot.v1";
@@ -20,6 +21,9 @@ pub const REGISTRY_RELEASE_CONTRACT_VERSION: &str = "mealy.registry.release.v1";
 pub const REGISTRY_ROOT_PAYLOAD_TYPE: &str = "application/vnd.mealy.registry.root.v1+json";
 /// Envelope payload type for registry snapshots.
 pub const REGISTRY_SNAPSHOT_PAYLOAD_TYPE: &str = "application/vnd.mealy.registry.snapshot.v1+json";
+/// Media type of one complete signed snapshot envelope returned by a registry mirror.
+pub const REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE: &str =
+    "application/vnd.mealy.registry.snapshot-envelope.v1+json";
 /// Envelope payload type for package releases.
 pub const REGISTRY_RELEASE_PAYLOAD_TYPE: &str = "application/vnd.mealy.registry.release.v1+json";
 /// Media type of one signed release envelope referenced by a snapshot.
@@ -41,6 +45,8 @@ const RELEASE_SIGNATURE_CONTEXT: &str = "MEALY-REGISTRY-RELEASE-V1";
 const ROOT_SIGNATURE_CONTEXT: &str = "MEALY-REGISTRY-ROOT-V1";
 const MAXIMUM_ROOT_ENVELOPE_BYTES: usize = 256 * 1024;
 const MAXIMUM_ROOT_PAYLOAD_BYTES: usize = 128 * 1024;
+/// Hard ceiling for one complete signed snapshot envelope fetched from an untrusted mirror.
+pub const REGISTRY_MAXIMUM_SNAPSHOT_ENVELOPE_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_SNAPSHOT_ENVELOPE_BYTES: usize = 4 * 1024 * 1024;
 const MAXIMUM_SNAPSHOT_PAYLOAD_BYTES: usize = 3 * 1024 * 1024;
 const MAXIMUM_RELEASE_ENVELOPE_BYTES: usize = 2 * 1024 * 1024;
@@ -143,6 +149,298 @@ impl RegistryContentDescriptor {
         }
         Ok(())
     }
+
+    fn validate_for_mirror(&self) -> Result<(), RegistryMirrorError> {
+        let maximum_bytes = match self.media_type.as_str() {
+            REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE => {
+                u64::try_from(MAXIMUM_RELEASE_ENVELOPE_BYTES).unwrap_or(u64::MAX)
+            }
+            REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE | REGISTRY_SKILL_MANIFEST_MEDIA_TYPE => {
+                MAXIMUM_MANIFEST_BYTES
+            }
+            REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE | REGISTRY_SKILL_PACKAGE_MEDIA_TYPE => {
+                MAXIMUM_PACKAGE_BYTES
+            }
+            _ => return Err(RegistryMirrorError::InvalidRequest),
+        };
+        if !is_sha256_digest(&self.sha256_digest)
+            || self.size_bytes == 0
+            || self.size_bytes > maximum_bytes
+        {
+            return Err(RegistryMirrorError::InvalidRequest);
+        }
+        Ok(())
+    }
+}
+
+/// One canonical, owner-selected HTTPS mirror for a locally trusted registry.
+///
+/// Mirror location is local policy, not a source of trust. Every accepted metadata or package
+/// object remains authenticated by the out-of-band registry root and signed content descriptors.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryMirror {
+    /// Stable registry identity which must match the locally trusted root.
+    pub registry_id: String,
+    /// Canonical HTTPS directory URL ending in `/`.
+    pub base_url: String,
+}
+
+impl RegistryMirror {
+    /// Validates canonical mirror identity and derives no network authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMirrorError::InvalidMirror`] for ambiguous, non-HTTPS, credential-bearing,
+    /// non-canonical, or path-unsafe mirror URLs.
+    pub fn validate(&self) -> Result<(), RegistryMirrorError> {
+        if !valid_identifier(&self.registry_id)
+            || self.base_url.is_empty()
+            || self.base_url.len() > 4_096
+            || self.base_url.trim() != self.base_url
+        {
+            return Err(RegistryMirrorError::InvalidMirror);
+        }
+        let url = Url::parse(&self.base_url).map_err(|_| RegistryMirrorError::InvalidMirror)?;
+        if url.as_str() != self.base_url
+            || url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.host_str().is_none_or(|host| !valid_mirror_host(host))
+            || !valid_mirror_base_path(url.path())
+        {
+            return Err(RegistryMirrorError::InvalidMirror);
+        }
+        Ok(())
+    }
+
+    fn object_url(&self, relative_path: &str) -> Result<Url, RegistryMirrorError> {
+        self.validate()?;
+        Url::parse(&self.base_url)
+            .map_err(|_| RegistryMirrorError::InvalidMirror)?
+            .join(relative_path)
+            .map_err(|_| RegistryMirrorError::InvalidRequest)
+    }
+}
+
+/// One transport-only, authority-free registry mirror read.
+///
+/// Callers cannot choose a free-form path. Constructors derive the fixed snapshot path or an
+/// immutable content-addressed object path from authenticated metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryMirrorRequest {
+    url: Url,
+    expected_media_type: &'static str,
+    maximum_bytes: u64,
+    descriptor: Option<RegistryContentDescriptor>,
+}
+
+impl RegistryMirrorRequest {
+    fn snapshot(mirror: &RegistryMirror) -> Result<Self, RegistryMirrorError> {
+        Ok(Self {
+            url: mirror.object_url("metadata/snapshot.json")?,
+            expected_media_type: REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE,
+            maximum_bytes: REGISTRY_MAXIMUM_SNAPSHOT_ENVELOPE_BYTES,
+            descriptor: None,
+        })
+    }
+
+    fn content(
+        mirror: &RegistryMirror,
+        descriptor: &RegistryContentDescriptor,
+    ) -> Result<Self, RegistryMirrorError> {
+        descriptor.validate_for_mirror()?;
+        Ok(Self {
+            url: mirror.object_url(&format!("objects/sha256/{}", descriptor.sha256_digest))?,
+            expected_media_type: match descriptor.media_type.as_str() {
+                REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE => REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+                REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE => REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE,
+                REGISTRY_SKILL_MANIFEST_MEDIA_TYPE => REGISTRY_SKILL_MANIFEST_MEDIA_TYPE,
+                REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE => REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE,
+                REGISTRY_SKILL_PACKAGE_MEDIA_TYPE => REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
+                _ => return Err(RegistryMirrorError::InvalidRequest),
+            },
+            maximum_bytes: descriptor.size_bytes,
+            descriptor: Some(descriptor.clone()),
+        })
+    }
+
+    /// Exact canonical URL selected by the fixed registry layout.
+    #[must_use]
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    /// Exact response media type accepted for this object.
+    #[must_use]
+    pub const fn expected_media_type(&self) -> &'static str {
+        self.expected_media_type
+    }
+
+    /// Maximum response body bytes admitted before signature or archive parsing.
+    #[must_use]
+    pub const fn maximum_bytes(&self) -> u64 {
+        self.maximum_bytes
+    }
+
+    fn verify_response(
+        &self,
+        response: RegistryMirrorResponse,
+    ) -> Result<Vec<u8>, RegistryMirrorError> {
+        if response.media_type != self.expected_media_type
+            || response.bytes.is_empty()
+            || u64::try_from(response.bytes.len())
+                .ok()
+                .is_none_or(|length| length > self.maximum_bytes)
+        {
+            return Err(RegistryMirrorError::InvalidResponse);
+        }
+        if let Some(descriptor) = &self.descriptor {
+            descriptor
+                .verify_bytes(&response.bytes)
+                .map_err(|_| RegistryMirrorError::ContentMismatch)?;
+        }
+        Ok(response.bytes)
+    }
+}
+
+/// Exact bounded bytes returned by a registry mirror adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryMirrorResponse {
+    /// Normalized response media type without parameters.
+    pub media_type: String,
+    /// Complete response body retained only after the adapter's byte ceiling.
+    pub bytes: Vec<u8>,
+}
+
+/// Fail-closed transport categories which never include a URL, body, credential, or peer detail.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum RegistryMirrorTransportError {
+    /// DNS, TLS, connection, or response I/O failed.
+    #[error("registry mirror transport is unavailable")]
+    Unavailable,
+    /// Destination, peer, status, header, or response framing violated transport policy.
+    #[error("registry mirror transport rejected the response")]
+    Rejected,
+    /// The response exceeded the request's hard byte ceiling.
+    #[error("registry mirror response exceeds its byte ceiling")]
+    ResponseTooLarge,
+}
+
+/// Infrastructure boundary for one bounded, read-only registry mirror request.
+pub trait RegistryMirrorTransport {
+    /// Fetches one already validated fixed-layout request without following redirects.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded transport category without exposing remote response content.
+    fn fetch(
+        &self,
+        request: &RegistryMirrorRequest,
+    ) -> Result<RegistryMirrorResponse, RegistryMirrorTransportError>;
+}
+
+/// Safe registry mirror request or response failure.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum RegistryMirrorError {
+    /// Mirror identity or canonical HTTPS base URL is invalid.
+    #[error("registry mirror configuration is invalid")]
+    InvalidMirror,
+    /// A content descriptor or derived mirror request is invalid.
+    #[error("registry mirror request is invalid")]
+    InvalidRequest,
+    /// The bounded response has the wrong media type, is empty, or exceeds its ceiling.
+    #[error("registry mirror response is invalid")]
+    InvalidResponse,
+    /// Exact response length or SHA-256 does not match authenticated metadata.
+    #[error("registry mirror content does not match its signed descriptor")]
+    ContentMismatch,
+    /// The concrete network adapter failed closed.
+    #[error(transparent)]
+    Transport(#[from] RegistryMirrorTransportError),
+}
+
+/// Fetches one bounded signed snapshot envelope from the fixed mirror metadata path.
+///
+/// Returned bytes are still untrusted. The caller must pass them to
+/// [`inspect_registry_snapshot`] or [`accept_registry_snapshot`] before using discovery metadata.
+///
+/// # Errors
+///
+/// Returns [`RegistryMirrorError`] for invalid mirror configuration, transport rejection, or a
+/// malformed response boundary.
+pub fn fetch_registry_snapshot_envelope(
+    transport: &impl RegistryMirrorTransport,
+    mirror: &RegistryMirror,
+) -> Result<Vec<u8>, RegistryMirrorError> {
+    let request = RegistryMirrorRequest::snapshot(mirror)?;
+    let response = transport.fetch(&request)?;
+    request.verify_response(response)
+}
+
+/// Fetches and authenticates one immutable object selected by a signed content descriptor.
+///
+/// # Errors
+///
+/// Returns [`RegistryMirrorError`] for invalid mirror/descriptor data, transport rejection, media
+/// type drift, truncation, expansion, or digest mismatch.
+pub fn fetch_registry_content(
+    transport: &impl RegistryMirrorTransport,
+    mirror: &RegistryMirror,
+    descriptor: &RegistryContentDescriptor,
+) -> Result<Vec<u8>, RegistryMirrorError> {
+    let request = RegistryMirrorRequest::content(mirror, descriptor)?;
+    let response = transport.fetch(&request)?;
+    request.verify_response(response)
+}
+
+fn valid_mirror_base_path(path: &str) -> bool {
+    if !path.starts_with('/') || !path.ends_with('/') {
+        return false;
+    }
+    if path == "/" {
+        return true;
+    }
+    let interior = &path[1..path.len() - 1];
+    interior.is_empty()
+        || interior.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                })
+        })
+}
+
+fn valid_mirror_host(host: &str) -> bool {
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    if literal.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                && label
+                    .as_bytes()
+                    .last()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+        })
 }
 
 /// Signature algorithm accepted by the v1 registry contract.
@@ -1487,12 +1785,15 @@ mod tests {
         REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
         REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE,
         REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
-        REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
-        RELEASE_SIGNATURE_CONTEXT, ROOT_SIGNATURE_CONTEXT, RegistryContentDescriptor,
-        RegistryError, RegistryPackageKind, RegistryPublicKey, RegistryPublisher, RegistryRelease,
-        RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope, RegistrySnapshot,
-        RegistrySnapshotState, RegistryTarget, RegistryTrustRoot, RegistryWithdrawal,
-        SNAPSHOT_SIGNATURE_CONTEXT, diff_extension_permissions, diff_skill_permissions,
+        REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE,
+        REGISTRY_SNAPSHOT_PAYLOAD_TYPE, RELEASE_SIGNATURE_CONTEXT, ROOT_SIGNATURE_CONTEXT,
+        RegistryContentDescriptor, RegistryError, RegistryMirror, RegistryMirrorError,
+        RegistryMirrorRequest, RegistryMirrorResponse, RegistryMirrorTransport,
+        RegistryMirrorTransportError, RegistryPackageKind, RegistryPublicKey, RegistryPublisher,
+        RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope,
+        RegistrySnapshot, RegistrySnapshotState, RegistryTarget, RegistryTrustRoot,
+        RegistryWithdrawal, SNAPSHOT_SIGNATURE_CONTEXT, diff_extension_permissions,
+        diff_skill_permissions, fetch_registry_content, fetch_registry_snapshot_envelope,
         inspect_initial_registry_trust_root, inspect_registry_release,
         inspect_registry_root_rotation, inspect_registry_snapshot,
     };
@@ -1508,7 +1809,10 @@ mod tests {
         ExtensionShutdownMode, RiskClass, SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset,
         SkillManifest, SkillToolRequirement,
     };
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        cell::RefCell,
+        collections::{BTreeMap, BTreeSet},
+    };
 
     const NOW_MS: i64 = 10_000;
 
@@ -1519,6 +1823,21 @@ mod tests {
         snapshot: RegistrySnapshot,
         snapshot_envelope: Vec<u8>,
         release_envelope: Vec<u8>,
+    }
+
+    struct FixtureMirrorTransport {
+        response: Result<RegistryMirrorResponse, RegistryMirrorTransportError>,
+        requests: RefCell<Vec<RegistryMirrorRequest>>,
+    }
+
+    impl RegistryMirrorTransport for FixtureMirrorTransport {
+        fn fetch(
+            &self,
+            request: &RegistryMirrorRequest,
+        ) -> Result<RegistryMirrorResponse, RegistryMirrorTransportError> {
+            self.requests.borrow_mut().push(request.clone());
+            self.response.clone()
+        }
     }
 
     fn fixture() -> Fixture {
@@ -1617,6 +1936,98 @@ mod tests {
             inspect_registry_release(&fixture.release_envelope, &snapshot, &forged_target, 1),
             Err(RegistryError::InvalidRelease)
         );
+    }
+
+    #[test]
+    fn mirror_requests_are_https_fixed_layout_bounded_and_content_authenticated() {
+        let fixture = fixture();
+        let mirror = RegistryMirror {
+            registry_id: fixture.root.registry_id.clone(),
+            base_url: "https://registry.example.test/mealy/v1/".to_owned(),
+        };
+        let snapshot_transport = FixtureMirrorTransport {
+            response: Ok(RegistryMirrorResponse {
+                media_type: REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE.to_owned(),
+                bytes: fixture.snapshot_envelope.clone(),
+            }),
+            requests: RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            fetch_registry_snapshot_envelope(&snapshot_transport, &mirror)
+                .expect("bounded snapshot"),
+            fixture.snapshot_envelope
+        );
+        let snapshot_requests = snapshot_transport.requests.borrow();
+        assert_eq!(snapshot_requests.len(), 1);
+        assert_eq!(
+            snapshot_requests[0].url().as_str(),
+            "https://registry.example.test/mealy/v1/metadata/snapshot.json"
+        );
+
+        let descriptor = descriptor(
+            REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+            &fixture.release_envelope,
+        );
+        let content_transport = FixtureMirrorTransport {
+            response: Ok(RegistryMirrorResponse {
+                media_type: descriptor.media_type.clone(),
+                bytes: fixture.release_envelope.clone(),
+            }),
+            requests: RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            fetch_registry_content(&content_transport, &mirror, &descriptor)
+                .expect("authenticated object"),
+            fixture.release_envelope
+        );
+        assert_eq!(
+            content_transport.requests.borrow()[0].url().as_str(),
+            format!(
+                "https://registry.example.test/mealy/v1/objects/sha256/{}",
+                descriptor.sha256_digest
+            )
+        );
+
+        let mut wrong_bytes = fixture.release_envelope.clone();
+        wrong_bytes[0] ^= 1;
+        let mismatch_transport = FixtureMirrorTransport {
+            response: Ok(RegistryMirrorResponse {
+                media_type: descriptor.media_type.clone(),
+                bytes: wrong_bytes,
+            }),
+            requests: RefCell::new(Vec::new()),
+        };
+        assert_eq!(
+            fetch_registry_content(&mismatch_transport, &mirror, &descriptor),
+            Err(RegistryMirrorError::ContentMismatch)
+        );
+    }
+
+    #[test]
+    fn mirror_configuration_rejects_ambiguous_authority_and_paths() {
+        for base_url in [
+            "http://registry.example.test/",
+            "https://owner:secret@registry.example.test/",
+            "https://registry.example.test",
+            "https://registry.example.test//v1/",
+            "https://registry.example.test/v1/%2e%2e/",
+            "https://registry.example.test/v1/?channel=stable",
+            "https://registry.example.test/v1/#current",
+            "https://registry.example.test./v1/",
+            "https://registry..example.test/v1/",
+            "https://-registry.example.test/v1/",
+            "HTTPS://registry.example.test/v1/",
+        ] {
+            let mirror = RegistryMirror {
+                registry_id: "dev.mealy.registry".to_owned(),
+                base_url: base_url.to_owned(),
+            };
+            assert_eq!(
+                mirror.validate(),
+                Err(RegistryMirrorError::InvalidMirror),
+                "accepted {base_url}"
+            );
+        }
     }
 
     #[test]

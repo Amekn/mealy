@@ -23,14 +23,15 @@ use mealy_application::{
     McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
     McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
     ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryError,
-    RegistryMetadataStore, RegistryMetadataStoreError, RegistrySnapshotState, RegistryUseCaseError,
-    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, accept_registry_snapshot,
-    bootstrap_registry_trust_root, default_daemon_config_document,
-    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
-    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    RegistryMetadataStore, RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError,
+    RegistrySnapshotState, RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
+    accept_registry_snapshot, bootstrap_registry_trust_root, default_daemon_config_document,
+    fetch_registry_snapshot_envelope, inspect_initial_registry_trust_root,
+    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
+    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
@@ -39,9 +40,10 @@ use mealy_domain::{
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage, LATEST_SCHEMA_VERSION,
-    MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
-    McpOAuthTokenError, ProviderSecretStoreError, SqliteStore, StoreError, SubscriptionCliProvider,
+    FileMcpOAuthTokenStore, FileProviderSecretStore, HttpsRegistryMirrorTransport,
+    InspectedSkillPackage, LATEST_SCHEMA_VERSION, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
+    MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, McpOAuthTokenError,
+    ProviderSecretStoreError, SqliteStore, StoreError, SubscriptionCliProvider,
     SubscriptionCliSettings, activate_backup, activate_migration_backup, browser_worker_main,
     discover_mcp_http_server, discover_mcp_oauth_metadata, discover_mcp_stdio_server,
     exchange_mcp_oauth_authorization_code, inspect_browser_bundle, inspect_existing_schema_version,
@@ -2039,6 +2041,28 @@ enum RegistryCommand {
         /// Exact no-follow snapshot envelope already reviewed with `snapshot-inspect`.
         #[arg(long)]
         envelope: PathBuf,
+        /// Confirm advancement of the durable anti-rollback fence.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Fetch and verify the current fixed-path snapshot without accepting it.
+    SnapshotFetch {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+    },
+    /// Fetch, verify, and atomically accept the current monotonic snapshot.
+    SnapshotRefresh {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact lowercase SHA-256 printed by the reviewed `snapshot-fetch`.
+        #[arg(long)]
+        expected_envelope_digest: String,
         /// Confirm advancement of the durable anti-rollback fence.
         #[arg(long)]
         approve: bool,
@@ -13076,35 +13100,106 @@ fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), 
         RegistryCommand::SnapshotInspect {
             registry_id,
             envelope,
-        } => {
-            validate_registry_id(registry_id)?;
-            let now_ms = registry_now_ms()?;
-            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
-            let (home, _instance_lock) = lock_stopped_home(home)?;
-            let home = fs::canonicalize(home)?;
-            let store = open_registry_read_store(&home)?;
-            let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
-            print_json(registry_snapshot_response("snapshot_verified", &inspected))
-        }
+        } => run_registry_snapshot_file(home, registry_id, envelope, false),
         RegistryCommand::SnapshotAccept {
             registry_id,
             envelope,
             approve,
         } => {
             require_registry_approval(*approve)?;
-            validate_registry_id(registry_id)?;
-            let now_ms = registry_now_ms()?;
-            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
-            let (home, _instance_lock) = lock_stopped_home(home)?;
-            let home = fs::canonicalize(home)?;
-            let mut store = open_registry_write_store(&home, now_ms)?;
-            let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
-            let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
-            if state != inspected.state {
-                return Err(CliError::RegistryStateDrift);
-            }
-            print_json(registry_snapshot_response("snapshot_active", &inspected))
+            run_registry_snapshot_file(home, registry_id, envelope, true)
         }
+        RegistryCommand::SnapshotFetch {
+            registry_id,
+            mirror,
+        } => run_registry_snapshot_mirror(home, registry_id, mirror, None),
+        RegistryCommand::SnapshotRefresh {
+            registry_id,
+            mirror,
+            expected_envelope_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_snapshot_mirror(home, registry_id, mirror, Some(expected_envelope_digest))
+        }
+    }
+}
+
+fn run_registry_snapshot_file(
+    home: &Path,
+    registry_id: &str,
+    envelope: &Path,
+    accept: bool,
+) -> Result<(), CliError> {
+    validate_registry_id(registry_id)?;
+    let now_ms = registry_now_ms()?;
+    let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if accept {
+        open_registry_write_store(&home, now_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+    if accept {
+        let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
+        if state != inspected.state {
+            return Err(CliError::RegistryStateDrift);
+        }
+    }
+    let operation = if accept {
+        "snapshot_active"
+    } else {
+        "snapshot_verified"
+    };
+    print_json(registry_snapshot_response(operation, &inspected, false))
+}
+
+fn run_registry_snapshot_mirror(
+    home: &Path,
+    registry_id: &str,
+    base_url: &str,
+    expected_envelope_digest: Option<&str>,
+) -> Result<(), CliError> {
+    let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_envelope_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistrySnapshotDigest);
+    }
+    let opened_at_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if expected_envelope_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let envelope = fetch_registry_snapshot_envelope(&HttpsRegistryMirrorTransport, &mirror)?;
+    let now_ms = registry_now_ms()?;
+    let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+    if let Some(expected_envelope_digest) = expected_envelope_digest {
+        require_registry_snapshot_review_digest(
+            &inspected.envelope_digest,
+            expected_envelope_digest,
+        )?;
+        let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
+        if state != inspected.state {
+            return Err(CliError::RegistryStateDrift);
+        }
+    }
+    let operation = if expected_envelope_digest.is_some() {
+        "snapshot_refreshed"
+    } else {
+        "snapshot_fetched_verified"
+    };
+    print_json(registry_snapshot_response(operation, &inspected, true))
+}
+
+fn require_registry_snapshot_review_digest(actual: &str, expected: &str) -> Result<(), CliError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CliError::RegistrySnapshotDrift)
     }
 }
 
@@ -13127,6 +13222,19 @@ fn validate_registry_id(registry_id: &str) -> Result<(), CliError> {
     } else {
         Err(CliError::InvalidRegistryIdentifier)
     }
+}
+
+fn validated_registry_mirror(
+    registry_id: &str,
+    base_url: &str,
+) -> Result<RegistryMirror, CliError> {
+    validate_registry_id(registry_id)?;
+    let mirror = RegistryMirror {
+        registry_id: registry_id.to_owned(),
+        base_url: base_url.to_owned(),
+    };
+    mirror.validate()?;
+    Ok(mirror)
 }
 
 fn read_registry_metadata(path: &Path, maximum: u64) -> Result<Vec<u8>, CliError> {
@@ -13253,6 +13361,7 @@ struct RegistrySnapshotResponse {
 fn registry_snapshot_response(
     operation: &'static str,
     snapshot: &InspectedRegistrySnapshot,
+    network_access: bool,
 ) -> RegistrySnapshotResponse {
     RegistrySnapshotResponse {
         operation,
@@ -13267,7 +13376,7 @@ fn registry_snapshot_response(
             .iter()
             .filter(|target| target.withdrawal.is_some())
             .count(),
-        network_access: false,
+        network_access,
         package_authority: false,
     }
 }
@@ -19282,6 +19391,11 @@ enum CliError {
         "registry identity must be 1 through 255 ASCII letters, digits, dots, underscores, colons, or hyphens"
     )]
     InvalidRegistryIdentifier,
+    /// Mirror refresh did not bind one canonical SHA-256 snapshot envelope identity.
+    #[error(
+        "registry snapshot refresh requires the exact lowercase SHA-256 printed by snapshot-fetch"
+    )]
+    InvalidRegistrySnapshotDigest,
     /// Registry metadata commands require an initialized canonical database.
     #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
     RegistryDatabaseNotFound,
@@ -19298,9 +19412,17 @@ enum CliError {
     /// Canonical registry state differed from the exact verified result.
     #[error("canonical registry metadata changed unexpectedly; no further action was attempted")]
     RegistryStateDrift,
+    /// The mirror changed after the owner reviewed the exact snapshot envelope.
+    #[error(
+        "registry mirror snapshot changed after review; run snapshot-fetch again and review the new digest"
+    )]
+    RegistrySnapshotDrift,
     /// Cryptographic or semantic registry metadata verification failed.
     #[error(transparent)]
     RegistryVerification(#[from] RegistryError),
+    /// Canonical registry mirror validation or bounded HTTPS retrieval failed.
+    #[error(transparent)]
+    RegistryMirror(#[from] RegistryMirrorError),
     /// Registry use-case verification or atomic persistence failed.
     #[error(transparent)]
     RegistryUseCase(#[from] RegistryUseCaseError),
@@ -19545,13 +19667,13 @@ mod tests {
         onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
         parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
         provider_switch_recovery_route, registry_invocation,
-        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
-        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
-        telegram_pair_api_url, update_recovery_route, valid_daemon_config_keys,
-        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
-        validate_discord_pair_base_url, validate_provider_probe_envelope,
-        validate_provider_probe_stream, validate_session_transcript_html,
-        validate_session_transcript_json, write_private_new_file,
+        require_registry_snapshot_review_digest, resolve_default_operational_subcommand,
+        resolve_setup, select_codex_subscription_model, setup_provider_config,
+        should_open_onboard_chat, stable_default_mealy_home, telegram_pair_api_url,
+        update_recovery_route, valid_daemon_config_keys, validate_anthropic_probe_envelope,
+        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
+        validate_provider_probe_envelope, validate_provider_probe_stream,
+        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -20354,6 +20476,49 @@ mod tests {
                     } if registry_id == "dev.mealy.registry"
                         && envelope == Path::new("/tmp/snapshot.json")
                 )
+        ));
+
+        let refresh = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "snapshot-refresh",
+            "dev.mealy.registry",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--approve",
+        ])
+        .expect("registry mirror refresh command");
+        assert!(matches!(
+            refresh.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::SnapshotRefresh {
+                        registry_id,
+                        mirror,
+                        expected_envelope_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_envelope_digest
+                            == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+        ));
+        assert!(
+            require_registry_snapshot_review_digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            require_registry_snapshot_review_digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            Err(CliError::RegistrySnapshotDrift)
         ));
     }
 

@@ -758,6 +758,16 @@ content corpus distinguishes prefix-confusable tags such as `<scripture>`, respe
 characters, removes comments and active blocks, fails closed on unclosed blocks, preserves word
 boundaries, decodes bounded common/numeric entities once, and prevents cascading entity decoding.
 
+The v0.5 registry mirror adapter deliberately reuses that address policy. Application tests prove
+that callers can derive only `metadata/snapshot.json` or `objects/sha256/DIGEST`, that response
+media type/length/SHA-256 are exact, and that tampered bytes fail before parsing. Infrastructure
+tests prove the body ceiling and that HTTPS loopback cannot inherit the web adapter's explicit
+owner-granted local-development exception. The `registry_configuration` process suite proves
+approval and a canonical expected envelope digest are checked before refresh, HTTP and private
+mirrors cannot advance SQLite state, and file-based trust/rollback/restart behavior remains
+intact. A bounded five-second resolver with an eight-lookup global ceiling closes the pre-request
+DNS timeout gap for every adapter sharing this egress policy.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

@@ -286,9 +286,17 @@ prior head inside one write transaction and survives migration/reopen without al
 writes, rollback, or equivocation. A stopped-home `registry` CLI now exposes bounded no-follow root
 inspection/bootstrap/rotation, snapshot inspection/acceptance, and status with explicit approval,
 live-daemon exclusion, exact-schema refusal, idempotent replay, and real process/SQLite tests.
-Bounded mirror transport, durable release/package evidence, package download/inspection, staged
-activation, installed-withdrawal handling, and rollback remain later slices; metadata acceptance
-grants no runtime authority.
+The next transport slice is also implemented: `snapshot-fetch` and approved `snapshot-refresh`
+read one fixed current-snapshot path from a canonical owner-selected HTTPS mirror. The adapter
+rejects proxy/redirect/credential paths, non-public or mixed DNS answers, peer drift, content
+encoding, non-200 status, type drift, and bodies above 4 MiB; signature and durable anti-rollback
+verification remain authoritative. Approved refresh additionally requires the exact envelope
+digest printed by the preceding fetch, closing mutable-current review/apply drift. Immutable
+content requests can only derive
+`objects/sha256/DIGEST` from signed descriptors and require exact type, length, and digest, but no
+package command consumes them yet. Durable release/package evidence, package
+download/inspection, staged activation, installed-withdrawal handling, and rollback remain later
+slices; metadata acceptance grants no runtime authority.
 
 ### Memory and automation
 

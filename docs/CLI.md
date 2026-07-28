@@ -68,9 +68,9 @@ public command cannot be added or removed without updating this reference.
 
 ## Signed registry trust metadata
 
-The v0.5 registry operator surface is deliberately local-file-only. First obtain an initial root
-through an independently authenticated out-of-band path, retain its expected digest outside the
-registry, and inspect the exact file without changing the Mealy home:
+The v0.5 registry trust-bootstrap surface is deliberately local-file-only. First obtain an initial
+root through an independently authenticated out-of-band path, retain its expected digest outside
+the registry, and inspect the exact file without changing the Mealy home:
 
 ```sh
 mealyctl registry root-inspect --root ./mealy-registry-root.json
@@ -118,11 +118,48 @@ envelopes at 256 KiB, and snapshot envelopes at 4 MiB; all are opened as nonempt
 files. Output includes only key IDs and summary counts, not public-key bodies or signed metadata
 payloads.
 
-These commands perform no DNS lookup, HTTP request, mirror discovery, package download,
-extraction, install, staging, activation, or permission grant. Accepted metadata is inert durable
-evidence only. SSRF-resistant mirror transport, signed release/package retrieval, full package
-inspection, permission-diff staging, and withdrawal-aware install/rollback are separate later
-v0.5 boundaries.
+Root and file-based snapshot commands perform no DNS lookup or HTTP request. To retrieve the fixed
+current snapshot from an owner-selected mirror and verify it without mutation:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-fetch dev.mealy.registry \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+Review the same snapshot summary, then repeat through the approved atomic acceptance boundary:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-refresh dev.mealy.registry \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-envelope-digest DIGEST_FROM_SNAPSHOT_FETCH \
+  --approve
+```
+
+`snapshot-fetch` prints the signed envelope identity as `state.envelopeDigest`. Refresh requires
+that exact lowercase SHA-256, so a mirror update between review and apply fails without advancing
+state; fetch and review the new summary before trying again.
+
+The base must be a canonical HTTPS directory URL ending in `/`; credentials, query strings,
+fragments, encoded/empty path segments, HTTP, loopback, private, link-local, documentation,
+reserved, multicast, and otherwise non-public destinations fail closed. Mealy resolves once,
+rejects the entire DNS answer if any address is non-public, pins that answer into TLS connection
+establishment, and verifies the connected peer is in the pinned set. The client uses no proxy,
+redirect, referrer, cookie, content decoding, or ambient credential path. It requests only
+`metadata/snapshot.json`, accepts exactly HTTP 200 and the registry snapshot-envelope media type,
+and retains at most 4 MiB under a five-second DNS deadline and five-minute HTTP deadline. The
+shared resolver permits at most eight concurrent outstanding lookups, so a stuck operating-system
+resolver cannot create unbounded threads. Signature, expiry, registry-identity, rollback, and
+equivocation verification still run against the locally trusted root before output or acceptance.
+The stopped-home lock remains held across retrieval and any commit, so the daemon cannot race the
+reviewed state.
+
+The application transport also derives immutable release/manifest/archive paths only as
+`objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
+SHA-256 before parsing. That content path is not yet exposed by an install command. Neither
+snapshot command downloads a package, extracts content, installs, stages, activates, discovers a
+mirror, or grants a permission. Accepted metadata remains inert durable evidence. Durable
+release/package evidence, full package inspection, permission-diff staging, and withdrawal-aware
+install/rollback are separate later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

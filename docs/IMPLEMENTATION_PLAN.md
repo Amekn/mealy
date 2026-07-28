@@ -283,10 +283,21 @@ restart/replay, rollback, dual-threshold rotation, symlink rejection, live-daemo
 old-schema refusal. The output omits key bodies and metadata payloads and declares that neither
 network nor package authority was used.
 
-The next slices must add SSRF-resistant bounded mirror transport, durable release/package
-evidence, exact archive download and existing package inspection, permission-diff install/stage
-commands, installed-withdrawal policy, upgrade and rollback transactions, public registry
-publication tooling, and package/upgrade/recovery qualification.
+The fourth slice adds a transport-only mirror boundary without broadening trust. A canonical
+owner-selected HTTPS base produces only the fixed `metadata/snapshot.json` path or an
+`objects/sha256/DIGEST` path derived from signed metadata. Resolution rejects the complete answer
+if any address is not publicly routable, pins accepted addresses into TLS, and checks the
+connected peer. Proxies, redirects, referrers, content decoding, ambient credentials, non-200
+responses, media-type drift, and oversized bodies fail closed. Snapshot fetch/refresh holds the
+stopped-home lock and repeats signature, expiry, registry identity, rollback, and equivocation
+checks before inspection or an approved commit. Application/infrastructure and CLI process tests
+cover fixed layout, digest/length/type mismatch, insecure/private origins, approval ordering,
+review-to-apply envelope drift, and the shared IANA special-address corpus.
+
+The next slices must add durable release/package evidence, exact archive download and existing
+package inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade
+and rollback transactions, public registry publication tooling, and package/upgrade/recovery
+qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

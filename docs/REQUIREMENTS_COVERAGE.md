@@ -45,9 +45,15 @@ writers, and survives reopen, migration, integrity, backup, and rollback tests. 
 `registry` CLI now provides no-mutation root/snapshot inspection, explicit-approved root
 bootstrap/rotation and snapshot acceptance, and durable status. It accepts only bounded no-follow
 files, excludes a running daemon, refuses database initialization or implicit schema migration,
-keeps exact replays idempotent, and reports no network or package authority. Process tests prove
-those controls across the real executable and SQLite restart boundary. Bounded mirror transport,
-durable release/package evidence, package fetch/inspection, staged activation,
+and keeps exact replays idempotent. Fixed-path `snapshot-fetch` and approved `snapshot-refresh`
+add canonical HTTPS-only, proxy/redirect-free, DNS-pinned, public-address-only reads with connected
+peer verification, exact media type, hard body/time bounds, and the same local signature and
+anti-rollback checks. Refresh also requires the exact envelope SHA-256 returned by the reviewed
+fetch. Immutable mirror content requests derive paths only from signed SHA-256
+descriptors and verify exact type/length/digest. Unit and process tests cover unsafe mirror URLs,
+loopback/private denial, shared special-address policy, digest drift, approval ordering, and no
+state advancement on transport failure. These boundaries still confer no package authority.
+Durable release/package evidence, package fetch/inspection commands, staged activation,
 installed-withdrawal handling, and rollback are still open v0.5 work and therefore are not marked
 covered here.
 

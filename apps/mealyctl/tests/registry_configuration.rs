@@ -17,6 +17,7 @@ use std::{
 };
 
 const REGISTRY_ID: &str = "dev.mealy.registry";
+const FIXTURE_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ROOT_CONTEXT: &str = "MEALY-REGISTRY-ROOT-V1";
 const SNAPSHOT_CONTEXT: &str = "MEALY-REGISTRY-SNAPSHOT-V1";
 
@@ -115,6 +116,74 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         "unexpected invalid-identity error: {}",
         String::from_utf8_lossy(&invalid_identity.stderr)
     );
+    let unapproved_refresh = registry_command(
+        home.path(),
+        &[
+            "snapshot-refresh",
+            REGISTRY_ID,
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            FIXTURE_DIGEST,
+        ],
+    );
+    assert!(!unapproved_refresh.status.success());
+    assert!(
+        String::from_utf8_lossy(&unapproved_refresh.stderr).contains("requires --approve"),
+        "unexpected unapproved refresh error: {}",
+        String::from_utf8_lossy(&unapproved_refresh.stderr)
+    );
+    let invalid_refresh_digest = registry_command(
+        home.path(),
+        &[
+            "snapshot-refresh",
+            REGISTRY_ID,
+            "--mirror",
+            "https://127.0.0.1/",
+            "--expected-envelope-digest",
+            "not-a-digest",
+            "--approve",
+        ],
+    );
+    assert!(!invalid_refresh_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_refresh_digest.stderr).contains("exact lowercase SHA-256"),
+        "unexpected invalid refresh digest error: {}",
+        String::from_utf8_lossy(&invalid_refresh_digest.stderr)
+    );
+    let insecure_mirror = registry_command(
+        home.path(),
+        &[
+            "snapshot-fetch",
+            REGISTRY_ID,
+            "--mirror",
+            "http://registry.example.test/mealy/v1/",
+        ],
+    );
+    assert!(!insecure_mirror.status.success());
+    assert!(
+        String::from_utf8_lossy(&insecure_mirror.stderr)
+            .contains("mirror configuration is invalid"),
+        "unexpected insecure-mirror error: {}",
+        String::from_utf8_lossy(&insecure_mirror.stderr)
+    );
+    let private_mirror = registry_command(
+        home.path(),
+        &[
+            "snapshot-fetch",
+            REGISTRY_ID,
+            "--mirror",
+            "https://127.0.0.1/",
+        ],
+    );
+    assert!(!private_mirror.status.success());
+    assert!(
+        String::from_utf8_lossy(&private_mirror.stderr)
+            .contains("mirror transport rejected the response"),
+        "unexpected private-mirror error: {}",
+        String::from_utf8_lossy(&private_mirror.stderr)
+    );
+    assert_eq!(database_count(home.path(), "registry_snapshot"), 0);
 
     let snapshot_one = snapshot(1, now_ms, &publisher_key);
     let snapshot_one_path = metadata.path().join("snapshot-1.json");
