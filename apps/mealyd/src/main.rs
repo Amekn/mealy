@@ -51,11 +51,12 @@ use mealy_domain::{
     PolicyProfile, ScheduleRunId, WorkerId,
 };
 use mealy_infrastructure::{
-    BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileProviderSecretStore,
-    LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
-    SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
-    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_read_tools,
-    load_mcp_read_tools, mcp_stdio_launcher_main, preserve_forensic_database,
+    BrowserReadTool, FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
+    FileProviderSecretStore, LATEST_SCHEMA_VERSION, ProviderSecretStoreError, SqliteStore,
+    StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool,
+    browser_worker_main, create_pre_migration_backup, inspect_existing_schema_version,
+    load_mcp_http_read_tools, load_mcp_read_tools, mcp_stdio_launcher_main,
+    preserve_forensic_database,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -534,8 +535,21 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                 return Err("duplicate MCP HTTP credential identity".into());
             }
         }
+        let oauth_store = daemon_config
+            .mcp_http_servers()
+            .iter()
+            .any(|server| {
+                server.enabled()
+                    && matches!(server.authentication(), McpHttpAuthentication::OAuth { .. })
+            })
+            .then(|| FileMcpOAuthTokenStore::new(arguments.home.join("mcp-oauth-tokens")))
+            .transpose()?;
         let tools = tokio::task::block_in_place(|| {
-            load_mcp_http_read_tools(daemon_config.mcp_http_servers(), credentials)
+            load_mcp_http_read_tools(
+                daemon_config.mcp_http_servers(),
+                credentials,
+                oauth_store.as_ref(),
+            )
         })?;
         tracing::info!(
             mcp_http_server_count = daemon_config
@@ -553,6 +567,14 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                             server.authentication(),
                             McpHttpAuthentication::Bearer { .. }
                         )
+                })
+                .count(),
+            oauth_server_count = daemon_config
+                .mcp_http_servers()
+                .iter()
+                .filter(|server| {
+                    server.enabled()
+                        && matches!(server.authentication(), McpHttpAuthentication::OAuth { .. })
                 })
                 .count(),
             "schema-pinned Streamable HTTP MCP tools enabled"

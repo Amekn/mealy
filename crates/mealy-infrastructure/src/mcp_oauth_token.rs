@@ -23,9 +23,10 @@ const MCP_OAUTH_TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 const MCP_OAUTH_MAXIMUM_TOKEN_RESPONSE_BYTES: u64 = 256 * 1024;
 const MCP_OAUTH_MAXIMUM_TOKEN_BYTES: usize = 16 * 1024;
 const MCP_OAUTH_MAXIMUM_CODE_BYTES: usize = 8 * 1024;
-const MCP_OAUTH_MAXIMUM_RECORD_BYTES: u64 = 64 * 1024;
+pub(crate) const MCP_OAUTH_MAXIMUM_RECORD_BYTES: u64 = 64 * 1024;
 const MCP_OAUTH_MAXIMUM_EXPIRES_IN_SECONDS: u64 = 10 * 365 * 24 * 60 * 60;
 const MCP_OAUTH_RECORD_FORMAT_VERSION: u64 = 1;
+const MCP_OAUTH_REFRESH_SKEW_MS: i64 = 60_000;
 
 /// One in-memory, single-use OAuth authorization-code transaction.
 ///
@@ -257,6 +258,132 @@ pub fn exchange_mcp_oauth_authorization_code(
     )
 }
 
+/// Resolves a usable audience-bound access token, refreshing near expiry when necessary.
+///
+/// Refresh is serialized across processes by the token-family lock, repeats the exact MCP
+/// `resource`, requires public-client refresh-token rotation, and atomically advances the broker
+/// generation.
+///
+/// # Errors
+///
+/// Returns [`McpOAuthTokenError`] for missing/mismatched token authority, unsafe storage,
+/// unavailable refresh authority, token endpoint failure, scope change, or fenced persistence
+/// conflict.
+pub fn resolve_mcp_oauth_access_token(
+    store: &FileMcpOAuthTokenStore,
+    grant: &McpOAuthTokenGrant,
+    now: SystemTime,
+) -> Result<McpOAuthAccessToken, McpOAuthTokenError> {
+    resolve_or_refresh_mcp_oauth_access_token(store, grant, now, None)
+}
+
+/// Forces one serialized refresh after a protected endpoint rejects one exact token generation.
+///
+/// If another process already advanced that generation, its current token is reused rather than
+/// rotating a second time.
+///
+/// # Errors
+///
+/// Returns [`McpOAuthTokenError`] under the same fail-closed conditions as
+/// [`resolve_mcp_oauth_access_token`].
+pub fn force_refresh_mcp_oauth_access_token(
+    store: &FileMcpOAuthTokenStore,
+    grant: &McpOAuthTokenGrant,
+    rejected_generation: u64,
+    now: SystemTime,
+) -> Result<McpOAuthAccessToken, McpOAuthTokenError> {
+    if rejected_generation == 0 {
+        return Err(McpOAuthTokenError::Invalid);
+    }
+    resolve_or_refresh_mcp_oauth_access_token(store, grant, now, Some(rejected_generation))
+}
+
+fn resolve_or_refresh_mcp_oauth_access_token(
+    store: &FileMcpOAuthTokenStore,
+    grant: &McpOAuthTokenGrant,
+    now: SystemTime,
+    rejected_generation: Option<u64>,
+) -> Result<McpOAuthAccessToken, McpOAuthTokenError> {
+    grant.validate().map_err(|_| McpOAuthTokenError::Invalid)?;
+    let _lock = store.lock_token_family(grant.token_set_id())?;
+    let current = store.read(grant.token_set_id())?;
+    if current.grant != *grant {
+        return Err(McpOAuthTokenError::AuthorityMismatch);
+    }
+    if rejected_generation.is_some_and(|generation| generation != current.generation) {
+        return Ok(McpOAuthAccessToken::from_token_set(&current));
+    }
+    let now_ms = system_time_milliseconds(now)?;
+    let fresh = current
+        .expires_at_ms
+        .is_none_or(|expires_at| expires_at.saturating_sub(MCP_OAUTH_REFRESH_SKEW_MS) > now_ms);
+    if fresh && rejected_generation.is_none() {
+        return Ok(McpOAuthAccessToken::from_token_set(&current));
+    }
+    refresh_mcp_oauth_token_set(store, &current, grant, now)
+}
+
+fn refresh_mcp_oauth_token_set(
+    store: &FileMcpOAuthTokenStore,
+    current: &McpOAuthTokenSet,
+    grant: &McpOAuthTokenGrant,
+    now: SystemTime,
+) -> Result<McpOAuthAccessToken, McpOAuthTokenError> {
+    let refresh_token = current
+        .refresh_token
+        .as_ref()
+        .ok_or(McpOAuthTokenError::ReauthorizationRequired)?;
+    let token_endpoint =
+        Url::parse(grant.token_endpoint()).map_err(|_| McpOAuthTokenError::Invalid)?;
+    let mut form = url::form_urlencoded::Serializer::new(String::new());
+    form.append_pair("grant_type", "refresh_token")
+        .append_pair("client_id", grant.client_id())
+        .append_pair("refresh_token", refresh_token.as_str())
+        .append_pair("resource", grant.resource());
+    let form = Zeroizing::new(form.finish());
+    let form_bytes = Zeroizing::new(form.as_bytes().to_vec());
+    drop(form);
+    let form_length =
+        u64::try_from(form_bytes.len()).map_err(|_| McpOAuthTokenError::OutputLimitExceeded)?;
+    let response = pinned_client(&token_endpoint)?
+        .post(token_endpoint)
+        .header(ACCEPT, "application/json")
+        .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::sized(std::io::Cursor::new(form_bytes), form_length))
+        .timeout(MCP_OAUTH_TOKEN_TIMEOUT)
+        .send()
+        .map_err(|error| {
+            if error.is_timeout() {
+                McpOAuthTokenError::TimedOut
+            } else {
+                McpOAuthTokenError::Transport
+            }
+        })?;
+    let token_response = parse_token_response(response, grant.scopes(), now)?;
+    if token_response.granted_scopes != grant.scopes() {
+        return Err(McpOAuthTokenError::ScopeChanged);
+    }
+    let rotated_refresh = token_response
+        .refresh_token
+        .ok_or(McpOAuthTokenError::ReauthorizationRequired)?;
+    if constant_time_equal(rotated_refresh.as_bytes(), refresh_token.as_bytes()) {
+        return Err(McpOAuthTokenError::ReauthorizationRequired);
+    }
+    let next_generation = current
+        .generation
+        .checked_add(1)
+        .ok_or(McpOAuthTokenError::Invalid)?;
+    let refreshed = McpOAuthTokenSet::new(
+        grant.clone(),
+        next_generation,
+        token_response.expires_at_ms,
+        token_response.access_token,
+        Some(rotated_refresh),
+    )?;
+    store.replace_locked(&refreshed, current.generation)?;
+    Ok(McpOAuthAccessToken::from_token_set(&refreshed))
+}
+
 struct ParsedTokenResponse {
     access_token: Zeroizing<String>,
     refresh_token: Option<Zeroizing<String>>,
@@ -395,15 +522,21 @@ fn is_scope_subset(granted: &[String], requested: &[String]) -> bool {
 }
 
 fn expiration_timestamp(now: SystemTime, seconds: u64) -> Result<i64, McpOAuthTokenError> {
-    let now_ms = now
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| McpOAuthTokenError::Invalid)?
-        .as_millis();
+    let now_ms =
+        u128::try_from(system_time_milliseconds(now)?).map_err(|_| McpOAuthTokenError::Invalid)?;
     let expires_ms = now_ms
         .checked_add(u128::from(seconds).saturating_mul(1_000))
         .and_then(|value| i64::try_from(value).ok())
         .ok_or(McpOAuthTokenError::Invalid)?;
     Ok(expires_ms)
+}
+
+fn system_time_milliseconds(now: SystemTime) -> Result<i64, McpOAuthTokenError> {
+    now.duration_since(UNIX_EPOCH)
+        .map_err(|_| McpOAuthTokenError::Invalid)?
+        .as_millis()
+        .try_into()
+        .map_err(|_| McpOAuthTokenError::Invalid)
 }
 
 fn valid_client_id(value: &str) -> bool {
@@ -460,6 +593,43 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
+/// One process-private OAuth access token paired with its broker generation.
+pub struct McpOAuthAccessToken {
+    generation: u64,
+    access_token: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for McpOAuthAccessToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpOAuthAccessToken")
+            .field("generation", &self.generation)
+            .field("access_token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl McpOAuthAccessToken {
+    fn from_token_set(token_set: &McpOAuthTokenSet) -> Self {
+        Self {
+            generation: token_set.generation,
+            access_token: Zeroizing::new(token_set.access_token.as_str().to_owned()),
+        }
+    }
+
+    /// Broker generation whose rejection may authorize at most one fenced refresh.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Process-private bearer value.
+    #[must_use]
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+}
+
 /// One validated OAuth access/refresh token family held only in secret-aware host memory.
 pub struct McpOAuthTokenSet {
     grant: McpOAuthTokenGrant,
@@ -482,7 +652,7 @@ impl std::fmt::Debug for McpOAuthTokenSet {
 }
 
 impl McpOAuthTokenSet {
-    fn new(
+    pub(crate) fn new(
         grant: McpOAuthTokenGrant,
         generation: u64,
         expires_at_ms: Option<i64>,
@@ -585,7 +755,27 @@ impl StoredMcpOAuthTokenSet {
     }
 }
 
+pub(crate) fn validate_stored_mcp_oauth_token_set(
+    token_set_id: &str,
+    bytes: &[u8],
+) -> Result<(), McpOAuthTokenError> {
+    if !valid_provider_secret_id(token_set_id)
+        || bytes.is_empty()
+        || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MCP_OAUTH_MAXIMUM_RECORD_BYTES
+    {
+        return Err(McpOAuthTokenError::Invalid);
+    }
+    let stored = serde_json::from_slice::<StoredMcpOAuthTokenSet>(bytes)
+        .map_err(|_| McpOAuthTokenError::Invalid)?;
+    let token_set = stored.into_runtime()?;
+    if token_set.grant.token_set_id() != token_set_id {
+        return Err(McpOAuthTokenError::Invalid);
+    }
+    Ok(())
+}
+
 /// Owner-private filesystem broker for rotating MCP OAuth token families.
+#[derive(Clone)]
 pub struct FileMcpOAuthTokenStore {
     root: PathBuf,
 }
@@ -627,12 +817,7 @@ impl FileMcpOAuthTokenStore {
         if token_set.generation != 1 {
             return Err(McpOAuthTokenError::Invalid);
         }
-        let stored = StoredMcpOAuthTokenSet::as_serializable(token_set);
-        let bytes =
-            Zeroizing::new(serde_json::to_vec(&stored).map_err(|_| McpOAuthTokenError::Invalid)?);
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MCP_OAUTH_MAXIMUM_RECORD_BYTES {
-            return Err(McpOAuthTokenError::OutputLimitExceeded);
-        }
+        let bytes = serialized_token_set(token_set)?;
         let path = self.path(token_set.grant.token_set_id())?;
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -663,6 +848,23 @@ impl FileMcpOAuthTokenStore {
             }
             Err(error) => Err(io_error(error)),
         }
+    }
+
+    /// Atomically advances one token family under an optimistic generation fence.
+    ///
+    /// Repeating the exact replacement is idempotent. A different current generation, authority,
+    /// or secret record fails closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpOAuthTokenError`] for an invalid transition, conflict, unsafe storage, or I/O.
+    pub fn replace(
+        &self,
+        token_set: &McpOAuthTokenSet,
+        expected_generation: u64,
+    ) -> Result<(), McpOAuthTokenError> {
+        let _lock = self.lock_token_family(token_set.grant.token_set_id())?;
+        self.replace_locked(token_set, expected_generation)
     }
 
     /// Loads and validates one bounded token family into zeroizing memory.
@@ -705,11 +907,138 @@ impl FileMcpOAuthTokenStore {
         Ok(token_set)
     }
 
+    /// Irreversibly removes one locally brokered OAuth token family.
+    ///
+    /// The caller must first revoke every configuration reference. The family lock prevents a
+    /// concurrent refresh from republishing the record after deletion; the durable lock inode is
+    /// intentionally retained so later operations on the same identity serialize on one object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpOAuthTokenError`] when the record is absent, unsafe, malformed, or cannot be
+    /// durably removed.
+    pub fn revoke(&self, token_set_id: &str) -> Result<McpOAuthTokenSet, McpOAuthTokenError> {
+        let _lock = self.lock_token_family(token_set_id)?;
+        let token_set = self.read(token_set_id)?;
+        fs::remove_file(self.path(token_set_id)?).map_err(io_error)?;
+        sync_directory(&self.root).map_err(io_error)?;
+        Ok(token_set)
+    }
+
     fn path(&self, token_set_id: &str) -> Result<PathBuf, McpOAuthTokenError> {
         valid_provider_secret_id(token_set_id)
             .then(|| self.root.join(format!("{token_set_id}.json")))
             .ok_or(McpOAuthTokenError::Invalid)
     }
+
+    fn replace_locked(
+        &self,
+        token_set: &McpOAuthTokenSet,
+        expected_generation: u64,
+    ) -> Result<(), McpOAuthTokenError> {
+        if token_set.generation != expected_generation.saturating_add(1)
+            || expected_generation == u64::MAX
+        {
+            return Err(McpOAuthTokenError::Invalid);
+        }
+        let existing = self.read(token_set.grant.token_set_id())?;
+        if same_token_set(&existing, token_set) {
+            return Ok(());
+        }
+        if existing.generation != expected_generation || existing.grant != token_set.grant {
+            return Err(McpOAuthTokenError::Conflict);
+        }
+        let bytes = serialized_token_set(token_set)?;
+        let nonce = random_base64url::<16>()?;
+        let temporary = self.root.join(format!(
+            ".{}.{}.tmp",
+            token_set.grant.token_set_id(),
+            nonce.as_str()
+        ));
+        let path = self.path(token_set.grant.token_set_id())?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary).map_err(io_error)?;
+        if let Err(error) = file
+            .write_all(&bytes)
+            .and_then(|()| file.flush())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(io_error(error));
+        }
+        drop(file);
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(io_error(error));
+        }
+        sync_directory(&self.root).map_err(io_error)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn lock_token_family(
+        &self,
+        token_set_id: &str,
+    ) -> Result<McpOAuthTokenFamilyLock, McpOAuthTokenError> {
+        use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
+
+        let path = valid_provider_secret_id(token_set_id)
+            .then(|| self.root.join(format!(".{token_set_id}.lock")))
+            .ok_or(McpOAuthTokenError::Invalid)?;
+        let file = open(
+            path,
+            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map(File::from)
+        .map_err(|error| {
+            if error == rustix::io::Errno::LOOP {
+                McpOAuthTokenError::UnsafeStorage
+            } else {
+                McpOAuthTokenError::StorageUnavailable
+            }
+        })?;
+        let metadata = file.metadata().map_err(io_error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
+                return Err(McpOAuthTokenError::UnsafeStorage);
+            }
+        }
+        flock(&file, FlockOperation::LockExclusive)
+            .map_err(|_| McpOAuthTokenError::StorageUnavailable)?;
+        Ok(McpOAuthTokenFamilyLock { _file: file })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn lock_token_family(
+        &self,
+        _token_set_id: &str,
+    ) -> Result<McpOAuthTokenFamilyLock, McpOAuthTokenError> {
+        Err(McpOAuthTokenError::StorageUnavailable)
+    }
+}
+
+struct McpOAuthTokenFamilyLock {
+    _file: File,
+}
+
+fn serialized_token_set(
+    token_set: &McpOAuthTokenSet,
+) -> Result<Zeroizing<Vec<u8>>, McpOAuthTokenError> {
+    let stored = StoredMcpOAuthTokenSet::as_serializable(token_set);
+    let bytes =
+        Zeroizing::new(serde_json::to_vec(&stored).map_err(|_| McpOAuthTokenError::Invalid)?);
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MCP_OAUTH_MAXIMUM_RECORD_BYTES {
+        return Err(McpOAuthTokenError::OutputLimitExceeded);
+    }
+    Ok(bytes)
 }
 
 #[cfg(target_os = "linux")]
@@ -774,6 +1103,15 @@ pub enum McpOAuthTokenError {
     /// Token response attempted to broaden the owner-requested scope set.
     #[error("MCP OAuth token response broadened scopes")]
     ScopeBroadened,
+    /// Refresh changed the immutable scope authority and requires a new approved login.
+    #[error("MCP OAuth refresh changed the approved scope set")]
+    ScopeChanged,
+    /// Stored token authority does not match the configured audience-bound grant.
+    #[error("MCP OAuth token authority does not match configuration")]
+    AuthorityMismatch,
+    /// A refresh token is absent, reused, or otherwise cannot safely rotate.
+    #[error("MCP OAuth reauthorization is required")]
+    ReauthorizationRequired,
     /// OS entropy was unavailable for state or PKCE generation.
     #[error("MCP OAuth secure randomness is unavailable")]
     RandomUnavailable,
@@ -806,14 +1144,16 @@ pub enum McpOAuthTokenError {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileMcpOAuthTokenStore, McpOAuthTokenError, exchange_mcp_oauth_authorization_code,
-        prepare_mcp_oauth_authorization,
+        FileMcpOAuthTokenStore, McpOAuthTokenError, McpOAuthTokenSet,
+        exchange_mcp_oauth_authorization_code, prepare_mcp_oauth_authorization,
+        resolve_mcp_oauth_access_token,
     };
-    use mealy_application::McpOAuthMetadataDiscovery;
+    use mealy_application::{McpOAuthMetadataDiscovery, McpOAuthTokenGrant};
     use serde_json::json;
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::{TcpListener, TcpStream},
+        sync::{Arc, Barrier},
         thread,
         time::{Duration, UNIX_EPOCH},
     };
@@ -943,6 +1283,132 @@ mod tests {
                 UNIX_EPOCH,
             ),
             Err(McpOAuthTokenError::StateMismatch)
+        ));
+    }
+
+    #[test]
+    fn concurrent_expiry_refresh_rotates_once_and_atomically_advances_generation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("refresh listener");
+        let origin = format!("http://{}", listener.local_addr().expect("refresh address"));
+        let discovery = discovery(&origin);
+        let grant = McpOAuthTokenGrant::new(
+            "remote.oauth".to_owned(),
+            discovery.resource().to_owned(),
+            discovery.selected_authorization_server().to_owned(),
+            discovery.token_endpoint().to_owned(),
+            "mealy-native".to_owned(),
+            vec!["read".to_owned()],
+            discovery.metadata_digest().expect("metadata digest"),
+        )
+        .expect("token grant");
+        let token_set = McpOAuthTokenSet::new(
+            grant.clone(),
+            1,
+            Some(10_000),
+            Zeroizing::new("access-one".to_owned()),
+            Some(Zeroizing::new("refresh-one".to_owned())),
+        )
+        .expect("initial token set");
+        let directory = tempfile::tempdir().expect("refresh token home");
+        let store = FileMcpOAuthTokenStore::new(directory.path().join("tokens"))
+            .expect("refresh token store");
+        store.create(&token_set).expect("store initial token");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("refresh request");
+            let body = consume_request(&mut stream);
+            assert!(body.contains("grant_type=refresh_token"));
+            assert!(body.contains("client_id=mealy-native"));
+            assert!(body.contains("refresh_token=refresh-one"));
+            assert!(body.contains("resource=http%3A%2F%2F127.0.0.1"));
+            respond(
+                &mut stream,
+                "200 OK",
+                &[
+                    ("Content-Type", "application/json"),
+                    ("Cache-Control", "no-store"),
+                    ("Pragma", "no-cache"),
+                ],
+                &json!({
+                    "access_token": "access-two",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh-two",
+                    "scope": "read"
+                })
+                .to_string(),
+            );
+        });
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let grant = grant.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    resolve_mcp_oauth_access_token(
+                        &store,
+                        &grant,
+                        UNIX_EPOCH + Duration::from_secs(10),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        for worker in workers {
+            assert_eq!(
+                worker
+                    .join()
+                    .expect("refresh worker")
+                    .expect("access token")
+                    .access_token(),
+                "access-two"
+            );
+        }
+        let rotated = store.read("remote.oauth").expect("rotated token set");
+        assert_eq!(rotated.generation(), 2);
+        assert_eq!(rotated.access_token(), "access-two");
+        assert_eq!(rotated.refresh_token(), Some("refresh-two"));
+        server.join().expect("refresh server");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn token_store_revoke_removes_only_the_validated_family_and_retains_its_lock() {
+        let directory = tempfile::tempdir().expect("token storage fixture");
+        let store =
+            FileMcpOAuthTokenStore::new(directory.path().join("tokens")).expect("token store");
+        let discovery = discovery("http://127.0.0.1");
+        let grant = McpOAuthTokenGrant::new(
+            "revoke.oauth".to_owned(),
+            discovery.resource().to_owned(),
+            discovery.selected_authorization_server().to_owned(),
+            discovery.token_endpoint().to_owned(),
+            "mealy-native".to_owned(),
+            vec!["read".to_owned()],
+            discovery.metadata_digest().expect("metadata digest"),
+        )
+        .expect("grant");
+        let token_set = McpOAuthTokenSet::new(
+            grant,
+            1,
+            None,
+            Zeroizing::new("access-revoke".to_owned()),
+            Some(Zeroizing::new("refresh-revoke".to_owned())),
+        )
+        .expect("token set");
+        store.create(&token_set).expect("store token");
+
+        let revoked = store.revoke("revoke.oauth").expect("revoke token");
+        assert_eq!(revoked.access_token(), "access-revoke");
+        assert!(matches!(
+            store.read("revoke.oauth"),
+            Err(McpOAuthTokenError::NotFound)
+        ));
+        assert!(directory.path().join("tokens/.revoke.oauth.lock").is_file());
+        assert!(matches!(
+            store.revoke("revoke.oauth"),
+            Err(McpOAuthTokenError::NotFound)
         ));
     }
 

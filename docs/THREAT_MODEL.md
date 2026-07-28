@@ -190,9 +190,14 @@ accepts only bounded JSON Bearer material with required cache controls and non-b
 Tokens are zeroized in process memory; the owner-private broker rejects symlink roots/records,
 unsafe modes, collisions, oversized records, and non-generation-one creation. The immutable
 non-secret grant binds resource, issuer, token endpoint, public client, scope, and metadata digest.
-Login changes no configuration or model authority. Refresh/rotation/revocation and OAuth-backed
-activation are not yet implemented; neither are resource-template expansion/subscriptions,
-resumable GET, or effectful HTTP calls.
+Login changes no configuration or model authority. Separately approved activation revalidates that
+grant plus the complete catalog before publishing selected authority. Runtime refresh is
+cross-process serialized and generation-fenced; it repeats the exact resource/client, rejects
+scope changes and refresh-token reuse, and allows at most one `401`-triggered refresh/retry.
+Reference-safe local revocation cannot delete a token used by active configuration. Encrypted
+backups and migration recovery validate every record before restoration. Issuer-side revocation,
+dynamic registration/CIMD, scope-challenge parking, resource-template expansion/subscriptions,
+resumable GET, and effectful HTTP calls are not yet implemented.
 
 ### Parent model delegates hidden context or excess authority
 

@@ -415,13 +415,15 @@ mealyctl --home "$HOME/.mealy" restore-verify nightly-secret \
   --passphrase-env MEALY_BACKUP_PASSPHRASE
 ```
 
-The secret archive contains `identity.json`, active brokered channel keys, and brokered model-
-provider credentials under Argon2id-derived XChaCha20-Poly1305 authenticated encryption. The
-passphrase is never persisted. Verification first checks every manifest file, copies the archive
-into a new isolated temporary home, authenticates and decrypts secrets when present, opens the
-copied database, runs full integrity/foreign-key/schema checks, validates all canonical artifact
-files, and proves that decrypted identity is active in the restored registry. It never replaces
-the active home.
+The secret archive contains `identity.json`, active brokered channel keys, brokered model-provider
+credentials, and validated MCP OAuth token families under Argon2id-derived XChaCha20-Poly1305
+authenticated encryption. The passphrase is never persisted. Format-v2 secret-free manifests name
+`mcp-oauth-tokens/` among the exclusions, while restore remains compatible with format v1.
+Verification first checks every manifest file, copies the archive into a new isolated temporary
+home, authenticates and decrypts secrets when present, opens the copied database, runs full
+integrity/foreign-key/schema checks, validates all canonical artifact files and OAuth records, and
+proves that decrypted identity is active in the restored registry. It never replaces the active
+home.
 
 Only a secret-complete backup can become an operable active home. Record the exact
 `manifestDigest` returned by `restore-verify`, drain Mealy, and explicitly bind activation to that
@@ -744,11 +746,38 @@ configuration, stdout, evidence, or model context. Login changes no MCP authorit
 identities, confidential clients, missing public-client metadata, malformed callbacks, unsafe token
 paths, and persistence failures fail closed.
 
+After reviewing the live catalog, bind the staged family to only the selected operations:
+
+```sh
+mealyctl --home "$HOME/.mealy" mcp-http oauth-add \
+  SERVER_ID https://mcp.example.com/mcp \
+  --oauth-token-set-id mcp.SERVER_ID.oauth \
+  --allow-tool REMOTE_TOOL \
+  --allow-resource EXACT_RESOURCE_URI \
+  --allow-prompt REMOTE_PROMPT \
+  --approve
+```
+
+This approved stopped-home transaction revalidates the complete OAuth metadata and catalog before
+publishing authority. Startup and re-enable revalidate the same non-secret grant. Runtime access
+refreshes before expiry; concurrent processes serialize on the token family, exact scope cannot
+change, public-client refresh tokens must rotate, and a rejected access generation permits only one
+refresh plus one retry. Every replacement is an atomic, durable generation advance.
+
 Use `mcp-http disable`, `mcp-http enable`, or `mcp-http revoke` with `--approve` while stopped.
-OAuth refresh/rotation/revocation, dynamic registration/CIMD, and OAuth-backed activation remain
-unavailable after this initial login slice. Resource-template expansion/subscriptions, resumable
-GET, and effectful HTTP MCP also remain unavailable until their separate v0.4 contracts and
-recovery tests land.
+After revoking every server that references a family, remove its local tokens:
+
+```sh
+mealyctl --home "$HOME/.mealy" mcp-http oauth-revoke \
+  mcp.SERVER_ID.oauth --approve
+```
+
+Local revocation fails closed while any configuration reference remains and does not call an
+issuer revocation endpoint; remove the authorization at the issuer separately when required.
+Encrypted secret backups and migration rollback carry only validated token records. Secret-free
+backups explicitly omit `mcp-oauth-tokens/`. Dynamic registration/CIMD, issuer-side revocation,
+resource-template expansion/subscriptions, resumable GET, and effectful HTTP MCP remain unavailable
+until their separate v0.4 contracts and recovery tests land.
 
 The optional rendered browser is a separate stopped-daemon authority and currently has release
 evidence on Linux x86_64. Fetch only the release-pinned Headless Shell archive with the managed

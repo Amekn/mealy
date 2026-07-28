@@ -53,8 +53,10 @@ pub use mcp::{
 };
 pub use mcp_oauth::discover_mcp_oauth_metadata;
 pub use mcp_oauth_token::{
-    FileMcpOAuthTokenStore, McpOAuthAuthorizationTransaction, McpOAuthTokenError, McpOAuthTokenSet,
-    exchange_mcp_oauth_authorization_code, prepare_mcp_oauth_authorization,
+    FileMcpOAuthTokenStore, McpOAuthAccessToken, McpOAuthAuthorizationTransaction,
+    McpOAuthTokenError, McpOAuthTokenSet, exchange_mcp_oauth_authorization_code,
+    force_refresh_mcp_oauth_access_token, prepare_mcp_oauth_authorization,
+    resolve_mcp_oauth_access_token,
 };
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};

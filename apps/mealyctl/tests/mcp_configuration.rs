@@ -393,6 +393,16 @@ fn mcp_http_oauth_login_uses_loopback_pkce_and_privately_brokers_tokens() {
     let origin = format!("http://{address}");
     let endpoint = format!("{origin}/mcp");
     let origin_for_worker = origin.clone();
+    let definition_for_worker = json!({
+        "name": "lookup",
+        "description": "Returns one fixture value",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {"key": {"type": "string"}},
+            "required": ["key"]
+        }
+    });
     let server = thread::spawn(move || {
         let discovery_responses = [
             format!(
@@ -446,6 +456,82 @@ fn mcp_http_oauth_login_uses_loopback_pkce_and_privately_brokers_tokens() {
         stream
             .write_all(response.as_bytes())
             .expect("write OAuth token response");
+        drop(stream);
+
+        let activation_discovery_responses = [
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"{origin_for_worker}/.well-known/oauth-protected-resource/mcp\", scope=\"files:read\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "resource": format!("{origin_for_worker}/mcp"),
+                    "authorization_servers": [origin_for_worker],
+                    "scopes_supported": ["files:read"]
+                }),
+                None,
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "issuer": origin_for_worker,
+                    "authorization_endpoint": format!("{origin_for_worker}/authorize"),
+                    "token_endpoint": format!("{origin_for_worker}/token"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"]
+                }),
+                None,
+            ),
+        ];
+        for response in activation_discovery_responses {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept OAuth activation metadata request");
+            read_http_request(&mut stream);
+            stream
+                .write_all(response.as_bytes())
+                .expect("write OAuth activation metadata response");
+        }
+        let mcp_responses = [
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "oauth-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", "oauth-activation-session")),
+            ),
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 100,
+                    "result": {"tools": [definition_for_worker]}
+                }),
+                None,
+            ),
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        ];
+        for response in mcp_responses {
+            let (mut stream, _) = listener.accept().expect("accept OAuth MCP request");
+            let request = read_http_request(&mut stream);
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer fixture-access-secret")
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write OAuth MCP response");
+        }
     });
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_mealyctl"))
@@ -549,7 +635,7 @@ fn mcp_http_oauth_login_uses_loopback_pkce_and_privately_brokers_tokens() {
     {
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(
-            fs::metadata(token_path)
+            fs::metadata(&token_path)
                 .expect("token record metadata")
                 .permissions()
                 .mode()
@@ -557,7 +643,74 @@ fn mcp_http_oauth_login_uses_loopback_pkce_and_privately_brokers_tokens() {
             0o600
         );
     }
+    let added = command(
+        home.path(),
+        &[
+            "mcp-http",
+            "oauth-add",
+            "oauth",
+            endpoint.as_str(),
+            "--oauth-token-set-id",
+            "oauth.fixture",
+            "--allow-tool",
+            "lookup",
+            "--approve",
+        ],
+    );
+    assert!(
+        added.status.success(),
+        "OAuth add failed: {}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let added_response: Value = serde_json::from_slice(&added.stdout).expect("OAuth add response");
+    assert_eq!(added_response["operation"], "installed_and_enabled");
+    assert_eq!(
+        added_response["exposedToolIds"],
+        json!(["mcp.oauth.tool.lookup"])
+    );
+    let activated = read_config(home.path());
+    assert_eq!(
+        activated["mcpHttpServers"][0]["authentication"]["kind"],
+        "oauth"
+    );
+    assert_eq!(
+        activated["mcpHttpServers"][0]["authentication"]["grant"]["tokenSetId"],
+        "oauth.fixture"
+    );
+    assert_eq!(
+        activated["mcpHttpServers"][0]["authentication"]["grant"]["resource"],
+        endpoint
+    );
     server.join().expect("OAuth fixture server");
+
+    let referenced_revoke = command(
+        home.path(),
+        &["mcp-http", "oauth-revoke", "oauth.fixture", "--approve"],
+    );
+    assert!(!referenced_revoke.status.success());
+    assert!(token_path.is_file());
+
+    let server_revoke = command(home.path(), &["mcp-http", "revoke", "oauth", "--approve"]);
+    assert!(
+        server_revoke.status.success(),
+        "OAuth server revoke failed: {}",
+        String::from_utf8_lossy(&server_revoke.stderr)
+    );
+    let token_revoke = command(
+        home.path(),
+        &["mcp-http", "oauth-revoke", "oauth.fixture", "--approve"],
+    );
+    assert!(
+        token_revoke.status.success(),
+        "OAuth token revoke failed: {}",
+        String::from_utf8_lossy(&token_revoke.stderr)
+    );
+    let revoke_response: Value =
+        serde_json::from_slice(&token_revoke.stdout).expect("OAuth revoke response");
+    assert_eq!(revoke_response["tokenSetId"], "oauth.fixture");
+    assert_eq!(revoke_response["revokedGeneration"], 1);
+    assert_eq!(revoke_response["localBrokerRecordRemoved"], true);
+    assert!(!token_path.exists());
 }
 
 fn fixture_config() -> McpServerConfig {

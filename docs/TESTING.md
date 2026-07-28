@@ -179,11 +179,15 @@ configuration history. The same real client boundary proves OAuth metadata inspe
 configuration and the credential broker unchanged. It also drives a complete approved login
 against real loopback metadata/token/callback sockets, proves state plus PKCE/resource parameters,
 requires bounded cache-controlled narrowed Bearer material, writes one private generation-one token
-record, and leaves configuration/model authority unchanged. Infrastructure OAuth fixtures prove
+record, and leaves configuration/model authority unchanged. The same process proof then activates
+selected catalog authority with that exact family, refuses token deletion while referenced,
+revokes the server, and durably removes the local token record. Infrastructure OAuth fixtures prove
 bounded multi-scheme challenge parsing, advertised and path/root protected-resource metadata
 discovery, exact resource and issuer binding, explicit multi-issuer selection, OAuth/OIDC discovery
 order, authorization-code support, mandatory PKCE S256, state-mismatch rejection before network,
-zeroizing/redacted token handling, idempotent private creation, and no-follow root/record rejection.
+zeroizing/redacted token handling, idempotent private creation, no-follow root/record rejection,
+cross-process single refresh/rotation, exact-scope enforcement, generation-fenced `401` recovery,
+and durable local revocation.
 Infrastructure HTTP fixtures additionally prove paginated
 tool/resource/resource-template/prompt discovery, exact resource reads, prompt argument fencing,
 untrusted-evidence normalization, authority-bound durable descriptors, and fail-closed catalog
@@ -192,7 +196,8 @@ drift. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable`
 schema, executes a sandboxed call, requires an `mcp://` citation, removes the installed executable,
 and still verifies recorded-only replay with zero provider or tool calls. Maintenance tests prove
 complete backups, isolated verification, and cross-schema home reconstruction preserve exact MCP
-bytes and executable permissions.
+bytes, executable permissions, and validated encrypted OAuth token families without placing them
+in secret-free archives.
 
 The `linux-browser-conformance` CI lane downloads only the repository-pinned Chrome Headless Shell
 archive through `scripts/fetch-browser-runtime.sh`, verifies its exact HTTPS artifact size and

@@ -1372,11 +1372,28 @@ PKCE S256 transaction, repeats the exact MCP `resource` at the token endpoint, a
 bounded Bearer response with equal-or-narrower scope. The token family is written under
 `mcp-oauth-tokens/` with owner-only directory/file permissions; configuration, catalog grants, and
 model-visible authority remain unchanged. Do not use a confidential client secret with this
-command. Dynamic registration, refresh/rotation, revocation, and OAuth-backed MCP activation are
-still pending later v0.4 slices, so this staged token cannot yet power a tool call.
+command. Login alone cannot power a tool call.
 
 Review every returned tool, resource, resource-template, and prompt definition, drain Mealy, then
-install only the exact operations you intend to expose. Repeat any selection flag as needed:
+install only the exact operations you intend to expose. Repeat any selection flag as needed. For
+the OAuth token family staged above:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-add \
+  remote-tools https://mcp.example.com/mcp \
+  --oauth-token-set-id mcp.remote-tools.oauth \
+  --allow-tool search \
+  --allow-resource 'docs://project/readme' \
+  --allow-prompt review \
+  --timeout-ms 30000 \
+  --maximum-output-bytes 262144 \
+  --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config mcp-list
+"$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
+```
+
+For the bearer token inspected earlier, use the otherwise equivalent `add` operation:
 
 ```sh
 "$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
@@ -1406,6 +1423,14 @@ durable descriptor and immutable run capability ceiling. JSON and SSE responses 
 message, event-ID, timeout, schema, and normalized-result bounds. Recorded replay never contacts
 the server.
 
+`oauth-add`, startup, and re-enable revalidate the reviewed OAuth metadata and exact MCP audience
+before using the brokered token. Access tokens refresh before expiry. Refresh is serialized across
+processes, must preserve the exact approved scope, and—for a public client—must rotate the refresh
+token. A protected endpoint may trigger one generation-fenced refresh and one retry after rejecting
+the old access token; Mealy never loops retries. Opt-in encrypted secret backups and migration
+rollback preserve validated token records. Ordinary secret-free backups declare
+`mcp-oauth-tokens/` as excluded.
+
 Disable or revoke a server while Mealy is stopped:
 
 ```sh
@@ -1413,14 +1438,17 @@ Disable or revoke a server while Mealy is stopped:
   remote-tools --approve
 "$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http revoke \
   remote-tools --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-revoke \
+  mcp.remote-tools.oauth --approve
 ```
 
 Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
-credential and an exact live inventory match before publishing authority. OAuth metadata
-inspection plus a separately approved pre-registered-public-client login and private initial token
-record are available, but registration, refresh/rotation/revocation, and OAuth-backed tool
-activation remain unavailable. Resource-template expansion/subscriptions, resumable GET streams,
-and effectful MCP tools are also planned v0.4 slices and are not implied by bearer support.
+credential and an exact live inventory match before publishing authority. `oauth-revoke` removes
+only the local broker record and fails while any configured server still references the token
+family, so revoke every referencing server first. It does not call an issuer revocation endpoint;
+remove the authorization at the issuer separately when the service requires it. Dynamic client
+registration/CIMD, resource-template expansion/subscriptions, resumable GET streams, and effectful
+MCP tools remain planned v0.4 slices.
 See the stable MCP
 [authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
 [resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and

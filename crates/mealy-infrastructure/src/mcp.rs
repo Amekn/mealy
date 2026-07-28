@@ -1,3 +1,7 @@
+use crate::{
+    FileMcpOAuthTokenStore, McpOAuthTokenError, force_refresh_mcp_oauth_access_token,
+    resolve_mcp_oauth_access_token,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mealy_application::{
     CancellationProbe, MCP_MAXIMUM_PROMPTS_PER_SERVER, MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER,
@@ -29,7 +33,7 @@ use std::{
         mpsc,
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 use thiserror::Error;
 use url::Url;
@@ -140,8 +144,14 @@ pub fn load_mcp_read_tools(
 pub fn discover_mcp_http_server(
     server: &McpHttpServerConfig,
     credential: Option<Zeroizing<String>>,
+    oauth_store: Option<FileMcpOAuthTokenStore>,
 ) -> Result<McpHttpCatalogDiscovery, McpHostError> {
-    let endpoint = McpHttpEndpoint::new(&server.endpoint_config(), credential.map(Arc::new))?;
+    verify_mcp_http_oauth_metadata(&server.endpoint_config())?;
+    let endpoint = McpHttpEndpoint::new(
+        &server.endpoint_config(),
+        credential.map(Arc::new),
+        oauth_store,
+    )?;
     let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
     verify_http_discovery(server, &discovery)?;
     Ok(discovery)
@@ -160,8 +170,10 @@ pub fn discover_mcp_http_server(
 pub fn inspect_mcp_http_endpoint(
     config: &McpHttpEndpointConfig,
     credential: Option<Zeroizing<String>>,
+    oauth_store: Option<FileMcpOAuthTokenStore>,
 ) -> Result<McpHttpCatalogDiscovery, McpHostError> {
-    McpHttpEndpoint::new(config, credential.map(Arc::new))?
+    verify_mcp_http_oauth_metadata(config)?;
+    McpHttpEndpoint::new(config, credential.map(Arc::new), oauth_store)?
         .discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)
 }
 
@@ -177,12 +189,20 @@ pub fn inspect_mcp_http_endpoint(
 pub fn load_mcp_http_read_tools(
     servers: &[McpHttpServerConfig],
     mut credentials: BTreeMap<String, Zeroizing<String>>,
+    oauth_store: Option<&FileMcpOAuthTokenStore>,
 ) -> Result<Vec<McpHttpReadTool>, McpHostError> {
+    let needs_oauth_store = servers.iter().any(|server| {
+        server.enabled() && matches!(server.authentication(), McpHttpAuthentication::OAuth { .. })
+    });
+    if needs_oauth_store != oauth_store.is_some() {
+        return Err(McpHostError::InvalidConfiguration);
+    }
     let mut result = Vec::new();
     for server in servers.iter().filter(|server| server.enabled()) {
         server
             .validate()
             .map_err(|_| McpHostError::InvalidConfiguration)?;
+        verify_mcp_http_oauth_metadata(&server.endpoint_config())?;
         let credential = credentials.remove(server.server_id()).map(Arc::new);
         let requires_credential = matches!(
             server.authentication(),
@@ -191,7 +211,13 @@ pub fn load_mcp_http_read_tools(
         if requires_credential != credential.is_some() {
             return Err(McpHostError::InvalidConfiguration);
         }
-        let endpoint = Arc::new(McpHttpEndpoint::new(&server.endpoint_config(), credential)?);
+        let endpoint = Arc::new(McpHttpEndpoint::new(
+            &server.endpoint_config(),
+            credential,
+            oauth_store
+                .filter(|_| matches!(server.authentication(), McpHttpAuthentication::OAuth { .. }))
+                .cloned(),
+        )?);
         let discovery = endpoint.discover(&NeverCancelled, MCP_DISCOVERY_TIMEOUT)?;
         verify_http_discovery(server, &discovery)?;
         for grant in server.tools() {
@@ -227,6 +253,33 @@ pub fn load_mcp_http_read_tools(
         return Err(McpHostError::InvalidConfiguration);
     }
     Ok(result)
+}
+
+fn verify_mcp_http_oauth_metadata(config: &McpHttpEndpointConfig) -> Result<(), McpHostError> {
+    let Some(grant) = config.authentication().oauth_grant() else {
+        return Ok(());
+    };
+    let public_config = McpHttpEndpointConfig::new(
+        config.server_id().to_owned(),
+        config.endpoint().to_owned(),
+        McpHttpAuthentication::None,
+    )
+    .map_err(|_| McpHostError::InvalidConfiguration)?;
+    let discovery = crate::mcp_oauth::discover_mcp_oauth_metadata(
+        &public_config,
+        Some(grant.authorization_server()),
+    )?;
+    if discovery.resource() != grant.resource()
+        || discovery.selected_authorization_server() != grant.authorization_server()
+        || discovery.token_endpoint() != grant.token_endpoint()
+        || discovery
+            .metadata_digest()
+            .map_err(|_| McpHostError::InvalidOAuthMetadata)?
+            != grant.metadata_digest()
+    {
+        return Err(McpHostError::InvalidOAuthMetadata);
+    }
+    Ok(())
 }
 
 fn verify_http_discovery(
@@ -556,10 +609,83 @@ fn bounded_catalog_output(
     })
 }
 
+enum McpHttpAuthorization {
+    Bearer(Arc<Zeroizing<String>>),
+    OAuth {
+        store: FileMcpOAuthTokenStore,
+        grant: mealy_application::McpOAuthTokenGrant,
+    },
+}
+
+struct ResolvedMcpHttpAuthorization {
+    access_token: Zeroizing<String>,
+    oauth_generation: Option<u64>,
+}
+
+impl McpHttpAuthorization {
+    fn resolve(
+        &self,
+        rejected_generation: Option<u64>,
+    ) -> Result<ResolvedMcpHttpAuthorization, McpHostError> {
+        match self {
+            Self::Bearer(access_token) => {
+                if rejected_generation.is_some() {
+                    return Err(McpHostError::InvalidConfiguration);
+                }
+                Ok(ResolvedMcpHttpAuthorization {
+                    access_token: Zeroizing::new(access_token.as_str().to_owned()),
+                    oauth_generation: None,
+                })
+            }
+            Self::OAuth { store, grant } => {
+                let access = rejected_generation.map_or_else(
+                    || resolve_mcp_oauth_access_token(store, grant, SystemTime::now()),
+                    |generation| {
+                        force_refresh_mcp_oauth_access_token(
+                            store,
+                            grant,
+                            generation,
+                            SystemTime::now(),
+                        )
+                    },
+                );
+                let access = access.map_err(map_mcp_oauth_token_error)?;
+                Ok(ResolvedMcpHttpAuthorization {
+                    access_token: Zeroizing::new(access.access_token().to_owned()),
+                    oauth_generation: Some(access.generation()),
+                })
+            }
+        }
+    }
+}
+
+fn map_mcp_oauth_token_error(error: McpOAuthTokenError) -> McpHostError {
+    match error {
+        McpOAuthTokenError::ReauthorizationRequired
+        | McpOAuthTokenError::AuthorityMismatch
+        | McpOAuthTokenError::ScopeBroadened
+        | McpOAuthTokenError::ScopeChanged
+        | McpOAuthTokenError::NotFound
+        | McpOAuthTokenError::TokenRejected(_) => McpHostError::AuthorizationRequired,
+        McpOAuthTokenError::TimedOut => McpHostError::TimedOut,
+        McpOAuthTokenError::Transport => {
+            McpHostError::Io("MCP OAuth token transport failed".to_owned())
+        }
+        McpOAuthTokenError::McpHost(error) => error,
+        McpOAuthTokenError::Invalid
+        | McpOAuthTokenError::StateMismatch
+        | McpOAuthTokenError::RandomUnavailable
+        | McpOAuthTokenError::OutputLimitExceeded
+        | McpOAuthTokenError::Conflict
+        | McpOAuthTokenError::UnsafeStorage
+        | McpOAuthTokenError::StorageUnavailable => McpHostError::InvalidConfiguration,
+    }
+}
+
 struct McpHttpEndpoint {
     client: Option<Client>,
     endpoint: Url,
-    authorization: Option<Arc<Zeroizing<String>>>,
+    authorization: Option<McpHttpAuthorization>,
 }
 
 impl std::fmt::Debug for McpHttpEndpoint {
@@ -576,17 +702,24 @@ impl McpHttpEndpoint {
     fn new(
         config: &McpHttpEndpointConfig,
         authorization: Option<Arc<Zeroizing<String>>>,
+        oauth_store: Option<FileMcpOAuthTokenStore>,
     ) -> Result<Self, McpHostError> {
         config
             .validate()
             .map_err(|_| McpHostError::InvalidConfiguration)?;
-        let requires_credential = matches!(
-            config.authentication(),
-            McpHttpAuthentication::Bearer { .. }
-        );
-        if requires_credential != authorization.is_some() {
-            return Err(McpHostError::InvalidConfiguration);
-        }
+        let authorization = match (config.authentication(), authorization, oauth_store) {
+            (McpHttpAuthentication::None, None, None) => None,
+            (McpHttpAuthentication::Bearer { .. }, Some(credential), None) => {
+                Some(McpHttpAuthorization::Bearer(credential))
+            }
+            (McpHttpAuthentication::OAuth { grant }, None, Some(store)) => {
+                Some(McpHttpAuthorization::OAuth {
+                    store,
+                    grant: grant.clone(),
+                })
+            }
+            _ => return Err(McpHostError::InvalidConfiguration),
+        };
         let endpoint =
             Url::parse(config.endpoint()).map_err(|_| McpHostError::InvalidConfiguration)?;
         let authority = mealy_application::WebAccessConfig {
@@ -1022,24 +1155,44 @@ impl McpHttpEndpoint {
         if cancellation.is_cancelled() {
             return Err(McpHostError::Cancelled);
         }
+        let started = Instant::now();
         let request = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": method,
             "params": params,
         });
-        let response = self
-            .request_builder(
-                self.client()?.post(self.endpoint.clone()),
-                session
-                    .and_then(|session| session.session_id.as_ref())
-                    .map(|value| value.as_str()),
-            )?
+        let session_id = session
+            .and_then(|session| session.session_id.as_ref())
+            .map(|value| value.as_str());
+        let (builder, oauth_generation) =
+            self.request_builder(self.client()?.post(self.endpoint.clone()), session_id, None)?;
+        let mut response = builder
             .header(ACCEPT, "application/json, text/event-stream")
             .json(&request)
             .timeout(timeout)
             .send()
             .map_err(|error| map_http_error(&error))?;
+        if response.status() == StatusCode::UNAUTHORIZED
+            && let Some(generation) = oauth_generation
+        {
+            drop(response);
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            response = self
+                .request_builder(
+                    self.client()?.post(self.endpoint.clone()),
+                    session_id,
+                    Some(generation),
+                )?
+                .0
+                .header(ACCEPT, "application/json, text/event-stream")
+                .json(&request)
+                .timeout(remaining)
+                .send()
+                .map_err(|error| map_http_error(&error))?;
+        }
         let headers = response.headers().clone();
         let result = parse_http_response(response, id)?;
         if cancellation.is_cancelled() {
@@ -1055,6 +1208,7 @@ impl McpHttpEndpoint {
         params: Option<Value>,
         timeout: Duration,
     ) -> Result<(), McpHostError> {
+        let started = Instant::now();
         let mut message = serde_json::Map::from_iter([
             ("jsonrpc".to_owned(), Value::String("2.0".to_owned())),
             ("method".to_owned(), Value::String(method.to_owned())),
@@ -1062,16 +1216,36 @@ impl McpHttpEndpoint {
         if let Some(params) = params {
             message.insert("params".to_owned(), params);
         }
-        let response = self
-            .request_builder(
-                self.client()?.post(self.endpoint.clone()),
-                session.session_id.as_ref().map(|value| value.as_str()),
-            )?
+        let message = Value::Object(message);
+        let session_id = session.session_id.as_ref().map(|value| value.as_str());
+        let (builder, oauth_generation) =
+            self.request_builder(self.client()?.post(self.endpoint.clone()), session_id, None)?;
+        let mut response = builder
             .header(ACCEPT, "application/json, text/event-stream")
-            .json(&Value::Object(message))
+            .json(&message)
             .timeout(timeout)
             .send()
             .map_err(|error| map_http_error(&error))?;
+        if response.status() == StatusCode::UNAUTHORIZED
+            && let Some(generation) = oauth_generation
+        {
+            drop(response);
+            let remaining = timeout
+                .checked_sub(started.elapsed())
+                .ok_or(McpHostError::TimedOut)?;
+            response = self
+                .request_builder(
+                    self.client()?.post(self.endpoint.clone()),
+                    session_id,
+                    Some(generation),
+                )?
+                .0
+                .header(ACCEPT, "application/json, text/event-stream")
+                .json(&message)
+                .timeout(remaining)
+                .send()
+                .map_err(|error| map_http_error(&error))?;
+        }
         match response.status() {
             StatusCode::ACCEPTED => Ok(()),
             StatusCode::UNAUTHORIZED => Err(McpHostError::AuthorizationRequired),
@@ -1084,7 +1258,8 @@ impl McpHttpEndpoint {
         &self,
         mut request: reqwest::blocking::RequestBuilder,
         session_id: Option<&str>,
-    ) -> Result<reqwest::blocking::RequestBuilder, McpHostError> {
+        rejected_oauth_generation: Option<u64>,
+    ) -> Result<(reqwest::blocking::RequestBuilder, Option<u64>), McpHostError> {
         request = request
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json, text/event-stream")
@@ -1096,18 +1271,21 @@ impl McpHttpEndpoint {
             header.set_sensitive(true);
             request = request.header(&MCP_SESSION_ID_HEADER, header);
         }
+        let mut oauth_generation = None;
         if let Some(authorization) = &self.authorization {
+            let authorization = authorization.resolve(rejected_oauth_generation)?;
+            oauth_generation = authorization.oauth_generation;
             let mut bearer = Zeroizing::new(String::with_capacity(
-                "Bearer ".len() + authorization.as_ref().len(),
+                "Bearer ".len() + authorization.access_token.len(),
             ));
             bearer.push_str("Bearer ");
-            bearer.push_str(authorization.as_ref().as_str());
+            bearer.push_str(authorization.access_token.as_str());
             let mut header = HeaderValue::from_str(bearer.as_str())
                 .map_err(|_| McpHostError::InvalidConfiguration)?;
             header.set_sensitive(true);
             request = request.header(AUTHORIZATION, header);
         }
-        Ok(request)
+        Ok((request, oauth_generation))
     }
 
     fn close(&self, session: &McpHttpSession) {
@@ -1121,8 +1299,8 @@ impl McpHttpEndpoint {
         let Ok(client) = self.client() else {
             return;
         };
-        let Ok(request) =
-            self.request_builder(client.delete(self.endpoint.clone()), Some(session_id))
+        let Ok((request, _)) =
+            self.request_builder(client.delete(self.endpoint.clone()), Some(session_id), None)
         else {
             return;
         };
@@ -2524,10 +2702,12 @@ mod tests {
         inspect_mcp_http_endpoint, jsonrpc_result, load_mcp_http_read_tools, parse_sse_response,
         read_bounded_line,
     };
+    use crate::{FileMcpOAuthTokenStore, McpOAuthTokenSet};
     use mealy_application::{
         MCP_PROTOCOL_VERSION, McpCatalogItemInspection, McpHttpAuthentication,
-        McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpPromptGrant,
-        McpResourceGrant, McpToolGrant, McpToolInspection, ReadOnlyTool,
+        McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig,
+        McpOAuthMetadataDiscovery, McpOAuthTokenGrant, McpPromptGrant, McpResourceGrant,
+        McpToolGrant, McpToolInspection, ReadOnlyTool,
     };
     use serde_json::{Value, json};
     use std::{
@@ -2669,6 +2849,7 @@ mod tests {
         let discovery = discover_mcp_http_server(
             &config,
             Some(Zeroizing::new("fixture-bearer-secret".to_owned())),
+            None,
         )
         .expect("HTTP discovery");
         assert_eq!(discovery, expected);
@@ -2692,6 +2873,223 @@ mod tests {
         assert!(requests[1].contains("\"method\":\"notifications/initialized\""));
         assert!(requests[2].contains("\"method\":\"tools/list\""));
         assert!(requests[3].starts_with("DELETE /mcp HTTP/1.1"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn streamable_http_oauth_revalidates_metadata_refreshes_once_and_calls_with_rotation() {
+        let definition = json!({
+            "name": "lookup",
+            "description": "Returns one bounded fixture value",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"]
+            }
+        });
+        let tool_grant =
+            McpToolGrant::new(definition.clone(), 5_000, 64 * 1024).expect("tool grant");
+        let catalog = McpHttpCatalogDiscovery {
+            protocol_version: MCP_PROTOCOL_VERSION.to_owned(),
+            server_info: json!({"name": "oauth-http-fixture", "version": "1"}),
+            tools_capability: Some(json!({})),
+            resources_capability: None,
+            prompts_capability: None,
+            tools: vec![McpToolInspection {
+                definition: definition.clone(),
+                definition_digest: tool_grant.definition_digest().to_owned(),
+            }],
+            resources: Vec::new(),
+            resource_templates: Vec::new(),
+            prompts: Vec::new(),
+        };
+        let initialize = |session: &'static str| {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "oauth-http-fixture", "version": "1"}
+                    }
+                }),
+                Some(("MCP-Session-Id", session)),
+            )
+        };
+        let listed = || {
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 100,
+                    "result": {"tools": [definition.clone()]}
+                }),
+                None,
+            )
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind OAuth HTTP fixture");
+        let address = listener.local_addr().expect("OAuth HTTP address");
+        let origin = format!("http://{address}");
+        let endpoint = format!("{origin}/mcp");
+        let metadata = McpOAuthMetadataDiscovery::new(
+            endpoint.clone(),
+            format!("{origin}/.well-known/oauth-protected-resource/mcp"),
+            endpoint.clone(),
+            vec![origin.clone()],
+            origin.clone(),
+            format!("{origin}/.well-known/oauth-authorization-server"),
+            format!("{origin}/authorize"),
+            format!("{origin}/token"),
+            None,
+            vec!["read".to_owned()],
+            vec!["read".to_owned()],
+            vec!["S256".to_owned()],
+            vec!["none".to_owned()],
+            false,
+        )
+        .expect("OAuth metadata");
+        let oauth_grant = McpOAuthTokenGrant::new(
+            "remote.oauth".to_owned(),
+            endpoint.clone(),
+            origin.clone(),
+            format!("{origin}/token"),
+            "mealy-native".to_owned(),
+            vec!["read".to_owned()],
+            metadata.metadata_digest().expect("metadata digest"),
+        )
+        .expect("OAuth grant");
+        let token_set = McpOAuthTokenSet::new(
+            oauth_grant.clone(),
+            1,
+            Some(4_000_000_000_000),
+            Zeroizing::new("access-one".to_owned()),
+            Some(Zeroizing::new("refresh-one".to_owned())),
+        )
+        .expect("initial OAuth token set");
+        let token_home = tempfile::tempdir().expect("OAuth token home");
+        let token_store = FileMcpOAuthTokenStore::new(token_home.path().join("tokens"))
+            .expect("OAuth token store");
+        token_store.create(&token_set).expect("persist OAuth token");
+        let accepted =
+            "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let deleted =
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+        let responses = vec![
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\", scope=\"read\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "resource": endpoint,
+                    "authorization_servers": [origin],
+                    "scopes_supported": ["read"]
+                }),
+                None,
+            ),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "issuer": origin,
+                    "authorization_endpoint": format!("{origin}/authorize"),
+                    "token_endpoint": format!("{origin}/token"),
+                    "response_types_supported": ["code"],
+                    "grant_types_supported": ["authorization_code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "token_endpoint_auth_methods_supported": ["none"]
+                }),
+                None,
+            ),
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_owned(),
+            http_oauth_token_response(&json!({
+                "access_token": "access-two",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "refresh_token": "refresh-two",
+                "scope": "read"
+            })),
+            initialize("oauth-load"),
+            accepted.clone(),
+            listed(),
+            deleted.clone(),
+            initialize("oauth-call"),
+            accepted,
+            listed(),
+            http_json_response(
+                "200 OK",
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 10_000,
+                    "result": {
+                        "content": [{"type": "text", "text": "rotated"}],
+                        "structuredContent": {"value": "rotated"},
+                        "isError": false
+                    }
+                }),
+                None,
+            ),
+            deleted,
+        ];
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        let server_thread = thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().expect("accept OAuth HTTP request");
+                let request = read_http_request(&mut stream);
+                captured
+                    .lock()
+                    .expect("capture OAuth request")
+                    .push(request);
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write OAuth HTTP response");
+            }
+        });
+        let config = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            endpoint,
+            McpHttpAuthentication::OAuth { grant: oauth_grant },
+            catalog.catalog_digest().expect("catalog digest"),
+            true,
+            vec![tool_grant],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("OAuth HTTP config");
+        let loaded = load_mcp_http_read_tools(&[config], BTreeMap::new(), Some(&token_store))
+            .expect("load OAuth MCP tool");
+        let output = loaded[0]
+            .execute(&json!({"key": "alpha"}), &NeverCancelled)
+            .expect("execute OAuth MCP tool");
+        let normalized: Value = serde_json::from_slice(&output.bytes).expect("normalized output");
+        assert_eq!(normalized["structuredContent"]["value"], "rotated");
+        server_thread.join().expect("OAuth HTTP fixture");
+        let requests = requests.lock().expect("OAuth request capture");
+        assert_eq!(requests.len(), 14);
+        assert!(
+            requests[3]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer access-one")
+        );
+        assert!(requests[4].contains("grant_type=refresh_token"));
+        assert!(requests[4].contains("refresh_token=refresh-one"));
+        for request in &requests[5..] {
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer access-two")
+            );
+        }
+        assert!(requests[12].contains("\"method\":\"tools/call\""));
+        let rotated = token_store
+            .read("remote.oauth")
+            .expect("rotated token record");
+        assert_eq!(rotated.generation(), 2);
+        assert_eq!(rotated.refresh_token(), Some("refresh-two"));
     }
 
     #[test]
@@ -2801,7 +3199,8 @@ mod tests {
             "remote".to_owned(),
             Zeroizing::new("fixture-bearer-secret".to_owned()),
         )]);
-        let loaded = load_mcp_http_read_tools(&[config], credentials).expect("load HTTP MCP tool");
+        let loaded =
+            load_mcp_http_read_tools(&[config], credentials, None).expect("load HTTP MCP tool");
         assert_eq!(loaded.len(), 1);
         let output = loaded[0]
             .execute(&json!({"key": "alpha"}), &NeverCancelled)
@@ -2977,8 +3376,8 @@ mod tests {
             vec![prompt_grant],
         )
         .expect("catalog config");
-        let loaded =
-            load_mcp_http_read_tools(&[config], BTreeMap::new()).expect("load catalog operations");
+        let loaded = load_mcp_http_read_tools(&[config], BTreeMap::new(), None)
+            .expect("load catalog operations");
         assert_eq!(loaded.len(), 2);
         let resource = loaded
             .iter()
@@ -3022,7 +3421,7 @@ mod tests {
         )
         .expect("proposal");
         assert!(matches!(
-            inspect_mcp_http_endpoint(&proposal, None),
+            inspect_mcp_http_endpoint(&proposal, None, None),
             Err(McpHostError::HttpStatus(307))
         ));
         server_thread.join().expect("redirect fixture server");
@@ -3057,7 +3456,7 @@ mod tests {
         )
         .expect("protected config");
         assert!(matches!(
-            load_mcp_http_read_tools(&[protected], BTreeMap::new()),
+            load_mcp_http_read_tools(&[protected], BTreeMap::new(), None),
             Err(McpHostError::InvalidConfiguration)
         ));
     }
@@ -3097,7 +3496,7 @@ mod tests {
         )
         .expect("proposal");
         assert!(matches!(
-            inspect_mcp_http_endpoint(&proposal, None),
+            inspect_mcp_http_endpoint(&proposal, None, None),
             Err(McpHostError::InvalidProtocol)
         ));
         server_thread.join().expect("failure fixture server");
@@ -3178,6 +3577,14 @@ mod tests {
             .unwrap_or_default();
         format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn http_oauth_token_response(value: &Value) -> String {
+        let body = value.to_string();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nPragma: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
     }

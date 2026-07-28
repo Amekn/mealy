@@ -4,9 +4,10 @@ Status: Accepted (2026-07-29)
 
 Implementation status: transport, complete catalog pinning, exact static-resource reads, exact
 prompt retrieval, and non-mutating OAuth protected-resource/authorization-server metadata
-discovery are implemented. A pre-registered-public-client authorization-code/PKCE login and private
-generation-one token broker are also implemented without configuration or model authority.
-Registration/CIMD, refresh/rotation/revocation, OAuth-backed activation, resource-template
+discovery are implemented. A pre-registered-public-client authorization-code/PKCE login, private
+rotating token broker, separately approved OAuth-backed activation, proactive/`401` refresh,
+reference-safe local revocation, and secret-backup/migration recovery are also implemented.
+Registration/CIMD, issuer-side revocation, scope-challenge parking, resource-template
 invocation/subscriptions, resumable GET, health, and effectful calls remain subsequent slices.
 
 ## Context
@@ -163,6 +164,17 @@ request parser, and exchanges the code once through the pinned network boundary.
 JSON Bearer material with `no-store`/`no-cache`, bounded secrets, and equal-or-narrower scopes.
 Tokens are zeroizing in memory and stored in a no-symlink owner-private directory as a `0600`
 generation-one record whose non-secret grant pins resource, issuer, token endpoint, client, scopes,
-and metadata digest. Configuration and model authority remain unchanged. Refresh/rotation,
-revocation, dynamic client registration, CIMD, and OAuth-backed MCP activation require subsequent
-contracts.
+and metadata digest. Configuration and model authority remain unchanged.
+
+The runtime slice keeps login separate from authority. `oauth-add` reloads the private record,
+revalidates its exact metadata/audience and the complete live catalog, and then publishes only its
+non-secret grant plus selected catalog pins. Startup and re-enable repeat metadata verification.
+Access resolution proactively refreshes near expiry under a per-family cross-process lock, repeats
+the exact resource and client, rejects scope changes and non-rotated public-client refresh tokens,
+and atomically advances a monotonic generation. A `401` can force one refresh fenced to the
+rejected generation and one retry; concurrent rejections cannot create a refresh storm. Local
+revocation requires zero configuration references, removes the validated record durably, and
+retains the lock inode. Authenticated encrypted backups and migration rollback include validated
+records; secret-free backups declare them excluded. Dynamic client registration, CIMD,
+issuer-side revocation, resource-template expansion/subscriptions, resumable GET, and effectful
+calls require subsequent contracts.

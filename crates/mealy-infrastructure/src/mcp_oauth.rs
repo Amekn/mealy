@@ -1,7 +1,8 @@
 use crate::{mcp::McpHostError, web::resolve_pinned_web_destination};
 use mealy_application::{
     MCP_OAUTH_MAXIMUM_AUTHORIZATION_SERVERS, MCP_OAUTH_MAXIMUM_METADATA_VALUES,
-    MCP_OAUTH_MAXIMUM_SCOPES, McpHttpEndpointConfig, McpOAuthMetadataDiscovery, WebAccessConfig,
+    MCP_OAUTH_MAXIMUM_SCOPES, McpHttpAuthentication, McpHttpEndpointConfig,
+    McpOAuthMetadataDiscovery, WebAccessConfig,
 };
 use reqwest::{
     StatusCode,
@@ -35,7 +36,7 @@ pub fn discover_mcp_oauth_metadata(
     config
         .validate()
         .map_err(|_| McpHostError::InvalidConfiguration)?;
-    if config.authentication().credential().is_some() {
+    if !matches!(config.authentication(), McpHttpAuthentication::None) {
         return Err(McpHostError::InvalidConfiguration);
     }
     let endpoint = safe_oauth_url(config.endpoint(), false)?;

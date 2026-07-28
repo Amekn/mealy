@@ -188,7 +188,7 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > interactive
 > arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
 > persistent or personal profiles,
-> OAuth-backed MCP activation/refresh, resource-template expansion, resumable MCP streams, or
+> OAuth dynamic client registration, resource-template expansion, resumable MCP streams, or
 > effectful MCP calls,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
 > clean-host release evidence must be verified in the exact tag's linked workflows. The checked
@@ -282,11 +282,16 @@ resource audience, OAuth/OIDC issuer metadata, authorization-code flow, and PKCE
 same SSRF-resistant pinned boundary; multiple issuers require owner selection. A separately
 approved stopped-daemon login now supports a pre-registered public client, fresh high-entropy state,
 PKCE S256, an exact literal-loopback callback, one-time authorization-code exchange, scope
-narrowing, and an owner-private no-symlink `0600` token-family broker. It prints the consent URL
-for the owner but does not alter configuration or expose model authority. Refresh, revocation,
-OAuth-backed MCP activation, resource-template expansion, subscriptions, resumable GET, and
-effectful MCP remain deliberately excluded until later v0.4 slices. Both boundaries exclude host
-workspace mounts.
+narrowing, and an owner-private no-symlink `0600` token-family broker. Login alone prints the
+consent URL without altering configuration or exposing model authority. A separate approved
+`oauth-add` transaction revalidates the complete metadata/catalog evidence before binding that
+token family to selected operations. Runtime access refreshes before expiry, serializes concurrent
+rotation, requires an exact unchanged scope and a new refresh token, and permits one
+generation-fenced retry after a `401`. Local revocation is allowed only after every configuration
+reference is removed. Encrypted secret backups and migration rollback carry validated token
+families; secret-free backups explicitly omit them. Dynamic registration/CIMD, issuer-side
+revocation, resource-template expansion, subscriptions, resumable GET, and effectful MCP remain
+deliberately excluded until later v0.4 slices. Both boundaries exclude host workspace mounts.
 The initial rendered-browser adapter similarly treats Chrome as untrusted runtime code. The complete
 Headless Shell bundle and CDP product are pinned, owner-installed, and re-verified; Bubblewrap gives
 each invocation an empty environment, ephemeral profile, private network namespace, and no

@@ -1253,6 +1253,8 @@ enum McpHttpAction {
     Inspect,
     OauthInspect,
     OauthLogin,
+    OauthAdd,
+    OauthRevoke,
     Add,
     Enable,
     Disable,
@@ -11585,6 +11587,18 @@ struct McpOAuthLoginResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct McpOAuthRevokeResponse {
+    token_set_id: String,
+    resource: String,
+    authorization_server: String,
+    revoked_generation: u64,
+    local_broker_record_removed: bool,
+    remote_revocation: &'static str,
+    configuration_changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct McpHttpConfigurationResponse {
     server_id: String,
     operation: String,
@@ -12078,25 +12092,11 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
                 options.approve,
             )
         }
-        McpHttpAction::Add
-            if options.endpoint.is_some()
-                && options.authorization_server.is_none()
-                && mcp_http_has_no_oauth_client_options(options) =>
-        {
-            configure_mcp_http_add(
-                home,
-                &options.server_id,
-                options.endpoint.as_deref().expect("guarded endpoint"),
-                options.bearer_secret_id.as_deref(),
-                credential_environment,
-                &options.allow_tools,
-                &options.allow_resources,
-                &options.allow_prompts,
-                options.timeout_ms.unwrap_or(30_000),
-                options.maximum_output_bytes.unwrap_or(262_144),
-                options.approve,
-            )
+        McpHttpAction::OauthAdd => run_mcp_http_oauth_add(home, options, credential_environment),
+        McpHttpAction::OauthRevoke if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_oauth_revoke(home, &options.server_id, options.approve)
         }
+        McpHttpAction::Add => run_mcp_http_standard_add(home, options, credential_environment),
         McpHttpAction::Enable if valid_mcp_http_lifecycle_options(options) => {
             configure_mcp_http_enabled(home, &options.server_id, true, options.approve)
         }
@@ -12108,6 +12108,64 @@ fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Resul
         }
         _ => Err(CliError::InvalidMcpConfiguration),
     }
+}
+
+fn run_mcp_http_standard_add(
+    home: &Path,
+    options: &McpHttpOptions,
+    credential_environment: &str,
+) -> Result<(), CliError> {
+    if options.endpoint.is_none()
+        || options.authorization_server.is_some()
+        || !mcp_http_has_no_oauth_client_options(options)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    configure_mcp_http_add(
+        home,
+        &options.server_id,
+        options.endpoint.as_deref().expect("guarded endpoint"),
+        options.bearer_secret_id.as_deref(),
+        credential_environment,
+        None,
+        &options.allow_tools,
+        &options.allow_resources,
+        &options.allow_prompts,
+        options.timeout_ms.unwrap_or(30_000),
+        options.maximum_output_bytes.unwrap_or(262_144),
+        options.approve,
+    )
+}
+
+fn run_mcp_http_oauth_add(
+    home: &Path,
+    options: &McpHttpOptions,
+    credential_environment: &str,
+) -> Result<(), CliError> {
+    if options.endpoint.is_none()
+        || options.oauth_token_set_id.is_none()
+        || options.bearer_secret_id.is_some()
+        || options.bearer_credential_env.is_some()
+        || options.authorization_server.is_some()
+        || options.oauth_client_id.is_some()
+        || options.oauth_timeout_seconds.is_some()
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    configure_mcp_http_add(
+        home,
+        &options.server_id,
+        options.endpoint.as_deref().expect("guarded endpoint"),
+        None,
+        credential_environment,
+        options.oauth_token_set_id.as_deref(),
+        &options.allow_tools,
+        &options.allow_resources,
+        &options.allow_prompts,
+        options.timeout_ms.unwrap_or(30_000),
+        options.maximum_output_bytes.unwrap_or(262_144),
+        options.approve,
+    )
 }
 
 fn mcp_http_has_no_oauth_client_options(options: &McpHttpOptions) -> bool {
@@ -15368,7 +15426,7 @@ fn inspect_mcp_http_server(
     let credential = bearer_secret_id
         .map(|_| read_provider_credential_environment(bearer_credential_env))
         .transpose()?;
-    let discovery = inspect_mcp_http_endpoint(&proposal, credential)?;
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential, None)?;
     print_json(McpHttpInspectionResponse {
         server_id: proposal.server_id().to_owned(),
         endpoint: proposal.endpoint().to_owned(),
@@ -15507,7 +15565,7 @@ fn configure_mcp_oauth_login(
                 expires_at_ms: token_set.expires_at_ms(),
                 configuration_changed: false,
                 authority_exposed: false,
-                next_step: "OAuth-backed MCP activation and token refresh remain unavailable in this staged v0.4 slice; this login grants no model-visible authority.",
+                next_step: "Review the live catalog, then run `mealyctl config mcp-http oauth-add SERVER_ID ENDPOINT --oauth-token-set-id TOKEN_SET_ID ... --approve` while the daemon is stopped.",
             })
         }
         Err(error) => {
@@ -15519,6 +15577,48 @@ fn configure_mcp_oauth_login(
             Err(error.into())
         }
     }
+}
+
+fn configure_mcp_oauth_revoke(
+    home: &Path,
+    token_set_id: &str,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if !valid_provider_secret_id(token_set_id) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let value = serde_json::from_slice::<Value>(&fs::read(home.join("config.json"))?)?;
+    let object = value
+        .as_object()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let servers = configured_mcp_http_servers(object)?;
+    if servers.iter().any(|server| {
+        server
+            .authentication()
+            .oauth_grant()
+            .is_some_and(|grant| grant.token_set_id() == token_set_id)
+    }) {
+        return Err(CliError::McpOAuthTokenIdentityInUse(
+            token_set_id.to_owned(),
+        ));
+    }
+    let token_store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+    let revoked = token_store.revoke(token_set_id)?;
+    print_json(McpOAuthRevokeResponse {
+        token_set_id: revoked.grant().token_set_id().to_owned(),
+        resource: revoked.grant().resource().to_owned(),
+        authorization_server: revoked.grant().authorization_server().to_owned(),
+        revoked_generation: revoked.generation(),
+        local_broker_record_removed: true,
+        remote_revocation: "not_attempted_remove_or_revoke_the_authorization_at_the_issuer_when_required",
+        configuration_changed: false,
+    })
 }
 
 struct McpOAuthCallback {
@@ -15720,6 +15820,7 @@ fn configure_mcp_http_add(
     endpoint: &str,
     bearer_secret_id: Option<&str>,
     bearer_credential_env: &str,
+    oauth_token_set_id: Option<&str>,
     allow_tools: &[String],
     allow_resources: &[String],
     allow_prompts: &[String],
@@ -15729,6 +15830,9 @@ fn configure_mcp_http_add(
 ) -> Result<(), CliError> {
     if !approve {
         return Err(CliError::ApprovalRequired);
+    }
+    if bearer_secret_id.is_some() && oauth_token_set_id.is_some() {
+        return Err(CliError::InvalidMcpConfiguration);
     }
     if allow_tools
         .len()
@@ -15755,15 +15859,26 @@ fn configure_mcp_http_add(
     {
         return Err(CliError::InvalidMcpConfiguration);
     }
-    let authentication = mcp_http_authentication(bearer_secret_id);
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let (authentication, oauth_store) = if let Some(token_set_id) = oauth_token_set_id {
+        let store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+        let token_set = store.read(token_set_id)?;
+        (
+            McpHttpAuthentication::OAuth {
+                grant: token_set.grant().clone(),
+            },
+            Some(store),
+        )
+    } else {
+        (mcp_http_authentication(bearer_secret_id), None)
+    };
     let proposal = McpHttpEndpointConfig::new(
         server_id.to_owned(),
         endpoint.to_owned(),
         authentication.clone(),
     )
     .map_err(|_| CliError::InvalidMcpConfiguration)?;
-    let (home, _instance_lock) = lock_stopped_home(home)?;
-    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
     let current = home.join("config.json");
     let current_body = fs::read(&current)?;
     let mut value = serde_json::from_slice::<Value>(&current_body)?;
@@ -15798,7 +15913,7 @@ fn configure_mcp_http_add(
     let credential = imported_credential
         .as_ref()
         .map(|credential| Zeroizing::new(credential.as_str().to_owned()));
-    let discovery = inspect_mcp_http_endpoint(&proposal, credential)?;
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential, oauth_store)?;
     let grants = selected_tools
         .iter()
         .map(|name| {
@@ -15915,8 +16030,9 @@ fn configure_mcp_http_enabled(
         return Err(CliError::InvalidMcpConfiguration);
     }
     if enabled {
-        let credential = resolve_mcp_http_credential(&home, servers[position].authentication())?;
-        discover_mcp_http_server(&servers[position], credential)?;
+        let (credential, oauth_store) =
+            resolve_mcp_http_credential(&home, servers[position].authentication())?;
+        discover_mcp_http_server(&servers[position], credential, oauth_store)?;
     }
     servers[position] = servers[position].with_enabled(enabled);
     validate_mcp_http_server_set(&stdio_servers, &servers)
@@ -16101,9 +16217,9 @@ fn mcp_http_authentication(bearer_secret_id: Option<&str>) -> McpHttpAuthenticat
 fn resolve_mcp_http_credential(
     home: &Path,
     authentication: &McpHttpAuthentication,
-) -> Result<Option<Zeroizing<String>>, CliError> {
+) -> Result<(Option<Zeroizing<String>>, Option<FileMcpOAuthTokenStore>), CliError> {
     let credential = match authentication {
-        McpHttpAuthentication::None => return Ok(None),
+        McpHttpAuthentication::None => return Ok((None, None)),
         McpHttpAuthentication::Bearer {
             credential: ProviderCredentialReference::Broker { secret_id },
         } => FileProviderSecretStore::new(home.join("provider-secrets"))?.read(secret_id)?,
@@ -16112,6 +16228,14 @@ fn resolve_mcp_http_credential(
         } => {
             Zeroizing::new(std::env::var(variable).map_err(|_| CliError::InvalidMcpConfiguration)?)
         }
+        McpHttpAuthentication::OAuth { grant } => {
+            let store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+            let token_set = store.read(grant.token_set_id())?;
+            if token_set.grant() != grant {
+                return Err(CliError::InvalidMcpConfiguration);
+            }
+            return Ok((None, Some(store)));
+        }
     };
     if credential.is_empty()
         || credential.len() > MAXIMUM_PROVIDER_CREDENTIAL_BYTES
@@ -16119,7 +16243,7 @@ fn resolve_mcp_http_credential(
     {
         return Err(CliError::InvalidMcpConfiguration);
     }
-    Ok(Some(credential))
+    Ok((Some(credential), None))
 }
 
 fn verify_configured_mcp_server(home: &Path, server: &McpServerConfig) -> Result<(), CliError> {

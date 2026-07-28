@@ -585,9 +585,10 @@ explicitly authorize the package-managed cross-schema transaction:
 The manager verifies both release slots and their schema identities, retains a verified copy of
 the newer activation client, switches the binary/metadata slots, and passes its already-held daemon
 home lock to that client without an unlock race. The client verifies the exact two-file snapshot,
-SQLite integrity and foreign keys, transition identity, active owner identity, brokered channel and
-provider secrets, and every artifact referenced by the older database. It materializes a complete
-private sibling home and uses one same-filesystem atomic directory exchange. The complete migrated
+SQLite integrity and foreign keys, transition identity, active owner identity, brokered channel,
+provider, and validated MCP OAuth secrets, and every artifact referenced by the older database. It
+materializes a complete private sibling home and uses one same-filesystem atomic directory
+exchange. The complete migrated
 home is retained at the `preservedHome` path in the response; a pre-exchange failure restores the
 newer release slots and leaves the home unchanged.
 

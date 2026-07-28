@@ -1,4 +1,7 @@
-use crate::{ArtifactBlobRecord, FileArtifactBlobStore, SqliteStore, StoreError};
+use crate::{
+    ArtifactBlobRecord, FileArtifactBlobStore, SqliteStore, StoreError,
+    mcp_oauth_token::{MCP_OAUTH_MAXIMUM_RECORD_BYTES, validate_stored_mcp_oauth_token_set},
+};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chacha20poly1305::{
@@ -25,7 +28,8 @@ use zeroize::Zeroizing;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const BACKUP_FORMAT_VERSION: u32 = 1;
+const BACKUP_FORMAT_VERSION: u32 = 2;
+const MAXIMUM_SECRET_FILES: usize = 4_001;
 const BUFFER_BYTES: usize = 64 * 1024;
 const MAXIMUM_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_SECRET_ARCHIVE_BYTES: usize = 4 * 1024 * 1024;
@@ -409,6 +413,7 @@ fn create_complete_archive(
                 "identity.json".to_owned(),
                 "connection.json".to_owned(),
                 "channel-secrets/".to_owned(),
+                "mcp-oauth-tokens/".to_owned(),
                 "provider-secrets/".to_owned(),
             ]
         },
@@ -1000,6 +1005,7 @@ fn copy_active_operational_secrets(
     write_private_file(&restored.join("identity.json"), &identity)?;
     copy_active_channel_secrets(home, restored)?;
     copy_active_provider_secrets(home, restored)?;
+    copy_active_mcp_oauth_tokens(home, restored)?;
     Ok(identity_subject)
 }
 
@@ -1077,6 +1083,51 @@ fn copy_active_provider_secrets(home: &Path, restored: &Path) -> Result<(), Main
                 if !valid_provider_credential(&copied) {
                     return Err(MaintenanceError::InvalidSecretArchive);
                 }
+            }
+            Ok(())
+        }
+        Ok(_) => Err(MaintenanceError::InvalidSecretArchive),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(MaintenanceError::Io(error)),
+    }
+}
+
+fn copy_active_mcp_oauth_tokens(home: &Path, restored: &Path) -> Result<(), MaintenanceError> {
+    let source_root = home.join("mcp-oauth-tokens");
+    let destination_root = restored.join("mcp-oauth-tokens");
+    match fs::symlink_metadata(&source_root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            create_private_directory(&destination_root)?;
+            let entries = fs::read_dir(&source_root)?.collect::<Result<Vec<_>, _>>()?;
+            if entries.len() > MAXIMUM_SECRET_FILES {
+                return Err(MaintenanceError::InvalidSecretArchive);
+            }
+            for entry in entries {
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or(MaintenanceError::InvalidSecretArchive)?
+                    .to_owned();
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if valid_mcp_oauth_ephemeral_name(&name) {
+                    if !valid_private_mcp_oauth_file_metadata(&metadata, true) {
+                        return Err(MaintenanceError::InvalidSecretArchive);
+                    }
+                    continue;
+                }
+                let token_set_id = mcp_oauth_token_set_id_from_name(&name)
+                    .ok_or(MaintenanceError::InvalidSecretArchive)?;
+                if !valid_private_mcp_oauth_file_metadata(&metadata, false) {
+                    return Err(MaintenanceError::InvalidSecretArchive);
+                }
+                let content = Zeroizing::new(read_bounded_file(
+                    &entry.path(),
+                    MCP_OAUTH_MAXIMUM_RECORD_BYTES,
+                )?);
+                validate_stored_mcp_oauth_token_set(token_set_id, &content)
+                    .map_err(|_| MaintenanceError::InvalidSecretArchive)?;
+                let destination = destination_root.join(name);
+                write_private_file(&destination, &content)?;
             }
             Ok(())
         }
@@ -1526,12 +1577,13 @@ fn encrypt_secret_archive(
         Err(error) => return Err(MaintenanceError::Io(error)),
     }
     append_provider_secret_files(home, &mut files)?;
-    if files.len() > 2_001 {
+    append_mcp_oauth_token_files(home, &mut files)?;
+    if files.len() > MAXIMUM_SECRET_FILES {
         return Err(MaintenanceError::InvalidSecretArchive);
     }
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     let plaintext = Zeroizing::new(serde_json::to_vec(&SecretArchive {
-        format_version: 1,
+        format_version: 2,
         files,
     })?);
     if plaintext.len() > MAXIMUM_SECRET_ARCHIVE_BYTES {
@@ -1608,6 +1660,51 @@ fn append_provider_secret_files(
     Ok(())
 }
 
+fn append_mcp_oauth_token_files(
+    home: &Path,
+    files: &mut Vec<SecretFile>,
+) -> Result<(), MaintenanceError> {
+    let token_root = home.join("mcp-oauth-tokens");
+    match fs::symlink_metadata(&token_root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            for entry in fs::read_dir(&token_root)? {
+                let entry = entry?;
+                let metadata = fs::symlink_metadata(entry.path())?;
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .ok_or(MaintenanceError::InvalidSecretArchive)?
+                    .to_owned();
+                if valid_mcp_oauth_ephemeral_name(&name) {
+                    if !valid_private_mcp_oauth_file_metadata(&metadata, true) {
+                        return Err(MaintenanceError::InvalidSecretArchive);
+                    }
+                    continue;
+                }
+                let token_set_id = mcp_oauth_token_set_id_from_name(&name)
+                    .ok_or(MaintenanceError::InvalidSecretArchive)?;
+                if !valid_private_mcp_oauth_file_metadata(&metadata, false) {
+                    return Err(MaintenanceError::InvalidSecretArchive);
+                }
+                let content = Zeroizing::new(read_bounded_file(
+                    &entry.path(),
+                    MCP_OAUTH_MAXIMUM_RECORD_BYTES,
+                )?);
+                validate_stored_mcp_oauth_token_set(token_set_id, &content)
+                    .map_err(|_| MaintenanceError::InvalidSecretArchive)?;
+                files.push(SecretFile {
+                    relative_path: format!("mcp-oauth-tokens/{name}"),
+                    content: URL_SAFE_NO_PAD.encode(&*content),
+                });
+            }
+        }
+        Ok(_) => return Err(MaintenanceError::InvalidSecretArchive),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(MaintenanceError::Io(error)),
+    }
+    Ok(())
+}
+
 fn restore_encrypted_secrets(
     restored: &Path,
     backup_name: &str,
@@ -1661,47 +1758,74 @@ fn restore_encrypted_secrets(
         return Err(MaintenanceError::InvalidSecretArchive);
     }
     let archive: SecretArchive = serde_json::from_slice(&plaintext)?;
-    if archive.format_version != 1 || archive.files.is_empty() || archive.files.len() > 2_001 {
+    if !matches!(archive.format_version, 1 | 2)
+        || archive.files.is_empty()
+        || archive.files.len() > MAXIMUM_SECRET_FILES
+    {
         return Err(MaintenanceError::InvalidSecretArchive);
     }
+    let archive_format_version = archive.format_version;
     let mut paths = BTreeSet::new();
     let mut identity = None;
     for file in archive.files {
         if !paths.insert(file.relative_path.clone()) {
             return Err(MaintenanceError::InvalidSecretArchive);
         }
-        let content = Zeroizing::new(
-            URL_SAFE_NO_PAD
-                .decode(file.content)
-                .map_err(|_| MaintenanceError::InvalidSecretArchive)?,
-        );
-        let channel_secret = file
-            .relative_path
-            .strip_prefix("channel-secrets/")
-            .is_some_and(valid_channel_secret_name);
-        let provider_secret = file
-            .relative_path
-            .strip_prefix("provider-secrets/")
-            .is_some_and(valid_provider_secret_name);
-        let valid_path = file.relative_path == "identity.json" || channel_secret || provider_secret;
-        if !valid_path
-            || (channel_secret && content.len() != 32)
-            || (provider_secret && !valid_provider_credential(&content))
+        if let Some(subject) = restore_secret_archive_file(restored, archive_format_version, file)?
         {
-            return Err(MaintenanceError::InvalidSecretArchive);
+            identity = Some(subject);
         }
-        if file.relative_path == "identity.json" {
-            identity = Some(validate_identity_json(&content)?);
-        }
-        let relative = validate_relative_path(&file.relative_path)?;
-        let destination = restored.join(relative);
-        let parent = destination
-            .parent()
-            .ok_or(MaintenanceError::InvalidSecretArchive)?;
-        create_private_directory(parent)?;
-        write_private_file(&destination, &content)?;
     }
     identity.ok_or(MaintenanceError::InvalidSecretArchive)
+}
+
+fn restore_secret_archive_file(
+    restored: &Path,
+    archive_format_version: u32,
+    file: SecretFile,
+) -> Result<Option<(String, String)>, MaintenanceError> {
+    let content = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(file.content)
+            .map_err(|_| MaintenanceError::InvalidSecretArchive)?,
+    );
+    let channel_secret = file
+        .relative_path
+        .strip_prefix("channel-secrets/")
+        .is_some_and(valid_channel_secret_name);
+    let provider_secret = file
+        .relative_path
+        .strip_prefix("provider-secrets/")
+        .is_some_and(valid_provider_secret_name);
+    let mcp_oauth_token_set_id = file
+        .relative_path
+        .strip_prefix("mcp-oauth-tokens/")
+        .and_then(mcp_oauth_token_set_id_from_name);
+    let mcp_oauth_token = archive_format_version >= 2 && mcp_oauth_token_set_id.is_some();
+    let valid_path = file.relative_path == "identity.json"
+        || channel_secret
+        || provider_secret
+        || mcp_oauth_token;
+    if !valid_path
+        || (channel_secret && content.len() != 32)
+        || (provider_secret && !valid_provider_credential(&content))
+        || mcp_oauth_token_set_id.is_some_and(|token_set_id| {
+            validate_stored_mcp_oauth_token_set(token_set_id, &content).is_err()
+        })
+    {
+        return Err(MaintenanceError::InvalidSecretArchive);
+    }
+    let identity = (file.relative_path == "identity.json")
+        .then(|| validate_identity_json(&content))
+        .transpose()?;
+    let relative = validate_relative_path(&file.relative_path)?;
+    let destination = restored.join(relative);
+    let parent = destination
+        .parent()
+        .ok_or(MaintenanceError::InvalidSecretArchive)?;
+    create_private_directory(parent)?;
+    write_private_file(&destination, &content)?;
+    Ok(identity)
 }
 
 fn validate_identity_json(body: &[u8]) -> Result<(String, String), MaintenanceError> {
@@ -1785,6 +1909,47 @@ fn valid_provider_secret_name(value: &str) -> bool {
         .is_some_and(valid_provider_secret_id)
 }
 
+fn mcp_oauth_token_set_id_from_name(value: &str) -> Option<&str> {
+    value
+        .strip_suffix(".json")
+        .filter(|token_set_id| valid_provider_secret_id(token_set_id))
+}
+
+fn valid_mcp_oauth_ephemeral_name(value: &str) -> bool {
+    let Some(value) = value.strip_prefix('.') else {
+        return false;
+    };
+    if let Some(token_set_id) = value.strip_suffix(".lock") {
+        return valid_provider_secret_id(token_set_id);
+    }
+    let Some(body) = value.strip_suffix(".tmp") else {
+        return false;
+    };
+    let Some((token_set_id, nonce)) = body.rsplit_once('.') else {
+        return false;
+    };
+    valid_provider_secret_id(token_set_id)
+        && nonce.len() == 22
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn valid_private_mcp_oauth_file_metadata(metadata: &fs::Metadata, allow_empty: bool) -> bool {
+    let valid = !metadata.file_type().is_symlink()
+        && metadata.is_file()
+        && (allow_empty || metadata.len() > 0)
+        && metadata.len() <= MCP_OAUTH_MAXIMUM_RECORD_BYTES;
+    #[cfg(unix)]
+    {
+        valid && metadata.permissions().mode().trailing_zeros() >= 6
+    }
+    #[cfg(not(unix))]
+    {
+        valid
+    }
+}
+
 fn valid_provider_credential(value: &[u8]) -> bool {
     !value.is_empty()
         && value.len() <= MAXIMUM_PROVIDER_CREDENTIAL_BYTES
@@ -1803,7 +1968,7 @@ fn valid_uuid_text(value: &str) -> bool {
 }
 
 fn validate_manifest(manifest: &BackupManifest) -> Result<(), MaintenanceError> {
-    if manifest.format_version != BACKUP_FORMAT_VERSION
+    if !matches!(manifest.format_version, 1 | BACKUP_FORMAT_VERSION)
         || manifest.created_at_ms < 0
         || manifest.schema_version == 0
         || manifest.files.is_empty()
@@ -1815,15 +1980,21 @@ fn validate_manifest(manifest: &BackupManifest) -> Result<(), MaintenanceError> 
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    let expected_excluded = if manifest.secrets_included {
-        BTreeSet::from(["connection.json"])
-    } else {
-        BTreeSet::from([
+    let expected_excluded = match (manifest.format_version, manifest.secrets_included) {
+        (_, true) => BTreeSet::from(["connection.json"]),
+        (1, false) => BTreeSet::from([
             "channel-secrets/",
             "connection.json",
             "identity.json",
             "provider-secrets/",
-        ])
+        ]),
+        (_, false) => BTreeSet::from([
+            "channel-secrets/",
+            "connection.json",
+            "identity.json",
+            "mcp-oauth-tokens/",
+            "provider-secrets/",
+        ]),
     };
     if excluded != expected_excluded {
         return Err(MaintenanceError::InvalidManifest);
@@ -2630,19 +2801,21 @@ mod tests {
         preserve_forensic_database, verify_backup,
     };
     use crate::{
-        FileArtifactBlobStore, FileChannelSecretStore, FileProviderSecretStore,
-        LATEST_SCHEMA_VERSION, SqliteStore, inspect_browser_bundle, inspect_skill_package,
-        publish_browser_bundle, publish_skill_package,
+        FileArtifactBlobStore, FileChannelSecretStore, FileMcpOAuthTokenStore,
+        FileProviderSecretStore, LATEST_SCHEMA_VERSION, McpOAuthTokenSet, SqliteStore,
+        inspect_browser_bundle, inspect_skill_package, publish_browser_bundle,
+        publish_skill_package,
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use mealy_application::{
         ArtifactBlobStore, BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, MCP_PROTOCOL_VERSION,
-        McpServerConfig, McpServerDiscovery, McpToolGrant, McpToolInspection, OwnershipContext,
-        sha256_digest,
+        McpOAuthTokenGrant, McpServerConfig, McpServerDiscovery, McpToolGrant, McpToolInspection,
+        OwnershipContext, sha256_digest,
     };
     use mealy_domain::{ChannelBindingId, PrincipalId};
     use rusqlite::params;
     use std::{fs, time::SystemTime};
+    use zeroize::Zeroizing;
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -2693,6 +2866,36 @@ mod tests {
         )
         .expect("MCP server config");
         (server, relative_path, executable)
+    }
+
+    fn install_mcp_oauth_token_fixture(
+        home: &std::path::Path,
+        token_set_id: &str,
+        access_token: &str,
+        refresh_token: &str,
+    ) {
+        let grant = McpOAuthTokenGrant::new(
+            token_set_id.to_owned(),
+            "https://mcp.example.test/v1".to_owned(),
+            "https://auth.example.test".to_owned(),
+            "https://auth.example.test/token".to_owned(),
+            "mealy-public-client".to_owned(),
+            vec!["mcp:tools".to_owned()],
+            "7".repeat(64),
+        )
+        .expect("OAuth grant");
+        let token_set = McpOAuthTokenSet::new(
+            grant,
+            1,
+            Some(4_102_444_800_000),
+            Zeroizing::new(access_token.to_owned()),
+            Some(Zeroizing::new(refresh_token.to_owned())),
+        )
+        .expect("OAuth token family");
+        FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))
+            .expect("OAuth broker")
+            .create(&token_set)
+            .expect("OAuth token record");
     }
 
     fn install_browser_fixture(home: &std::path::Path) -> (BrowserConfig, String, Vec<u8>) {
@@ -2789,6 +2992,12 @@ mod tests {
         .expect("config");
         let database = home.path().join("mealy.sqlite3");
         let store = SqliteStore::open(&database, 1).expect("store");
+        install_mcp_oauth_token_fixture(
+            home.path(),
+            "excluded-mcp",
+            "excluded-oauth-access",
+            "excluded-oauth-refresh",
+        );
         let artifacts =
             FileArtifactBlobStore::new(home.path().join("artifacts"), 1024).expect("artifacts");
         let content = b"backup artifact";
@@ -2816,6 +3025,19 @@ mod tests {
         )
         .expect("backup");
         assert_eq!(report.artifact_count, 1);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(report.path.join("manifest.json")).expect("backup manifest"),
+        )
+        .expect("manifest JSON");
+        assert_eq!(manifest["formatVersion"], 2);
+        assert!(
+            manifest["excludedSecretComponents"]
+                .as_array()
+                .expect("excluded components")
+                .iter()
+                .any(|value| value == "mcp-oauth-tokens/")
+        );
+        assert!(!report.path.join("mcp-oauth-tokens").exists());
         assert_eq!(
             fs::read(
                 report
@@ -2911,6 +3133,14 @@ mod tests {
             .expect("provider broker")
             .put("openai-primary", provider_key)
             .expect("provider key");
+        let oauth_access_token = "mcp-oauth-access-secret";
+        let oauth_refresh_token = "mcp-oauth-refresh-secret";
+        install_mcp_oauth_token_fixture(
+            home.path(),
+            "calendar-mcp",
+            oauth_access_token,
+            oauth_refresh_token,
+        );
         let artifacts =
             FileArtifactBlobStore::new(home.path().join("artifacts"), 1024).expect("artifacts");
         let passphrase = "correct horse battery staple";
@@ -2935,6 +3165,16 @@ mod tests {
             !encrypted
                 .windows(provider_key.len())
                 .any(|window| window == provider_key.as_bytes())
+        );
+        assert!(
+            !encrypted
+                .windows(oauth_access_token.len())
+                .any(|window| window == oauth_access_token.as_bytes())
+        );
+        assert!(
+            !encrypted
+                .windows(oauth_refresh_token.len())
+                .any(|window| window == oauth_refresh_token.as_bytes())
         );
         assert!(matches!(
             verify_backup(
@@ -2994,6 +3234,12 @@ mod tests {
                 .expect("activated provider credential"),
             provider_key.as_bytes()
         );
+        let restored_oauth = FileMcpOAuthTokenStore::new(home.path().join("mcp-oauth-tokens"))
+            .expect("restored OAuth broker")
+            .read("calendar-mcp")
+            .expect("restored OAuth token");
+        assert_eq!(restored_oauth.access_token(), oauth_access_token);
+        assert_eq!(restored_oauth.refresh_token(), Some(oauth_refresh_token));
         let activated_store =
             SqliteStore::open(home.path().join("mealy.sqlite3"), 2).expect("activated store");
         assert!(
@@ -3182,6 +3428,12 @@ mod tests {
             .expect("provider broker")
             .put("openai-primary", "migration-rollback-provider-secret")
             .expect("provider secret");
+        install_mcp_oauth_token_fixture(
+            home.path(),
+            "migration-mcp",
+            "migration-oauth-access",
+            "migration-oauth-refresh",
+        );
         let artifacts =
             FileArtifactBlobStore::new(home.path().join("artifacts"), 1024).expect("artifacts");
         let artifact_body = b"pre-migration canonical artifact";
@@ -3321,6 +3573,15 @@ mod tests {
             fs::read(home.path().join("provider-secrets/openai-primary.key"))
                 .expect("copied provider secret"),
             b"migration-rollback-provider-secret"
+        );
+        let restored_oauth = FileMcpOAuthTokenStore::new(home.path().join("mcp-oauth-tokens"))
+            .expect("restored OAuth broker")
+            .read("migration-mcp")
+            .expect("copied OAuth token");
+        assert_eq!(restored_oauth.access_token(), "migration-oauth-access");
+        assert_eq!(
+            restored_oauth.refresh_token(),
+            Some("migration-oauth-refresh")
         );
         assert_eq!(
             fs::read(home.path().join("artifacts").join(&artifact.relative_path))

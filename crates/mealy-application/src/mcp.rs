@@ -1,4 +1,7 @@
-use crate::{ProviderCredentialReference, ReadToolDescriptor, ReadToolError, sha256_digest};
+use crate::{
+    McpOAuthTokenGrant, ProviderCredentialReference, ReadToolDescriptor, ReadToolError,
+    sha256_digest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, net::IpAddr, path::Path, time::Duration};
@@ -529,15 +532,40 @@ pub enum McpHttpAuthentication {
         /// Opaque credential reference; the token never enters configuration.
         credential: ProviderCredentialReference,
     },
+    /// Resolve and rotate one audience-bound OAuth token family through its dedicated broker.
+    #[serde(rename = "oauth")]
+    OAuth {
+        /// Non-secret immutable token-family authority; access/refresh tokens never enter config.
+        grant: McpOAuthTokenGrant,
+    },
 }
 
 impl McpHttpAuthentication {
-    /// Returns the configured credential reference, if any.
+    /// Returns the configured static bearer credential reference, if any.
     #[must_use]
     pub const fn credential(&self) -> Option<&ProviderCredentialReference> {
         match self {
-            Self::None => None,
+            Self::None | Self::OAuth { .. } => None,
             Self::Bearer { credential } => Some(credential),
+        }
+    }
+
+    /// Returns the configured OAuth token-family grant, if any.
+    #[must_use]
+    pub const fn oauth_grant(&self) -> Option<&McpOAuthTokenGrant> {
+        match self {
+            Self::OAuth { grant } => Some(grant),
+            Self::None | Self::Bearer { .. } => None,
+        }
+    }
+
+    /// Returns the opaque broker capability reference for either authentication mode.
+    #[must_use]
+    pub fn capability_reference(&self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Bearer { credential } => Some(credential.capability_reference()),
+            Self::OAuth { grant } => Some(grant.capability_reference()),
         }
     }
 
@@ -547,6 +575,7 @@ impl McpHttpAuthentication {
             Self::Bearer { credential } => credential
                 .validate()
                 .map_err(|_| McpConfigError::InvalidServer),
+            Self::OAuth { grant } => grant.validate().map_err(|_| McpConfigError::InvalidServer),
         }
     }
 }
@@ -608,6 +637,10 @@ impl McpHttpEndpointConfig {
         if valid_mcp_name(&self.server_id, 32)
             && validated_mcp_http_endpoint(&self.endpoint).is_some()
             && self.authentication.validate().is_ok()
+            && self
+                .authentication
+                .oauth_grant()
+                .is_none_or(|grant| grant.resource() == self.endpoint)
         {
             Ok(())
         } else {
@@ -777,9 +810,7 @@ impl McpHttpServerConfig {
     /// Opaque credential claim copied into task capability grants, when configured.
     #[must_use]
     pub fn capability_secret_reference(&self) -> Option<String> {
-        self.authentication
-            .credential()
-            .map(ProviderCredentialReference::capability_reference)
+        self.authentication.capability_reference()
     }
 
     /// Validates one complete Streamable HTTP server configuration.
@@ -1575,8 +1606,7 @@ pub fn mcp_http_read_tool_descriptor(
             "endpoint": server.endpoint(),
             "authenticationReference": server
                 .authentication()
-                .credential()
-                .map(ProviderCredentialReference::capability_reference),
+                .capability_reference(),
             "serverCatalogDigest": server.catalog_digest(),
             "toolDefinitionDigest": grant.definition_digest(),
         })
@@ -1761,8 +1791,7 @@ fn http_catalog_item_identity_digest(
             "endpoint": server.endpoint(),
             "authenticationReference": server
                 .authentication()
-                .credential()
-                .map(ProviderCredentialReference::capability_reference),
+                .capability_reference(),
             "serverCatalogDigest": server.catalog_digest(),
             "kind": kind,
             "definitionDigest": definition_digest,
@@ -1943,7 +1972,7 @@ mod tests {
         mcp_resource_template_definition_digest, validate_mcp_http_server_set,
         validate_mcp_prompt_arguments, validate_mcp_tool_arguments,
     };
-    use crate::ProviderCredentialReference;
+    use crate::{McpOAuthTokenGrant, ProviderCredentialReference};
     use serde_json::json;
 
     fn definition(name: &str) -> serde_json::Value {
@@ -2057,6 +2086,57 @@ mod tests {
             server.capability_secret_reference().as_deref(),
             Some("broker:mcp-remote")
         );
+    }
+
+    #[test]
+    fn streamable_http_oauth_grant_binds_exact_audience_and_descriptor_authority() {
+        let grant = McpToolGrant::new(definition("lookup"), 5_000, 64 * 1024).expect("grant");
+        let oauth = McpOAuthTokenGrant::new(
+            "remote-oauth".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            "https://auth.example.test".to_owned(),
+            "https://auth.example.test/token".to_owned(),
+            "mealy-native".to_owned(),
+            vec!["mcp:read".to_owned()],
+            "a".repeat(64),
+        )
+        .expect("OAuth grant");
+        let server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::OAuth {
+                grant: oauth.clone(),
+            },
+            "b".repeat(64),
+            true,
+            vec![grant.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("OAuth HTTP server");
+        assert_eq!(
+            server.capability_secret_reference().as_deref(),
+            Some("mcp_oauth_broker:remote-oauth")
+        );
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
+        descriptor.validate_evidence().expect("descriptor evidence");
+        assert!(
+            descriptor
+                .required_capability
+                .contains(":authority-sha256:")
+        );
+
+        let wrong_audience = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://other.example.test/mcp".to_owned(),
+            McpHttpAuthentication::OAuth { grant: oauth },
+            "b".repeat(64),
+            true,
+            vec![grant],
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(wrong_audience.is_err());
     }
 
     #[test]
