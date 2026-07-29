@@ -28,6 +28,7 @@ asset_sha256=${asset_sha256%% *}
 asset_bytes=$(stat -c '%s' "$asset")
 revision=0123456789abcdef0123456789abcdef01234567
 tag_revision=$revision
+release_tag=soak-subject-$revision
 asset_name=mealy-soak-test-linux-x86_64-gnu-mealyd
 
 jq -n \
@@ -35,12 +36,13 @@ jq -n \
   --arg name "$asset_name" \
   --arg sha256 "$asset_sha256" \
   --arg revision "$revision" \
+  --arg tag "$release_tag" \
   --argjson bytes "$asset_bytes" '
   {
     schemaVersion: "mealy.soak-subject.v1",
     repository: $repository,
     releaseId: 99,
-    releaseTag: "v0.1.0",
+    releaseTag: $tag,
     assetName: $name,
     assetSha256: $sha256,
     assetBytes: $bytes,
@@ -64,10 +66,11 @@ jq -n \
   --arg name "$asset_name" \
   --arg owner Amekn \
   --arg digest "sha256:$asset_sha256" \
+  --arg tag "$release_tag" \
   --argjson bytes "$asset_bytes" '
   {
     id: 99,
-    tag_name: "v0.1.0",
+    tag_name: $tag,
     draft: true,
     prerelease: false,
     assets: [{
@@ -86,7 +89,7 @@ cat >"$temporary/bin/gh" <<'EOF'
 set -euo pipefail
 if [[ $* == *'/releases/99'* ]]; then
   cat "$MOCK_RELEASE"
-elif [[ $* == *'/git/ref/tags/v0.1.0'* ]]; then
+elif [[ $* == *"/git/ref/tags/$MOCK_TAG"* ]]; then
   jq -n --arg revision "$MOCK_REVISION" '{object: {type: "commit", sha: $revision}}'
 elif [[ $* == *'/releases/assets/42'* ]]; then
   cat "$MOCK_ASSET"
@@ -102,6 +105,7 @@ run_fetch() {
     MOCK_RELEASE="$temporary/release.json" \
     MOCK_ASSET="$asset" \
     MOCK_REVISION="$tag_revision" \
+    MOCK_TAG="$release_tag" \
     "$fetcher" "$temporary/manifest.json" "$temporary/report.json" \
       "$temporary/output/mealyd" Amekn/mealy
 }
@@ -117,6 +121,22 @@ jq '.assetSha256 = ("0" * 64)' "$temporary/manifest.valid.json" \
   >"$temporary/manifest.json"
 if run_fetch >/dev/null 2>&1; then
   echo "soak-subject fetch accepted a manifest/report digest mismatch" >&2
+  exit 1
+fi
+cp "$temporary/manifest.valid.json" "$temporary/manifest.json"
+
+jq '.releaseTag = "v0.1.0"' "$temporary/manifest.valid.json" \
+  >"$temporary/manifest.json"
+if run_fetch >/dev/null 2>&1; then
+  echo "soak-subject fetch accepted a stable release tag" >&2
+  exit 1
+fi
+cp "$temporary/manifest.valid.json" "$temporary/manifest.json"
+
+jq '.releaseTag = "soak-subject-" + ("f" * 40)' \
+  "$temporary/manifest.valid.json" >"$temporary/manifest.json"
+if run_fetch >/dev/null 2>&1; then
+  echo "soak-subject fetch accepted a tag that did not encode the report revision" >&2
   exit 1
 fi
 cp "$temporary/manifest.valid.json" "$temporary/manifest.json"
@@ -140,6 +160,14 @@ cp "$temporary/release.valid.json" "$temporary/release.json"
 tag_revision=ffffffffffffffffffffffffffffffffffffffff
 if run_fetch >/dev/null 2>&1; then
   echo "soak-subject fetch accepted a staging tag on the wrong revision" >&2
+  exit 1
+fi
+
+if PATH="$temporary/bin:$PATH" GH_TOKEN=test-token \
+  "$fetcher" "$temporary/manifest.json" "$temporary/report.json" \
+    "$temporary/output/rejected-repository" "Amekn/mealy/extra" \
+    >/dev/null 2>&1; then
+  echo "soak-subject fetch accepted a malformed repository identity" >&2
   exit 1
 fi
 
