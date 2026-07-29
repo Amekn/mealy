@@ -1,9 +1,10 @@
 # Production readiness
 
-- Status: v0.2.1 is the qualified public Linux release; v0.3.0 daily-use candidate
-  implementation is complete and release qualification is active; broader
-  competitive-personal-agent breadth remains incomplete
-- Reviewed: 2026-07-28
+- Status: v0.2.1 is the qualified public Linux release; v0.3.0 daily-use release
+  qualification is active; the v0.4.0 governed-capability implementation is
+  complete but cannot begin sequential release qualification until v0.3.0 is
+  published; broader competitive-personal-agent breadth remains incomplete
+- Reviewed: 2026-07-29
 - Target: one-owner Linux production release across Ubuntu, Debian, Fedora, Arch, and compatible
   derivatives; macOS and Windows are outside the active production contract
 
