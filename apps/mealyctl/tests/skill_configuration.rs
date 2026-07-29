@@ -50,7 +50,7 @@ fn skill_lifecycle_is_digest_pinned_inert_on_install_and_revision_fenced() {
     let unapproved = install_command(home.path(), source_v1.path(), &digest_v1, false);
     assert!(!unapproved.status.success());
     assert!(!home.path().join("skills").exists());
-    assert!(default_config() == read_config(home.path()));
+    assert_eq!(default_config(), read_config(home.path()));
 
     let installed = install_command(home.path(), source_v1.path(), &digest_v1, true);
     assert!(
