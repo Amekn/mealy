@@ -184,68 +184,137 @@ impl TimelineStore for SqliteStore {
             .map_err(|_| invariant("timeline page limit exceeds SQLite range"))?;
         let after =
             i64::try_from(after).map_err(|_| invariant("timeline cursor exceeds SQLite range"))?;
+        // CROSS JOIN is a deliberate planner fence: the requested cursor range is
+        // scanned first, and each candidate event receives bounded indexed lineage checks.
         let mut statement = self
             .connection
             .prepare(
-                "WITH session_runs(run_id) AS (\
-                    SELECT lineage.run_id FROM run_lineage lineage \
-                    WHERE lineage.root_run_id IN (\
-                        SELECT run_id FROM turn WHERE session_id = ?2 AND turn_kind = 'canonical'\
-                    )\
-                 ) \
-                 SELECT te.cursor, je.event_id, je.aggregate_kind, je.aggregate_id, \
+                "SELECT te.cursor, je.event_id, je.aggregate_kind, je.aggregate_id, \
                         je.aggregate_sequence, je.event_type, je.event_version, je.occurred_at_ms, \
                         je.correlation_id, je.causation_id, je.payload_json \
-                 FROM timeline_event te JOIN journal_event je ON je.event_id = te.event_id \
+                 FROM timeline_event te CROSS JOIN journal_event je \
                  WHERE te.cursor > ?1 AND (\
-                    (je.aggregate_kind = 'session' AND je.aggregate_id = ?2) OR \
-                    (je.aggregate_kind = 'task' AND je.aggregate_id IN \
-                        (SELECT task_id FROM run WHERE id IN (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'run' AND je.aggregate_id IN \
-                        (SELECT run_id FROM session_runs)) OR \
-                    (je.aggregate_kind = 'turn' AND je.aggregate_id IN \
-                        (SELECT id FROM turn WHERE session_id = ?2)) OR \
-                    (je.aggregate_kind = 'context_epoch' AND je.aggregate_id IN \
-                        (SELECT id FROM context_epoch WHERE session_id = ?2)) OR \
-                    (je.aggregate_kind = 'context_manifest' AND je.aggregate_id IN \
-                        (SELECT id FROM context_manifest WHERE session_id = ?2)) OR \
-                    (je.aggregate_kind = 'model_attempt' AND je.aggregate_id IN \
-                        (SELECT attempt_id FROM model_attempt WHERE run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'tool_call' AND je.aggregate_id IN \
-                        (SELECT tool_call_id FROM tool_call WHERE run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'effect' AND je.aggregate_id IN \
-                        (SELECT id FROM effect WHERE run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'approval' AND je.aggregate_id IN \
-                        (SELECT approval_id FROM approval_request WHERE effect_id IN \
-                            (SELECT id FROM effect WHERE run_id IN \
-                                (SELECT run_id FROM session_runs)))) OR \
-                    (je.aggregate_kind = 'validation' AND je.aggregate_id IN \
-                        (SELECT id FROM validation_record WHERE producer_run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'delegation' AND je.aggregate_id IN \
-                        (SELECT id FROM delegation WHERE parent_run_id IN \
-                            (SELECT run_id FROM session_runs) OR child_run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'resource_claim' AND je.aggregate_id IN \
-                        (SELECT claim_id FROM resource_claim WHERE run_id IN \
-                            (SELECT run_id FROM session_runs))) OR \
-                    (je.aggregate_kind = 'compaction' AND je.aggregate_id IN \
-                        (SELECT id FROM session_compaction WHERE session_id = ?2)) OR \
-                    (je.aggregate_kind = 'memory' AND je.aggregate_id IN (\
-                        SELECT memory.id FROM memory \
-                        JOIN session owner_session ON owner_session.id = ?2 \
-                        WHERE memory.principal_id = owner_session.principal_id \
-                          AND memory.workspace_identity IN (\
-                              SELECT workspace_identity FROM context_epoch WHERE session_id = ?2\
-                          )\
-                    )) OR \
-                    (je.aggregate_kind = 'artifact' AND je.aggregate_id IN \
-                        (SELECT id FROM artifact WHERE session_id = ?2)) OR \
-                    (je.aggregate_kind = 'message' AND je.aggregate_id IN \
-                        (SELECT id FROM message WHERE session_id = ?2))\
+                    je.event_id = te.event_id AND (\
+                        (je.aggregate_kind = 'session' AND je.aggregate_id = ?2) OR \
+                        (je.aggregate_kind = 'task' AND EXISTS(\
+                            SELECT 1 FROM run task_run \
+                            JOIN run_lineage lineage ON lineage.run_id = task_run.id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE task_run.task_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'run' AND EXISTS(\
+                            SELECT 1 FROM run_lineage lineage \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE lineage.run_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'turn' AND EXISTS(\
+                            SELECT 1 FROM turn candidate \
+                            WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                        )) OR \
+                        (je.aggregate_kind = 'context_epoch' AND EXISTS(\
+                            SELECT 1 FROM context_epoch epoch \
+                            WHERE epoch.id = je.aggregate_id AND epoch.session_id = ?2\
+                        )) OR \
+                        (je.aggregate_kind = 'context_manifest' AND EXISTS(\
+                            SELECT 1 FROM context_manifest manifest \
+                            WHERE manifest.id = je.aggregate_id AND manifest.session_id = ?2\
+                        )) OR \
+                        (je.aggregate_kind = 'model_attempt' AND EXISTS(\
+                            SELECT 1 FROM model_attempt attempt \
+                            JOIN run_lineage lineage ON lineage.run_id = attempt.run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE attempt.attempt_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'tool_call' AND EXISTS(\
+                            SELECT 1 FROM tool_call call \
+                            JOIN run_lineage lineage ON lineage.run_id = call.run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE call.tool_call_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'effect' AND EXISTS(\
+                            SELECT 1 FROM effect candidate \
+                            JOIN run_lineage lineage ON lineage.run_id = candidate.run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE candidate.id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'approval' AND EXISTS(\
+                            SELECT 1 FROM approval_request approval \
+                            JOIN effect candidate ON candidate.id = approval.effect_id \
+                            JOIN run_lineage lineage ON lineage.run_id = candidate.run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE approval.approval_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'validation' AND EXISTS(\
+                            SELECT 1 FROM validation_record validation \
+                            JOIN run_lineage lineage ON lineage.run_id = validation.producer_run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE validation.id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'delegation' AND EXISTS(\
+                            SELECT 1 FROM delegation candidate \
+                            WHERE candidate.id = je.aggregate_id AND (\
+                                EXISTS(\
+                                    SELECT 1 FROM run_lineage parent_lineage \
+                                    JOIN turn parent_root \
+                                      ON parent_root.run_id = parent_lineage.root_run_id \
+                                    WHERE parent_lineage.run_id = candidate.parent_run_id \
+                                      AND parent_root.session_id = ?2 \
+                                      AND parent_root.turn_kind = 'canonical'\
+                                ) OR EXISTS(\
+                                    SELECT 1 FROM run_lineage child_lineage \
+                                    JOIN turn child_root \
+                                      ON child_root.run_id = child_lineage.root_run_id \
+                                    WHERE child_lineage.run_id = candidate.child_run_id \
+                                      AND child_root.session_id = ?2 \
+                                      AND child_root.turn_kind = 'canonical'\
+                                )\
+                            )\
+                        )) OR \
+                        (je.aggregate_kind = 'resource_claim' AND EXISTS(\
+                            SELECT 1 FROM resource_claim claim \
+                            JOIN run_lineage lineage ON lineage.run_id = claim.run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE claim.claim_id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
+                        (je.aggregate_kind = 'compaction' AND EXISTS(\
+                            SELECT 1 FROM session_compaction compaction \
+                            WHERE compaction.id = je.aggregate_id AND compaction.session_id = ?2\
+                        )) OR \
+                        (je.aggregate_kind = 'memory' AND EXISTS(\
+                            SELECT 1 FROM memory candidate \
+                            JOIN session owner_session ON owner_session.id = ?2 \
+                            WHERE candidate.id = je.aggregate_id \
+                              AND candidate.principal_id = owner_session.principal_id \
+                              AND candidate.workspace_identity IN (\
+                                  SELECT workspace_identity FROM context_epoch \
+                                  WHERE session_id = ?2\
+                              )\
+                        )) OR \
+                        (je.aggregate_kind = 'artifact' AND EXISTS(\
+                            SELECT 1 FROM artifact candidate \
+                            WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                        )) OR \
+                        (je.aggregate_kind = 'message' AND EXISTS(\
+                            SELECT 1 FROM message candidate \
+                            WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                        ))\
+                    )\
                  ) ORDER BY te.cursor LIMIT ?3",
             )
             .map_err(map_sqlite_error)?;
@@ -446,71 +515,141 @@ fn authorize(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn high_watermark(
     connection: &rusqlite::Connection,
     session_id: SessionId,
 ) -> Result<TimelineCursor, TimelineStoreError> {
-    let maximum: Option<i64> = connection
+    // CROSS JOIN is a deliberate planner fence: inspect the newest presentation
+    // rows first, then perform bounded primary-key lineage checks for each event.
+    // Materializing every historical aggregate for a long-lived session made
+    // concurrent timeline reads grow with the complete session history.
+    let maximum = connection
         .query_row(
-            "WITH session_runs(run_id) AS (\
-                SELECT lineage.run_id FROM run_lineage lineage \
-                WHERE lineage.root_run_id IN (\
-                    SELECT run_id FROM turn WHERE session_id = ?1 AND turn_kind = 'canonical'\
-                )\
-             ) \
-             SELECT MAX(te.cursor) \
-             FROM timeline_event te JOIN journal_event je ON je.event_id = te.event_id \
-             WHERE (je.aggregate_kind = 'session' AND je.aggregate_id = ?1) OR \
-                   (je.aggregate_kind = 'task' AND je.aggregate_id IN \
-                       (SELECT task_id FROM run WHERE id IN (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'run' AND je.aggregate_id IN \
-                       (SELECT run_id FROM session_runs)) OR \
-                   (je.aggregate_kind = 'turn' AND je.aggregate_id IN \
-                       (SELECT id FROM turn WHERE session_id = ?1)) OR \
-                   (je.aggregate_kind = 'context_epoch' AND je.aggregate_id IN \
-                       (SELECT id FROM context_epoch WHERE session_id = ?1)) OR \
-                   (je.aggregate_kind = 'context_manifest' AND je.aggregate_id IN \
-                       (SELECT id FROM context_manifest WHERE session_id = ?1)) OR \
-                   (je.aggregate_kind = 'model_attempt' AND je.aggregate_id IN \
-                       (SELECT attempt_id FROM model_attempt WHERE run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'tool_call' AND je.aggregate_id IN \
-                       (SELECT tool_call_id FROM tool_call WHERE run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'effect' AND je.aggregate_id IN \
-                       (SELECT id FROM effect WHERE run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'approval' AND je.aggregate_id IN \
-                       (SELECT approval_id FROM approval_request WHERE effect_id IN \
-                           (SELECT id FROM effect WHERE run_id IN \
-                               (SELECT run_id FROM session_runs)))) OR \
-                   (je.aggregate_kind = 'validation' AND je.aggregate_id IN \
-                       (SELECT id FROM validation_record WHERE producer_run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'delegation' AND je.aggregate_id IN \
-                       (SELECT id FROM delegation WHERE parent_run_id IN \
-                           (SELECT run_id FROM session_runs) OR child_run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'resource_claim' AND je.aggregate_id IN \
-                       (SELECT claim_id FROM resource_claim WHERE run_id IN \
-                           (SELECT run_id FROM session_runs))) OR \
-                   (je.aggregate_kind = 'compaction' AND je.aggregate_id IN \
-                       (SELECT id FROM session_compaction WHERE session_id = ?1)) OR \
-                   (je.aggregate_kind = 'memory' AND je.aggregate_id IN (\
-                       SELECT memory.id FROM memory \
-                       JOIN session owner_session ON owner_session.id = ?1 \
-                       WHERE memory.principal_id = owner_session.principal_id \
-                         AND memory.workspace_identity IN (\
-                             SELECT workspace_identity FROM context_epoch WHERE session_id = ?1\
-                         )\
-                   )) OR \
-                   (je.aggregate_kind = 'artifact' AND je.aggregate_id IN \
-                       (SELECT id FROM artifact WHERE session_id = ?1)) OR \
-                   (je.aggregate_kind = 'message' AND je.aggregate_id IN \
-                       (SELECT id FROM message WHERE session_id = ?1))",
-            [session_id.to_string()],
+            "SELECT te.cursor \
+             FROM timeline_event te CROSS JOIN journal_event je \
+             WHERE je.event_id = te.event_id AND (\
+                (je.aggregate_kind = 'session' AND je.aggregate_id = ?2) OR \
+                (je.aggregate_kind = 'task' AND EXISTS(\
+                    SELECT 1 FROM run task_run \
+                    JOIN run_lineage lineage ON lineage.run_id = task_run.id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE task_run.task_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'run' AND EXISTS(\
+                    SELECT 1 FROM run_lineage lineage \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE lineage.run_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'turn' AND EXISTS(\
+                    SELECT 1 FROM turn candidate \
+                    WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                )) OR \
+                (je.aggregate_kind = 'context_epoch' AND EXISTS(\
+                    SELECT 1 FROM context_epoch epoch \
+                    WHERE epoch.id = je.aggregate_id AND epoch.session_id = ?2\
+                )) OR \
+                (je.aggregate_kind = 'context_manifest' AND EXISTS(\
+                    SELECT 1 FROM context_manifest manifest \
+                    WHERE manifest.id = je.aggregate_id AND manifest.session_id = ?2\
+                )) OR \
+                (je.aggregate_kind = 'model_attempt' AND EXISTS(\
+                    SELECT 1 FROM model_attempt attempt \
+                    JOIN run_lineage lineage ON lineage.run_id = attempt.run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE attempt.attempt_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'tool_call' AND EXISTS(\
+                    SELECT 1 FROM tool_call call \
+                    JOIN run_lineage lineage ON lineage.run_id = call.run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE call.tool_call_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'effect' AND EXISTS(\
+                    SELECT 1 FROM effect candidate \
+                    JOIN run_lineage lineage ON lineage.run_id = candidate.run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE candidate.id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'approval' AND EXISTS(\
+                    SELECT 1 FROM approval_request approval \
+                    JOIN effect candidate ON candidate.id = approval.effect_id \
+                    JOIN run_lineage lineage ON lineage.run_id = candidate.run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE approval.approval_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'validation' AND EXISTS(\
+                    SELECT 1 FROM validation_record validation \
+                    JOIN run_lineage lineage ON lineage.run_id = validation.producer_run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE validation.id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'delegation' AND EXISTS(\
+                    SELECT 1 FROM delegation candidate \
+                    WHERE candidate.id = je.aggregate_id AND (\
+                        EXISTS(\
+                            SELECT 1 FROM run_lineage parent_lineage \
+                            JOIN turn parent_root ON parent_root.run_id = parent_lineage.root_run_id \
+                            WHERE parent_lineage.run_id = candidate.parent_run_id \
+                              AND parent_root.session_id = ?2 \
+                              AND parent_root.turn_kind = 'canonical'\
+                        ) OR EXISTS(\
+                            SELECT 1 FROM run_lineage child_lineage \
+                            JOIN turn child_root ON child_root.run_id = child_lineage.root_run_id \
+                            WHERE child_lineage.run_id = candidate.child_run_id \
+                              AND child_root.session_id = ?2 \
+                              AND child_root.turn_kind = 'canonical'\
+                        )\
+                    )\
+                )) OR \
+                (je.aggregate_kind = 'resource_claim' AND EXISTS(\
+                    SELECT 1 FROM resource_claim claim \
+                    JOIN run_lineage lineage ON lineage.run_id = claim.run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE claim.claim_id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
+                )) OR \
+                (je.aggregate_kind = 'compaction' AND EXISTS(\
+                    SELECT 1 FROM session_compaction compaction \
+                    WHERE compaction.id = je.aggregate_id AND compaction.session_id = ?2\
+                )) OR \
+                (je.aggregate_kind = 'memory' AND EXISTS(\
+                    SELECT 1 FROM memory candidate \
+                    JOIN session owner_session ON owner_session.id = ?2 \
+                    WHERE candidate.id = je.aggregate_id \
+                      AND candidate.principal_id = owner_session.principal_id \
+                      AND candidate.workspace_identity IN (\
+                          SELECT workspace_identity FROM context_epoch WHERE session_id = ?2\
+                      )\
+                )) OR \
+                (je.aggregate_kind = 'artifact' AND EXISTS(\
+                    SELECT 1 FROM artifact candidate \
+                    WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                )) OR \
+                (je.aggregate_kind = 'message' AND EXISTS(\
+                    SELECT 1 FROM message candidate \
+                    WHERE candidate.id = je.aggregate_id AND candidate.session_id = ?2\
+                ))\
+             ) ORDER BY te.cursor DESC LIMIT 1",
+            params![0_i64, session_id.to_string()],
             |row| row.get(0),
         )
+        .optional()
         .map_err(map_sqlite_error)?;
     maximum
         .map(|value| positive_u64(value, "maximum timeline cursor").map(TimelineCursor))
@@ -555,13 +694,18 @@ fn invariant(message: impl Into<String>) -> TimelineStoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteStore;
+    use super::{SqliteStore, high_watermark};
     use mealy_application::{
-        OwnershipContext, TimelineCursor, TimelineQuery, TimelineStoreError, create_session,
-        query_timeline,
+        IdGenerator, OwnershipContext, TimelineCursor, TimelineQuery, TimelineStoreError,
+        create_session, query_timeline,
     };
     use mealy_domain::{ChannelBindingId, PrincipalId};
     use mealy_testkit::{TestClock, TestIdGenerator};
+    use rusqlite::params;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     #[test]
     fn explicit_retention_floor_reports_a_real_cursor_gap() {
@@ -600,6 +744,88 @@ mod tests {
             mealy_application::TimelineUseCaseError::Store(TimelineStoreError::Gap {
                 earliest: TimelineCursor(2)
             })
+        );
+    }
+
+    #[test]
+    fn latest_timeline_reads_are_bounded_by_recent_events_not_complete_history() {
+        const HISTORICAL_EVENTS: usize = 50_000;
+        const PROGRESS_GRANULARITY: i32 = 100;
+        const MAX_PROGRESS_CALLBACKS: usize = 10;
+
+        let now = 1_782_062_400_000;
+        let clock = TestClock::new(now);
+        let ids = TestIdGenerator::new(now.cast_unsigned());
+        let ownership = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+        let mut store = SqliteStore::open_in_memory(now).expect("open store");
+        let session_id =
+            create_session(&mut store, &clock, &ids, ownership).expect("create session");
+
+        {
+            let transaction = store.connection.transaction().expect("begin transaction");
+            {
+                let mut insert = transaction
+                    .prepare(
+                        "INSERT INTO journal_event (\
+                            event_id, aggregate_kind, aggregate_id, aggregate_sequence, \
+                            event_type, event_version, occurred_at_ms, correlation_id, payload_json\
+                         ) VALUES (?1, 'session', ?2, ?3, 'test.synthetic', 1, ?4, ?5, '{}')",
+                    )
+                    .expect("prepare synthetic history insert");
+                for sequence in 2..=HISTORICAL_EVENTS + 1 {
+                    insert
+                        .execute(params![
+                            ids.generate_event_id().to_string(),
+                            session_id.to_string(),
+                            i64::try_from(sequence).expect("sequence fits SQLite"),
+                            now + i64::try_from(sequence).expect("timestamp fits SQLite"),
+                            ids.generate_correlation_id().to_string(),
+                        ])
+                        .expect("insert synthetic history");
+                }
+            }
+            transaction.commit().expect("commit synthetic history");
+        }
+
+        let progress_callbacks = Arc::new(AtomicUsize::new(0));
+        let callback_counter = Arc::clone(&progress_callbacks);
+        store
+            .connection
+            .progress_handler(
+                PROGRESS_GRANULARITY,
+                Some(move || {
+                    callback_counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )
+            .expect("install progress handler");
+        let watermark = high_watermark(&store.connection, session_id).expect("query watermark");
+        let page = query_timeline(
+            &store,
+            TimelineQuery {
+                session_id,
+                ownership,
+                after: Some(TimelineCursor(
+                    u64::try_from(HISTORICAL_EVENTS).expect("cursor fits u64"),
+                )),
+                limit: 100,
+            },
+        )
+        .expect("query latest timeline page");
+        store
+            .connection
+            .progress_handler(0, None::<fn() -> bool>)
+            .expect("remove progress handler");
+
+        assert_eq!(
+            watermark,
+            TimelineCursor(u64::try_from(HISTORICAL_EVENTS + 1).expect("cursor fits u64"))
+        );
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].cursor, watermark);
+        assert!(
+            progress_callbacks.load(Ordering::Relaxed) <= MAX_PROGRESS_CALLBACKS,
+            "latest-cursor and timeline-page lookups must seek from recent presentation rows"
         );
     }
 }

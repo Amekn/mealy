@@ -367,6 +367,16 @@ schema-16 [release soak](benchmarks/release-soak.json) subsequently completed 19
 hard restarts against the exact packaged daemon with complete replay, integrity `ok`, and zero
 residue.
 
+The first v0.3 candidate subsequently failed after 16 hours 11 minutes on a concurrent
+near-current timeline read. The retained database remained intact, but the original query
+materialized complete historical membership sets and produced 7–14.5-second requests under
+16-way concurrency. The
+[negative observation](benchmarks/2026-07-29-v0.3-timeline-read-scaling-failure.md) preserves the
+exact subject, diagnosis, and focused correction evidence. The cursor-first replacement completed
+the same retained-state burst with a 50-millisecond maximum and bounded memory growth, but v0.3 is
+not production-promotable until protected CI, package rebuild, and a new 24-hour exact-binary soak
+pass from zero.
+
 The storage gate now has object-level attribution and bounded compatibility-preserving compression.
 The checked [60-second optimized storage observation](benchmarks/2026-07-13-storage-optimized-soak.json)
 completed 536 turns with six hard restarts, SQLite integrity `ok`, zero residual work, and 150,680
