@@ -163,6 +163,16 @@ The refresh changes only the exact browser-fetch helper, its integration-test ex
 documentation; it does not change either shipped Rust binary source boundary. The fresh-process
 browser and protected package/lifecycle gates must pass again before tagging.
 
+The 2026-07-29 pre-tag refresh confirmed that the stable Headless Shell remains
+`151.0.7922.47`; Checkout `v7.0.1`, artifact upload `v7.0.1`, artifact download `v8.0.1`,
+Attest `v4.2.0`, the Pages actions, SBOM Action `v0.24.0`, Cargo Audit `0.22.2`,
+Cargo Auditable `0.7.5`, Cargo About `0.9.1`, Cargo Deny `0.20.2`, and zizmor `1.28.0`
+remain the current reviewed releases. Syft advanced to `v1.50.0`; its upstream release notes
+identify a high-severity gRPC dependency vulnerability remediated by that release, so the release
+workflow now requests `v1.50.0` from the already commit-pinned SBOM Action. This workflow and
+documentation-only refresh does not change the soaked Rust binary source boundary. Protected CI
+and the tag workflow still validate the updated workflow and generated SBOM before publication.
+
 The native tag jobs run
 `scripts/validate-public-license.sh` and refuse publication if restrictive terms,
 redirected/mismatched license metadata, an unsupported/mismatched license text, or a workspace
