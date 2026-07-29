@@ -16,13 +16,14 @@ use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
     ArtifactBlobStore, ArtifactBlobStoreError, BrowserConfig, CancellationProbe,
-    EXTENSION_HOST_API_VERSION, ImageGenerationConfig, InspectedRegistryRelease,
-    InspectedRegistrySnapshot, InspectedRegistryTrustRoot, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
-    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
-    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
-    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
+    EXTENSION_HOST_API_VERSION, ExtensionStore, ExtensionStoreError, ImageGenerationConfig,
+    InspectedRegistryRelease, InspectedRegistrySnapshot, InspectedRegistryTrustRoot,
+    MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_IMAGE_DIMENSION,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication, McpHttpCatalogDiscovery,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery, McpPromptGrant,
+    McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect, McpToolGrant,
+    MessageRole, ModelProvider, NormalizedMessage, OwnershipContext, ProviderConfig,
     ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryContentDescriptor,
     RegistryDependencyLock, RegistryError, RegistryMetadataStore, RegistryMetadataStoreError,
     RegistryMirror, RegistryMirrorError, RegistryPackageKind, RegistryPackageManifest,
@@ -30,16 +31,16 @@ use mealy_application::{
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
     SubscriptionCliClient, WebAccessConfig, WebSearchConfig, accept_registry_release,
     accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
-    default_daemon_config_document, fetch_registry_content, fetch_registry_snapshot_envelope,
-    inspect_active_registry_release, inspect_initial_registry_trust_root,
-    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
-    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
-    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
-    validate_provider_chain,
+    default_daemon_config_document, diff_extension_permissions, diff_skill_permissions,
+    fetch_registry_content, fetch_registry_snapshot_envelope, inspect_active_registry_release,
+    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
+    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
+    validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
-    ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
-    SkillToolRequirement,
+    ArtifactId, AttemptId, ChannelBindingId, ContextManifestId, PrincipalId, RunId, ScheduleId,
+    SessionId, SkillAsset, SkillToolRequirement,
 };
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
@@ -53,9 +54,9 @@ use mealy_infrastructure::{
     discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
     inspect_browser_bundle, inspect_existing_schema_version, inspect_mcp_http_endpoint,
     inspect_registry_package_archive, inspect_skill_package, inspect_subscription_cli_executable,
-    is_trusted_system_executable, mcp_stdio_launcher_main, media_worker_main,
-    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
-    publish_skill_package, verify_browser_runtime_installation,
+    inspected_registry_skill_package, is_trusted_system_executable, mcp_stdio_launcher_main,
+    media_worker_main, prepare_mcp_oauth_authorization, probe_browser_bundle_product,
+    publish_browser_bundle, publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -2139,6 +2140,30 @@ enum RegistryCommand {
         #[arg(long)]
         expected_archive_digest: String,
         /// Confirm inert content-addressed retention.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Compare one durable staged package with the current inert installation and grants.
+    PackagePlan {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+    },
+    /// Apply one exact reviewed plan as a disabled inert skill installation.
+    PackageInstall {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Exact plan SHA-256 printed by `package-plan`.
+        #[arg(long)]
+        expected_plan_digest: String,
+        /// Confirm immutable publication and disabled configuration update.
         #[arg(long)]
         approve: bool,
     },
@@ -12174,6 +12199,16 @@ struct InstalledSkillConfigRecord {
     manifest_digest: String,
     package_path: String,
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<InstalledSkillRegistryProvenance>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstalledSkillRegistryProvenance {
+    registry_id: String,
+    release_envelope_digest: String,
+    archive_digest: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -12191,6 +12226,8 @@ struct SkillPackageResponse {
     resources: Vec<SkillAsset>,
     required_tools: Vec<SkillToolRequirement>,
     tool_authority: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry: Option<InstalledSkillRegistryProvenance>,
     configuration_path: Option<String>,
     replaced_configuration_copy: Option<String>,
     restart_required: bool,
@@ -13201,7 +13238,9 @@ fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), 
         | RegistryCommand::ReleaseAccept { .. }
         | RegistryCommand::ReleaseStatus { .. }
         | RegistryCommand::PackageFetch { .. }
-        | RegistryCommand::PackageStage { .. }) => run_registry_release_operation(home, command),
+        | RegistryCommand::PackageStage { .. }
+        | RegistryCommand::PackagePlan { .. }
+        | RegistryCommand::PackageInstall { .. }) => run_registry_release_operation(home, command),
     }
 }
 
@@ -13258,6 +13297,27 @@ fn run_registry_release_operation(home: &Path, command: &RegistryCommand) -> Res
                 version,
                 mirror,
                 Some(expected_archive_digest),
+            )
+        }
+        RegistryCommand::PackagePlan {
+            registry_id,
+            package_id,
+            version,
+        } => run_registry_package_plan(home, registry_id, package_id, version),
+        RegistryCommand::PackageInstall {
+            registry_id,
+            package_id,
+            version,
+            expected_plan_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_package_install(
+                home,
+                registry_id,
+                package_id,
+                version,
+                expected_plan_digest,
             )
         }
         _ => Err(CliError::InvalidRegistryMetadata),
@@ -13533,6 +13593,459 @@ fn run_registry_package_mirror(
     ))
 }
 
+fn run_registry_package_plan(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<(), CliError> {
+    let now_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let store = open_registry_read_store(&home)?;
+    let (_package, plan) =
+        build_registry_package_plan(&home, &store, registry_id, package_id, version, now_ms)?;
+    print_json(plan)
+}
+
+fn run_registry_package_install(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    expected_plan_digest: &str,
+) -> Result<(), CliError> {
+    if !is_sha256_digest(expected_plan_digest) {
+        return Err(CliError::InvalidRegistryPackagePlanDigest);
+    }
+    let now_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let store = open_registry_read_store(&home)?;
+    let (registry_package, plan) =
+        build_registry_package_plan(&home, &store, registry_id, package_id, version, now_ms)?;
+    if plan.plan_digest != expected_plan_digest {
+        return Err(CliError::RegistryPackagePlanDrift);
+    }
+    if !matches!(
+        registry_package.manifest().manifest,
+        RegistryPackageManifest::Skill(_)
+    ) {
+        return Err(CliError::RegistryPackageInstallUnsupported);
+    }
+    let package = inspected_registry_skill_package(&registry_package)?;
+    let provenance = InstalledSkillRegistryProvenance {
+        registry_id: registry_id.to_owned(),
+        release_envelope_digest: registry_package.release().envelope_digest.clone(),
+        archive_digest: registry_package.archive_digest().to_owned(),
+    };
+    print_json(apply_registry_skill_install(
+        &home,
+        &package,
+        &provenance,
+        &plan,
+    )?)
+}
+
+#[allow(clippy::too_many_lines)] // One config commit covers install, update, and evidence adoption.
+fn apply_registry_skill_install(
+    home: &Path,
+    package: &InspectedSkillPackage,
+    provenance: &InstalledSkillRegistryProvenance,
+    plan: &RegistryPackagePlanResponse,
+) -> Result<RegistryPackageInstallResponse, CliError> {
+    let (current, current_body, mut config, mut records) = load_skill_configuration(home)?;
+    let existing_index = records
+        .iter()
+        .position(|record| record.skill_id == package.manifest().skill_id);
+    if plan.action == "already_installed" {
+        let record = existing_index
+            .and_then(|index| records.get(index))
+            .ok_or(CliError::RegistryPackagePlanDrift)?;
+        return Ok(registry_package_install_response(
+            package,
+            record,
+            provenance,
+            &plan.plan_digest,
+            "already_installed",
+            None,
+            false,
+        ));
+    }
+    let installed = publish_skill_package(package, &home.join("skills"))?;
+    let expected_path = skill_package_relative_path(package.manifest_digest());
+    if installed != home.join(&expected_path) {
+        return Err(CliError::InvalidSkillConfiguration);
+    }
+    let operation = match (plan.action, existing_index) {
+        ("install", None) => {
+            if records.len() >= 32 {
+                return Err(CliError::InvalidSkillConfiguration);
+            }
+            records.push(InstalledSkillConfigRecord {
+                skill_id: package.manifest().skill_id.clone(),
+                version: package.manifest().version.clone(),
+                manifest_digest: package.manifest_digest().to_owned(),
+                package_path: expected_path,
+                enabled: false,
+                registry: Some(provenance.clone()),
+            });
+            "installed_disabled"
+        }
+        ("update", Some(index)) => {
+            let record = records
+                .get_mut(index)
+                .ok_or(CliError::RegistryPackagePlanDrift)?;
+            record.version.clone_from(&package.manifest().version);
+            package
+                .manifest_digest()
+                .clone_into(&mut record.manifest_digest);
+            record.package_path = expected_path;
+            record.enabled = false;
+            record.registry = Some(provenance.clone());
+            "updated_disabled"
+        }
+        ("adopt_evidence", Some(index)) => {
+            let record = records
+                .get_mut(index)
+                .ok_or(CliError::RegistryPackagePlanDrift)?;
+            if record.manifest_digest != package.manifest_digest()
+                || record.version != package.manifest().version
+            {
+                return Err(CliError::RegistryPackagePlanDrift);
+            }
+            record.registry = Some(provenance.clone());
+            "registry_evidence_adopted"
+        }
+        _ => return Err(CliError::RegistryPackagePlanDrift),
+    };
+    records.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+    set_skill_records(&mut config, &records)?;
+    let record = records
+        .iter()
+        .find(|record| record.skill_id == package.manifest().skill_id)
+        .ok_or(CliError::RegistryPackagePlanDrift)?
+        .clone();
+    let timestamp = unix_timestamp_millis()?;
+    let history = home.join("config-history");
+    create_private_service_directory(&history)?;
+    let replaced = history.join(format!("pre-registry-skill-{timestamp}.json"));
+    atomic_write_service(&replaced, &current_body)?;
+    atomic_write_service(&current, &serde_json::to_vec_pretty(&config)?)?;
+    Ok(registry_package_install_response(
+        package,
+        &record,
+        provenance,
+        &plan.plan_digest,
+        operation,
+        Some(replaced.display().to_string()),
+        true,
+    ))
+}
+
+fn build_registry_package_plan(
+    home: &Path,
+    store: &SqliteStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    now_ms: i64,
+) -> Result<
+    (
+        mealy_infrastructure::InspectedRegistryPackageArchive,
+        RegistryPackagePlanResponse,
+    ),
+    CliError,
+> {
+    let (package, staged) =
+        load_staged_registry_package(home, store, registry_id, package_id, version, now_ms)?;
+    let release = &package.release().release;
+    let registry_provenance = InstalledSkillRegistryProvenance {
+        registry_id: release.registry_id.clone(),
+        release_envelope_digest: package.release().envelope_digest.clone(),
+        archive_digest: package.archive_digest().to_owned(),
+    };
+    let (action, current, permission_diff, content_changes, widens_authority, authority_reset) =
+        match &package.manifest().manifest {
+            RegistryPackageManifest::Skill(candidate) => registry_skill_install_plan(
+                home,
+                candidate,
+                package.manifest().manifest_digest.as_str(),
+                &registry_provenance,
+            )?,
+            RegistryPackageManifest::Extension(candidate) => {
+                registry_extension_install_plan(home, store, candidate)?
+            }
+        };
+    let review = RegistryPackagePlanReview {
+        required: action != "already_installed",
+        widens_authority,
+        authority_reset_on_apply: authority_reset,
+    };
+    let digest_material = RegistryPackagePlanDigestMaterial {
+        contract_version: "mealy.registry.install-plan.v1",
+        registry_id: &release.registry_id,
+        package_id: &release.package_id,
+        kind: release.kind,
+        version: &release.version,
+        publisher_id: &release.publisher_id,
+        release_envelope_digest: &package.release().envelope_digest,
+        manifest_digest: &package.manifest().manifest_digest,
+        archive_digest: package.archive_digest(),
+        staged_at_ms: staged.staged_at_ms,
+        action,
+        current: &current,
+        permission_diff: &permission_diff,
+        content_changes: &content_changes,
+        review: &review,
+    };
+    let plan_digest = sha256_digest(&serde_json::to_vec(&digest_material)?);
+    let plan = RegistryPackagePlanResponse {
+        operation: "package_install_planned",
+        plan_digest,
+        registry_id: release.registry_id.clone(),
+        package_id: release.package_id.clone(),
+        kind: release.kind,
+        version: release.version.clone(),
+        publisher_id: release.publisher_id.clone(),
+        release_envelope_digest: package.release().envelope_digest.clone(),
+        manifest_digest: package.manifest().manifest_digest.clone(),
+        archive_digest: package.archive_digest().to_owned(),
+        staged_at_ms: staged.staged_at_ms,
+        action,
+        current,
+        permission_diff,
+        content_changes,
+        review,
+        effects: RegistryPackagePlanEffects {
+            network_access: false,
+            filesystem_mutation: false,
+            package_authority: false,
+        },
+    };
+    Ok((package, plan))
+}
+
+fn load_staged_registry_package(
+    home: &Path,
+    store: &SqliteStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    now_ms: i64,
+) -> Result<
+    (
+        mealy_infrastructure::InspectedRegistryPackageArchive,
+        RegistryPackageState,
+    ),
+    CliError,
+> {
+    let staged = store
+        .registry_package(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryPackageNotFound)?;
+    let (accepted, release_state) = store
+        .registry_release(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryReleaseNotFound)?;
+    let active = inspect_active_registry_release(
+        store,
+        registry_id,
+        package_id,
+        version,
+        &accepted.envelope_bytes,
+        EXTENSION_HOST_API_VERSION,
+        now_ms,
+    )?;
+    if active != accepted
+        || staged.release_envelope_digest != active.envelope_digest
+        || staged.manifest_blob.digest != release_state.manifest_digest
+        || staged.package_blob.digest != release_state.package_digest
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    let artifacts =
+        FileArtifactBlobStore::new(home.join("artifacts"), MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES)?;
+    let manifest_bytes = artifacts.read(&staged.manifest_blob)?;
+    let archive_bytes = artifacts.read(&staged.package_blob)?;
+    let package = inspect_registry_package_archive(&active, &manifest_bytes, &archive_bytes)?;
+    if package.manifest().manifest_digest != staged.manifest_blob.digest
+        || package.archive_digest() != staged.package_blob.digest
+        || u64::try_from(manifest_bytes.len()).ok() != Some(staged.manifest_blob.size_bytes)
+        || u64::try_from(archive_bytes.len()).ok() != Some(staged.package_blob.size_bytes)
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    Ok((package, staged))
+}
+
+type RegistryPackagePlanParts = (
+    &'static str,
+    Option<RegistryInstalledPackageSummary>,
+    Value,
+    Value,
+    bool,
+    bool,
+);
+
+fn registry_skill_install_plan(
+    home: &Path,
+    candidate: &mealy_domain::SkillManifest,
+    candidate_manifest_digest: &str,
+    candidate_provenance: &InstalledSkillRegistryProvenance,
+) -> Result<RegistryPackagePlanParts, CliError> {
+    let (_current_path, _current_body, _config, records) = load_skill_configuration(home)?;
+    let Some(record) = records
+        .iter()
+        .find(|record| record.skill_id == candidate.skill_id)
+    else {
+        return Ok((
+            "install",
+            None,
+            json!({
+                "kind": "skill",
+                "addedRequiredTools": candidate.required_tools,
+                "removedRequiredTools": [],
+            }),
+            json!({
+                "instructionsChanged": !candidate.instructions.is_empty(),
+                "resourcesChanged": !candidate.resources.is_empty(),
+                "versionChanged": true,
+            }),
+            !candidate.required_tools.is_empty(),
+            false,
+        ));
+    };
+    let current_package = inspect_installed_skill(home, record)?;
+    let permission_diff = diff_skill_permissions(current_package.manifest(), candidate)?;
+    let instructions_changed = current_package.manifest().instructions != candidate.instructions;
+    let resources_changed = current_package.manifest().resources != candidate.resources;
+    let version_changed = current_package.manifest().version != candidate.version;
+    let manifest_changed = record.manifest_digest != candidate_manifest_digest;
+    let action = if manifest_changed {
+        "update"
+    } else if record.registry.as_ref() != Some(candidate_provenance) {
+        "adopt_evidence"
+    } else {
+        "already_installed"
+    };
+    Ok((
+        action,
+        Some(RegistryInstalledPackageSummary {
+            version: record.version.clone(),
+            manifest_digest: record.manifest_digest.clone(),
+            status: if record.enabled {
+                "enabled".to_owned()
+            } else {
+                "disabled".to_owned()
+            },
+            revision: None,
+            registry: record.registry.clone(),
+        }),
+        serde_json::to_value(&permission_diff)?,
+        json!({
+            "instructionsChanged": instructions_changed,
+            "resourcesChanged": resources_changed,
+            "versionChanged": version_changed,
+        }),
+        permission_diff.widens_authority(),
+        record.enabled && manifest_changed,
+    ))
+}
+
+fn registry_extension_install_plan(
+    home: &Path,
+    store: &SqliteStore,
+    candidate: &mealy_application::ExtensionManifestInspection,
+) -> Result<RegistryPackagePlanParts, CliError> {
+    let connection = load_connection(home)?;
+    let principal_id = connection
+        .principal_id
+        .parse::<PrincipalId>()
+        .map_err(|_| CliError::InvalidConnection("principalId is malformed".to_owned()))?;
+    let channel_binding_id = connection
+        .channel_binding_id
+        .parse::<ChannelBindingId>()
+        .map_err(|_| CliError::InvalidConnection("channelBindingId is malformed".to_owned()))?;
+    let ownership = OwnershipContext::new(principal_id, channel_binding_id);
+    let current = match store.extension(ownership, candidate.manifest.extension_id) {
+        Ok(view) => Some(view),
+        Err(ExtensionStoreError::NotFound) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let Some(current) = current else {
+        let requested = &candidate.manifest.permissions;
+        return Ok((
+            "install",
+            None,
+            json!({
+                "kind": "extension",
+                "addedCapabilities": candidate
+                    .manifest
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.capability_id.as_str())
+                    .collect::<Vec<_>>(),
+                "removedCapabilities": [],
+                "changedCapabilities": [],
+                "filesystem": requested.filesystem,
+                "addedNetworkDestinations": requested.network_destinations,
+                "removedNetworkDestinations": [],
+                "addedSecretReferences": requested.secret_references,
+                "removedSecretReferences": [],
+                "processSpawnBefore": false,
+                "processSpawnAfter": requested.allow_process_spawn,
+            }),
+            json!({
+                "manifestChanged": true,
+                "executableChanged": true,
+                "runtimeFilesChanged": !candidate.manifest.entry_point.runtime_files.is_empty(),
+                "versionChanged": true,
+            }),
+            true,
+            false,
+        ));
+    };
+    let permission_diff = diff_extension_permissions(&current.manifest, &candidate.manifest)?;
+    let manifest_changed = current.current_manifest_digest != candidate.manifest_digest;
+    let executable_changed = current.manifest.entry_point.executable_digest
+        != candidate.manifest.entry_point.executable_digest;
+    let runtime_files_changed =
+        current.manifest.entry_point.runtime_files != candidate.manifest.entry_point.runtime_files;
+    let version_changed = current.manifest.version != candidate.manifest.version;
+    Ok((
+        if manifest_changed {
+            "update"
+        } else {
+            "already_installed"
+        },
+        Some(RegistryInstalledPackageSummary {
+            version: current.manifest.version,
+            manifest_digest: current.current_manifest_digest,
+            status: extension_status_text(current.status).to_owned(),
+            revision: Some(current.revision),
+            registry: None,
+        }),
+        serde_json::to_value(&permission_diff)?,
+        json!({
+            "manifestChanged": manifest_changed,
+            "executableChanged": executable_changed,
+            "runtimeFilesChanged": runtime_files_changed,
+            "versionChanged": version_changed,
+        }),
+        permission_diff.widens_authority(),
+        current.active_grant.is_some() && manifest_changed,
+    ))
+}
+
+const fn extension_status_text(status: mealy_domain::ExtensionStatus) -> &'static str {
+    match status {
+        mealy_domain::ExtensionStatus::Installed => "installed",
+        mealy_domain::ExtensionStatus::Enabled => "enabled",
+        mealy_domain::ExtensionStatus::Disabled => "disabled",
+        mealy_domain::ExtensionStatus::Failed => "failed",
+        mealy_domain::ExtensionStatus::Revoked => "revoked",
+    }
+}
+
 fn require_registry_approval(approve: bool) -> Result<(), CliError> {
     if approve {
         Ok(())
@@ -13793,6 +14306,131 @@ struct RegistryPackageResponse {
     package_authority: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryInstalledPackageSummary {
+    version: String,
+    manifest_digest: String,
+    status: String,
+    revision: Option<u64>,
+    registry: Option<InstalledSkillRegistryProvenance>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanResponse {
+    operation: &'static str,
+    plan_digest: String,
+    registry_id: String,
+    package_id: String,
+    kind: RegistryPackageKind,
+    version: String,
+    publisher_id: String,
+    release_envelope_digest: String,
+    manifest_digest: String,
+    archive_digest: String,
+    staged_at_ms: i64,
+    action: &'static str,
+    current: Option<RegistryInstalledPackageSummary>,
+    permission_diff: Value,
+    content_changes: Value,
+    review: RegistryPackagePlanReview,
+    effects: RegistryPackagePlanEffects,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanReview {
+    required: bool,
+    widens_authority: bool,
+    authority_reset_on_apply: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanEffects {
+    network_access: bool,
+    filesystem_mutation: bool,
+    package_authority: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanDigestMaterial<'a> {
+    contract_version: &'static str,
+    registry_id: &'a str,
+    package_id: &'a str,
+    kind: RegistryPackageKind,
+    version: &'a str,
+    publisher_id: &'a str,
+    release_envelope_digest: &'a str,
+    manifest_digest: &'a str,
+    archive_digest: &'a str,
+    staged_at_ms: i64,
+    action: &'static str,
+    current: &'a Option<RegistryInstalledPackageSummary>,
+    permission_diff: &'a Value,
+    content_changes: &'a Value,
+    review: &'a RegistryPackagePlanReview,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallResponse {
+    operation: &'static str,
+    plan_digest: String,
+    registry: InstalledSkillRegistryProvenance,
+    skill: SkillPackageResponse,
+    activation: RegistryPackageInstallActivation,
+    effects: RegistryPackageInstallEffects,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallActivation {
+    instruction_authority_active: bool,
+    tool_authority_granted: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallEffects {
+    filesystem_mutation: bool,
+    restart_required: bool,
+}
+
+fn registry_package_install_response(
+    package: &InspectedSkillPackage,
+    record: &InstalledSkillConfigRecord,
+    provenance: &InstalledSkillRegistryProvenance,
+    plan_digest: &str,
+    operation: &'static str,
+    replaced_configuration_copy: Option<String>,
+    filesystem_mutation: bool,
+) -> RegistryPackageInstallResponse {
+    RegistryPackageInstallResponse {
+        operation,
+        plan_digest: plan_digest.to_owned(),
+        registry: provenance.clone(),
+        skill: skill_package_response(
+            package,
+            Some(record),
+            operation,
+            None,
+            replaced_configuration_copy,
+            filesystem_mutation,
+        ),
+        activation: RegistryPackageInstallActivation {
+            instruction_authority_active: record.enabled,
+            tool_authority_granted: false,
+        },
+        effects: RegistryPackageInstallEffects {
+            filesystem_mutation,
+            restart_required: filesystem_mutation,
+        },
+    }
+}
+
 fn registry_package_response(
     package: &mealy_infrastructure::InspectedRegistryPackageArchive,
     durable_release_state: RegistryReleaseState,
@@ -13893,6 +14531,7 @@ fn install_skill(
         manifest_digest: package.manifest_digest().to_owned(),
         package_path: skill_package_relative_path(package.manifest_digest()),
         enabled: false,
+        registry: None,
     };
     if installed != home.join(&record.package_path) {
         return Err(CliError::InvalidSkillConfiguration);
@@ -13945,6 +14584,7 @@ fn update_skill(
         .clone_into(&mut record.manifest_digest);
     record.package_path = skill_package_relative_path(package.manifest_digest());
     record.enabled = false;
+    record.registry = None;
     if installed != home.join(&record.package_path) {
         return Err(CliError::InvalidSkillConfiguration);
     }
@@ -14122,6 +14762,11 @@ fn validate_skill_records(records: &[InstalledSkillConfigRecord]) -> Result<(), 
             && valid_skill_identifier(&record.version, 128)
             && is_sha256_digest(&record.manifest_digest)
             && record.package_path == skill_package_relative_path(&record.manifest_digest)
+            && record.registry.as_ref().is_none_or(|registry| {
+                valid_skill_identifier(&registry.registry_id, 255)
+                    && is_sha256_digest(&registry.release_envelope_digest)
+                    && is_sha256_digest(&registry.archive_digest)
+            })
             && identities.insert(record.skill_id.as_str())
             && package_paths.insert(record.package_path.as_str())
     }) {
@@ -14224,6 +14869,7 @@ fn skill_package_response(
         resources: package.manifest().resources.clone(),
         required_tools: package.manifest().required_tools.iter().cloned().collect(),
         tool_authority: "references_only_no_authority_granted",
+        registry: record.and_then(|record| record.registry.clone()),
         configuration_path,
         replaced_configuration_copy,
         restart_required,
@@ -19876,6 +20522,11 @@ enum CliError {
         "registry package staging requires the exact lowercase SHA-256 printed by package-fetch"
     )]
     InvalidRegistryPackageDigest,
+    /// Package installation did not bind one canonical reviewed plan identity.
+    #[error(
+        "registry package installation requires the exact lowercase SHA-256 printed by package-plan"
+    )]
+    InvalidRegistryPackagePlanDigest,
     /// Registry metadata commands require an initialized canonical database.
     #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
     RegistryDatabaseNotFound,
@@ -19907,9 +20558,22 @@ enum CliError {
         "registry package changed after review; run package-fetch again and review the new digest"
     )]
     RegistryPackageDrift,
+    /// Installed state or staged evidence changed after the owner reviewed the plan.
+    #[error(
+        "registry package install plan changed after review; run package-plan again and review the new digest"
+    )]
+    RegistryPackagePlanDrift,
+    /// The current registry installer deliberately supports only data-only skills.
+    #[error(
+        "registry extension installation is not yet available; package-plan remains read-only and grants nothing"
+    )]
+    RegistryPackageInstallUnsupported,
     /// No durable release evidence exists for the exact requested identity.
     #[error("registry release evidence was not found")]
     RegistryReleaseNotFound,
+    /// No durable exact package bytes exist for the requested identity.
+    #[error("registry package evidence was not found; run package-fetch and package-stage first")]
+    RegistryPackageNotFound,
     /// Cryptographic or semantic registry metadata verification failed.
     #[error(transparent)]
     RegistryVerification(#[from] RegistryError),
@@ -19928,6 +20592,9 @@ enum CliError {
     /// Canonical registry metadata lookup failed.
     #[error(transparent)]
     RegistryMetadataStore(#[from] RegistryMetadataStoreError),
+    /// Existing extension lifecycle evidence could not be projected for an install plan.
+    #[error(transparent)]
+    RegistryExtensionPlan(#[from] ExtensionStoreError),
     /// Canonical `SQLite` storage could not be opened safely.
     #[error("canonical registry store could not be opened safely: {0}")]
     RegistryStore(#[source] StoreError),
@@ -20165,7 +20832,7 @@ mod tests {
         observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
         onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
         parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
-        provider_switch_recovery_route, registry_invocation,
+        provider_switch_recovery_route, registry_invocation, registry_skill_install_plan,
         require_registry_snapshot_review_digest, resolve_default_operational_subcommand,
         resolve_setup, select_codex_subscription_model, setup_provider_config,
         should_open_onboard_chat, stable_default_mealy_home, telegram_pair_api_url,
@@ -20184,6 +20851,9 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
     use mealy_application::{AgentLoopLimits, ProviderConfig, default_daemon_config_document};
+    use mealy_domain::{
+        SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset, SkillManifest, SkillToolRequirement,
+    };
     use mealy_infrastructure::CodexSubscriptionModel;
     use mealy_protocol::{
         API_VERSION, DeliveryMode, LocalConnectionInfo, TaskBudgetUsage, TimelineCursor,
@@ -20194,7 +20864,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     #[cfg(target_os = "linux")]
     use std::path::Path;
-    use std::{collections::BTreeMap, ffi::OsString, fs, io::Cursor, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        ffi::OsString,
+        fs,
+        io::Cursor,
+        path::PathBuf,
+    };
 
     fn connection(base_url: &str) -> LocalConnectionInfo {
         LocalConnectionInfo {
@@ -21118,6 +21794,64 @@ mod tests {
                         && mirror == "https://registry.example.test/mealy/v1/"
                         && expected_archive_digest
                             == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                )
+        ));
+    }
+
+    #[test]
+    fn registry_package_plan_parser_preserves_exact_staged_identity() {
+        let plan = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-plan",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+        ])
+        .expect("registry package plan command");
+        assert!(matches!(
+            plan.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackagePlan {
+                        registry_id,
+                        package_id,
+                        version,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                )
+        ));
+
+        let install = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-install",
+            "dev.mealy.registry",
+            "dev.mealy.skill.review",
+            "1.0.0",
+            "--expected-plan-digest",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "--approve",
+        ])
+        .expect("registry package install command");
+        assert!(matches!(
+            install.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackageInstall {
+                        registry_id,
+                        package_id,
+                        version,
+                        expected_plan_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.skill.review"
+                        && version == "1.0.0"
+                        && expected_plan_digest
+                            == "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
                 )
         ));
     }
@@ -22651,6 +23385,145 @@ mod tests {
             } if skill_id == "mealy.fixture.review"
                 && expected_manifest_digest == "b".repeat(64)
         ));
+    }
+
+    #[test]
+    fn registry_skill_plan_exposes_new_tool_references_without_installing() {
+        let home = tempfile::tempdir().expect("temporary skill plan home");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let candidate = SkillManifest {
+            contract_version: SKILL_MANIFEST_CONTRACT_VERSION.to_owned(),
+            skill_id: "dev.mealy.skill.review".to_owned(),
+            version: "1.0.0".to_owned(),
+            instructions: vec![SkillAsset {
+                relative_path: "instructions/review.md".to_owned(),
+                media_type: "text/markdown".to_owned(),
+                content_digest: "a".repeat(64),
+                size_bytes: 1,
+            }],
+            resources: Vec::new(),
+            required_tools: BTreeSet::from([SkillToolRequirement {
+                tool_id: "workspace.read".to_owned(),
+                version: "1".to_owned(),
+                input_schema_digest: "b".repeat(64),
+            }]),
+        };
+        let provenance = super::InstalledSkillRegistryProvenance {
+            registry_id: "dev.mealy.registry".to_owned(),
+            release_envelope_digest: "d".repeat(64),
+            archive_digest: "e".repeat(64),
+        };
+        let plan =
+            registry_skill_install_plan(home.path(), &candidate, &"c".repeat(64), &provenance)
+                .expect("new skill install plan");
+        assert_eq!(plan.0, "install");
+        assert!(plan.1.is_none());
+        assert_eq!(plan.2["addedRequiredTools"][0]["toolId"], "workspace.read");
+        assert_eq!(plan.2["removedRequiredTools"], json!([]));
+        assert_eq!(plan.3["instructionsChanged"], true);
+        assert!(plan.4);
+        assert!(!plan.5);
+        assert!(
+            !home.path().join("skills").exists(),
+            "planning must not publish package content"
+        );
+    }
+
+    #[test]
+    fn registry_skill_apply_publishes_disabled_provenance_bound_package() {
+        let home = tempfile::tempdir().expect("temporary registry skill home");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let source = home.path().join("source");
+        fs::create_dir(&source).expect("source directory");
+        let instruction = b"Review the requested change.\n";
+        fs::create_dir(source.join("instructions")).expect("instruction directory");
+        fs::write(source.join("instructions/review.md"), instruction).expect("instruction");
+        let manifest = SkillManifest {
+            contract_version: SKILL_MANIFEST_CONTRACT_VERSION.to_owned(),
+            skill_id: "dev.mealy.skill.review".to_owned(),
+            version: "1.0.0".to_owned(),
+            instructions: vec![SkillAsset {
+                relative_path: "instructions/review.md".to_owned(),
+                media_type: "text/markdown".to_owned(),
+                content_digest: mealy_application::sha256_digest(instruction),
+                size_bytes: u64::try_from(instruction.len()).expect("instruction size"),
+            }],
+            resources: Vec::new(),
+            required_tools: BTreeSet::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest");
+        fs::write(source.join("manifest.json"), &manifest_bytes).expect("manifest file");
+        let package = super::inspect_skill_package(
+            &source.join("manifest.json"),
+            &source,
+            Some(&mealy_application::sha256_digest(&manifest_bytes)),
+        )
+        .expect("inspect skill");
+        let provenance = super::InstalledSkillRegistryProvenance {
+            registry_id: "dev.mealy.registry".to_owned(),
+            release_envelope_digest: "d".repeat(64),
+            archive_digest: "e".repeat(64),
+        };
+        let plan = super::RegistryPackagePlanResponse {
+            operation: "package_install_planned",
+            plan_digest: "f".repeat(64),
+            registry_id: provenance.registry_id.clone(),
+            package_id: manifest.skill_id.clone(),
+            kind: mealy_application::RegistryPackageKind::Skill,
+            version: manifest.version.clone(),
+            publisher_id: "dev.mealy".to_owned(),
+            release_envelope_digest: provenance.release_envelope_digest.clone(),
+            manifest_digest: package.manifest_digest().to_owned(),
+            archive_digest: provenance.archive_digest.clone(),
+            staged_at_ms: 1,
+            action: "install",
+            current: None,
+            permission_diff: json!({
+                "kind": "skill",
+                "addedRequiredTools": [],
+                "removedRequiredTools": [],
+            }),
+            content_changes: json!({
+                "instructionsChanged": true,
+                "resourcesChanged": false,
+                "versionChanged": true,
+            }),
+            review: super::RegistryPackagePlanReview {
+                required: true,
+                widens_authority: false,
+                authority_reset_on_apply: false,
+            },
+            effects: super::RegistryPackagePlanEffects {
+                network_access: false,
+                filesystem_mutation: false,
+                package_authority: false,
+            },
+        };
+        let response =
+            super::apply_registry_skill_install(home.path(), &package, &provenance, &plan)
+                .expect("apply reviewed skill plan");
+        assert_eq!(response.operation, "installed_disabled");
+        assert!(!response.activation.instruction_authority_active);
+        assert!(!response.activation.tool_authority_granted);
+        assert!(response.effects.filesystem_mutation);
+        assert!(response.effects.restart_required);
+        let (_path, _body, _value, records) =
+            super::load_skill_configuration(home.path()).expect("installed configuration");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].registry.as_ref(), Some(&provenance));
+        assert!(!records[0].enabled);
+        super::inspect_installed_skill(home.path(), &records[0])
+            .expect("reinspect immutable installed skill");
     }
 
     #[test]

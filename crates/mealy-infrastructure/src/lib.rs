@@ -80,7 +80,7 @@ pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntime
 pub use skill_package::{
     InspectedSkillAsset, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
     MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, SkillPackageError, SkillResourceReadTool,
-    inspect_skill_package, publish_skill_package,
+    inspect_skill_package, inspected_registry_skill_package, publish_skill_package,
 };
 pub use sqlite::{
     ArtifactBlobRecord, JournalRecord, LATEST_SCHEMA_VERSION, OutboxRecord, SqliteStore,

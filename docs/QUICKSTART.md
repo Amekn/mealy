@@ -1291,6 +1291,31 @@ that exact digest as a separate decision:
 "$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
 ```
 
+If the same skill comes from an already bootstrapped signed registry, use the registry review chain
+instead of owner-local package paths. After `release-accept`, run:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-fetch \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-stage \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-archive-digest DIGEST_FROM_PACKAGE_FETCH --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-plan \
+  dev.mealy.registry owner.release-review 1.0.0
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-install \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --expected-plan-digest DIGEST_FROM_PACKAGE_PLAN --approve
+```
+
+The plan is offline and shows content plus governed-tool-reference changes against the installed
+revision. Install repeats current withdrawal/trust checks and the exact plan under the stopped-home
+lock, publishes through the same immutable skill store, records signed provenance, and leaves new,
+updated, or rollback bytes disabled. Run the same separate `skill enable` command shown above only
+after reviewing the installed manifest digest. Registry extension packages can currently be
+planned but not installed.
+
 Inspection rejects symlinks, traversal, undeclared files, missing assets, changed size/digest,
 non-UTF-8 or control-bearing instructions, oversized inventories, and executable helper fields.
 Installation copies the already-inspected bytes into an owner-private immutable digest directory

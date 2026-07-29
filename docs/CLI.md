@@ -217,6 +217,42 @@ the existing age-gated artifact garbage collector; it cannot become installed au
 Content-addressed package blobs are included in the established backup, restore, migration-copy,
 integrity, and orphan-accounting paths.
 
+For a staged skill, compare its exact content and governed-tool references with the currently
+installed revision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-plan dev.mealy.registry \
+  dev.mealy.skill.review 1.0.0
+```
+
+The offline plan rereads and verifies both staged blobs, requires the release to remain authorized
+and unwithdrawn, and reports install/update/evidence-adoption intent, prior status and digest,
+instruction/resource changes, exact added/removed governed-tool references, whether authority
+widens, and whether applying an update will disable active instructions. Extension packages
+receive the analogous capability, filesystem, network, secret, process, executable, and runtime
+file diff, but extension apply remains unsupported. The canonical plan material is returned as
+`planDigest`; it binds the staged publisher evidence and the exact current installation.
+
+Apply one unchanged reviewed skill plan:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-install dev.mealy.registry \
+  dev.mealy.skill.review 1.0.0 \
+  --expected-plan-digest DIGEST_FROM_PACKAGE_PLAN \
+  --approve
+```
+
+Apply repeats the active-root/snapshot/release/withdrawal checks, staged-blob integrity inspection,
+and complete install-plan calculation under the stopped-home lock. A digest mismatch changes
+nothing. A new skill is published through the existing immutable skill store and configured
+disabled. An update or rollback retains prior immutable revisions, replaces the configured
+revision, and removes prior instruction authority by leaving the candidate disabled. If identical
+locally installed bytes lack registry provenance, evidence adoption preserves their current
+enabled/disabled state. The signed registry, release, and archive identities are retained in
+non-secret skill configuration. Skill enablement remains the separate existing
+`skill enable --expected-manifest-digest ... --approve` decision, and required tools remain
+references rather than grants.
+
 The application transport also derives immutable release/manifest/archive paths only as
 `objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
 SHA-256 before parsing. The package inspector accepts only uncompressed deterministic USTAR with
@@ -227,10 +263,10 @@ FIFOs, sparse/PAX/GNU extensions, duplicates, undeclared files, traversal, non-c
 and trailing content. It parses and retains bytes in memory rather than invoking a tar extraction
 API, so inspection cannot create filesystem paths or race an extraction destination.
 
-No registry command installs, activates, discovers a mirror, or grants a permission. A package
-stage retains only exact reviewed inert evidence; it does not unpack an archive, publish an
-extension, enable a skill, add a tool, or authorize requested permissions. Permission-diff
-install staging and withdrawal-aware install/update/rollback are separate later v0.5 boundaries.
+No registry command activates an extension or skill, discovers a mirror, or grants a tool or
+requested permission. `package-install` supports data-only skills only and always uses the existing
+disabled-by-default lifecycle for new or changed bytes. Registry extension application,
+installed-withdrawal enforcement, and registry publication tooling remain later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

@@ -794,6 +794,16 @@ release evidence and adds the guarded package table. CLI parser/process coverage
 network access. Existing restore, migration-copy, rollback, artifact-integrity, and orphan-GC
 tests continue to exercise the shared artifact store used by staged packages.
 
+Registry install-plan tests prove a new skill exposes exact governed-tool additions while creating
+no package directory. Permission-diff unit coverage separately exercises extension capability,
+filesystem, network, secret, and process widening and skill tool-reference replacement. The
+registry-to-skill bridge republishes one signed deterministic archive through the existing
+immutable skill store and reinspects identical bytes. Apply coverage proves an exact reviewed plan
+publishes a provenance-bound disabled skill, creates no instruction or tool authority, and remains
+readable by the normal installed-skill verifier. CLI parser/process tests prove plan and install
+are distinct, approval precedes apply work, and malformed plan digests fail before staged-state
+lookup.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

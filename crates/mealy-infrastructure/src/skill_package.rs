@@ -1,7 +1,8 @@
+use crate::InspectedRegistryPackageArchive;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mealy_application::{
     CancellationProbe, ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput,
-    sha256_digest,
+    RegistryPackageManifest, sha256_digest,
 };
 use mealy_domain::{SkillAsset, SkillManifest, SkillManifestError};
 use serde::Deserialize;
@@ -383,6 +384,59 @@ pub fn inspect_skill_package(
         manifest,
         manifest_bytes,
         manifest_digest,
+        assets,
+    })
+}
+
+/// Converts strict authenticated registry archive evidence into the existing inert skill package.
+///
+/// This bridge materializes no path and executes nothing. It copies only manifest-declared bytes
+/// from the already extraction-free inspected archive, allowing the established immutable skill
+/// publisher and activation lifecycle to remain the sole installation boundary.
+///
+/// # Errors
+///
+/// Returns [`SkillPackageError::InvalidPackage`] unless the archive is one exact valid data-only
+/// skill package whose complete declaration and bytes remain internally consistent.
+pub fn inspected_registry_skill_package(
+    package: &InspectedRegistryPackageArchive,
+) -> Result<InspectedSkillPackage, SkillPackageError> {
+    let RegistryPackageManifest::Skill(manifest) = &package.manifest().manifest else {
+        return Err(SkillPackageError::InvalidPackage);
+    };
+    manifest.validate()?;
+    let declarations = manifest
+        .instructions
+        .iter()
+        .chain(&manifest.resources)
+        .collect::<Vec<_>>();
+    if package.files().len() != declarations.len().saturating_add(1) {
+        return Err(SkillPackageError::InvalidPackage);
+    }
+    let mut assets = BTreeMap::new();
+    for declaration in declarations {
+        let file = package
+            .files()
+            .get(&declaration.relative_path)
+            .ok_or(SkillPackageError::InvalidPackage)?;
+        if file.executable()
+            || u64::try_from(file.bytes().len()).ok() != Some(declaration.size_bytes)
+            || file.digest() != declaration.content_digest
+        {
+            return Err(SkillPackageError::InvalidPackage);
+        }
+        assets.insert(
+            declaration.relative_path.clone(),
+            InspectedSkillAsset {
+                declaration: declaration.clone(),
+                bytes: file.bytes().to_vec(),
+            },
+        );
+    }
+    Ok(InspectedSkillPackage {
+        manifest: manifest.clone(),
+        manifest_bytes: package.manifest().manifest_bytes.clone(),
+        manifest_digest: package.manifest().manifest_digest.clone(),
         assets,
     })
 }

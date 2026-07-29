@@ -1380,7 +1380,8 @@ pub fn inspect_registry_package_manifest(
 }
 
 /// Exact change to one logical extension filesystem permission.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtensionFilesystemPermissionChange {
     /// Stable logical mount name.
     pub name: String,
@@ -1391,7 +1392,8 @@ pub struct ExtensionFilesystemPermissionChange {
 }
 
 /// Exact semantic change to one extension capability contract.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtensionCapabilityChange {
     /// Stable capability ID.
     pub capability_id: String,
@@ -1410,7 +1412,8 @@ pub struct ExtensionCapabilityChange {
 }
 
 /// Complete review surface between an installed and candidate extension manifest.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExtensionPermissionDiff {
     /// Newly advertised capability IDs.
     pub added_capabilities: Vec<String>,
@@ -1605,7 +1608,8 @@ pub fn diff_extension_permissions(
 }
 
 /// Review surface between installed and candidate data-only skill tool references.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillPermissionDiff {
     /// Newly referenced separately governed tool contracts.
     pub added_required_tools: Vec<SkillToolRequirement>,

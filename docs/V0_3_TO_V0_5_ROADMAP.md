@@ -301,8 +301,12 @@ snapshot, exact replay is idempotent, and later withdrawal preserves audit histo
 new acceptance. Exact manifest/archive download and extraction-free inspection are implemented by
 `package-fetch`; explicitly approved, review-digest-fenced `package-stage` repeats those checks and
 retains the exact inert blobs through schema 26 and the established content-addressed artifact
-store. Permission-diff installation, staged activation, installed-withdrawal handling, and
-rollback remain later slices; metadata and byte acceptance grant no runtime authority.
+store. Offline `package-plan` now compares exact staged skills and extensions with canonical
+installed state and binds the complete content/permission diff into one review digest. Approved
+`package-install` applies that digest only to data-only skills through the existing immutable
+disabled-by-default lifecycle; it supports install, update, and same-flow rollback without
+granting required tools. Registry extension installation, installed-withdrawal enforcement, and
+activation remain later slices.
 
 ### Memory and automation
 

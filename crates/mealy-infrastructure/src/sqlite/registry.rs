@@ -1314,6 +1314,20 @@ mod tests {
             &package_bytes,
         )
         .expect("inspect exact package");
+        let bridged_skill = crate::inspected_registry_skill_package(&inspected_package)
+            .expect("bridge registry package into inert skill lifecycle");
+        let installed_skill =
+            crate::publish_skill_package(&bridged_skill, &temporary.path().join("skills"))
+                .expect("publish bridged skill");
+        assert_eq!(
+            crate::inspect_skill_package(
+                &installed_skill.join("manifest.json"),
+                &installed_skill,
+                Some(bridged_skill.manifest_digest()),
+            )
+            .expect("reinspect bridged skill"),
+            bridged_skill
+        );
         let manifest_blob = artifacts.commit(&manifest_bytes).expect("manifest blob");
         let package_blob = artifacts.commit(&package_bytes).expect("package blob");
         let snapshot_state = store

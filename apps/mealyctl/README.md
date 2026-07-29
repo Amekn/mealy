@@ -217,9 +217,10 @@ copy-paste lifecycle.
 
 The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `status`,
 `snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, `snapshot-refresh`, `release-fetch`,
-`release-accept`, `release-status`, `package-fetch`, and `package-stage` for the v0.5 signed
-registry trust root, monotonic snapshot fence, inert publisher-release evidence, extraction-free
-review, and digest-fenced durable package evidence.
+`release-accept`, `release-status`, `package-fetch`, `package-stage`, `package-plan`, and
+`package-install` for the v0.5 signed registry trust root, monotonic snapshot fence, inert
+publisher-release evidence, extraction-free review, digest-fenced durable package evidence, and
+disabled-by-default data-only skill installation.
 Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
 all canonical-state operations require the daemon to be stopped, and existing databases must
 already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
@@ -231,7 +232,11 @@ immutable SQLite transaction.
 `package-stage` additionally requires explicit approval and the exact archive digest from
 `package-fetch`; it revalidates current authority and commits exact inert manifest/archive blobs
 through schema 26 and the existing private content-addressed artifact store.
-The namespace still installs or grants no extension, skill, tool, or requested permission. See
+`package-plan` is offline and binds complete current/candidate content and permission diffs into one
+review digest. Approved `package-install` currently accepts only data-only skills, publishes
+through the existing immutable skill lifecycle, disables changed revisions, and retains signed
+provenance. It never enables instructions or grants required tools. Registry extension install
+remains closed. See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
 lifecycle and current mirror boundary.
 

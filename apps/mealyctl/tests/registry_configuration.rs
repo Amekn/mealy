@@ -208,6 +208,22 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         "unexpected package precondition error: {}",
         String::from_utf8_lossy(&unaccepted_package.stderr)
     );
+    let unstaged_package_plan = registry_command(
+        home.path(),
+        &[
+            "package-plan",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+        ],
+    );
+    assert!(!unstaged_package_plan.status.success());
+    assert!(
+        String::from_utf8_lossy(&unstaged_package_plan.stderr)
+            .contains("package evidence was not found"),
+        "unexpected package-plan precondition error: {}",
+        String::from_utf8_lossy(&unstaged_package_plan.stderr)
+    );
     let unapproved_package_stage = registry_command(
         home.path(),
         &[
@@ -246,6 +262,42 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         String::from_utf8_lossy(&invalid_package_digest.stderr).contains("exact lowercase SHA-256"),
         "unexpected package digest error: {}",
         String::from_utf8_lossy(&invalid_package_digest.stderr)
+    );
+    let unapproved_package_install = registry_command(
+        home.path(),
+        &[
+            "package-install",
+            REGISTRY_ID,
+            "dev.mealy.skill.review",
+            "1.0.0",
+            "--expected-plan-digest",
+            FIXTURE_DIGEST,
+        ],
+    );
+    assert!(!unapproved_package_install.status.success());
+    assert!(
+        String::from_utf8_lossy(&unapproved_package_install.stderr).contains("requires --approve"),
+        "unexpected package-install approval error: {}",
+        String::from_utf8_lossy(&unapproved_package_install.stderr)
+    );
+    let invalid_package_plan_digest = registry_command(
+        home.path(),
+        &[
+            "package-install",
+            REGISTRY_ID,
+            "dev.mealy.skill.review",
+            "1.0.0",
+            "--expected-plan-digest",
+            "not-a-digest",
+            "--approve",
+        ],
+    );
+    assert!(!invalid_package_plan_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_package_plan_digest.stderr)
+            .contains("exact lowercase SHA-256"),
+        "unexpected package plan digest error: {}",
+        String::from_utf8_lossy(&invalid_package_plan_digest.stderr)
     );
     let insecure_mirror = registry_command(
         home.path(),

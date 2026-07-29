@@ -67,8 +67,14 @@ Explicitly approved `package-stage` repeats that review under a digest fence, pe
 manifest/archive bytes through the existing content-addressed artifact store, and commits schema
 26 immutable evidence only after transactional root/snapshot/release/withdrawal reverification.
 Restart, exact replay, mutation rejection, backup enumeration, and v25-to-v26 migration are
-covered. Permission-diff installation, installed-withdrawal handling, activation, and rollback are
-still open v0.5 work and therefore are not marked covered here.
+covered. Offline `package-plan` covers complete extension permission and skill governed-tool
+reference diffs, content/executable changes, current status, widening, authority reset, and one
+review digest without mutation. Approved `package-install` covers data-only skill install, update,
+and rollback through the existing immutable publisher; changed revisions are disabled and signed
+registry provenance is retained. Exact-plan mismatch, invalid approval/digest ordering,
+extraction-free registry-to-skill conversion, disabled publication, and startup parsing of the
+optional provenance are tested. Registry extension installation and installed-withdrawal handling
+remain open v0.5 work and therefore are not marked covered here.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

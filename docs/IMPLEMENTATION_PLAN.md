@@ -322,9 +322,17 @@ store, so backup, restore, migration-copy, integrity, deduplication, and age-gat
 remain one mechanism. Exact replay is idempotent; no archive is extracted and no extension, skill,
 tool, or permission is installed or enabled.
 
-The next slices must add permission-diff install/stage commands, installed-withdrawal policy,
-upgrade and rollback transactions, public registry publication tooling, and
-package/upgrade/recovery qualification.
+The eighth slice adds offline `package-plan` for both package classes. It reloads exact staged
+bytes, requires current unwithdrawn release authorization, and reports deterministic content and
+permission/tool-reference diffs against the existing installation. One canonical digest binds the
+candidate and current state. Approved `package-install` applies that digest only for data-only
+skills, bridging the extraction-free registry evidence into the established immutable skill
+publisher. New or changed revisions are disabled, prior immutable bytes remain available for the
+same rollback flow, identical-byte evidence adoption may preserve status, and registry provenance
+is retained without granting required tools. Activation remains a separate approval.
+
+The next slices must add registry extension installation, installed-withdrawal policy, public
+registry publication tooling, and package/upgrade/recovery qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

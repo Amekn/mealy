@@ -107,6 +107,17 @@ pub struct SkillConfig {
     manifest_digest: String,
     package_path: PathBuf,
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<SkillRegistryProvenanceConfig>,
+}
+
+/// Signed-registry evidence that supplied one installed inert skill revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SkillRegistryProvenanceConfig {
+    registry_id: String,
+    release_envelope_digest: String,
+    archive_digest: String,
 }
 
 impl SkillConfig {
@@ -578,6 +589,11 @@ fn valid_skills(skills: &[SkillConfig]) -> bool {
                 .package_path
                 .components()
                 .all(|component| matches!(component, std::path::Component::Normal(_)))
+            && skill.registry.as_ref().is_none_or(|registry| {
+                valid_skill_identifier(&registry.registry_id, 255)
+                    && is_sha256_digest(&registry.release_envelope_digest)
+                    && is_sha256_digest(&registry.archive_digest)
+            })
             && identities.insert(skill.skill_id.as_str())
             && package_paths.insert(skill.package_path.as_path())
     })
@@ -1507,6 +1523,29 @@ mod tests {
         assert_eq!(loaded.skills().len(), 1);
         assert_eq!(loaded.skills()[0].skill_id(), "mealy.fixture.review");
         assert!(!loaded.skills()[0].enabled());
+
+        value["skills"][0]["registry"] = json!({
+            "registryId": "dev.mealy.registry",
+            "releaseEnvelopeDigest": "b".repeat(64),
+            "archiveDigest": "c".repeat(64),
+        });
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("registry config bytes"),
+        )
+        .expect("write registry config");
+        load_or_create_daemon_config(home.path()).expect("registry provenance config");
+        let mut invalid_registry = value.clone();
+        invalid_registry["skills"][0]["registry"]["archiveDigest"] = json!("not-a-digest");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&invalid_registry).expect("invalid registry config bytes"),
+        )
+        .expect("write invalid registry config");
+        assert!(matches!(
+            load_or_create_daemon_config(home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
 
         for invalid_path in ["../skills/escape", "/tmp/skill", "skills/not-the-digest"] {
             let mut invalid = value.clone();

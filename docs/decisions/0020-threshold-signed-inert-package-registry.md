@@ -116,10 +116,21 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     idempotent. A failed database transaction can leave only an inert age-gated orphan, never an
     installed package or permission. Existing artifact backup, restore, migration-copy, integrity,
     deduplication, and garbage-collection paths apply without a second cache.
-15. Download resumption, package publication tooling, permission-diff install staging, activation,
-    withdrawal propagation to installed revisions, and rollback orchestration remain later slices.
-    Mirror retrieval and durable byte staging still perform no package execution and grant no
-    runtime authority.
+15. Offline `package-plan` rereads exact staged blobs, requires current unwithdrawn authorization,
+    and compares them with the existing skill or extension revision. Its digest binds publisher
+    evidence, candidate bytes, current digest/status/revision, complete permission/tool-reference
+    diff, content/executable changes, widening, and authority-reset intent. It mutates nothing.
+16. Approved `package-install` currently accepts only data-only skills and only the exact reviewed
+    plan digest. It repeats plan construction under the stopped-home lock, converts the opaque
+    extraction-free package into the existing inert skill package type, and publishes through the
+    established immutable skill store. New, updated, and rollback candidates are disabled; an
+    update removes prior instruction authority. Identical-byte registry evidence adoption may
+    preserve status. Configuration records exact registry/release/archive provenance, while tool
+    requirements remain ungranted references and skill enablement remains a separate digest-fenced
+    approval.
+17. Download resumption, registry extension installation, installed-withdrawal enforcement, and
+    package publication tooling remain later slices. Mirror retrieval, durable staging, planning,
+    and skill installation perform no package execution and grant no runtime tool authority.
 
 ## Consequences
 

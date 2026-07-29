@@ -631,7 +631,7 @@ failure cannot advance state, and refresh holds the stopped-home lock across net
 Refresh additionally requires the exact envelope digest printed by the preceding fetch, so the
 mutable current path cannot change between owner review and apply. The implementation shares the
 same reviewed IANA special-address policy as web, MCP, and browser egress so the deny list cannot
-drift independently. Permission-diff installation and withdrawal propagation to installed
+drift independently. Registry extension installation and withdrawal propagation to installed
 packages remain explicit follow-on boundaries and are not yet claimed.
 
 Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
@@ -662,6 +662,18 @@ flag. Private atomic blob publication may precede a database failure, but that l
 unreferenced, age-gated artifact-store orphan; immutable package evidence is the sole path to a
 durable staged identity. Neither path extracts code, installs a skill, activates an extension, or
 creates a grant.
+
+`package-plan` then rereads both staged blobs and repeats current release authorization before
+comparing the candidate with canonical installed state. The plan digest binds exact publisher,
+release, manifest, archive, prior revision/status, permission or governed-tool reference diff,
+content changes, widening, and authority-reset intent. `package-install` checks approval before
+work, rebuilds that plan under the stopped-home lock, and refuses any digest drift. It accepts only
+data-only skills, converts only the opaque extraction-free inspected package, and publishes it
+through the existing immutable skill lifecycle. New, updated, or rollback bytes are configured
+disabled; prior instructions therefore cannot remain active across a changed manifest. Identical
+installed bytes may adopt signed provenance without changing their status. Required tools remain
+ungranted references, and a separate exact-manifest-digest approval is still required to enable
+instructions. Extension application remains closed.
 
 ### A staging asset substitutes a different release daemon
 
