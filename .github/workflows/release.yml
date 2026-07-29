@@ -39,6 +39,7 @@ jobs:
             libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libudev1 \
             libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
             libxkbcommon0 libxrandr2 unzip
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
           browser_bundle=$(scripts/fetch-browser-runtime.sh "$RUNNER_TEMP/mealy-browser")
           echo "MEALY_BROWSER_BUNDLE=$browser_bundle" >>"$GITHUB_ENV"
@@ -194,6 +195,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes apparmor-profiles apparmor-utils binutils bubblewrap lintian shellcheck
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
       - run: cargo fmt --all -- --check
       - name: Validate shell entry points
@@ -888,6 +890,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes \
             apparmor-profiles apparmor-utils bubblewrap curl jq
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
           attestation_help=$(gh attestation verify --help)
           grep -Fq -- '--bundle' <<<"$attestation_help"
