@@ -483,8 +483,8 @@ The v0.5 release additionally publishes `mealy-domain`, `mealy-protocol`, and `m
 `ATTESTATION-sdk.sigstore.json`. `scripts/build-sdk-packages.sh` requires clean tagged source,
 packages the complete dependency set together twice, and rejects byte drift. The verifier checks
 the exact bounded archive/checksum inventory, extracts outside the workspace, and compiles a clean
-consumer against the retained lock. Protected CI and the tag gate run that proof before
-publication; the native x86-64 public-release job downloads every SDK asset, verifies its GitHub
+consumer against the retained qualification lock. Protected CI and the tag gate run that proof
+before publication; the native x86-64 public-release job downloads every SDK asset, verifies its GitHub
 release digest and dedicated provenance, and repeats the extracted-package consumer build. The
 protected non-publishing post-release workflow can repeat the same proof independently for an
 unchanged tag. GitHub assets are the supported v0.5 SDK distribution boundary and do not imply

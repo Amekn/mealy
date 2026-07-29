@@ -44,10 +44,60 @@ variants only when behavior needs to differ; the enum is non-exhaustive so compa
 may add more precise failures.
 
 Every v0.5-or-newer GitHub release publishes reproducible `mealy-domain`, `mealy-protocol`, and
-`mealy-client` `.crate` archives with a pinned downstream-consumer lock, checksums, and retained
+`mealy-client` `.crate` archives with a pinned qualification-consumer lock, checksums, and retained
 Sigstore provenance. The release workflow extracts those archives outside the workspace and
 compiles a clean consumer through the public client surface before publication, then repeats the
 same check from the downloaded public assets. Frozen v0.2.1, v0.3.0, v0.4.0, and v0.5.0 daemon
 fixtures prevent a compatible `v1` response or structured error from silently becoming
 unreadable. These GitHub release packages are the supported v0.5 distribution boundary; they are
 intentionally not represented as already published on crates.io.
+
+## Use the v0.5 GitHub release packages
+
+Download all six SDK assets from one release, authenticate the release digests and dedicated
+provenance, and then check the signed checksum inventory:
+
+```sh
+repo=Amekn/mealy
+tag=v0.5.0
+version=${tag#v}
+mkdir "mealy-sdk-$version"
+cd "mealy-sdk-$version"
+gh release download "$tag" --repo "$repo" \
+  --pattern "mealy-domain-$version.crate" \
+  --pattern "mealy-protocol-$version.crate" \
+  --pattern "mealy-client-$version.crate" \
+  --pattern "mealy-sdk-$version-Cargo.lock" \
+  --pattern SHA256SUMS-sdk \
+  --pattern ATTESTATION-sdk.sigstore.json
+for asset in ./*; do
+  gh release verify-asset "$tag" "$asset" --repo "$repo"
+done
+gh attestation verify SHA256SUMS-sdk --repo "$repo" \
+  --signer-workflow "$repo/.github/workflows/release.yml" \
+  --source-ref "refs/tags/$tag" \
+  --bundle ATTESTATION-sdk.sigstore.json \
+  --deny-self-hosted-runners
+sha256sum --check --strict SHA256SUMS-sdk
+mkdir vendor
+for crate in mealy-domain mealy-protocol mealy-client; do
+  tar -xzf "$crate-$version.crate" --no-same-owner --no-same-permissions -C vendor
+done
+```
+
+Point the top-level client dependency at the authenticated extracted package and patch its two
+unpublished Mealy dependencies to the matching extracted packages:
+
+```toml
+[dependencies]
+mealy-client = { version = "=0.5.0", path = "mealy-sdk-0.5.0/vendor/mealy-client-0.5.0" }
+
+[patch.crates-io]
+mealy-domain = { path = "mealy-sdk-0.5.0/vendor/mealy-domain-0.5.0" }
+mealy-protocol = { path = "mealy-sdk-0.5.0/vendor/mealy-protocol-0.5.0" }
+```
+
+Generate and retain the integrating application's own `Cargo.lock`, then build with `--locked`.
+The released `mealy-sdk-0.5.0-Cargo.lock` records the exact qualification consumer and transitive
+dependency graph for audit and reproduction; it is not a drop-in lock for an application with a
+different root package identity.

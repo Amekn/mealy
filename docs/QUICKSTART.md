@@ -2389,6 +2389,23 @@ Workspace users can depend on `mealy-client` and construct `MealyClient` from an
 `mealy_client::protocol` and has typed methods for status/provider discovery, session workbench,
 text/image admission, task control and replay, approvals, extensions, and channel administration.
 
+Release users should download and authenticate all six v0.5 SDK assets as described in the client
+README, extract the three `.crate` archives into a private vendor directory, and use the complete
+matched set:
+
+```toml
+[dependencies]
+mealy-client = { version = "=0.5.0", path = "vendor/mealy-client-0.5.0" }
+
+[patch.crates-io]
+mealy-domain = { path = "vendor/mealy-domain-0.5.0" }
+mealy-protocol = { path = "vendor/mealy-protocol-0.5.0" }
+```
+
+Generate the application's own lockfile after adding these paths. The released SDK lock records
+the exact qualification consumer and dependency graph; it cannot replace a lock whose root
+application has a different package identity.
+
 Do not open `$MEALY_HOME/connection.json` through an ordinary path lookup in a reusable service.
 It contains the bearer credential. Apply the same canonical owner-private directory,
 owner-private regular-file, no-follow, and 64-KiB bounds used by `mealyctl`, then pass the parsed

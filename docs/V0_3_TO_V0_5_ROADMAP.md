@@ -366,9 +366,9 @@ rejection. Release qualification remains open.
   literal loopback, ignores ambient proxies, refuses redirects, redacts bearer credentials, bounds
   request/response JSON, and rejects incompatible request, response, and structured error versions.
   Frozen v0.2.1/v0.3/v0.4/v0.5 daemon fixtures, byte-reproducible publishable crate archives, a
-  retained consumer lock, clean external-consumer compilation, and dedicated release attestation
-  complete the v0.5 SDK qualification boundary. Async/SSE and non-Rust clients remain later
-  ecosystem work.
+  retained qualification-consumer lock, clean external-consumer compilation, and dedicated
+  release attestation complete the v0.5 SDK qualification boundary. Async/SSE and non-Rust clients
+  remain later ecosystem work.
 - Export bounded OpenTelemetry traces/metrics without prompts, secrets, or
   private content by default. The first typed Rust slice is implemented behind an explicit
   `--otlp-endpoint`: it records claimed agent-run slices with canonical correlation IDs on traces
