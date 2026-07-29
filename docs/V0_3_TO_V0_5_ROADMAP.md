@@ -346,8 +346,15 @@ exclusive no-replay cursors; leased occurrences recover after restart; prompt ad
 deterministic inbox deduplication; and notification completion atomically commits outbox, run,
 cursor/status, and journal evidence. Event actions are static notification-only and never copy
 source payloads. CLI/API, migration, store, observability, safe-mode, clean-drain, and hard-restart
-process evidence cover the slice. Exact Slack-thread pinning remains part of remote continuation,
-and release qualification remains open.
+process evidence cover the slice. Exact Slack-thread pinning is implemented through schema 30 and
+[ADR 0023](decisions/0023-exact-thread-slack-remote-continuation.md). A local owner creates one
+UUIDv7-keyed, one-minute-to-30-day route to a thread already admitted from the exact allowlisted
+Slack workspace/member/conversation. Creation stores a no-replay cursor; only one effective pin
+per binding is allowed; revision-fenced revoke retains evidence. Static notification definitions
+pin that exact route, and definition mutation, outbox publication, and delivery claim all
+revalidate it without latest-thread or local-delivery fallback. Public-process evidence covers
+restart recovery, pin/list/read, proactive exact-thread delivery, revoke, and post-revoke
+rejection. Release qualification remains open.
 
 ### SDK, observability, evaluation, and remote continuation
 
@@ -377,9 +384,12 @@ and release qualification remains open.
   Deterministic process coverage proves validated success plus approval parking with zero effect
   dispatch. Crash injection/restart remains an outer-harness responsibility, and signed report
   publication plus model-judge plugins remain later v0.5 work.
-- Add outbound-only, authenticated, revocable, single-owner remote
-  continuation with synchronized timeline cursors and completion/approval
-  notifications. Multi-user hosting remains outside this milestone.
+- Add outbound-only, authenticated, revocable, single-owner remote continuation with synchronized
+  timeline cursors and completion/approval notifications. The exact-thread Slack static-
+  notification slice is implemented through schema 30 without a public inbound listener.
+  Reactive completion/approval replies retain their originating-thread route. General remote
+  interactive prompts, additional transports, and multi-user hosting remain outside this
+  milestone.
 
 ### v0.5 release gate
 

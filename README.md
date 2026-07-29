@@ -380,7 +380,11 @@ Separate schema-29 automations add future one-shot prompt or notification action
 future-session-event notifications. They use client-keyed duplicate-safe creation, whole-definition
 revision fences, exclusive event cursors, recoverable leased runs, deterministic prompt admission,
 and atomic notification outbox evidence. Event payloads are never copied and event rules cannot
-submit model prompts. See [durable automation](docs/AUTOMATION.md).
+submit model prompts. Schema 30 adds outbound-only Slack static notifications through one
+short-lived owner pin to an exact previously admitted thread; definitions store that exact route,
+and expiry/revocation cannot fall back to a newer or local thread. See
+[durable automation](docs/AUTOMATION.md) and
+[exact-thread remote continuation](docs/REMOTE_CONTINUATION.md).
 Operational hardening adds schema-versioned configuration and rollback history, durable daemon
 lifetime evidence, safe mode, bounded clean/forced drain, authenticated status/metrics/doctor
 views, immutable online backups, optional authenticated-encrypted secret archives, isolated fresh-

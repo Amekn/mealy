@@ -1201,14 +1201,18 @@ Claims expire after 30 seconds and restart reclaims the same occurrence. Prompt 
 `automation:AUTOMATION_ID:TRIGGER_KEY` as the durable inbox key. Notification completion writes the
 terminal occurrence, next status/cursor, journal event, and one outbox record atomically. A
 `notified` run means accepted into the durable delivery outbox; inspect normal channel/outbox
-health for remote delivery failures.
+health for remote delivery failures. Slack static notifications additionally name one exact active
+remote-continuation ID. That route is checked at definition time, before outbox publication, and
+at delivery claim; expiry or revocation fails closed without choosing another thread.
 
 Review `activeAutomations`, `pausedAutomations`, `claimedAutomationRuns`, and
 `failedAutomationRuns` in `status`, and the snake-case equivalents in `metrics`. A claimed count
 that persists beyond one lease interval or a rising failed count needs investigation with
 `automation runs`. Safe mode starts no automation driver and rejects mutation. Do not edit schema
-29 automation tables directly. See [durable automation](AUTOMATION.md) for exact CLI forms,
-supported destinations, edit behavior, and payload-isolation rules.
+29/30 automation or Slack-continuation tables directly. See
+[durable automation](AUTOMATION.md) for exact CLI forms, supported destinations, edit behavior,
+and payload-isolation rules, and [remote continuation](REMOTE_CONTINUATION.md) for route inspection,
+expiry, and revocation.
 
 ## Installed-program lifecycle
 

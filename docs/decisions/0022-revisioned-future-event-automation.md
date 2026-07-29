@@ -47,11 +47,12 @@ leave it active.
 
 Automation targets may be local, an exact signed webhook installation, or an exact Telegram or
 Discord installation and route. Arbitrary extension-channel names are rejected rather than
-treated as local delivery. Slack targets are rejected for both prompts and notifications until an
-explicit thread-pinning contract exists. The exact binding is validated at create/edit time and
-again immediately before notification outbox publication; revocation produces terminal failed run
-evidence and no outbox row. Safe mode starts no automation driver and rejects mutation through the
-existing API boundary.
+treated as local delivery. Slack targets were rejected pending an explicit thread-pinning
+contract; [ADR 0023](0023-exact-thread-slack-remote-continuation.md) now permits static Slack
+notifications through that separate exact route while retaining the prompt prohibition. The exact
+binding is validated at create/edit time and again immediately before notification outbox
+publication; revocation produces terminal failed run evidence and no outbox row. Safe mode starts
+no automation driver and rejects mutation through the existing API boundary.
 
 ## Consequences
 
@@ -65,5 +66,4 @@ existing API boundary.
   a semantically different reuse of the same identifier cannot alias the original command.
 - Editing is whole-definition replacement under an exact revision fence; terminal definitions are
   immutable.
-- Proactive Slack automation remains a visible limitation until secure remote continuation pins an
-  exact owner-approved thread.
+- Proactive Slack routing is delegated to ADR 0023's exact owner-approved continuation contract.

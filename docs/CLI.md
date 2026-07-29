@@ -40,7 +40,7 @@ public command cannot be added or removed without updating this reference.
 | `extension` | Install, grant, invoke, upgrade, disable, or revoke isolated extensions. |
 | `skill` | Inspect and manage stopped-home data-only skill bundles. |
 | `registry` | Inspect and advance signed inert registry trust metadata while stopped. |
-| `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
+| `channel` | Configure and inspect webhook, Telegram, Discord, Slack, and exact-thread Slack continuation bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
 | `automation` | Create, edit, inspect, pause, resume, cancel, or audit one-shot and future-event automations. |
 | `health` | Check daemon liveness. |
@@ -568,6 +568,8 @@ choose a bounded non-interactive path.
   conversation, skills, tools, channels, schedules, and delegation.
 - Follow [durable automation](AUTOMATION.md) for one-shot prompts, future-event notifications,
   revision-fenced edits, crash recovery, and delivery boundaries.
+- Follow [exact-thread remote continuation](REMOTE_CONTINUATION.md) to pin, inspect, use, expire,
+  or revoke proactive Slack notification routes.
 - Use the [operations guide](OPERATIONS.md) for health, metrics, drain, backup/restore, retention,
   service management, upgrades, and incidents.
 - Use the [local API reference](API.md) when building a direct client rather than invoking

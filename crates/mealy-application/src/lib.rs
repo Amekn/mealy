@@ -370,16 +370,20 @@ pub use sessions::{
 pub use slack::{
     SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
     SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_acknowledgement_id,
-    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id,
+    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id, valid_slack_thread_id,
 };
 pub use slack_channel::{
-    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,
-    PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
-    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, SLACK_MAXIMUM_DISPLAY_NAME_BYTES,
-    SLACK_MAXIMUM_ERROR_CODE_BYTES, SLACK_MAXIMUM_IGNORE_REASON_BYTES, SlackChannelBindingView,
-    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
-    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
-    slack_input_dedupe_key, validate_slack_binding, validate_slack_reservation,
+    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit,
+    CreateSlackRemoteContinuationCommit, OutboundSlackTarget, PendingSlackEnvelope,
+    RecordSlackSocketCommit, RegisterSlackChannelCommit, ReserveSlackEnvelopeCommit,
+    RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit,
+    SLACK_MAXIMUM_DISPLAY_NAME_BYTES, SLACK_MAXIMUM_ERROR_CODE_BYTES,
+    SLACK_MAXIMUM_IGNORE_REASON_BYTES, SLACK_REMOTE_CONTINUATION_MAXIMUM_LIFETIME_MS,
+    SLACK_REMOTE_CONTINUATION_MINIMUM_LIFETIME_MS, SlackChannelBindingView, SlackChannelStatus,
+    SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition, SlackEnvelopeReservation,
+    SlackOutboundContext, SlackRemoteContinuationStatus, SlackRemoteContinuationView,
+    SlackReservedDisposition, SlackSocketTarget, slack_input_dedupe_key, validate_slack_binding,
+    validate_slack_reservation,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,

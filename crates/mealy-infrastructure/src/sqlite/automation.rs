@@ -8,7 +8,8 @@ use mealy_application::{
     validate_automation_definition, validate_automation_view,
 };
 use mealy_domain::{
-    AutomationId, AutomationRunId, EventId, InboxEntryId, OutboxId, PrincipalId, SessionId,
+    AutomationId, AutomationRunId, EventId, InboxEntryId, OutboxId, PrincipalId,
+    RemoteContinuationId, SessionId,
 };
 use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::json;
@@ -53,7 +54,7 @@ impl AutomationStore for SqliteStore {
             commit.action.target_session_id(),
             "target",
         )?;
-        ensure_automation_target_supported(&transaction, &commit.action)?;
+        ensure_automation_target_supported(&transaction, &commit.action, commit.created_at_ms)?;
         authorize_source(
             &transaction,
             commit.manager_ownership.principal_id(),
@@ -82,16 +83,18 @@ impl AutomationStore for SqliteStore {
         let definition_digest = sha256_digest(definition_json.as_bytes());
         let (trigger_kind, due_at_ms, source_session_id, source_event_type) =
             trigger_columns(&commit.trigger);
-        let (action_kind, action_body, approval_allowed) = action_columns(&commit.action);
+        let (action_kind, action_body, approval_allowed, remote_continuation_id) =
+            action_columns(&commit.action);
         transaction
             .execute(
                 "INSERT INTO automation(\
                 automation_id, principal_id, manager_binding_id, target_binding_id, \
                 target_session_id, name, trigger_kind, due_at_ms, source_session_id, \
                 source_event_type, source_after_cursor, action_kind, action_body, \
-                approval_required_actions_allowed, status, revision, created_at_ms, updated_at_ms\
+                approval_required_actions_allowed, slack_remote_continuation_id, status, \
+                revision, created_at_ms, updated_at_ms\
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                       'active', 0, ?15, ?15)",
+                       ?15, 'active', 0, ?16, ?16)",
                 params![
                     commit.automation_id.to_string(),
                     commit.manager_ownership.principal_id().to_string(),
@@ -107,6 +110,7 @@ impl AutomationStore for SqliteStore {
                     action_kind,
                     action_body,
                     i64::from(approval_allowed),
+                    remote_continuation_id.map(|id| id.to_string()),
                     commit.created_at_ms,
                 ],
             )
@@ -234,7 +238,7 @@ impl AutomationStore for SqliteStore {
             commit.action.target_session_id(),
             "target",
         )?;
-        ensure_automation_target_supported(&transaction, &commit.action)?;
+        ensure_automation_target_supported(&transaction, &commit.action, commit.edited_at_ms)?;
         authorize_source(
             &transaction,
             commit.manager_ownership.principal_id(),
@@ -256,7 +260,8 @@ impl AutomationStore for SqliteStore {
         let definition_digest = sha256_digest(definition_json.as_bytes());
         let (trigger_kind, due_at_ms, source_session_id, source_event_type) =
             trigger_columns(&commit.trigger);
-        let (action_kind, action_body, approval_allowed) = action_columns(&commit.action);
+        let (action_kind, action_body, approval_allowed, remote_continuation_id) =
+            action_columns(&commit.action);
         let next_revision = commit
             .expected_revision
             .checked_add(1)
@@ -267,8 +272,8 @@ impl AutomationStore for SqliteStore {
                     trigger_kind = ?4, due_at_ms = ?5, source_session_id = ?6, \
                     source_event_type = ?7, source_after_cursor = ?8, action_kind = ?9, \
                     action_body = ?10, approval_required_actions_allowed = ?11, \
-                    revision = ?12, updated_at_ms = ?13 \
-                 WHERE automation_id = ?14 AND principal_id = ?15 AND revision = ?16 \
+                    slack_remote_continuation_id = ?12, revision = ?13, updated_at_ms = ?14 \
+                 WHERE automation_id = ?15 AND principal_id = ?16 AND revision = ?17 \
                    AND status IN ('active', 'paused') \
                    AND NOT EXISTS (SELECT 1 FROM automation_run run \
                                    WHERE run.automation_id = automation.automation_id \
@@ -285,6 +290,7 @@ impl AutomationStore for SqliteStore {
                     action_kind,
                     action_body,
                     i64::from(approval_allowed),
+                    remote_continuation_id.map(|id| id.to_string()),
                     to_i64(next_revision)?,
                     commit.edited_at_ms,
                     commit.automation_id.to_string(),
@@ -637,6 +643,7 @@ impl AutomationStore for SqliteStore {
             let AutomationAction::Notify {
                 target_session_id,
                 message,
+                ..
             } = &automation.action
             else {
                 return Err(invalid_contract("notification outcome has a prompt action"));
@@ -650,13 +657,24 @@ impl AutomationStore for SqliteStore {
             if current_target != automation.target_ownership {
                 return Err(AutomationStoreError::Unauthorized);
             }
-            ensure_automation_target_supported(&transaction, &automation.action).map_err(
-                |error| match error {
-                    AutomationStoreError::InvalidContract(_)
-                    | AutomationStoreError::Unauthorized => AutomationStoreError::Unauthorized,
-                    other => other,
-                },
-            )?;
+            let notification_route = ensure_automation_target_supported(
+                &transaction,
+                &automation.action,
+                commit.completed_at_ms,
+            )
+            .map_err(|error| match error {
+                AutomationStoreError::InvalidContract(_) | AutomationStoreError::Unauthorized => {
+                    AutomationStoreError::Unauthorized
+                }
+                other => other,
+            })?;
+            let remote_continuation_id = match &automation.action {
+                AutomationAction::Notify {
+                    remote_continuation_id,
+                    ..
+                } => *remote_continuation_id,
+                AutomationAction::SubmitPrompt { .. } => None,
+            };
             transaction
                 .execute(
                     "INSERT INTO outbox(outbox_id, topic, payload_json, created_at_ms) \
@@ -667,6 +685,8 @@ impl AutomationStore for SqliteStore {
                             "automation_id": automation.automation_id,
                             "automation_run_id": run.automation_run_id,
                             "message": message,
+                            "notification_route": notification_route,
+                            "remote_continuation_id": remote_continuation_id,
                             "session_id": target_session_id,
                             "source_event_cursor": run.source_event_cursor,
                             "source_event_id": run.source_event_id,
@@ -804,7 +824,8 @@ fn load_automation(
             "SELECT principal_id, manager_binding_id, target_binding_id, target_session_id, name, \
                     trigger_kind, due_at_ms, source_session_id, source_event_type, \
                     source_after_cursor, action_kind, action_body, \
-                    approval_required_actions_allowed, status, revision, created_at_ms, updated_at_ms \
+                    approval_required_actions_allowed, slack_remote_continuation_id, status, \
+                    revision, created_at_ms, updated_at_ms \
              FROM automation WHERE automation_id = ?1",
             [automation_id.to_string()],
             |row| {
@@ -822,10 +843,11 @@ fn load_automation(
                     row.get::<_, String>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, bool>(12)?,
-                    row.get::<_, String>(13)?,
-                    row.get::<_, i64>(14)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, String>(14)?,
                     row.get::<_, i64>(15)?,
                     row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
                 ))
             },
         )
@@ -866,6 +888,11 @@ fn load_automation(
         "notify" if !row.12 => AutomationAction::Notify {
             target_session_id,
             message: row.11,
+            remote_continuation_id: row
+                .13
+                .as_deref()
+                .map(|id| parse_id(id, "automation remote continuation ID"))
+                .transpose()?,
         },
         _ => return Err(invariant("stored automation action is invalid")),
     };
@@ -882,10 +909,10 @@ fn load_automation(
         name: row.4,
         trigger,
         action,
-        status: parse_status(&row.13)?,
-        revision: nonnegative(row.14, "automation revision")?,
-        created_at_ms: row.15,
-        updated_at_ms: row.16,
+        status: parse_status(&row.14)?,
+        revision: nonnegative(row.15, "automation revision")?,
+        created_at_ms: row.16,
+        updated_at_ms: row.17,
     };
     validate_automation_view(&view).map_err(|error| invariant(error.to_string()))?;
     Ok(view)
@@ -1183,7 +1210,9 @@ fn trigger_columns(
     }
 }
 
-fn action_columns(action: &AutomationAction) -> (&'static str, String, bool) {
+fn action_columns(
+    action: &AutomationAction,
+) -> (&'static str, String, bool, Option<RemoteContinuationId>) {
     match action {
         AutomationAction::SubmitPrompt {
             prompt,
@@ -1193,8 +1222,13 @@ fn action_columns(action: &AutomationAction) -> (&'static str, String, bool) {
             "submit_prompt",
             prompt.clone(),
             *approval_required_actions_allowed,
+            None,
         ),
-        AutomationAction::Notify { message, .. } => ("notify", message.clone(), false),
+        AutomationAction::Notify {
+            message,
+            remote_continuation_id,
+            ..
+        } => ("notify", message.clone(), false, *remote_continuation_id),
     }
 }
 
@@ -1257,9 +1291,68 @@ fn authorize_source(
 fn ensure_automation_target_supported(
     connection: &rusqlite::Connection,
     action: &AutomationAction,
-) -> Result<(), AutomationStoreError> {
+    observed_at_ms: i64,
+) -> Result<&'static str, AutomationStoreError> {
+    if observed_at_ms < 0 {
+        return Err(invalid_contract(
+            "automation target observation time precedes the Unix epoch",
+        ));
+    }
     let target_session_id = action.target_session_id();
-    let route = connection
+    let remote_continuation_id = match action {
+        AutomationAction::Notify {
+            remote_continuation_id,
+            ..
+        } => *remote_continuation_id,
+        AutomationAction::SubmitPrompt { .. } => None,
+    };
+    let route = automation_target_route(connection, target_session_id)?;
+    match route {
+        (kind, None, false, false, false, false)
+            if matches!(kind.as_str(), "local_cli" | "legacy_session")
+                && remote_continuation_id.is_none() =>
+        {
+            Ok("local")
+        }
+        (kind, Some(installation), true, false, false, false)
+            if kind == "signed_webhook"
+                && installation == "builtin.signed_webhook.v1"
+                && remote_continuation_id.is_none() =>
+        {
+            Ok("signed_webhook")
+        }
+        (kind, Some(installation), false, true, false, false)
+            if kind == "extension_channel"
+                && installation == "builtin.telegram.v1"
+                && remote_continuation_id.is_none() =>
+        {
+            Ok("telegram")
+        }
+        (kind, Some(installation), false, false, true, false)
+            if kind == "extension_channel"
+                && installation == "builtin.discord.dm.v1"
+                && remote_continuation_id.is_none() =>
+        {
+            Ok("discord")
+        }
+        (kind, Some(installation), false, false, false, true)
+            if kind == "extension_channel" && installation == "builtin.slack.socket.v1" =>
+        {
+            ensure_slack_automation_route(connection, action, target_session_id, observed_at_ms)
+        }
+        _ => Err(invalid_contract(
+            "automation notification target has no supported exact delivery route",
+        )),
+    }
+}
+
+type AutomationTargetRoute = (String, Option<String>, bool, bool, bool, bool);
+
+fn automation_target_route(
+    connection: &rusqlite::Connection,
+    target_session_id: SessionId,
+) -> Result<AutomationTargetRoute, AutomationStoreError> {
+    connection
         .query_row(
             "SELECT registry.channel_kind, registry.installation_id, \
                     EXISTS(SELECT 1 FROM webhook_channel_binding route \
@@ -1289,38 +1382,58 @@ fn ensure_automation_target_supported(
         )
         .optional()
         .map_err(map_sqlite_error)?
-        .ok_or(AutomationStoreError::Unauthorized)?;
-    match route {
-        (kind, None, false, false, false, false)
-            if matches!(kind.as_str(), "local_cli" | "legacy_session") =>
-        {
-            Ok(())
+        .ok_or(AutomationStoreError::Unauthorized)
+}
+
+fn ensure_slack_automation_route(
+    connection: &rusqlite::Connection,
+    action: &AutomationAction,
+    target_session_id: SessionId,
+    observed_at_ms: i64,
+) -> Result<&'static str, AutomationStoreError> {
+    let remote_continuation_id = match action {
+        AutomationAction::SubmitPrompt { .. } => {
+            return Err(invalid_contract(
+                "Slack scheduled prompts lack an exact originating thread",
+            ));
         }
-        (kind, Some(installation), true, false, false, false)
-            if kind == "signed_webhook" && installation == "builtin.signed_webhook.v1" =>
-        {
-            Ok(())
+        AutomationAction::Notify {
+            remote_continuation_id: Some(remote_continuation_id),
+            ..
+        } => *remote_continuation_id,
+        AutomationAction::Notify {
+            remote_continuation_id: None,
+            ..
+        } => {
+            return Err(invalid_contract(
+                "Slack automation needs an explicit remote continuation",
+            ));
         }
-        (kind, Some(installation), false, true, false, false)
-            if kind == "extension_channel" && installation == "builtin.telegram.v1" =>
-        {
-            Ok(())
-        }
-        (kind, Some(installation), false, false, true, false)
-            if kind == "extension_channel" && installation == "builtin.discord.dm.v1" =>
-        {
-            Ok(())
-        }
-        (kind, Some(installation), false, false, false, true)
-            if kind == "extension_channel" && installation == "builtin.slack.socket.v1" =>
-        {
-            Err(invalid_contract(
-                "Slack automation needs an explicit pinned thread",
-            ))
-        }
-        _ => Err(invalid_contract(
-            "automation notification target has no supported exact delivery route",
-        )),
+    };
+    let route_is_effective = connection
+        .query_row(
+            "SELECT EXISTS(\
+                SELECT 1 FROM slack_remote_continuation continuation \
+                JOIN session ON session.id = continuation.session_id \
+                WHERE continuation.remote_continuation_id = ?1 \
+                  AND continuation.session_id = ?2 \
+                  AND continuation.binding_id = session.channel_binding_id \
+                  AND continuation.principal_id = session.principal_id \
+                  AND continuation.status = 'active' \
+                  AND continuation.expires_at_ms > ?3\
+             )",
+            params![
+                remote_continuation_id.to_string(),
+                target_session_id.to_string(),
+                observed_at_ms,
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if route_is_effective {
+        Ok("slack_remote_continuation")
+    } else {
+        Err(AutomationStoreError::Unauthorized)
     }
 }
 
@@ -1567,6 +1680,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "Only enqueue this once.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1582,6 +1696,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "Only enqueue this once.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1603,6 +1718,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "Observe future events once.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1636,6 +1752,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "Observe future events once.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1691,6 +1808,7 @@ mod tests {
                 AutomationAction::Notify {
                     target_session_id: unsupported_session_id,
                     message: "Do not misclassify this as local.".to_owned(),
+                    remote_continuation_id: None,
                 },
             ),
             (
@@ -1761,6 +1879,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id,
                     message: "Retain existing evidence.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1786,6 +1905,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id,
                     message: "Retain existing evidence.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1808,6 +1928,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "Review the completed build.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -1955,6 +2076,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id,
                     message: "This route must still be active.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
@@ -2067,6 +2189,7 @@ mod tests {
                 action: AutomationAction::Notify {
                     target_session_id: session_id,
                     message: "A watched input was accepted.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),

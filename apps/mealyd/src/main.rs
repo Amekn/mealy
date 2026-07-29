@@ -56,7 +56,8 @@ use mealy_application::{
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, AutomationRunId, CapabilityGrant, CorrelationId, DeliveryMode,
-    EffectClass, EventId, InboxEntryId, OutboxId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
+    EffectClass, EventId, InboxEntryId, OutboxId, PolicyProfile, RemoteContinuationId,
+    ScheduleRunId, TaskId, WorkerId,
 };
 use mealy_infrastructure::{
     BrowserReadTool, BrowserTransactionTool, FileArtifactBlobStore, FileChannelSecretStore,
@@ -4256,6 +4257,25 @@ struct RoutedOutboxDelivery {
     slack_target: Option<OutboundSlackTarget>,
     supported: bool,
     valid_payload: bool,
+    route_failure: Option<String>,
+}
+
+struct OutboxRouteTargets {
+    webhook: Option<OutboundWebhookTarget>,
+    telegram: Option<OutboundTelegramTarget>,
+    discord: Option<OutboundDiscordTarget>,
+    slack: Option<OutboundSlackTarget>,
+    remote_continuation_id: Option<RemoteContinuationId>,
+    slack_route_error: Option<String>,
+}
+
+impl OutboxRouteTargets {
+    fn count(&self) -> usize {
+        usize::from(self.webhook.is_some())
+            + usize::from(self.telegram.is_some())
+            + usize::from(self.discord.is_some())
+            + usize::from(self.slack.is_some())
+    }
 }
 
 enum OutboxDeliveryResult {
@@ -4272,6 +4292,8 @@ enum OutboxDriverError {
     Lock,
     #[error("outbox blocking worker failed")]
     Join,
+    #[error("outbox delivery clock is outside the supported epoch range")]
+    Time,
     #[error(transparent)]
     Outbox(#[from] OutboxUseCaseError),
     #[error(transparent)]
@@ -4339,6 +4361,8 @@ async fn drive_outbox_batch(
                 &routed.delivery,
             )
             .await
+        } else if let Some(error) = routed.route_failure {
+            OutboxDeliveryResult::Terminal(error)
         } else if routed.supported && routed.valid_payload {
             tracing::debug!(
                 outbox_id = %routed.delivery.outbox_id,
@@ -4402,66 +4426,139 @@ fn claim_routed_outbox(
             | "effect.approval_requested"
             | "automation.notification"
     );
+    let targets = resolve_outbox_route_targets(&mut guard, &delivery, payload.as_ref())?;
+    if targets.count() > 1 {
+        return Err(OutboxDriverError::AmbiguousRoute);
+    }
+    let route_failure =
+        automation_notification_route_failure(&delivery.topic, payload.as_ref(), &targets);
+    Ok(Some(RoutedOutboxDelivery {
+        delivery,
+        webhook_target: targets.webhook,
+        telegram_target: targets.telegram,
+        discord_target: targets.discord,
+        slack_target: targets.slack,
+        supported,
+        valid_payload,
+        route_failure,
+    }))
+}
+
+fn resolve_outbox_route_targets(
+    store: &mut SqliteStore,
+    delivery: &OutboxDelivery,
+    payload: Option<&Value>,
+) -> Result<OutboxRouteTargets, OutboxDriverError> {
     let session_id = payload
-        .as_ref()
         .and_then(|value| value.get("session_id"))
         .and_then(serde_json::Value::as_str)
         .and_then(|session_id| session_id.parse().ok());
     let webhook_target = session_id
-        .map(|session_id| guard.outbound_webhook_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_webhook_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let telegram_target = session_id
-        .map(|session_id| guard.outbound_telegram_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_telegram_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let discord_target = session_id
-        .map(|session_id| guard.outbound_discord_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_discord_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let inbox_entry_id = payload
-        .as_ref()
         .and_then(|value| value.get("inbox_entry_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<InboxEntryId>().ok());
     let task_id = payload
-        .as_ref()
         .and_then(|value| value.get("task_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<TaskId>().ok());
     let approval_id = payload
-        .as_ref()
         .and_then(|value| value.get("approval_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<ApprovalId>().ok());
-    let slack_target = session_id
+    let remote_continuation_id = payload
+        .and_then(|value| value.get("remote_continuation_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<RemoteContinuationId>().ok());
+    let observed_at_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| OutboxDriverError::Time)?
+            .as_millis(),
+    )
+    .map_err(|_| OutboxDriverError::Time)?;
+    let slack_resolution = session_id
         .map(|session_id| {
-            guard.outbound_slack_target(SlackOutboundContext {
+            store.outbound_slack_target(SlackOutboundContext {
                 session_id,
                 topic: &delivery.topic,
                 inbox_entry_id,
                 task_id,
                 approval_id,
+                remote_continuation_id,
+                observed_at_ms,
             })
         })
-        .transpose()?
-        .flatten();
-    let route_count = usize::from(webhook_target.is_some())
-        + usize::from(telegram_target.is_some())
-        + usize::from(discord_target.is_some())
-        + usize::from(slack_target.is_some());
-    if route_count > 1 {
-        return Err(OutboxDriverError::AmbiguousRoute);
+        .transpose();
+    let (slack_target, slack_route_error) = match slack_resolution {
+        Ok(target) => (target.flatten(), None),
+        Err(
+            SlackChannelStoreError::NotFound
+            | SlackChannelStoreError::Revoked
+            | SlackChannelStoreError::Conflict
+            | SlackChannelStoreError::InvalidContract(_),
+        ) if delivery.topic == "automation.notification" => (
+            None,
+            Some("Slack remote continuation is absent, expired, or revoked".to_owned()),
+        ),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(OutboxRouteTargets {
+        webhook: webhook_target,
+        telegram: telegram_target,
+        discord: discord_target,
+        slack: slack_target,
+        remote_continuation_id,
+        slack_route_error,
+    })
+}
+
+fn automation_notification_route_failure(
+    topic: &str,
+    payload: Option<&Value>,
+    targets: &OutboxRouteTargets,
+) -> Option<String> {
+    if topic != "automation.notification" {
+        return None;
     }
-    Ok(Some(RoutedOutboxDelivery {
-        delivery,
-        webhook_target,
-        telegram_target,
-        discord_target,
-        slack_target,
-        supported,
-        valid_payload,
-    }))
+    let declared_notification_route = payload
+        .and_then(|value| value.get("notification_route"))
+        .and_then(Value::as_str);
+    let remote_continuation_declared = payload
+        .and_then(|value| value.get("remote_continuation_id"))
+        .is_some();
+    targets.slack_route_error.clone().or_else(|| {
+        let route_count = targets.count();
+        let exact = match declared_notification_route {
+            Some("local") => route_count == 0 && !remote_continuation_declared,
+            Some("signed_webhook") => targets.webhook.is_some() && route_count == 1,
+            Some("telegram") => targets.telegram.is_some() && route_count == 1,
+            Some("discord") => targets.discord.is_some() && route_count == 1,
+            Some("slack_remote_continuation") => {
+                targets.remote_continuation_id.is_some()
+                    && targets
+                        .slack
+                        .as_ref()
+                        .and_then(|target| target.remote_continuation_id)
+                        == targets.remote_continuation_id
+                    && route_count == 1
+            }
+            _ => false,
+        };
+        (!exact)
+            .then(|| "automation notification route is malformed, expired, or revoked".to_owned())
+    })
 }
 
 async fn deliver_signed_webhook(
@@ -4961,6 +5058,7 @@ fn render_slack_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\nApproval: {approval_id}\n\nFor safety, approve or deny from the owner-local Mealy dashboard or mealyctl; Slack replies cannot grant authority."
             ))
         }
+        "automation.notification" => render_automation_notification(payload),
         _ => Err("Slack topic is unsupported"),
     }
 }
@@ -5215,7 +5313,8 @@ fn epoch_milliseconds(time: SystemTime) -> Result<i64, Box<dyn Error + Send + Sy
 #[cfg(test)]
 mod schedule_driver_tests {
     use super::{
-        DiscordInboundAction, RuntimeStore, TelegramInboundAction, TelegramSendAcknowledgement,
+        DiscordInboundAction, OutboxRouteTargets, RuntimeStore, TelegramInboundAction,
+        TelegramSendAcknowledgement, automation_notification_route_failure,
         classify_telegram_send_acknowledgement, discord_approval_action, discord_message_action,
         discord_success_delay, drive_schedule_batch, render_discord_outbox, render_telegram_outbox,
         schedule_now_ms, telegram_approval_action,
@@ -5372,6 +5471,39 @@ mod schedule_driver_tests {
             assert!(rendered.contains("timeline cursor 42"));
             assert!(!rendered.contains("PRIVATE-SOURCE-PAYLOAD-MUST-NOT-RENDER"));
         }
+    }
+
+    #[test]
+    fn automation_notification_route_cannot_downgrade_malformed_remote_identity_to_local() {
+        let targets = OutboxRouteTargets {
+            webhook: None,
+            telegram: None,
+            discord: None,
+            slack: None,
+            remote_continuation_id: None,
+            slack_route_error: None,
+        };
+        let local = serde_json::json!({"notification_route": "local"});
+        assert_eq!(
+            automation_notification_route_failure(
+                "automation.notification",
+                Some(&local),
+                &targets,
+            ),
+            None
+        );
+        let malformed = serde_json::json!({
+            "notification_route": "local",
+            "remote_continuation_id": "not-a-uuid",
+        });
+        assert!(
+            automation_notification_route_failure(
+                "automation.notification",
+                Some(&malformed),
+                &targets,
+            )
+            .is_some()
+        );
     }
 
     #[test]

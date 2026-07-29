@@ -1,9 +1,10 @@
 # Durable automation and notifications
 
 Mealy schema 29 adds revisioned one-shot and future event automations without changing the
-published recurring-cron contract. Automations are disabled with the rest of the dispatch plane in
-safe mode. Their canonical definition, revisions, trigger cursor, leased runs, journal events, and
-notification outbox evidence live in SQLite and survive a clean or hard restart.
+published recurring-cron contract. Schema 30 adds an exact-thread Slack notification route.
+Automations are disabled with the rest of the dispatch plane in safe mode. Their canonical
+definition, revisions, trigger cursor, leased runs, journal events, and notification outbox
+evidence live in SQLite and survive a clean or hard restart.
 
 ## Choose the right trigger
 
@@ -63,16 +64,19 @@ The destination is an existing session owned by the same principal. A local dest
 durable local notification. Active webhook, Telegram, and Discord session bindings use their
 existing signed or token-digest-pinned outbound boundaries, retries, and revocation behavior.
 
-Proactive Slack automation, whether a prompt or notification, is rejected in schema 29. A Slack
-binding may span multiple threads and choosing the newest thread at delivery time would not be an
-exact route. A later remote-continuation slice must pin a specific owner-approved thread before
-Slack can be an automation destination.
+Proactive Slack prompt automation remains rejected. A Slack binding may span multiple threads and
+choosing the newest thread at delivery time is never an exact route. Schema 30 allows only static
+notification automation when the owner first pins one exact previously admitted Slack thread and
+passes its active `--remote-continuation-id` to the create or edit command. The definition stores
+that exact ID and cannot silently switch to another pin. See
+[exact-thread remote continuation](REMOTE_CONTINUATION.md).
 
 Channel revocation after automation creation does not restore authority. The exact target binding
-is revalidated before outbox publication; if it is no longer active, the occurrence terminates as
-`failed` with no outbox record. A notification already in the outbox follows the channel's bounded
-retry/failure rules; the automation run remains an honest record that the durable notification was
-enqueued, not a claim that a remote service displayed it.
+and any Slack continuation are revalidated before outbox publication; if no longer active, the
+occurrence terminates as `failed` with no outbox record. The declared delivery route is revalidated
+again when an outbox delivery is claimed. A revoked or expired Slack continuation is terminal
+rather than being treated as local delivery. The automation run remains an honest record that the
+durable notification was enqueued, not a claim that a remote service displayed it.
 
 ## Edit and lifecycle
 

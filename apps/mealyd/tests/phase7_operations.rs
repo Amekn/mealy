@@ -173,6 +173,7 @@ async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
             action: AutomationActionCommand::Notify {
                 target_session_id: mealy_domain::SessionId::new().to_string(),
                 message: "must not be accepted".to_owned(),
+                remote_continuation_id: None,
             },
         },
     )
@@ -640,6 +641,7 @@ async fn automation_api_drives_one_shot_and_future_event_actions_without_replay(
         action: AutomationActionCommand::Notify {
             target_session_id: target.session_id.clone(),
             message: "A future source input was accepted.".to_owned(),
+            remote_continuation_id: None,
         },
     };
     let event_rule: AutomationResponse =
@@ -688,6 +690,7 @@ async fn automation_api_drives_one_shot_and_future_event_actions_without_replay(
             action: AutomationActionCommand::Notify {
                 target_session_id: target.session_id.clone(),
                 message: "An input after the edit was accepted.".to_owned(),
+                remote_continuation_id: None,
             },
         },
     )

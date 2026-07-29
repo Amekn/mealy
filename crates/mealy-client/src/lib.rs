@@ -29,21 +29,23 @@ use mealy_protocol::{
     AutomationLifecycleRequest, AutomationResponse, AutomationRunsResponse, AutomationsResponse,
     CancelTaskRequest, ControlTaskRequest, CreateAutomationRequest, CreateDiscordChannelRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DiscordChannelResponse, DiscordChannelsResponse,
-    EditAutomationRequest, EnableExtensionRequest, ExtensionInvocationResponse,
-    ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
-    HealthResponse, InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest,
-    LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse, ReadinessResponse,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
-    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
-    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
-    SubmitImageInputRequest, SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt,
-    TaskReplayResponse, TaskResponse, TelegramChannelResponse, TelegramChannelsResponse,
-    TimelineCursor, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    UpdateSessionTitleRequest, WebhookChannelResponse, WebhookChannelsResponse,
+    CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DiscordChannelResponse,
+    DiscordChannelsResponse, EditAutomationRequest, EnableExtensionRequest,
+    ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse,
+    ForkSessionRequest, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
+    ReadinessResponse, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    RevokeSlackChannelRequest, RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
+    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionTitleResponse, SessionsResponse, SlackChannelResponse,
+    SlackChannelsResponse, SlackRemoteContinuationResponse, SlackRemoteContinuationsResponse,
+    StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, WebhookChannelResponse,
+    WebhookChannelsResponse,
 };
 use reqwest::Method;
 use reqwest::blocking::{Body, Client as HttpClient, RequestBuilder, Response};
@@ -1178,6 +1180,93 @@ impl MealyClient {
         )
     }
 
+    /// Lists exact-thread remote continuations for one Slack binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn slack_remote_continuations(
+        &self,
+        binding_id: &str,
+    ) -> Result<SlackRemoteContinuationsResponse, ClientError> {
+        self.get(&[
+            "v1",
+            "channels",
+            "slack",
+            path_identifier(binding_id)?,
+            "remote-continuations",
+        ])
+    }
+
+    /// Returns one exact-thread Slack remote continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn slack_remote_continuation(
+        &self,
+        binding_id: &str,
+        remote_continuation_id: &str,
+    ) -> Result<SlackRemoteContinuationResponse, ClientError> {
+        self.get(&[
+            "v1",
+            "channels",
+            "slack",
+            path_identifier(binding_id)?,
+            "remote-continuations",
+            path_identifier(remote_continuation_id)?,
+        ])
+    }
+
+    /// Creates one short-lived continuation pinned to an observed Slack thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn create_slack_remote_continuation(
+        &self,
+        binding_id: &str,
+        request: &CreateSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, ClientError> {
+        self.post(
+            &[
+                "v1",
+                "channels",
+                "slack",
+                path_identifier(binding_id)?,
+                "remote-continuations",
+            ],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
+    /// Terminally revokes one exact-thread Slack remote continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn revoke_slack_remote_continuation(
+        &self,
+        binding_id: &str,
+        remote_continuation_id: &str,
+        request: &RevokeSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, ClientError> {
+        self.post(
+            &[
+                "v1",
+                "channels",
+                "slack",
+                path_identifier(binding_id)?,
+                "remote-continuations",
+                path_identifier(remote_continuation_id)?,
+                "revoke",
+            ],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
     fn get<T>(&self, path: &[&str]) -> Result<T, ClientError>
     where
         T: DeserializeOwned,
@@ -1354,7 +1443,9 @@ versioned_requests!(
     CreateDiscordChannelRequest,
     RevokeDiscordChannelRequest,
     CreateSlackChannelRequest,
+    CreateSlackRemoteContinuationRequest,
     RevokeSlackChannelRequest,
+    RevokeSlackRemoteContinuationRequest,
 );
 
 struct ZeroizingReader {
@@ -1551,8 +1642,9 @@ mod tests {
 
     use mealy_protocol::{
         API_VERSION, AutomationActionCommand, AutomationTriggerRequest, CreateAutomationRequest,
-        CreateSessionRequest, DeliveryMode, LocalConnectionInfo, ProviderSelectionCommand,
-        SubmitInputRequest, UpdateSessionTitleRequest,
+        CreateSessionRequest, CreateSlackRemoteContinuationRequest, DeliveryMode,
+        LocalConnectionInfo, ProviderSelectionCommand, SubmitInputRequest,
+        UpdateSessionTitleRequest,
     };
 
     use super::{ClientError, MealyClient, ResponseVersion, validate_response_value};
@@ -1806,6 +1898,7 @@ mod tests {
                 action: AutomationActionCommand::Notify {
                     target_session_id: "session-1".to_owned(),
                     message: "hello".to_owned(),
+                    remote_continuation_id: None,
                 },
             })
             .unwrap();
@@ -1835,6 +1928,45 @@ mod tests {
                 .unwrap()
                 .to_ascii_lowercase()
                 .starts_with("get /v1/automations/automation-1/runs?limit=20 http/1.1\r\n")
+        );
+    }
+
+    #[test]
+    fn creates_typed_exact_thread_slack_remote_continuation() {
+        let (base_url, server) = serve_once(
+            "200 OK",
+            format!(
+                r#"{{"apiVersion":"{API_VERSION}","remoteContinuationId":"continuation-1","bindingId":"binding-1","sessionId":"session-1","teamId":"T01234567","slackUserId":"U01234567","slackChannelId":"C01234567","threadId":"1785254000.000100","synchronizedAfterCursor":42,"status":"active","revision":0,"createdAtMs":10,"expiresAtMs":60010,"updatedAtMs":10}}"#
+            ),
+        );
+        let client = MealyClient::new(base_url, "owner-token").unwrap();
+        let response = client
+            .create_slack_remote_continuation(
+                "binding-1",
+                &CreateSlackRemoteContinuationRequest {
+                    api_version: API_VERSION.to_owned(),
+                    remote_continuation_id: "continuation-1".to_owned(),
+                    thread_id: "1785254000.000100".to_owned(),
+                    expires_at_ms: 60_010,
+                },
+            )
+            .unwrap();
+        assert_eq!(response.synchronized_after_cursor, 42);
+        let request = server.join().unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .starts_with("post /v1/channels/slack/binding-1/remote-continuations http/1.1\r\n")
+        );
+        let (_, body) = request.split_once("\r\n\r\n").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({
+                "apiVersion": API_VERSION,
+                "remoteContinuationId": "continuation-1",
+                "threadId": "1785254000.000100",
+                "expiresAtMs": 60_010
+            })
         );
     }
 

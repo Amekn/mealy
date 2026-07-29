@@ -27,23 +27,25 @@ use mealy_protocol::{
     CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
-    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
-    EditAutomationRequest, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
-    EnableExtensionRequest, ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
-    ExtensionResponse, ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse,
-    HealthResponse, InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest,
-    MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse,
-    MemoryRetrievalMode, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
+    CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
+    DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse,
+    DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest, EffectAttemptResponse,
+    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportResponse,
+    ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse,
+    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse,
+    MemoryLifecycleRequest, MemoryResponse, MemoryRetrievalMode, MemorySearchResponse,
+    MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ProviderCatalogResponse, ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
+    RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
     ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
     SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, SlackChannelResponse, SlackChannelsResponse,
+    SlackRemoteContinuationResponse, SlackRemoteContinuationsResponse,
     StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
     TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
     TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
@@ -1260,6 +1262,63 @@ pub trait ApiBackend: Send + Sync + 'static {
         Err(BackendError::Unavailable)
     }
 
+    /// Creates one short-lived continuation pinned to an exact previously admitted Slack thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for malformed identity, unobserved thread, overlap, authorization,
+    /// invalid lifetime, or persistence.
+    fn create_slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _request: CreateSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists owner-authorized exact-thread continuations for one Slack binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for authorization, identity, or persistence failure.
+    fn slack_remote_continuations(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+    ) -> Result<SlackRemoteContinuationsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads one exact-thread remote continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when absent, unauthorized, malformed, or corrupt.
+    fn slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _remote_continuation_id: String,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Terminally revokes one exact-thread continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for authorization, revision, lifecycle, or persistence failure.
+    fn revoke_slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _remote_continuation_id: String,
+        _request: RevokeSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
     /// Verifies and durably admits one external delivery without local bearer authentication.
     ///
     /// # Errors
@@ -1713,6 +1772,18 @@ fn build_router(
         .route(
             "/v1/channels/slack/{binding_id}/revoke",
             post(revoke_slack_channel_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations",
+            get(slack_remote_continuations_handler).post(create_slack_remote_continuation_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}",
+            get(slack_remote_continuation_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke",
+            post(revoke_slack_remote_continuation_handler),
         )
         .route("/v1/admin/status", get(admin_status_handler))
         .route("/v1/admin/metrics", get(admin_metrics_handler))
@@ -3073,6 +3144,65 @@ async fn revoke_slack_channel_handler(
     require_version(&request.api_version)?;
     let result = run_backend(state, move |backend| {
         backend.revoke_slack_channel(identity, binding_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn create_slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+    request: Result<Json<CreateSlackRemoteContinuationRequest>, JsonRejection>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_slack_remote_continuation(identity, binding_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn slack_remote_continuations_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+) -> Result<Json<SlackRemoteContinuationsResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.slack_remote_continuations(identity, binding_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path((binding_id, remote_continuation_id)): Path<(String, String)>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.slack_remote_continuation(identity, binding_id, remote_continuation_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn revoke_slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path((binding_id, remote_continuation_id)): Path<(String, String)>,
+    request: Result<Json<RevokeSlackRemoteContinuationRequest>, JsonRejection>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.revoke_slack_remote_continuation(
+            identity,
+            binding_id,
+            remote_continuation_id,
+            request,
+        )
     })
     .await?;
     Ok(Json(result))

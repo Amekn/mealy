@@ -2232,6 +2232,35 @@ approval but instruct the owner to approve or deny through the authenticated das
 installation removes both brokered tokens, stops connection discovery, and retains its session,
 envelope, health, and journal evidence.
 
+### Pin one Slack thread for proactive notifications
+
+Reactive progress and results already return to their originating thread. For a proactive static
+automation notification, first send Mealy a message in the intended Slack thread and wait for its
+acknowledgement. Then pin that exact admitted thread:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-pin BINDING_ID \
+  --thread-id 1785254000.000100 --expires-in-hours 24
+```
+
+Retain the printed `MEALY_REMOTE_CONTINUATION_ID`. Pass it as
+`--remote-continuation-id UUID` to `automation create-once-notify`,
+`create-event-notify`, or the corresponding edit command when the target is the Slack binding's
+`SESSION_ID`. Inspect or remove the route with:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-list BINDING_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-revoke BINDING_ID REMOTE_CONTINUATION_ID \
+  --expected-revision REVISION
+```
+
+The pin lasts from one minute through 30 days (the CLI uses whole hours), cannot overlap another
+effective pin for the binding, and never changes to a newer thread. Proactive Slack prompts remain
+unsupported. See [exact-thread remote continuation](REMOTE_CONTINUATION.md).
+
 ## Create a recurring schedule
 
 Schedules target an existing durable session. This example admits one normal read-only turn at
@@ -2295,6 +2324,10 @@ Or notify one target session after each future exact event from another same-own
   --event-type turn.completed \
   "The watched session completed."
 ```
+
+For a Slack target, first create the exact-thread pin above and add
+`--remote-continuation-id REMOTE_CONTINUATION_ID` to the notification command. The route is checked
+again before outbox publication and delivery, so expiry or revocation cannot redirect the message.
 
 The client prints `MEALY_AUTOMATION_ID UUID` before each create request. If the response is
 ambiguous, repeat the exact command with `--automation-id UUID`; it returns the existing

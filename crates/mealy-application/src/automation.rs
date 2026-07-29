@@ -1,7 +1,7 @@
 use crate::OwnershipContext;
 use mealy_domain::{
-    AutomationId, AutomationRunId, CorrelationId, EventId, InboxEntryId, OutboxId, SessionId,
-    WorkerId,
+    AutomationId, AutomationRunId, CorrelationId, EventId, InboxEntryId, OutboxId,
+    RemoteContinuationId, SessionId, WorkerId,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -88,6 +88,8 @@ pub enum AutomationAction {
         target_session_id: SessionId,
         /// Owner-authored bounded notification text.
         message: String,
+        /// Exact Slack continuation when the destination is a Slack session.
+        remote_continuation_id: Option<RemoteContinuationId>,
     },
 }
 
@@ -675,6 +677,7 @@ mod tests {
                 &AutomationAction::Notify {
                     target_session_id,
                     message: "hello".to_owned(),
+                    remote_continuation_id: None,
                 },
                 1_000,
             ),
@@ -695,6 +698,7 @@ mod tests {
                 &AutomationAction::Notify {
                     target_session_id: session,
                     message: "The watched session completed.".to_owned(),
+                    remote_continuation_id: None,
                 },
                 1_000,
             )

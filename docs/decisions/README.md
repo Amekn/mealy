@@ -26,5 +26,6 @@ ADRs record decisions that shape multiple modules or are expensive to reverse. T
 | [0020](0020-threshold-signed-inert-package-registry.md) | Threshold-signed inert package registry | Accepted |
 | [0021](0021-derived-semantic-memory-index.md) | Privacy-scoped derived semantic memory | Accepted |
 | [0022](0022-revisioned-future-event-automation.md) | Revisioned future-event automation | Accepted |
+| [0023](0023-exact-thread-slack-remote-continuation.md) | Exact-thread Slack remote continuation | Accepted |
 
 New ADRs use the next four-digit number and begin as `Proposed`. Superseding an ADR keeps the old file and links both directions.

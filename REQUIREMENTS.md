@@ -162,6 +162,16 @@ These rules apply to every implementation phase.
 - **AUTO-018:** Safe mode MUST start no automation driver and reject automation mutation.
   Authenticated status, metrics, doctor, definition inspection, and bounded run history MUST expose
   operational state without private source payloads.
+- **AUTO-019:** Proactive Slack notification MUST require an exact, bounded, owner-created route to
+  one previously admitted thread. Creation MUST bind the verified workspace, member, conversation,
+  session, and admitted-envelope evidence, record an exclusive no-replay cursor, accept only a
+  client-proposed UUIDv7 exact retry key, and expire no later than 30 days. The runtime MUST NOT
+  choose a newest, ambient, or fallback thread.
+- **AUTO-020:** A Slack notification definition MUST store the exact remote-continuation identity.
+  The route MUST be revalidated at definition mutation, before outbox publication, and at delivery
+  claim. Expiry, revision-fenced continuation revocation, parent-binding revocation, or route
+  mismatch MUST fail closed without local-delivery fallback. Proactive Slack prompt automation
+  MUST remain unsupported.
 
 ### 6.4 Agent execution
 

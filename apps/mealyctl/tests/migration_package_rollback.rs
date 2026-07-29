@@ -165,6 +165,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn downgrade_fixture_to_v13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
@@ -223,6 +224,16 @@ fn downgrade_fixture_to_v13(database: &Path) {
              DROP TABLE context_manifest_bundle_compaction;
              DROP TABLE context_manifest_bundle_artifact;
              DROP TABLE context_manifest_bundle;
+             DROP TRIGGER automation_slack_remote_route_update_guard;
+             DROP TRIGGER automation_slack_remote_route_insert_guard;
+             DROP INDEX automation_slack_remote_continuation_idx;
+             ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+             DROP TRIGGER slack_remote_continuation_immutable_delete;
+             DROP TRIGGER slack_remote_continuation_transition_guard;
+             DROP TRIGGER slack_remote_continuation_insert_guard;
+             DROP INDEX slack_remote_continuation_route_idx;
+             DROP INDEX slack_remote_continuation_owner_idx;
+             DROP TABLE slack_remote_continuation;
              DROP TABLE slack_envelope_receipt;
              DROP TABLE slack_channel_health;
              DROP TABLE slack_channel_binding;
@@ -260,7 +271,7 @@ fn downgrade_fixture_to_v13(database: &Path) {
              DROP TABLE registry_trust_root_head;
              DROP TABLE registry_trust_root;
              DELETE FROM schema_version WHERE version IN (
-                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
              );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )

@@ -188,6 +188,10 @@ define_id!(
     AutomationRunId
 );
 define_id!(
+    /// Identifies one revocable single-owner remote continuation.
+    RemoteContinuationId
+);
+define_id!(
     /// Identifies related commands, events, attempts, and effects.
     CorrelationId
 );

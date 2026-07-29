@@ -44,7 +44,8 @@ use mealy_application::{
 };
 use mealy_domain::{
     ArtifactId, AttemptId, AutomationId, ChannelBindingId, ContextManifestId, CorrelationId,
-    EventId, PrincipalId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
+    EventId, PrincipalId, RemoteContinuationId, RunId, ScheduleId, SessionId, SkillAsset,
+    SkillToolRequirement,
 };
 use mealy_evaluation::{EvaluationError, EvaluationSuite, run_suite};
 use mealy_infrastructure::{
@@ -73,31 +74,33 @@ use mealy_protocol::{
     CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateAutomationRequest,
     CreateBackupRequest, CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
-    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
-    DelegationsResponse, DeliveryMode, DiscordChannelResponse, DiscordChannelsResponse,
-    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest,
-    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
-    ExportKindRequest, ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
-    ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
-    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
-    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
-    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
-    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
-    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    CreateSessionResponse, CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest,
+    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
+    DelegationResponse, DelegationsResponse, DeliveryMode, DiscordChannelResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EditAutomationRequest, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
+    ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
+    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse,
+    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+    MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    RevokeSlackChannelRequest, RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
+    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse, SchedulesResponse,
+    SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
-    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
-    SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage,
-    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
-    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    SlackChannelResponse, SlackChannelsResponse, SlackRemoteContinuationResponse,
+    SlackRemoteContinuationsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
+    SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage, TaskCancellationReceipt,
+    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
+    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
     UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
     WebhookChannelResponse, WebhookChannelsResponse,
 };
@@ -2424,6 +2427,42 @@ enum ChannelCommand {
         #[arg(long)]
         expected_revision: u64,
     },
+    /// Pin proactive continuation to one exact Slack thread already admitted from the owner.
+    SlackContinuationPin {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Exact Slack thread root timestamp (`thread_ts`).
+        #[arg(long)]
+        thread_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Bounded route lifetime in whole hours.
+        #[arg(long, default_value_t = 168)]
+        expires_in_hours: u64,
+    },
+    /// List exact-thread remote continuations for one Slack binding.
+    SlackContinuationList {
+        /// Stable Slack binding ID.
+        binding_id: String,
+    },
+    /// Inspect one exact-thread remote continuation.
+    SlackContinuationStatus {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Stable remote-continuation ID.
+        remote_continuation_id: String,
+    },
+    /// Terminally revoke one exact-thread remote continuation.
+    SlackContinuationRevoke {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Stable remote-continuation ID.
+        remote_continuation_id: String,
+        /// Optimistic-concurrency revision returned by continuation status.
+        #[arg(long)]
+        expected_revision: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2531,6 +2570,9 @@ enum AutomationCommand {
         /// Future RFC 3339 instant.
         #[arg(long)]
         at: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
         /// Static notification body.
         message: String,
     },
@@ -2549,6 +2591,9 @@ enum AutomationCommand {
         /// Exact journal event type, such as `turn.completed`.
         #[arg(long)]
         event_type: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
         /// Static notification body. Source payload is never copied.
         message: String,
     },
@@ -2590,6 +2635,9 @@ enum AutomationCommand {
         /// Future RFC 3339 instant.
         #[arg(long)]
         at: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
         /// Replacement static notification.
         message: String,
     },
@@ -2612,6 +2660,9 @@ enum AutomationCommand {
         /// Exact journal event type.
         #[arg(long)]
         event_type: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
         /// Replacement static notification.
         message: String,
     },
@@ -7373,7 +7424,11 @@ async fn run_channel(
         slack_command @ (ChannelCommand::SlackCreate { .. }
         | ChannelCommand::SlackList
         | ChannelCommand::SlackStatus { .. }
-        | ChannelCommand::SlackRevoke { .. }) => {
+        | ChannelCommand::SlackRevoke { .. }
+        | ChannelCommand::SlackContinuationPin { .. }
+        | ChannelCommand::SlackContinuationList { .. }
+        | ChannelCommand::SlackContinuationStatus { .. }
+        | ChannelCommand::SlackContinuationRevoke { .. }) => {
             return run_slack_channel(client, connection, slack_command).await;
         }
         ChannelCommand::Create {
@@ -8056,6 +8111,12 @@ async fn run_slack_channel(
             .send()
             .await?
         }
+        continuation @ (ChannelCommand::SlackContinuationPin { .. }
+        | ChannelCommand::SlackContinuationList { .. }
+        | ChannelCommand::SlackContinuationStatus { .. }
+        | ChannelCommand::SlackContinuationRevoke { .. }) => {
+            return run_slack_continuation(client, connection, continuation).await;
+        }
         _ => {
             return Err(CliError::Protocol(
                 "non-Slack command reached Slack dispatcher".to_owned(),
@@ -8063,6 +8124,127 @@ async fn run_slack_channel(
         }
     };
     print_json(decode::<SlackChannelResponse>(response).await?)
+}
+
+async fn run_slack_continuation(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: ChannelCommand,
+) -> Result<(), CliError> {
+    match command {
+        ChannelCommand::SlackContinuationPin {
+            binding_id,
+            thread_id,
+            remote_continuation_id,
+            expires_in_hours,
+        } => {
+            let (remote_continuation_id, generated) =
+                resolve_remote_continuation_id(remote_continuation_id)?;
+            if generated {
+                eprintln!("MEALY_REMOTE_CONTINUATION_ID {remote_continuation_id}");
+            }
+            let response = authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&CreateSlackRemoteContinuationRequest {
+                api_version: API_VERSION.to_owned(),
+                remote_continuation_id,
+                thread_id,
+                expires_at_ms: remote_continuation_expiry(expires_in_hours)?,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationList { binding_id } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationsResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationStatus {
+            binding_id,
+            remote_continuation_id,
+        } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationRevoke {
+            binding_id,
+            remote_continuation_id,
+            expected_revision,
+        } => {
+            let response = authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&RevokeSlackRemoteContinuationRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        _ => Err(CliError::Protocol(
+            "non-continuation command reached Slack continuation dispatcher".to_owned(),
+        )),
+    }
+}
+
+fn resolve_remote_continuation_id(
+    remote_continuation_id: Option<String>,
+) -> Result<(String, bool), CliError> {
+    let Some(remote_continuation_id) = remote_continuation_id else {
+        return Ok((RemoteContinuationId::new().to_string(), true));
+    };
+    let parsed = remote_continuation_id
+        .parse::<RemoteContinuationId>()
+        .map_err(|_| CliError::InvalidRemoteContinuationId)?;
+    if parsed.to_string() != remote_continuation_id || parsed.as_uuid().get_version_num() != 7 {
+        return Err(CliError::InvalidRemoteContinuationId);
+    }
+    Ok((remote_continuation_id, false))
+}
+
+fn remote_continuation_expiry(expires_in_hours: u64) -> Result<i64, CliError> {
+    if !(1..=720).contains(&expires_in_hours) {
+        return Err(CliError::InvalidRemoteContinuationLifetime);
+    }
+    let now_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| CliError::InvalidRemoteContinuationLifetime)?
+        .as_millis();
+    let lifetime_ms = u128::from(expires_in_hours)
+        .checked_mul(60 * 60 * 1_000)
+        .ok_or(CliError::InvalidRemoteContinuationLifetime)?;
+    i64::try_from(
+        now_ms
+            .checked_add(lifetime_ms)
+            .ok_or(CliError::InvalidRemoteContinuationLifetime)?,
+    )
+    .map_err(|_| CliError::InvalidRemoteContinuationLifetime)
 }
 
 async fn submit_slack_channel_secrets(
@@ -8664,6 +8846,7 @@ async fn run_automation(
             automation_id,
             name,
             at,
+            remote_continuation_id,
             message,
         } => {
             create_automation_request(
@@ -8677,6 +8860,7 @@ async fn run_automation(
                 AutomationActionCommand::Notify {
                     target_session_id: session_id,
                     message,
+                    remote_continuation_id,
                 },
             )
             .await?;
@@ -8687,6 +8871,7 @@ async fn run_automation(
             automation_id,
             name,
             event_type,
+            remote_continuation_id,
             message,
         } => {
             create_automation_request(
@@ -8701,6 +8886,7 @@ async fn run_automation(
                 AutomationActionCommand::Notify {
                     target_session_id,
                     message,
+                    remote_continuation_id,
                 },
             )
             .await?;
@@ -8737,6 +8923,7 @@ async fn run_automation(
             session_id,
             name,
             at,
+            remote_continuation_id,
             message,
         } => {
             edit_automation_request(
@@ -8751,6 +8938,7 @@ async fn run_automation(
                 AutomationActionCommand::Notify {
                     target_session_id: session_id,
                     message,
+                    remote_continuation_id,
                 },
             )
             .await?;
@@ -8762,6 +8950,7 @@ async fn run_automation(
             target_session_id,
             name,
             event_type,
+            remote_continuation_id,
             message,
         } => {
             edit_automation_request(
@@ -8777,6 +8966,7 @@ async fn run_automation(
                 AutomationActionCommand::Notify {
                     target_session_id,
                     message,
+                    remote_continuation_id,
                 },
             )
             .await?;
@@ -21983,6 +22173,12 @@ enum CliError {
     /// Caller-proposed automation identity is not one canonical `UUIDv7`.
     #[error("automation --automation-id must be one canonical UUIDv7")]
     InvalidAutomationId,
+    /// Caller-proposed remote-continuation identity is not one canonical `UUIDv7`.
+    #[error("Slack continuation --remote-continuation-id must be one canonical UUIDv7")]
+    InvalidRemoteContinuationId,
+    /// Remote-continuation lifetime is not one through 720 whole hours.
+    #[error("Slack continuation --expires-in-hours must be between 1 and 720")]
+    InvalidRemoteContinuationLifetime,
     /// Explicit local text attachment is unsafe, unsupported, oversized, or not valid UTF-8.
     #[error(
         "local text attachment must be a nonempty no-follow regular UTF-8 file with a supported extension and at most 256 KiB"

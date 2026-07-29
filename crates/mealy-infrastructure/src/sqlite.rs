@@ -66,10 +66,11 @@ const MIGRATION_0026: &str = include_str!("../migrations/0026_registry_package_e
 const MIGRATION_0027: &str = include_str!("../migrations/0027_extension_registry_provenance.sql");
 const MIGRATION_0028: &str = include_str!("../migrations/0028_memory_semantic_index.sql");
 const MIGRATION_0029: &str = include_str!("../migrations/0029_automation.sql");
+const MIGRATION_0030: &str = include_str!("../migrations/0030_slack_remote_continuation.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 29;
+pub const LATEST_SCHEMA_VERSION: i64 = 30;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -430,6 +431,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0029)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (29, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 29;
+        }
+        if existing_version == 29 {
+            transaction.execute_batch(MIGRATION_0030)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (30, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -1165,6 +1174,7 @@ mod tests {
     }
 
     fn remove_automation_schema(connection: &Connection) {
+        remove_slack_remote_continuation_schema(connection);
         connection
             .execute_batch(
                 "DROP TABLE automation_run;
@@ -1173,6 +1183,19 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 29;",
             )
             .expect("remove v29 automation schema");
+    }
+
+    fn remove_slack_remote_continuation_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER automation_slack_remote_route_update_guard;
+                 DROP TRIGGER automation_slack_remote_route_insert_guard;
+                 DROP INDEX automation_slack_remote_continuation_idx;
+                 ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+                 DROP TABLE slack_remote_continuation;
+                 DELETE FROM schema_version WHERE version = 30;",
+            )
+            .expect("remove v30 Slack remote-continuation schema");
     }
 
     fn remove_media_schema(connection: &Connection) {

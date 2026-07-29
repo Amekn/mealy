@@ -326,6 +326,10 @@ boundary without executing extension code.
 | `POST` | `/v1/channels/slack` | `CreateSlackChannelRequest` | `SlackChannelResponse` |
 | `GET` | `/v1/channels/slack/{binding_id}` | - | `SlackChannelResponse` |
 | `POST` | `/v1/channels/slack/{binding_id}/revoke` | `RevokeSlackChannelRequest` | `SlackChannelResponse` |
+| `GET` | `/v1/channels/slack/{binding_id}/remote-continuations` | - | `SlackRemoteContinuationsResponse` |
+| `POST` | `/v1/channels/slack/{binding_id}/remote-continuations` | `CreateSlackRemoteContinuationRequest` | `SlackRemoteContinuationResponse` |
+| `GET` | `/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}` | - | `SlackRemoteContinuationResponse` |
+| `POST` | `/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke` | `RevokeSlackRemoteContinuationRequest` | `SlackRemoteContinuationResponse` |
 
 The ingress-only `POST /v1/channels/webhooks/{binding_id}/deliveries` route does not accept the
 local bearer. It requires exactly one `X-Mealy-Timestamp`, `X-Mealy-Nonce`, and
@@ -338,6 +342,14 @@ Slack administration is local-bearer authenticated. Creation accepts Socket Mode
 conversation, proves the app token can open Socket Mode, then brokers both token values outside
 SQLite. Responses expose only identity pins, lifecycle, revision, and secret-free health. Socket
 Mode itself is an outbound daemon connection: no public Slack webhook route is opened.
+
+A Slack remote-continuation creation carries a canonical client-proposed UUIDv7, an exact
+previously admitted thread root, and an exclusive expiry between one minute and 30 days after
+creation. The route captures a no-replay timeline cursor, permits only proactive static
+`automation.notification` output, and is terminally revision-fenced on revoke. Slack automation
+requests must include the exact active `remoteContinuationId`; it is invalid for non-Slack targets
+or prompt actions. Delivery revalidates the declared route and never selects a newer thread. See
+[the remote-continuation contract](REMOTE_CONTINUATION.md).
 
 ### Administration
 

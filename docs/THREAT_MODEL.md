@@ -104,12 +104,13 @@ key. Action-mode text needs explicit automation opt-in but retains ordinary capa
 approval, effect, sandbox, and recovery controls. Claims are durable and owner fenced; expiry
 reclaims the same run identity. Notification terminal state, outbox row, cursor/status transition,
 and journal event commit atomically. Static notification destinations are restricted to same-owner
-local, active webhook, Telegram, or Discord routes. Slack is rejected until a specific
-owner-approved thread can be pinned. Revocation never restores authority. Safe mode starts no
-driver and permits no mutation. The exact target binding is revalidated immediately before
-notification outbox publication; a revoked target produces a terminal failed occurrence and no
-outbox row. Bounded status, metrics, doctor, and run history expose stuck or failed work without
-source payloads.
+local, active webhook, Telegram, or Discord routes, or an exact short-lived Slack continuation
+pinned to a previously admitted owner thread. Slack prompt automation remains rejected.
+Definitions store the exact continuation ID and cannot select a newest/ambient thread. Revocation
+never restores authority. Safe mode starts no driver and permits no mutation. The exact target
+binding and continuation are revalidated immediately before notification outbox publication and
+again at delivery claim; a revoked or expired target cannot fall back to local delivery. Bounded
+status, metrics, doctor, and run history expose stuck or failed work without source payloads.
 
 ### Image generation duplicates spend or publishes hostile output
 
@@ -161,6 +162,15 @@ bot-token app identity before events are accepted. Routes may share a connection
 workspace, app, bot, and both secret identities/digests agree. Runtime input repeats the exact
 workspace/conversation/member claims and rejects bot, subtype, malformed, or unmentioned shared
 messages. Token possession alone is not a local principal boundary.
+
+Proactive Slack continuation requires a separate local-owner command that pins one exact thread
+already represented by an admitted envelope matching that binding's workspace, conversation,
+member, and session. The client-proposed UUIDv7 is an exact retry key; creation records a
+no-replay timeline high cursor and a one-minute-to-30-day exclusive expiry. Only one effective pin
+per binding is allowed. Automation names the exact pin, and create/edit, outbox publication, and
+delivery claim all revalidate it. Expiry, explicit revision-fenced revoke, or parent-binding revoke
+removes authority without deleting evidence. No inbound listener or latest-thread heuristic is
+introduced.
 
 ### Channel backlog, rate, mention, and duplicate-message abuse
 

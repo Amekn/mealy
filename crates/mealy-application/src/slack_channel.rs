@@ -4,8 +4,8 @@ use crate::{
     valid_slack_delivery_id,
 };
 use mealy_domain::{
-    ApprovalId, ChannelBindingId, CorrelationId, EventId, InboxEntryId, PrincipalId, SessionId,
-    TaskId,
+    ApprovalId, ChannelBindingId, CorrelationId, EventId, InboxEntryId, PrincipalId,
+    RemoteContinuationId, SessionId, TaskId,
 };
 use std::time::SystemTime;
 use thiserror::Error;
@@ -16,6 +16,10 @@ pub const SLACK_MAXIMUM_DISPLAY_NAME_BYTES: usize = 128;
 pub const SLACK_MAXIMUM_ERROR_CODE_BYTES: usize = 128;
 /// Maximum durable ignored-envelope reason bytes.
 pub const SLACK_MAXIMUM_IGNORE_REASON_BYTES: usize = 256;
+/// Minimum owner-visible lifetime for one proactive remote-continuation pin.
+pub const SLACK_REMOTE_CONTINUATION_MINIMUM_LIFETIME_MS: i64 = 60 * 1_000;
+/// Maximum lifetime for one proactive remote-continuation pin.
+pub const SLACK_REMOTE_CONTINUATION_MAXIMUM_LIFETIME_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
 /// Durable lifecycle of one exact Slack app/workspace/member/conversation binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +28,90 @@ pub enum SlackChannelStatus {
     Active,
     /// Both brokered token authorities are terminally revoked while evidence remains.
     Revoked,
+}
+
+/// Effective lifecycle of one exact Slack remote-continuation pin.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SlackRemoteContinuationStatus {
+    /// The exact observed thread may receive proactive owner-authorized notifications.
+    Active,
+    /// The bounded owner-approved lifetime elapsed.
+    Expired,
+    /// The owner terminally revoked the pin.
+    Revoked,
+}
+
+/// Owner-safe projection of one authenticated exact-thread remote continuation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlackRemoteContinuationView {
+    /// Stable client-proposed `UUIDv7` creation/retry identity.
+    pub remote_continuation_id: RemoteContinuationId,
+    /// Local owner principal.
+    pub principal_id: PrincipalId,
+    /// Exact Slack channel binding.
+    pub binding_id: ChannelBindingId,
+    /// Dedicated durable Slack session continued by this route.
+    pub session_id: SessionId,
+    /// Exact verified Slack workspace.
+    pub team_id: String,
+    /// Exact allowlisted Slack member.
+    pub slack_user_id: String,
+    /// Exact Slack conversation.
+    pub slack_channel_id: String,
+    /// Exact previously admitted Slack thread root.
+    pub thread_id: String,
+    /// Exclusive global timeline cursor at activation; older events are never replayed.
+    pub synchronized_after_cursor: u64,
+    /// Effective lifecycle at the caller-supplied observation time.
+    pub status: SlackRemoteContinuationStatus,
+    /// Optimistic-concurrency revision.
+    pub revision: u64,
+    /// Pin creation UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Exclusive expiry UTC epoch milliseconds.
+    pub expires_at_ms: i64,
+    /// Last lifecycle update UTC epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// Terminal revocation UTC epoch milliseconds.
+    pub revoked_at_ms: Option<i64>,
+}
+
+/// Atomic exact-thread remote-continuation creation.
+pub struct CreateSlackRemoteContinuationCommit {
+    /// Authenticated local administrator.
+    pub administrative_ownership: OwnershipContext,
+    /// Client-proposed `UUIDv7` creation/retry identity.
+    pub remote_continuation_id: RemoteContinuationId,
+    /// Exact Slack binding.
+    pub binding_id: ChannelBindingId,
+    /// Exact thread already observed in an admitted envelope.
+    pub thread_id: String,
+    /// Exclusive bounded expiry UTC epoch milliseconds.
+    pub expires_at_ms: i64,
+    /// Canonical activation event.
+    pub event_id: EventId,
+    /// End-to-end command correlation.
+    pub correlation_id: CorrelationId,
+    /// Creation time.
+    pub created_at: SystemTime,
+}
+
+/// Terminal owner-authorized exact-thread continuation revocation.
+pub struct RevokeSlackRemoteContinuationCommit {
+    /// Authenticated local administrator.
+    pub administrative_ownership: OwnershipContext,
+    /// Exact Slack binding.
+    pub binding_id: ChannelBindingId,
+    /// Exact continuation.
+    pub remote_continuation_id: RemoteContinuationId,
+    /// Optimistic-concurrency lifecycle fence.
+    pub expected_revision: u64,
+    /// Canonical revocation event.
+    pub event_id: EventId,
+    /// End-to-end command correlation.
+    pub correlation_id: CorrelationId,
+    /// Revocation time.
+    pub revoked_at: SystemTime,
 }
 
 /// Owner-authorized Slack binding projection without credential material.
@@ -272,6 +360,10 @@ pub struct SlackOutboundContext<'a> {
     pub task_id: Option<TaskId>,
     /// Approval identity supplied by effect notification.
     pub approval_id: Option<ApprovalId>,
+    /// Exact proactive remote-continuation route for automation notifications.
+    pub remote_continuation_id: Option<RemoteContinuationId>,
+    /// Delivery-time UTC epoch milliseconds used to revalidate expiry.
+    pub observed_at_ms: i64,
 }
 
 /// Internal exact Slack destination for one existing session outbox notification.
@@ -279,6 +371,8 @@ pub struct SlackOutboundContext<'a> {
 pub struct OutboundSlackTarget {
     /// Exact binding.
     pub binding_id: ChannelBindingId,
+    /// Exact proactive route when this is a remote-continuation notification.
+    pub remote_continuation_id: Option<RemoteContinuationId>,
     /// Exact Slack conversation.
     pub slack_channel_id: String,
     /// Exact verified Slack workspace used to reconstruct the pure adapter.
@@ -362,6 +456,52 @@ pub trait SlackChannelStore {
         &self,
         ownership: OwnershipContext,
     ) -> Result<Vec<SlackChannelBindingView>, SlackChannelStoreError>;
+
+    /// Creates or exactly replays one bounded exact-thread remote continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlackChannelStoreError`] for unobserved threads, overlap, authorization,
+    /// invalid lifetime, or persistence failure.
+    fn create_slack_remote_continuation(
+        &mut self,
+        commit: CreateSlackRemoteContinuationCommit,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError>;
+
+    /// Reads one owner-authorized remote continuation at an explicit observation time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlackChannelStoreError`] when absent, unauthorized, invalid, or corrupt.
+    fn slack_remote_continuation(
+        &self,
+        ownership: OwnershipContext,
+        binding_id: ChannelBindingId,
+        remote_continuation_id: RemoteContinuationId,
+        observed_at_ms: i64,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError>;
+
+    /// Lists exact-thread continuations in stable creation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlackChannelStoreError`] for authorization, invalid time, or persistence.
+    fn slack_remote_continuations(
+        &self,
+        ownership: OwnershipContext,
+        binding_id: ChannelBindingId,
+        observed_at_ms: i64,
+    ) -> Result<Vec<SlackRemoteContinuationView>, SlackChannelStoreError>;
+
+    /// Terminally revokes one exact-thread continuation under a revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlackChannelStoreError`] for authorization, revision, lifecycle, or persistence.
+    fn revoke_slack_remote_continuation(
+        &mut self,
+        commit: RevokeSlackRemoteContinuationCommit,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError>;
 
     /// Lists a bounded stable batch of active Socket Mode targets.
     ///

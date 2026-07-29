@@ -2511,6 +2511,90 @@ pub struct RevokeSlackChannelRequest {
     pub expected_revision: u64,
 }
 
+/// Strict creation of one short-lived exact-thread Slack remote continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSlackRemoteContinuationRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Client-proposed canonical `UUIDv7` identity and exact retry key.
+    pub remote_continuation_id: String,
+    /// Exact Slack thread root previously admitted from the allowlisted owner.
+    pub thread_id: String,
+    /// Exclusive expiry UTC epoch milliseconds, no more than 30 days after creation.
+    pub expires_at_ms: i64,
+}
+
+/// Effective lifecycle of one exact-thread remote continuation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackRemoteContinuationStatusResponse {
+    /// The exact route can receive owner-authorized proactive notifications.
+    Active,
+    /// The bounded lifetime elapsed.
+    Expired,
+    /// The owner or parent Slack binding revoked the route.
+    Revoked,
+}
+
+/// Owner-safe exact-thread remote-continuation projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackRemoteContinuationResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable `UUIDv7` continuation identity.
+    pub remote_continuation_id: String,
+    /// Exact Slack binding.
+    pub binding_id: String,
+    /// Dedicated durable Slack session.
+    pub session_id: String,
+    /// Exact verified workspace.
+    pub team_id: String,
+    /// Exact allowlisted owner member.
+    pub slack_user_id: String,
+    /// Exact allowlisted Slack conversation.
+    pub slack_channel_id: String,
+    /// Exact previously admitted thread root.
+    pub thread_id: String,
+    /// Exclusive global timeline cursor captured before activation.
+    pub synchronized_after_cursor: u64,
+    /// Effective lifecycle.
+    pub status: SlackRemoteContinuationStatusResponse,
+    /// Optimistic-concurrency revision.
+    pub revision: u64,
+    /// Creation UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Exclusive expiry UTC epoch milliseconds.
+    pub expires_at_ms: i64,
+    /// Last lifecycle update UTC epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// Terminal explicit revocation time.
+    pub revoked_at_ms: Option<i64>,
+}
+
+/// Stable exact-thread remote-continuation list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackRemoteContinuationsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Exact parent Slack binding.
+    pub binding_id: String,
+    /// Owner-created routes in stable creation order.
+    pub remote_continuations: Vec<SlackRemoteContinuationResponse>,
+}
+
+/// Optimistic terminal exact-thread continuation revocation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeSlackRemoteContinuationRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Exact current continuation revision.
+    pub expected_revision: u64,
+}
+
 /// Strict raw-body contract authenticated by the signed webhook ingress.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3420,6 +3504,9 @@ pub enum AutomationActionCommand {
         target_session_id: String,
         /// Bounded static notification.
         message: String,
+        /// Exact Slack remote continuation required only for a Slack target session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_continuation_id: Option<String>,
     },
 }
 
@@ -3446,6 +3533,9 @@ pub enum AutomationActionResponse {
         target_session_id: String,
         /// Bounded static notification.
         message: String,
+        /// Exact Slack remote continuation pinned by this definition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_continuation_id: Option<String>,
     },
 }
 

@@ -20,48 +20,50 @@ use mealy_application::{
     CompactionStore, CompactionStoreError, CompactionView, CompleteExtensionInvocationCommit,
     CompleteWebhookDeliveryCommit, ContextDisposition, ContextManifestEvidence,
     ContextManifestEvidenceStore, ContextManifestEvidenceStoreError, CreateAutomationCommit,
-    CreateScheduleCommit, CreateSessionCheckpointCommand, DelegationStore, DisableExtensionCommit,
-    DiscordChannelBindingView, DiscordChannelStatus, DiscordChannelStore, DiscordChannelStoreError,
-    EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION, EditAutomationCommit, EffectAttemptState,
-    EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError, EffectLedgerView,
-    EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
-    ExtensionDispatchRequest, ExtensionGrant, ExtensionHost, ExtensionHostError,
-    ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
-    ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
-    ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
-    InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit, InstallExtensionCommit,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchHit, MemorySearchQuery,
-    MemorySemanticIndexHealth, MemorySemanticSearchHit, MemorySemanticSearchQuery,
-    MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
-    OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
-    ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
-    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
-    ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
-    RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
-    RegisterWebhookChannelCommit, RegistryInstalledPackageDisposition, RegistryMetadataStore,
-    RegistryPackageKind, ReplaceMemorySemanticIndexCommit, RequestTaskCancellationCommit,
-    ReserveWebhookDeliveryCommit, ResolveApprovalCommit, RevokeDiscordChannelCommit,
-    RevokeExtensionCommit, RevokeSlackChannelCommit, RevokeTelegramChannelCommit,
+    CreateScheduleCommit, CreateSessionCheckpointCommand, CreateSlackRemoteContinuationCommit,
+    DelegationStore, DisableExtensionCommit, DiscordChannelBindingView, DiscordChannelStatus,
+    DiscordChannelStore, DiscordChannelStoreError, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION,
+    EditAutomationCommit, EffectAttemptState, EffectAttemptView, EffectLedgerStore,
+    EffectLedgerStoreError, EffectLedgerView, EffectOutcomeKind, EffectReconciliationOutcome,
+    EnableExtensionCommit, ExtensionDispatchRequest, ExtensionGrant, ExtensionHost,
+    ExtensionHostError, ExtensionInvocationStatus, ExtensionInvocationTerminal,
+    ExtensionInvocationView, ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest,
+    ExtensionStore, ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator,
+    InputAdmissionLimits, InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit,
+    InstallExtensionCommit, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION,
+    MemorySearchHit, MemorySearchQuery, MemorySemanticIndexHealth, MemorySemanticSearchHit,
+    MemorySemanticSearchQuery, MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError,
+    MemoryView, ModelProvider, OperationalSnapshot, OperationalStore, OperationalStoreError,
+    OwnershipContext, ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality,
+    ProviderPricing, ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection,
+    ProviderSelectionPreference, ProviderSelectionStoreError, ProviderSelectionUseCaseError,
+    ReconcileEffectOutcomeCommit, RegisterDiscordChannelCommit, RegisterSlackChannelCommit,
+    RegisterTelegramChannelCommit, RegisterWebhookChannelCommit,
+    RegistryInstalledPackageDisposition, RegistryMetadataStore, RegistryPackageKind,
+    ReplaceMemorySemanticIndexCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
+    ResolveApprovalCommit, RevokeDiscordChannelCommit, RevokeExtensionCommit,
+    RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit, RevokeTelegramChannelCommit,
     RevokeWebhookChannelCommit, ScheduleDefinition, ScheduleRunStatus, ScheduleRunView,
     ScheduleStatus, ScheduleStore, ScheduleStoreError, ScheduleTransition, ScheduleView,
     SessionCheckpointView, SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot,
     SessionTranscriptStoreError, SessionTranscriptTurn, SessionUseCaseError,
     SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, SlackChannelBindingView,
-    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, StageExtensionManifestCommit,
-    TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
-    TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
-    TimelineUseCaseError, TransitionAutomationCommit, TransitionScheduleCommit,
-    UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand, ValidationStore,
-    WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION,
-    WebhookChannelBindingView, WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError,
-    admit_input, admit_input_with_images, canonical_arguments_digest,
-    compaction_source_event_digest, create_session, create_session_checkpoint,
-    create_session_with_selection, extension_grant_digest, fork_session,
-    inspect_extension_manifest, inspect_installed_registry_package_policy,
-    next_schedule_occurrence_ms, query_session_checkpoints, query_session_provider_selection,
-    query_session_status, query_session_transcript, query_sessions, query_timeline, route_provider,
-    search_sessions, sha256_digest, update_session_provider_selection, update_session_title,
+    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackRemoteContinuationStatus,
+    SlackRemoteContinuationView, StageExtensionManifestCommit, TaskControlAction,
+    TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
+    TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
+    TransitionAutomationCommit, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
+    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
+    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
+    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    admit_input_with_images, canonical_arguments_digest, compaction_source_event_digest,
+    create_session, create_session_checkpoint, create_session_with_selection,
+    extension_grant_digest, fork_session, inspect_extension_manifest,
+    inspect_installed_registry_package_policy, next_schedule_occurrence_ms,
+    query_session_checkpoints, query_session_provider_selection, query_session_status,
+    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
+    sha256_digest, update_session_provider_selection, update_session_title,
     validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
     webhook_input_dedupe_key, webhook_signature_digest,
 };
@@ -72,8 +74,8 @@ use mealy_domain::{
     ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
     ExtensionStatus, MemoryCategory, MemoryConfidence, MemoryId, MemoryMetadata, MemoryNamespace,
     MemoryPromotionAuthorization, MemoryProvenance, MemoryRetention, MemoryRevisionId,
-    MemorySensitivity, PrincipalId, ScheduleId, SessionCheckpointId, SessionId, TaskId,
-    ValidationMethod, ValidationOutcome,
+    MemorySensitivity, PrincipalId, RemoteContinuationId, ScheduleId, SessionCheckpointId,
+    SessionId, TaskId, ValidationMethod, ValidationOutcome,
 };
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
@@ -101,13 +103,14 @@ use mealy_protocol::{
     CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DaemonRunStatusResponse, DelegationResponse, DelegationsResponse,
-    DiscordChannelResponse, DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse,
-    DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest, EffectAttemptResponse,
-    EffectAttemptStatusResponse, EffectOutcomeEvidenceResponse, EffectOutcomeResponse,
-    EffectReconciliationReceipt, EffectResponse, EffectStatusResponse, EnableExtensionRequest,
-    ExportKindRequest, ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
+    CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DaemonRunStatusResponse,
+    DelegationResponse, DelegationsResponse, DiscordChannelResponse, DiscordChannelStatusResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EditAutomationRequest, EffectAttemptResponse, EffectAttemptStatusResponse,
+    EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
+    EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
+    ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
     ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
     ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
     ExtensionRegistryProvenanceResponse, ExtensionResponse, ExtensionStatusResponse,
@@ -122,22 +125,24 @@ use mealy_protocol::{
     ProviderCatalogRouteResponse, ProviderEndpointStatusResponse, ProviderSelectionCommand,
     RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
     ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
-    SandboxProfileResponse, SandboxProfileStatusResponse, ScheduleLifecycleRequest,
-    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse,
-    ScheduleRunStatusResponse, ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse,
-    SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
-    SessionProviderSelectionResponse, SessionSearchHitResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
-    SessionTranscriptAssistantMessageResponse, SessionTranscriptBoundsResponse,
-    SessionTranscriptCitationResponse, SessionTranscriptExport, SessionTranscriptImageResponse,
-    SessionTranscriptLineageResponse, SessionTranscriptRedactionResponse,
-    SessionTranscriptTurnResponse, SessionTranscriptUserMessageResponse, SessionsResponse,
-    SetMemoryPinRequest, SignedWebhookInputRequest, SlackChannelResponse,
-    SlackChannelStatusResponse, SlackChannelsResponse, StageExtensionManifestRequest,
-    SubmitImageInputRequest, SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage,
-    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass,
-    TaskStatus, TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
+    RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, SandboxProfileResponse,
+    SandboxProfileStatusResponse, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
+    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
+    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchHitResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
+    SessionTitleResponse, SessionTranscriptAssistantMessageResponse,
+    SessionTranscriptBoundsResponse, SessionTranscriptCitationResponse, SessionTranscriptExport,
+    SessionTranscriptImageResponse, SessionTranscriptLineageResponse,
+    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
+    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
+    SignedWebhookInputRequest, SlackChannelResponse, SlackChannelStatusResponse,
+    SlackChannelsResponse, SlackRemoteContinuationResponse, SlackRemoteContinuationStatusResponse,
+    SlackRemoteContinuationsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
+    SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
+    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
+    TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
     TelegramChannelStatusResponse, TelegramChannelsResponse, TimelineCursor, TimelineEvent,
     TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
     ValidationMethodResponse, ValidationOutcomeResponse, VerifyBackupRequest,
@@ -3511,6 +3516,93 @@ impl ApiBackend for RuntimeBackend {
         Ok(slack_channel_response(revoked))
     }
 
+    fn create_slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        request: CreateSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let binding_id = parse_channel_binding(&binding_id)?;
+        let remote_continuation_id = parse_remote_continuation(&request.remote_continuation_id)?;
+        let created = self
+            .lock()?
+            .create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                administrative_ownership: ownership,
+                remote_continuation_id,
+                binding_id,
+                thread_id: request.thread_id,
+                expires_at_ms: request.expires_at_ms,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                created_at: self.clock.now(),
+            })
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(created))
+    }
+
+    fn slack_remote_continuations(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+    ) -> Result<SlackRemoteContinuationsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let binding_id = parse_channel_binding(&binding_id)?;
+        let observed_at_ms = epoch_milliseconds(self.clock.now())?;
+        let remote_continuations = self
+            .read()?
+            .slack_remote_continuations(ownership, binding_id, observed_at_ms)
+            .map_err(map_slack_store_error)?
+            .into_iter()
+            .map(slack_remote_continuation_response)
+            .collect();
+        Ok(SlackRemoteContinuationsResponse {
+            api_version: API_VERSION.to_owned(),
+            binding_id: binding_id.to_string(),
+            remote_continuations,
+        })
+    }
+
+    fn slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        remote_continuation_id: String,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let view = self
+            .read()?
+            .slack_remote_continuation(
+                parse_ownership(&identity)?,
+                parse_channel_binding(&binding_id)?,
+                parse_remote_continuation(&remote_continuation_id)?,
+                epoch_milliseconds(self.clock.now())?,
+            )
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(view))
+    }
+
+    fn revoke_slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        remote_continuation_id: String,
+        request: RevokeSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let revoked = self
+            .lock()?
+            .revoke_slack_remote_continuation(RevokeSlackRemoteContinuationCommit {
+                administrative_ownership: parse_ownership(&identity)?,
+                binding_id: parse_channel_binding(&binding_id)?,
+                remote_continuation_id: parse_remote_continuation(&remote_continuation_id)?,
+                expected_revision: request.expected_revision,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                revoked_at: self.clock.now(),
+            })
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(revoked))
+    }
+
     fn receive_signed_webhook(
         &self,
         binding_id: String,
@@ -4095,6 +4187,36 @@ fn slack_channel_response(view: SlackChannelBindingView) -> SlackChannelResponse
         last_error_code: view.last_error_code,
         created_at_ms: view.created_at_ms,
         updated_at_ms: view.updated_at_ms,
+    }
+}
+
+fn slack_remote_continuation_response(
+    view: SlackRemoteContinuationView,
+) -> SlackRemoteContinuationResponse {
+    SlackRemoteContinuationResponse {
+        api_version: API_VERSION.to_owned(),
+        remote_continuation_id: view.remote_continuation_id.to_string(),
+        binding_id: view.binding_id.to_string(),
+        session_id: view.session_id.to_string(),
+        team_id: view.team_id,
+        slack_user_id: view.slack_user_id,
+        slack_channel_id: view.slack_channel_id,
+        thread_id: view.thread_id,
+        synchronized_after_cursor: view.synchronized_after_cursor,
+        status: match view.status {
+            SlackRemoteContinuationStatus::Active => SlackRemoteContinuationStatusResponse::Active,
+            SlackRemoteContinuationStatus::Expired => {
+                SlackRemoteContinuationStatusResponse::Expired
+            }
+            SlackRemoteContinuationStatus::Revoked => {
+                SlackRemoteContinuationStatusResponse::Revoked
+            }
+        },
+        revision: view.revision,
+        created_at_ms: view.created_at_ms,
+        expires_at_ms: view.expires_at_ms,
+        updated_at_ms: view.updated_at_ms,
+        revoked_at_ms: view.revoked_at_ms,
     }
 }
 
@@ -5129,6 +5251,11 @@ fn parse_automation(value: &str) -> Result<AutomationId, BackendError> {
         .map_err(|_| BackendError::InvalidRequest("invalid automation ID".to_owned()))
 }
 
+fn parse_remote_continuation(value: &str) -> Result<RemoteContinuationId, BackendError> {
+    RemoteContinuationId::from_str(value)
+        .map_err(|_| BackendError::InvalidRequest("invalid remote continuation ID".to_owned()))
+}
+
 fn parse_task(value: &str) -> Result<TaskId, BackendError> {
     TaskId::from_str(value).map_err(|_| BackendError::InvalidRequest("invalid task ID".to_owned()))
 }
@@ -5299,9 +5426,14 @@ fn automation_action_from_command(
         AutomationActionCommand::Notify {
             target_session_id,
             message,
+            remote_continuation_id,
         } => Ok(AutomationAction::Notify {
             target_session_id: parse_session(&target_session_id)?,
             message,
+            remote_continuation_id: remote_continuation_id
+                .as_deref()
+                .map(parse_remote_continuation)
+                .transpose()?,
         }),
     }
 }
@@ -5320,9 +5452,11 @@ fn automation_action_response(action: AutomationAction) -> AutomationActionRespo
         AutomationAction::Notify {
             target_session_id,
             message,
+            remote_continuation_id,
         } => AutomationActionResponse::Notify {
             target_session_id: target_session_id.to_string(),
             message,
+            remote_continuation_id: remote_continuation_id.map(|id| id.to_string()),
         },
     }
 }

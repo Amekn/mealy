@@ -76,8 +76,8 @@ It rejects an event-to-prompt loop, admits a sub-minute one-shot prompt once, re
 creation after completion, delivers one future event notification, retries event creation after
 cursor movement, skips events accumulated while paused, exports active/paused/claimed/failed
 operator gauges, drains cleanly, hard-restarts the same home, and proves retained history with no
-duplicate action. Safe-mode and migration/package suites cover the disabled driver, schema 29, and
-complete-home backup/rollback inventories.
+duplicate action. Safe-mode and migration/package suites cover the disabled driver, schemas 29/30,
+and complete-home backup/rollback inventories.
 
 The `real_provider` process suite includes one exact image-bearing turn through the public daemon
 API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
@@ -406,9 +406,12 @@ token enters SQLite, then kills the daemon after the fixture observes a Socket M
 acknowledgement but before admission. Restart completes the persisted normalized disposition
 without another input, returns acknowledgements and results to the exact originating thread,
 honors one `429 Retry-After`, reuses `client_msg_id`, re-acknowledges an exact duplicate without
-duplication, durably ignores a wrong sender, removes both final-route broker entries, and preserves
-terminal evidence. `sqlite::slack` separately covers migration, shared-installation invariants,
-pending-envelope reconstruction, thread lookup, health, and revocation.
+duplication, and durably ignores a wrong sender. It then creates/lists/reads a UUIDv7-keyed pin for
+that exact admitted thread, delivers a proactive one-shot notification through it, revokes it, and
+proves a new definition cannot reuse the revoked route. Final binding revocation removes both
+broker entries and preserves terminal evidence. `sqlite::slack` separately covers migration,
+shared-installation invariants, pending-envelope reconstruction, exact retry, overlap, expiry,
+thread lookup, health, and revocation.
 
 The Phase 7 process suite at `apps/mealyd/tests/phase7_operations.rs` starts real daemon processes
 for safe mode, clean drain, corrupt-open failure, and a provider call deliberately held beyond a

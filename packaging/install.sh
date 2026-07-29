@@ -57,6 +57,7 @@ release_documents=(
   QUICKSTART.md
   README.md
   RELEASE.md
+  REMOTE_CONTINUATION.md
   REQUIREMENTS_COVERAGE.md
   SEMANTIC_MEMORY.md
   TESTING.md
@@ -114,6 +115,7 @@ release_documents=(
   decisions/0020-threshold-signed-inert-package-registry.md
   decisions/0021-derived-semantic-memory-index.md
   decisions/0022-revisioned-future-event-automation.md
+  decisions/0023-exact-thread-slack-remote-continuation.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
