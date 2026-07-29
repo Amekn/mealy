@@ -46,6 +46,7 @@ release_documents=(
   CI_CD.md
   CLI.md
   DOMAIN_MODEL.md
+  EVALUATIONS.md
   GETTING_STARTED.md
   IMPLEMENTATION_PLAN.md
   LINUX_REPOSITORIES.md
@@ -59,6 +60,7 @@ release_documents=(
   TESTING.md
   THREAT_MODEL.md
   V0_3_TO_V0_5_ROADMAP.md
+  evaluation-suite-v1.json
   benchmarks/2026-07-12-development-soak.json
   benchmarks/2026-07-13-debian-13-installed-package-smoke.md
   benchmarks/2026-07-13-development-soak.json

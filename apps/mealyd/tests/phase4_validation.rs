@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "linux")]
 
+use mealy_evaluation::{EvaluationSuite, run_suite};
 use mealy_protocol::{
     API_VERSION, ApprovalDecisionCommand, ApprovalResolutionReceipt, CreateSessionRequest,
     CreateSessionResponse, DeliveryMode, InputAdmissionResponse, LocalConnectionInfo,
@@ -66,6 +67,126 @@ impl Drop for Daemon {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn versioned_evaluator_drives_public_api_and_never_approves_effects() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let home = TempDir::new().expect("temporary evaluator daemon home should be created");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("HTTP client should build");
+    let _daemon = Daemon::spawn(home.path());
+    let connection = wait_until_ready(&client, home.path()).await;
+    let private_prompt = "Return one bounded acknowledgement for evaluator-canary-71da.";
+    let private_write = format!(
+        "fixture.write_file {}",
+        json!({
+            "operation": "write_file",
+            "relativePath": "evaluator-must-not-write.txt",
+            "content": "evaluator-private-write-canary-248b",
+        })
+    );
+    let suite: EvaluationSuite = serde_json::from_value(json!({
+        "contractVersion": "mealy.evaluation-suite.v1",
+        "suiteId": "phase4.public-api",
+        "description": "Deterministic task and approval-parking coverage",
+        "cases": [
+            {
+                "caseId": "assistant.success",
+                "input": {"content": private_prompt},
+                "expect": {
+                    "settledStatus": "succeeded",
+                    "finalResponse": {"presence": "present"},
+                    "validation": {
+                        "presence": "present",
+                        "outcomes": ["passed"],
+                        "methods": ["deterministic"]
+                    },
+                    "replay": {},
+                    "requiredEvents": [
+                        {"eventType": "validation.completed", "minimum": 1, "maximum": 1},
+                        {"eventType": "task.succeeded", "minimum": 1, "maximum": 1}
+                    ],
+                    "forbiddenEvents": ["effect.dispatched"],
+                    "budgets": {
+                        "maximumDurationMs": 20000,
+                        "maximumModelCalls": 2,
+                        "maximumToolCalls": 1,
+                        "maximumDelegatedRuns": 0,
+                        "maximumRetries": 0
+                    }
+                },
+                "timeoutMs": 30000,
+                "pollIntervalMs": 20
+            },
+            {
+                "caseId": "effect.parks",
+                "input": {"content": private_write},
+                "expect": {
+                    "settledStatus": "waiting",
+                    "finalResponse": {"presence": "absent"},
+                    "validation": {"presence": "absent"},
+                    "requiredEvents": [
+                        {"eventType": "effect.proposed", "minimum": 1, "maximum": 1},
+                        {"eventType": "approval.requested", "minimum": 1, "maximum": 1}
+                    ],
+                    "forbiddenEvents": [
+                        "approval.approved",
+                        "effect.dispatched",
+                        "effect.succeeded"
+                    ],
+                    "budgets": {
+                        "maximumDurationMs": 20000,
+                        "maximumModelCalls": 2,
+                        "maximumDelegatedRuns": 0,
+                        "maximumRetries": 0
+                    }
+                },
+                "timeoutMs": 30000,
+                "pollIntervalMs": 20
+            }
+        ]
+    }))
+    .expect("versioned evaluation suite should decode");
+    let report = tokio::task::spawn_blocking(move || run_suite(&connection, &suite))
+        .await
+        .expect("blocking evaluator should join")
+        .expect("public API evaluator should return a report");
+    assert_eq!(
+        (report.summary.total, report.summary.passed),
+        (2, 2),
+        "evaluation failures: {report:#?}"
+    );
+    assert_eq!(report.summary.failed, 0);
+    assert!(
+        report
+            .cases
+            .iter()
+            .all(|case| case.passed && case.evidence.timeline_complete)
+    );
+    assert!(
+        !home
+            .path()
+            .join("fixture-workspace/evaluator-must-not-write.txt")
+            .exists(),
+        "the evaluator must never approve its own effect"
+    );
+    let encoded = serde_json::to_string(&report).expect("report should serialize");
+    for private in [
+        private_prompt,
+        private_write.as_str(),
+        "evaluator-private-write-canary-248b",
+    ] {
+        assert!(
+            !encoded.contains(private),
+            "report leaked private scenario content"
+        );
     }
 }
 

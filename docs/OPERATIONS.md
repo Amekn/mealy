@@ -304,6 +304,34 @@ therefore an optional derived view, never Mealy's audit authority. For a supervi
 add these exact arguments to an operator-reviewed direct `mealyd` unit; the current generated
 `mealyctl service install` unit intentionally does not acquire optional network-export authority.
 
+### Scenario evaluation operations
+
+Preflight a checked suite without requiring a running service:
+
+```sh
+mealyctl eval validate ./evaluation-suite.json
+```
+
+Then run it against the selected private home:
+
+```sh
+mealyctl --home "$HOME/.mealy" eval run ./evaluation-suite.json \
+  > ./evaluation-report.json
+```
+
+The run creates fresh sessions and can make normal provider requests, so choose a deterministic
+local provider for protected CI and apply ordinary live-provider cost/rate policy to manual
+runs. Cases execute sequentially with explicit time/call/token/cost ceilings. A task that requires
+approval parks; the evaluator never approves it. The report is emitted before the command returns
+a failed status for a regression. Preserve both stdout and the exit status.
+
+Reports contain no prompt/response/tool/validation/timeline bodies, but do contain stable
+canonical IDs and unsalted SHA-256 commitments that may reveal equality or permit guessing
+low-entropy text. Store them with workload-appropriate access controls. The report digest detects
+modification but is not a signature. Release evidence must retain it inside the protected CI or
+attestation chain. See [`EVALUATIONS.md`](EVALUATIONS.md) for the complete contract and
+crash-harness composition.
+
 External providers configured with `streaming: true` request `text/event-stream`. Text deltas are
 untrusted, non-authoritative progress: each attempt retains no more than 64 KiB across 256 events,
 each event is at most 4 KiB, and correlation IDs keep adjacent turns separate. Responses requires

@@ -1,0 +1,50 @@
+{
+  "contractVersion": "mealy.evaluation-suite.v1",
+  "suiteId": "mealy.fixture.core",
+  "description": "Release-packaged deterministic public-API task, validation, replay, safety, and budget evidence",
+  "cases": [
+    {
+      "caseId": "assistant.success",
+      "input": {
+        "content": "Return one bounded acknowledgement for the deterministic Mealy fixture."
+      },
+      "expect": {
+        "settledStatus": "succeeded",
+        "finalResponse": {
+          "presence": "present"
+        },
+        "validation": {
+          "presence": "present",
+          "outcomes": [
+            "passed"
+          ]
+        },
+        "replay": {},
+        "requiredEvents": [
+          {
+            "eventType": "validation.completed",
+            "minimum": 1,
+            "maximum": 1
+          },
+          {
+            "eventType": "task.succeeded",
+            "minimum": 1,
+            "maximum": 1
+          }
+        ],
+        "forbiddenEvents": [
+          "effect.dispatched"
+        ],
+        "budgets": {
+          "maximumDurationMs": 20000,
+          "maximumModelCalls": 2,
+          "maximumToolCalls": 1,
+          "maximumDelegatedRuns": 0,
+          "maximumRetries": 0
+        }
+      },
+      "timeoutMs": 30000,
+      "pollIntervalMs": 100
+    }
+  ]
+}

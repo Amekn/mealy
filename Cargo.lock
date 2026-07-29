@@ -1846,6 +1846,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mealy-evaluation"
+version = "0.3.0"
+dependencies = [
+ "mealy-client",
+ "mealy-protocol",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "mealy-infrastructure"
 version = "0.3.0"
 dependencies = [
@@ -1926,6 +1938,7 @@ dependencies = [
  "getrandom 0.4.3",
  "mealy-application",
  "mealy-domain",
+ "mealy-evaluation",
  "mealy-infrastructure",
  "mealy-protocol",
  "ratatui",
@@ -1958,6 +1971,7 @@ dependencies = [
  "mealy-api",
  "mealy-application",
  "mealy-domain",
+ "mealy-evaluation",
  "mealy-infrastructure",
  "mealy-observability",
  "mealy-protocol",

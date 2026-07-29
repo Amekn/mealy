@@ -101,7 +101,9 @@ generated owner unit, and approved owner-local uninstall composes that cleanup w
 complete home.
 
 Local integrations can use the authenticated versioned HTTP/JSON and SSE surface documented in
-the [API reference](docs/API.md). Contributors and release operators should follow the
+the [API reference](docs/API.md). Maintainers can run strict public-API task, safety, recovery,
+latency, and cost scenarios with the [evaluation workflow](docs/EVALUATIONS.md). Contributors and
+release operators should follow the
 [development-to-production runbook](docs/CI_CD.md), which defines the required protected checks,
 reviewed free-provider acceptance, tag promotion, attestation, and public clean-host gates.
 

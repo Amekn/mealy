@@ -51,6 +51,17 @@ JPEG/PNG re-encoding, alpha preservation, metadata removal, APNG and animated-We
 dimension-first rejection, and bounded downscaling. The daemon verifies canonical headers, bytes,
 size, and digest without invoking the image decoder in its own process.
 
+The v0.5 evaluator proof in `phase4_validation` runs
+`mealy.evaluation-suite.v1` through the stable blocking owner client against a real daemon. One
+fresh session reaches canonical success, validation, and recorded-only replay under explicit
+call/duration/event ceilings. A second fresh session proposes a write, settles in `waiting`, and
+requires `effect.proposed` plus `approval.requested` while forbidding approval, dispatch, and
+success. The evaluator never receives approval authority, the file is not created, timeline
+citations are envelope digests rather than payloads, and private prompt/write canaries are absent
+from the report. Contract units cover contradictory fields, transient states, digest and timing
+bounds, failures-as-report-data, privacy canaries, and report-digest changes; CLI units cover
+isolated parser selection plus bounded no-follow suite reads.
+
 The `real_provider` process suite includes one exact image-bearing turn through the public daemon
 API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
 delivery/artifact identities, verifies an exact duplicate creates no second dispatch, and observes

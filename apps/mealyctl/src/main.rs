@@ -44,6 +44,7 @@ use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, ContextManifestId, CorrelationId, EventId,
     PrincipalId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
 };
+use mealy_evaluation::{EvaluationError, EvaluationSuite, run_suite};
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
@@ -155,6 +156,7 @@ const MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAXIMUM_TIMELINE_SSE_EVENT_BYTES: usize = MAXIMUM_DAEMON_RESPONSE_BYTES;
 const MAXIMUM_CONNECTION_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_EXTENSION_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAXIMUM_EVALUATION_SUITE_BYTES: u64 = 2 * 1024 * 1024;
 const MAXIMUM_REGISTRY_ROOT_BYTES: u64 = 128 * 1024;
 const MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES: u64 = 256 * 1024;
 const MAXIMUM_REGISTRY_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
@@ -262,6 +264,17 @@ struct RegistryArguments {
     command: RegistryNamespace,
 }
 
+#[derive(Debug, Parser)]
+#[command(version, about = "Versioned public-API scenario evaluations")]
+struct EvaluationArguments {
+    /// Private Mealy state directory containing `connection.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Evaluation namespace.
+    #[command(subcommand)]
+    command: EvaluationNamespace,
+}
+
 #[derive(Debug, Subcommand)]
 enum McpHttpNamespace {
     /// Inspect or change governed Streamable HTTP MCP authority.
@@ -287,6 +300,16 @@ enum RegistryNamespace {
         /// Signed registry metadata operation.
         #[command(subcommand)]
         command: Box<RegistryCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EvaluationNamespace {
+    /// Validate or run versioned public-API scenario evaluations.
+    Eval {
+        /// Evaluation operation.
+        #[command(subcommand)]
+        command: Box<EvaluationCommand>,
     },
 }
 
@@ -1534,6 +1557,20 @@ impl From<ExportKindArgument> for ExportKindRequest {
             ExportKindArgument::Memory => Self::Memory,
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+enum EvaluationCommand {
+    /// Strictly validate a bounded scenario suite without contacting a daemon.
+    Validate {
+        /// JSON file using `mealy.evaluation-suite.v1`.
+        suite: PathBuf,
+    },
+    /// Run a valid suite through fresh sessions on the authenticated daemon.
+    Run {
+        /// JSON file using `mealy.evaluation-suite.v1`.
+        suite: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2897,12 +2934,14 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <RegistryNamespace as clap::Subcommand>::augment_subcommands(
-        <BrowserNamespace as clap::Subcommand>::augment_subcommands(
-            <MediaNamespace as clap::Subcommand>::augment_subcommands(
-                <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-                    <LifecycleCommand as clap::Subcommand>::augment_subcommands(
-                        Arguments::command(),
+    <EvaluationNamespace as clap::Subcommand>::augment_subcommands(
+        <RegistryNamespace as clap::Subcommand>::augment_subcommands(
+            <BrowserNamespace as clap::Subcommand>::augment_subcommands(
+                <MediaNamespace as clap::Subcommand>::augment_subcommands(
+                    <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+                        <LifecycleCommand as clap::Subcommand>::augment_subcommands(
+                            Arguments::command(),
+                        ),
                     ),
                 ),
             ),
@@ -3052,6 +3091,25 @@ fn registry_invocation(arguments: &[OsString]) -> bool {
             continue;
         }
         return argument == "registry";
+    }
+    false
+}
+
+fn evaluation_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "eval";
     }
     false
 }
@@ -4038,6 +4096,24 @@ async fn run() -> Result<(), CliError> {
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
         let RegistryNamespace::Registry { command } = arguments.command;
         return tokio::task::block_in_place(|| run_registry_operation(&arguments.home, &command));
+    }
+    if evaluation_invocation(&raw_arguments) {
+        let mut arguments = EvaluationArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let EvaluationNamespace::Eval { command } = arguments.command;
+        return match *command {
+            EvaluationCommand::Validate { suite } => validate_evaluation_suite(&suite),
+            EvaluationCommand::Run { suite } => {
+                let connection = load_connection(&arguments.home)?;
+                if connection.api_version != API_VERSION {
+                    return Err(CliError::Protocol(format!(
+                        "connection descriptor uses unsupported API version {:?}",
+                        connection.api_version
+                    )));
+                }
+                run_evaluation_suite(&connection, suite).await
+            }
+        };
     }
     if lifecycle_invocation(&raw_arguments) {
         let mut arguments = LifecycleArguments::parse_from(raw_arguments);
@@ -20427,6 +20503,79 @@ fn valid_server_api_error(error: &ApiErrorResponse) -> bool {
         && !error.message.chars().any(unsafe_terminal_character)
 }
 
+fn read_evaluation_suite(path: &Path) -> Result<EvaluationSuite, CliError> {
+    let file = open_evaluation_suite(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAXIMUM_EVALUATION_SUITE_BYTES
+    {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| CliError::InvalidEvaluationSuiteFile)?,
+    );
+    file.take(MAXIMUM_EVALUATION_SUITE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty()
+        || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_EVALUATION_SUITE_BYTES
+    {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    let suite: EvaluationSuite = serde_json::from_slice(&bytes)?;
+    suite.validate().map_err(EvaluationError::from)?;
+    Ok(suite)
+}
+
+#[cfg(unix)]
+fn open_evaluation_suite(path: &Path) -> Result<File, CliError> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| CliError::Io(error.into()))
+}
+
+#[cfg(not(unix))]
+fn open_evaluation_suite(path: &Path) -> Result<File, CliError> {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    File::open(path).map_err(CliError::Io)
+}
+
+fn validate_evaluation_suite(path: &Path) -> Result<(), CliError> {
+    let suite = read_evaluation_suite(path)?;
+    print_json(json!({
+        "contractVersion": mealy_evaluation::EVALUATION_SUITE_VERSION,
+        "suiteId": suite.suite_id,
+        "suiteDigest": suite.digest()?,
+        "cases": suite.cases.len(),
+        "valid": true,
+    }))
+}
+
+async fn run_evaluation_suite(
+    connection: &LocalConnectionInfo,
+    path: PathBuf,
+) -> Result<(), CliError> {
+    let connection = connection.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        let suite = read_evaluation_suite(&path)?;
+        run_suite(&connection, &suite).map_err(CliError::from)
+    })
+    .await
+    .map_err(|_| CliError::EvaluationWorkerFailed)??;
+    let failed = report.summary.failed;
+    print_json(report)?;
+    if failed > 0 {
+        return Err(CliError::EvaluationFailed(failed));
+    }
+    Ok(())
+}
+
 fn load_connection(home: &Path) -> Result<LocalConnectionInfo, CliError> {
     let home = validate_private_connection_home(home)?;
     let path = home.join("connection.json");
@@ -20632,6 +20781,18 @@ enum CliError {
     /// JSON encoding or decoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Evaluation contract, typed client, or report construction failed.
+    #[error(transparent)]
+    Evaluation(#[from] EvaluationError),
+    /// Owner-selected suite was absent, linked, empty, non-regular, or oversized.
+    #[error("evaluation suite must be a nonempty bounded no-follow regular JSON file")]
+    InvalidEvaluationSuiteFile,
+    /// The isolated blocking evaluation worker could not be joined.
+    #[error("evaluation worker stopped before returning a report")]
+    EvaluationWorkerFailed,
+    /// One or more scenarios failed their explicit assertions.
+    #[error("{0} evaluation scenario(s) failed; inspect the report emitted above")]
+    EvaluationFailed(u64),
     /// Install provenance or lifecycle inspection failed.
     #[error(transparent)]
     Lifecycle(#[from] lifecycle::LifecycleError),
@@ -21077,31 +21238,33 @@ mod tests {
     use super::{
         ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
         ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigCommand, DelegationCommand,
-        DiscordPairMessage, DiscordPairUser, EffectCommand, ExtensionCommand,
-        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
-        MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
-        MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
-        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, RegistryArguments,
-        RegistryCommand, RegistryNamespace, ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS,
-        ScheduleCommand, ServiceCommand, SessionCommand, SessionExportFormatArgument,
-        SessionProviderCommand, SetupProviderArgument, SkillCommand, TelegramPairChat,
-        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
-        browser_invocation, chat_usage_line, configure_provider_image_generation,
-        configure_workspace_grant, decode, generate_discord_pair_challenge,
-        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
-        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
-        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
-        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
-        provider_switch_recovery_route, registry_invocation, registry_skill_install_plan,
-        require_registry_snapshot_review_digest, resolve_default_operational_subcommand,
-        resolve_setup, select_codex_subscription_model, setup_provider_config,
-        should_open_onboard_chat, stable_default_mealy_home, telegram_pair_api_url,
-        update_recovery_route, valid_daemon_config_keys, validate_anthropic_probe_envelope,
-        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
-        validate_provider_probe_envelope, validate_provider_probe_stream,
-        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
+        DiscordPairMessage, DiscordPairUser, EffectCommand, EvaluationArguments, EvaluationCommand,
+        EvaluationNamespace, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
+        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
+        MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction,
+        MediaArguments, MediaNamespace, MediaOptions, MemoryCommand,
+        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
+        ProviderSwitchRecoveryRoute, RegistryArguments, RegistryCommand, RegistryNamespace,
+        ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
+        SessionCommand, SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument,
+        SkillCommand, TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
+        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
+        configure_provider_image_generation, configure_workspace_grant, decode,
+        evaluation_invocation, generate_discord_pair_challenge, generate_telegram_pair_challenge,
+        initialize_setup_home, inspect_mcp_executable, lifecycle_invocation, load_connection,
+        media_invocation, normalize_openrouter_display_name, observe_discord_pair_messages,
+        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
+        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
+        prepare_local_image_attachment, prepare_local_text_attachment,
+        provider_switch_recovery_route, read_evaluation_suite, registry_invocation,
+        registry_skill_install_plan, require_registry_snapshot_review_digest,
+        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
+        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
+        telegram_pair_api_url, update_recovery_route, valid_daemon_config_keys,
+        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
+        validate_discord_pair_base_url, validate_provider_probe_envelope,
+        validate_provider_probe_stream, validate_session_transcript_html,
+        validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -21957,6 +22120,81 @@ mod tests {
             ),
             Err(CliError::RegistrySnapshotDrift)
         ));
+    }
+
+    #[test]
+    fn evaluation_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("eval"),
+            OsString::from("run"),
+            OsString::from("/tmp/core-eval.json"),
+        ];
+        assert!(evaluation_invocation(&arguments));
+        assert!(!evaluation_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed = EvaluationArguments::try_parse_from(arguments)
+            .expect("separate evaluation command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            EvaluationNamespace::Eval { command }
+                if matches!(
+                    command.as_ref(),
+                    EvaluationCommand::Run { suite }
+                        if suite == Path::new("/tmp/core-eval.json")
+                )
+        ));
+    }
+
+    #[test]
+    fn evaluation_suite_reads_are_strict_bounded_regular_and_no_follow() {
+        let directory = tempfile::tempdir().expect("evaluation suite directory");
+        let path = directory.path().join("suite.json");
+        let document = json!({
+            "contractVersion": "mealy.evaluation-suite.v1",
+            "suiteId": "cli.read",
+            "cases": [{
+                "caseId": "one",
+                "input": {"content": "private prompt"},
+                "expect": {
+                    "settledStatus": "succeeded",
+                    "replay": {},
+                    "forbiddenEvents": ["effect.dispatched"]
+                },
+                "timeoutMs": 1000,
+                "pollIntervalMs": 20
+            }]
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec(&document).expect("suite encoding"),
+        )
+        .expect("suite write");
+        let suite = read_evaluation_suite(&path).expect("strict suite read");
+        assert_eq!(suite.suite_id, "cli.read");
+
+        let oversized = directory.path().join("oversized.json");
+        let file = fs::File::create(&oversized).expect("oversized suite");
+        file.set_len(MAXIMUM_EVALUATION_SUITE_BYTES + 1)
+            .expect("oversized suite length");
+        assert!(matches!(
+            read_evaluation_suite(&oversized),
+            Err(CliError::InvalidEvaluationSuiteFile)
+        ));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let linked = directory.path().join("linked.json");
+            symlink(&path, &linked).expect("suite link");
+            assert!(read_evaluation_suite(&linked).is_err());
+        }
     }
 
     #[test]

@@ -733,6 +733,30 @@ package checksums, GitHub provenance attestations, immutable release creation, a
 clean-host install tests all occur after promotion. The draft asset and current-run artifact are
 transport, not authority: mutating or replacing either cannot satisfy the committed digest.
 
+### A scenario file becomes an authority or data-exfiltration path
+
+Threat: an untrusted evaluation suite asks the test runner to approve a mutation, inject a crash,
+read daemon storage, call an arbitrary URL, select hidden provider behavior, or copy prompts,
+responses, tool arguments, validation bodies, and timeline payloads into a CI artifact.
+
+Controls: `mealyctl eval` is an isolated command namespace. Offline preflight opens one nonempty
+no-follow regular file, caps it at 2 MiB, rejects unknown fields, limits it to 128 cases and
+256 KiB input per case, and bounds time, polling, identifiers, event names, and timeline volume.
+The runner constructs the fail-closed typed client on a blocking worker and uses only public
+session/input/timeline/task/replay methods. Every case gets a fresh session. Scenario fields
+cannot name an approval decision, tool grant, effect dispatch, host command, storage path, fault
+injection, service action, report destination, arbitrary HTTP endpoint, or report attribute.
+
+The evaluator never resolves an approval. An effect scenario must expect a parked task or rely on
+a separately governed actor outside the evaluator. Reports use fixed assertion names and contain
+only bounded IDs, counters, statuses, validation references, digests, and first/last relevant
+event-envelope citations. They omit all model/tool-authored bodies and arbitrary errors. A
+real-daemon process case proves a write proposal parks and creates no file, and report canaries
+prove private inputs and timeline/validation payloads are absent. Suite/input SHA-256 commitments
+can reveal equality or allow guesses of low-entropy content, so reports remain sensitivity-scoped
+rather than automatically public. The report digest is integrity evidence, not signer identity;
+release publication must place it in the ordinary attestation chain.
+
 ## Explicit non-boundaries
 
 - prompt instructions;

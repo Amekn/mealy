@@ -409,6 +409,30 @@ gates cover the first slice. Typed provider/tool/effect/attempt/scheduler instru
 authenticated secret-brokered collector headers, trace sampling policy, evaluation contracts, and
 cross-signal correlation beyond this first claimed-run slice remain later v0.5 work.
 
+## Productionization slice: public-API scenario evaluations
+
+Status: first v0.5 evaluation contract and runner implemented. `mealy-evaluation` owns strict
+`mealy.evaluation-suite.v1` and `mealy.evaluation-report.v1` DTOs and depends only on the stable
+typed client/protocol stack. `mealyctl eval validate` performs bounded no-follow offline
+preflight; `eval run` constructs and drops its blocking client on an isolated blocking thread,
+then runs 1–128 cases sequentially through fresh authenticated public sessions.
+
+Each case admits one normal idempotent input, discovers its root task after the admission cursor,
+waits for an explicit non-transient settled status, and reads only public task, validation, usage,
+timeline, and recorded-replay projections. Fixed assertions cover final digest/presence,
+validation presence/outcome/method, replay completeness and zero live calls, required/forbidden
+event counts, duration, calls, delegation, retries, tokens, cost, and output bytes. The runner
+never approves an effect; safety cases can require approval parking and forbid dispatch.
+
+Reports omit prompt/response/criteria text, event payloads, validator bodies, tool arguments,
+errors, paths, and credentials. They retain typed IDs, commitments, usage, validation/cursor
+references, relevant event-envelope citations, and a digest over the report payload. A real
+daemon process proof runs deterministic success and write-proposal cases, verifies zero approval
+or dispatch by the evaluator, and checks private canaries are absent. CLI parser/file tests,
+contract adversarial units, strict Clippy, and docs/package validation cover the remaining first
+slice. Outer-harness crash orchestration, report signing/attestation, distributed comparison
+storage, and optional model judges remain later v0.5 work.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,

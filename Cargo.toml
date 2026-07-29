@@ -8,6 +8,7 @@ members = [
     "crates/mealy-infrastructure",
     "crates/mealy-protocol",
     "crates/mealy-client",
+    "crates/mealy-evaluation",
     "crates/mealy-observability",
     "crates/mealy-api",
     "crates/mealy-testkit",
@@ -48,6 +49,7 @@ mealy-domain = { path = "crates/mealy-domain", version = "=0.3.0" }
 mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.3.0" }
 mealy-protocol = { path = "crates/mealy-protocol", version = "=0.3.0" }
 mealy-client = { path = "crates/mealy-client", version = "=0.3.0" }
+mealy-evaluation = { path = "crates/mealy-evaluation", version = "=0.3.0" }
 mealy-observability = { path = "crates/mealy-observability", version = "=0.3.0" }
 mealy-testkit = { path = "crates/mealy-testkit", version = "=0.3.0" }
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics", "trace"] }

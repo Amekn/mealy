@@ -344,7 +344,15 @@ release qualification remain separate slices.
   Broader typed attempt/effect/scheduler instruments and authenticated collector credentials
   remain later v0.5 work.
 - Add versioned scenario/evaluation contracts for task success, safety,
-  recovery, latency, and cost regression.
+  recovery, latency, and cost regression. The first `mealy.evaluation-suite.v1` /
+  `mealy.evaluation-report.v1` slice is implemented in `mealy-evaluation` and `mealyctl eval`.
+  It strictly validates bounded suites, creates a fresh public-API session per case, observes
+  canonical task/validation/usage/timeline/recorded-replay evidence, applies deterministic
+  status/digest/event/budget assertions, and emits a digest-bearing content-free report. It
+  never reads storage, uses a provider shortcut, grants authority, or resolves approvals.
+  Deterministic process coverage proves validated success plus approval parking with zero effect
+  dispatch. Crash injection/restart remains an outer-harness responsibility, and signed report
+  publication plus model-judge plugins remain later v0.5 work.
 - Add outbound-only, authenticated, revocable, single-owner remote
   continuation with synchronized timeline cursors and completion/approval
   notifications. Multi-user hosting remains outside this milestone.

@@ -19,6 +19,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 mealy-application.workspace = true
 mealy-domain.workspace = true
+mealy-evaluation.workspace = true
 mealy-infrastructure.workspace = true
 mealy-protocol.workspace = true
 ratatui.workspace = true

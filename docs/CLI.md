@@ -31,6 +31,7 @@ public command cannot be added or removed without updating this reference.
 | `session` | Create, submit to, inspect, search, or watch durable sessions. |
 | `provider` | Inspect the active provider/model catalog and metadata provenance. |
 | `task` | Inspect, cancel, pause, resume, or replay durable agent tasks. |
+| `eval` | Validate or run versioned public-API scenario suites. |
 | `delegation` | Inspect durable parent-to-child agent delegations. |
 | `approval` | Inspect and resolve authenticated approval subjects. |
 | `effect` | Inspect governed effects, dispatch attempts, and reconciliation evidence. |
@@ -65,6 +66,20 @@ public command cannot be added or removed without updating this reference.
 | `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
 | `browser` | Explicitly activate or disable separately governed one-shot browser transactions. |
 | `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
+
+## Scenario evaluations
+
+Validate a strict suite without a daemon, then run it through fresh authenticated public sessions:
+
+```sh
+mealyctl eval validate ./evaluation-suite.json
+mealyctl --home "$HOME/.mealy" eval run ./evaluation-suite.json
+```
+
+`eval run` emits the complete digest-bearing report and exits nonzero after output when any case
+fails. It never resolves approvals or exposes prompt/response bodies in the report. See the
+[evaluation guide](EVALUATIONS.md) for the contract, safety/recovery composition, privacy limits,
+and CI workflow.
 
 ## Signed registry trust metadata
 

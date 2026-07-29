@@ -18,22 +18,23 @@ Start with these documents in order:
 12. [`API.md`](API.md) — authenticated local HTTP/JSON and SSE compatibility reference.
 13. [`CLI.md`](CLI.md) — source-checked owner command surface and usage conventions.
 14. [`CI_CD.md`](CI_CD.md) — developer checks and protected source-to-production promotion.
-15. [`OPERATIONS.md`](OPERATIONS.md) — install, diagnostics, backup, retention, and recovery.
-16. [`RELEASE.md`](RELEASE.md) — attested packages, clean install, upgrade, and rollback.
-17. [`REQUIREMENTS_COVERAGE.md`](REQUIREMENTS_COVERAGE.md) — release evidence for normative groups.
-18. [`decisions/`](decisions/) — accepted architectural choices.
-19. [`V0_3_TO_V0_5_ROADMAP.md`](V0_3_TO_V0_5_ROADMAP.md) — active daily-use, governed-capability,
+15. [`EVALUATIONS.md`](EVALUATIONS.md) — versioned public-API scenarios, privacy, budgets, and CI.
+16. [`OPERATIONS.md`](OPERATIONS.md) — install, diagnostics, backup, retention, and recovery.
+17. [`RELEASE.md`](RELEASE.md) — attested packages, clean install, upgrade, and rollback.
+18. [`REQUIREMENTS_COVERAGE.md`](REQUIREMENTS_COVERAGE.md) — release evidence for normative groups.
+19. [`decisions/`](decisions/) — accepted architectural choices.
+20. [`V0_3_TO_V0_5_ROADMAP.md`](V0_3_TO_V0_5_ROADMAP.md) — active daily-use, governed-capability,
     and ecosystem production milestones.
-20. [`research/REFERENCE_SYSTEMS.md`](research/REFERENCE_SYSTEMS.md) — pinned architectural
+21. [`research/REFERENCE_SYSTEMS.md`](research/REFERENCE_SYSTEMS.md) — pinned architectural
     evidence from the eight reference systems.
-21. [`research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md`](research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md)
+22. [`research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md`](research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md)
     — current install, onboarding, maintenance, documentation, CI, release, and user-experience
     comparison.
-22. [`research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md`](research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md)
+23. [`research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md`](research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md)
     — direct evidence for each competitor-grade onboarding outcome and its remaining external
     release gates.
-23. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
-24. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
+24. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
+25. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
 
 Requirements are authoritative for product intent. Accepted ADRs are authoritative for cross-cutting implementation decisions. Architecture describes the current synthesis and must be updated when an ADR supersedes it.
 
