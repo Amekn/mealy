@@ -106,7 +106,23 @@ if [[ -z $report ]]; then
 elif [[ $report != /* ]]; then
   report="$PWD/$report"
 fi
-mkdir -p "$(dirname "$report")"
+report_parent=$(dirname -- "$report")
+report_name=$(basename -- "$report")
+if [[ $report_name == . || $report_name == .. || $report_name == / ]]; then
+  echo "soak report has an invalid basename" >&2
+  exit 64
+fi
+if [[ -L $report_parent ]]; then
+  echo "soak report parent directory cannot be a symlink: $report_parent" >&2
+  exit 73
+fi
+mkdir -p -- "$report_parent"
+report_parent=$(cd "$report_parent" && pwd -P)
+report="$report_parent/$report_name"
+if [[ -e $report || -L $report ]]; then
+  echo "soak report destination must not already exist: $report" >&2
+  exit 73
+fi
 
 if [[ -n $mealyd ]]; then
   if [[ $mealyd != /* ]]; then
