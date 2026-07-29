@@ -465,13 +465,10 @@ async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
     );
     assert_eq!(state.session_revision.load(Ordering::SeqCst), 2);
 
-    terminal
-        .write_all(b"\x1bOR")
-        .and_then(|()| terminal.flush())
-        .expect("create an immutable checkpoint through F3");
-    wait_for_tui_state(
+    drive_tui_key_until(
         &mut terminal,
         &mut rendered,
+        b"\x1bOR",
         Duration::from_secs(3),
         "immutable checkpoint",
         || state.checkpoint_count.load(Ordering::SeqCst) >= 1,
@@ -479,16 +476,13 @@ async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
     .await;
     assert_eq!(state.checkpoint_count.load(Ordering::SeqCst), 1);
 
-    terminal
-        .write_all(b"\x1b[17~")
-        .and_then(|()| terminal.flush())
-        .expect("export a verified JSON transcript through F6");
     let export = export_root
         .path()
         .join(format!("mealy-session-{SESSION_ID}.json"));
-    wait_for_tui_state(
+    drive_tui_key_until(
         &mut terminal,
         &mut rendered,
+        b"\x1b[17~",
         Duration::from_secs(3),
         "verified private transcript export",
         || export.is_file(),
@@ -502,18 +496,13 @@ async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
     assert_eq!(exported["sessionId"], SESSION_ID);
     assert_eq!(exported["title"], "Canonical continuity");
 
-    sleep(Duration::from_millis(50)).await;
-    read_available_terminal_output(&mut terminal, &mut rendered);
-    terminal
-        .write_all(b"\x1b[17;2~")
-        .and_then(|()| terminal.flush())
-        .expect("export a verified inert HTML transcript through Shift-F6");
     let html_export = export_root
         .path()
         .join(format!("mealy-session-{SESSION_ID}.html"));
-    wait_for_tui_state(
+    drive_tui_key_until(
         &mut terminal,
         &mut rendered,
+        b"\x1b[17;2~",
         Duration::from_secs(3),
         "verified inert HTML transcript export",
         || html_export.is_file(),
@@ -527,15 +516,10 @@ async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
     assert!(html.contains(SESSION_ID));
     assert!(!html.to_ascii_lowercase().contains("<script"));
 
-    sleep(Duration::from_millis(50)).await;
-    read_available_terminal_output(&mut terminal, &mut rendered);
-    terminal
-        .write_all(b"\x1bOS")
-        .and_then(|()| terminal.flush())
-        .expect("checkpoint and fork through F4");
-    wait_for_tui_state(
+    drive_tui_key_until(
         &mut terminal,
         &mut rendered,
+        b"\x1bOS",
         Duration::from_secs(3),
         "checkpoint-backed conversation fork",
         || state.fork_created.load(Ordering::SeqCst),
@@ -586,6 +570,39 @@ async fn wait_for_tui_state(
             String::from_utf8_lossy(rendered)
         );
         sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn drive_tui_key_until(
+    terminal: &mut File,
+    rendered: &mut Vec<u8>,
+    key: &[u8],
+    timeout: Duration,
+    description: &str,
+    mut condition: impl FnMut() -> bool,
+) {
+    let deadline = Instant::now() + timeout;
+    while !condition() {
+        terminal
+            .write_all(key)
+            .and_then(|()| terminal.flush())
+            .unwrap_or_else(|error| panic!("send TUI key for {description}: {error}"));
+        let retry_at = Instant::now() + Duration::from_millis(100);
+        loop {
+            read_available_terminal_output(terminal, rendered);
+            if condition() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "TUI did not complete {description}: {}",
+                String::from_utf8_lossy(rendered)
+            );
+            if Instant::now() >= retry_at {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
     }
 }
 
