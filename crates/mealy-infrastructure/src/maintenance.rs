@@ -33,7 +33,6 @@ const MAXIMUM_SECRET_FILES: usize = 4_001;
 const BUFFER_BYTES: usize = 64 * 1024;
 const MAXIMUM_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_SECRET_ARCHIVE_BYTES: usize = 4 * 1024 * 1024;
-const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const SECRET_KDF_MEMORY_KIB: u32 = 64 * 1024;
 const SECRET_KDF_ITERATIONS: u32 = 3;
 const SECRET_KDF_PARALLELISM: u32 = 1;
@@ -2191,7 +2190,7 @@ fn inspect_configured_mcp_executable(
         || metadata.file_type().is_symlink()
         || !metadata.is_file()
         || metadata.len() < 4
-        || metadata.len() > MAXIMUM_MCP_EXECUTABLE_BYTES
+        || metadata.len() > crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
     {
         return Err(MaintenanceError::UnsafePath(
             executable.display().to_string(),

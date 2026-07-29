@@ -169,7 +169,6 @@ const MAXIMUM_REGISTRY_ROOT_BYTES: u64 = 128 * 1024;
 const MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES: u64 = 256 * 1024;
 const MAXIMUM_REGISTRY_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES: u64 = 512 * 1024 * 1024;
-const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_SERVER_ERROR_CODE_BYTES: usize = 64;
 const MAXIMUM_SERVER_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
 const PROVIDER_PROBE_MAXIMUM_BYTES: u64 = 1024 * 1024;
@@ -20330,7 +20329,7 @@ fn inspect_mcp_executable(executable: &Path) -> Result<(PathBuf, String, Vec<u8>
         || !same_file_identity(&path_metadata, &metadata)
         || !metadata.is_file()
         || metadata.len() < 4
-        || metadata.len() > MAXIMUM_MCP_EXECUTABLE_BYTES
+        || metadata.len() > mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
     {
         return Err(CliError::InvalidMcpConfiguration);
     }
@@ -20341,9 +20340,10 @@ fn inspect_mcp_executable(executable: &Path) -> Result<(PathBuf, String, Vec<u8>
     let mut bytes = Vec::with_capacity(
         usize::try_from(metadata.len()).map_err(|_| CliError::InvalidMcpConfiguration)?,
     );
-    file.take(MAXIMUM_MCP_EXECUTABLE_BYTES.saturating_add(1))
+    file.take(mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_MCP_EXECUTABLE_BYTES
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        > mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
         || bytes.len() < 4
         || &bytes[..4] != b"\x7fELF"
     {
@@ -24142,7 +24142,7 @@ mod tests {
 
         let executable = canonical_home.join("oversized-server");
         let file = std::fs::File::create(&executable).expect("create sparse executable");
-        file.set_len(super::MAXIMUM_MCP_EXECUTABLE_BYTES + 1)
+        file.set_len(mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES + 1)
             .expect("oversized sparse executable");
         #[cfg(unix)]
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))

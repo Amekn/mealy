@@ -26,6 +26,13 @@ mod trusted_executable;
 mod web;
 mod workspace;
 
+/// Maximum size of an owner-selected external executable that Mealy will inspect and identity-pin.
+///
+/// Current signed subscription clients and all-feature development launchers can exceed 256 MiB.
+/// The 384 MiB ceiling keeps those supported inputs bounded while remaining independent of
+/// per-process runtime memory limits and stricter package-format limits.
+pub const MAXIMUM_EXTERNAL_EXECUTABLE_BYTES: u64 = 384 * 1024 * 1024;
+
 pub use artifact::{ArtifactGarbageCollectionReport, ArtifactStorageUsage, FileArtifactBlobStore};
 pub use browser::{
     BrowserHostError, BrowserReadTool, BrowserRuntimeProbe, BrowserTransactionDownload,

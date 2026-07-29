@@ -43,7 +43,6 @@ use zeroize::Zeroizing;
 const MCP_LAUNCHER_ARGUMENT: &str = "--mcp-stdio-launcher";
 const MCP_SANDBOX_LAUNCHER: &str = "/runtime/mealy-mcp-launcher";
 const MCP_SANDBOX_SERVER: &str = "/mcp/server";
-const MCP_MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MCP_MAXIMUM_MESSAGE_BYTES: usize = 1024 * 1024;
 const MCP_MAXIMUM_STDOUT_BYTES: usize = 4 * 1024 * 1024;
 const MCP_MAXIMUM_STDERR_BYTES: u64 = 64 * 1024;
@@ -2854,11 +2853,11 @@ fn digest_executable(path: &Path) -> Result<String, McpHostError> {
     let metadata = file
         .metadata()
         .map_err(|error| McpHostError::Io(format!("cannot inspect executable: {error}")))?;
-    if metadata.len() < 4 || metadata.len() > MCP_MAXIMUM_EXECUTABLE_BYTES {
+    if metadata.len() < 4 || metadata.len() > crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES {
         return Err(McpHostError::InvalidConfiguration);
     }
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
-    file.take(MCP_MAXIMUM_EXECUTABLE_BYTES.saturating_add(1))
+    file.take(crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| McpHostError::Io(format!("cannot hash executable: {error}")))?;
     if bytes.len() < 4 || &bytes[..4] != b"\x7fELF" {

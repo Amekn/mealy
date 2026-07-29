@@ -31,10 +31,6 @@ use std::os::unix::{
     process::CommandExt as _,
 };
 
-// Current signed Codex builds are just under 300 MB. Keep the hashing bound
-// comfortably above that measured size while still rejecting unexpectedly
-// large or unbounded executable inputs.
-const MAXIMUM_EXECUTABLE_BYTES: u64 = 384 * 1024 * 1024;
 const MAXIMUM_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const MAXIMUM_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MAXIMUM_STDERR_BYTES: usize = 64 * 1024;
@@ -1106,7 +1102,7 @@ fn executable_digest(path: &Path) -> Result<String, SubscriptionCliBuildError> {
     if !metadata.is_file()
         || metadata.file_type().is_symlink()
         || metadata.len() < 4
-        || metadata.len() > MAXIMUM_EXECUTABLE_BYTES
+        || metadata.len() > crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
     {
         return Err(SubscriptionCliBuildError::InvalidConfiguration);
     }
@@ -1127,7 +1123,7 @@ fn executable_digest(path: &Path) -> Result<String, SubscriptionCliBuildError> {
             break;
         }
         observed = observed.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        if observed > MAXIMUM_EXECUTABLE_BYTES {
+        if observed > crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES {
             return Err(SubscriptionCliBuildError::InvalidConfiguration);
         }
         hasher.update(&chunk[..read]);
