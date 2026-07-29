@@ -99,6 +99,17 @@ cmp "$temporary/extracted/usr/bin/mealyctl" "$release_root/bin/mealyctl"
 [[ $(readlink "$temporary/extracted/usr/bin/mealyctl") == ../lib/mealy/release/bin/mealyctl ]]
 [[ $(stat -Lc '%a' "$temporary/extracted/usr/bin/mealyd") == 755 ]]
 [[ $(stat -c '%a' "$release_root/install-release.sh") == 755 ]]
+if [[ -n $(find "$temporary/extracted/usr/lib/mealy" \
+  "$temporary/extracted/usr/share/doc/mealy" \
+  -type d ! -perm 0755 -print -quit) ]]; then
+  echo "Arch package contains a directory that an ordinary user cannot traverse" >&2
+  exit 1
+fi
+if [[ -n $(find "$temporary/extracted/usr/share/doc/mealy" \
+  -type f ! -perm 0644 -print -quit) ]]; then
+  echo "Arch package contains documentation that an ordinary user cannot read" >&2
+  exit 1
+fi
 [[ -f $temporary/extracted/usr/share/doc/mealy/QUICKSTART.md ]]
 [[ -f $temporary/extracted/usr/share/doc/mealy/GETTING_STARTED.md ]]
 [[ -f $temporary/extracted/usr/share/doc/mealy/research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md ]]

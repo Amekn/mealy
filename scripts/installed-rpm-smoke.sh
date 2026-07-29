@@ -67,6 +67,9 @@ package_installed=true
 [[ $(readlink /usr/bin/mealyctl) == ../lib/mealy/release/bin/mealyctl ]]
 [[ $(stat -Lc '%u:%g:%a' /usr/bin/mealyd) == 0:0:755 ]]
 [[ $(stat -Lc '%u:%g:%a' /usr/bin/mealyctl) == 0:0:755 ]]
+[[ $(stat -c '%u:%g:%a' /usr/lib/mealy/release) == 0:0:755 ]]
+[[ $(stat -c '%u:%g:%a' /usr/share/doc/mealy) == 0:0:755 ]]
+[[ $(stat -c '%u:%g:%a' /usr/share/doc/mealy/QUICKSTART.md) == 0:0:644 ]]
 scripts_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 "$scripts_root/system-package-runtime-smoke.sh" RPM "$home" "$work"
 
