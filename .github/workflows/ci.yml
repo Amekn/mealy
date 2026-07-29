@@ -19,20 +19,6 @@ env:
   CARGO_INCREMENTAL: '0'
 
 jobs:
-  linux-trust-host-evidence:
-    name: Linux trust host evidence (${{ matrix.probe }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        probe: [1, 2, 3, 4, 5, 6, 7, 8]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: scripts/diagnose-system-executable-trust.sh /usr/bin/mkdir
-
   quality:
     name: Strict workspace gate
     runs-on: ubuntu-24.04
@@ -49,6 +35,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes apparmor-profiles apparmor-utils binutils bubblewrap curl jq lintian shellcheck
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
           scripts/diagnose-system-executable-trust.sh /usr/bin/bwrap
       - run: cargo fmt --all -- --check
@@ -336,6 +323,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes apparmor-profiles apparmor-utils bubblewrap jq
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
           scripts/diagnose-system-executable-trust.sh /usr/bin/bwrap
       - run: cargo test --locked -p mealy-infrastructure --all-features --test sandbox_executor
@@ -393,6 +381,7 @@ jobs:
             libdbus-1-3 libexpat1 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libudev1 \
             libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
             libxkbcommon0 libxrandr2 unzip
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
           browser_bundle=$(scripts/fetch-browser-runtime.sh "$RUNNER_TEMP/mealy-browser")
           echo "MEALY_BROWSER_BUNDLE=$browser_bundle" >>"$GITHUB_ENV"

@@ -66,6 +66,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes apparmor-profiles apparmor-utils bubblewrap jq
+          scripts/prepare-github-host-trust-boundary.sh
           scripts/prepare-bwrap-boundary.sh
       - name: Build exact release binaries
         run: scripts/build-release-binaries.sh
