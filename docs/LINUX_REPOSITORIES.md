@@ -254,9 +254,11 @@ revalidation, and every GitHub release operation carries an explicit repository 
 
 Before a signing subkey expires, add its successor to the same primary certificate and replace the
 GitHub secret with a new secret-subkey export. While the old subkey still signs releases, publish
-the refreshed public certificate and require APT users to refresh `mealy.sources`, DNF users to
-re-import the refreshed key when prompted, and Arch users to run `pacman-key --add` again. Switch
-signers only after that overlap. The primary fingerprint remains stable, but clients still need
-the new public subkey material. A primary-key rotation is a separate trust migration: publish and
-document both certificates before changing the repository identity, retain the old key long enough
-for configuration refresh, and never reuse the old fingerprint after revocation.
+the refreshed public certificate. The repository builder preserves its complete public
+certification and subkey-binding history so RPM, APT, and Arch can continue validating packages
+signed before the refresh. Require APT users to refresh `mealy.sources`, DNF users to re-import the
+refreshed key when prompted, and Arch users to run `pacman-key --add` again. Switch signers only
+after that overlap. The primary fingerprint remains stable, but clients still need the new public
+subkey material. A primary-key rotation is a separate trust migration: publish and document both
+certificates before changing the repository identity, retain the old key long enough for
+configuration refresh, and never reuse the old fingerprint after revocation.

@@ -33,6 +33,11 @@ repository=$temporary/repository
 mkdir -m 0700 "$key_home"
 mkdir -m 0755 "$assets"
 
+if grep -Eq -- '--export-options[[:space:]]+export-minimal' "$builder"; then
+  echo "repository builder would discard historical public-key bindings" >&2
+  exit 70
+fi
+
 # RPM 6 evaluates a signing subkey's binding at the package-signature time.
 # Backdate the ephemeral fixture certificate enough to make that ordering
 # deterministic across host/container clock rounding without weakening the
