@@ -297,10 +297,32 @@ jq -n --arg repository "$repository" --argjson release_id "$release_id" \
   ' >docs/benchmarks/release-soak-subject.json
 ```
 
-Copy the terminal report without editing its measurements, then run
-`scripts/fetch-release-soak-subject.sh` and `scripts/validate-release-soak.sh` against a fresh
-download before committing either JSON file. Keep prior draft subjects for audit; their unique tags,
-release IDs, and asset names prevent them from qualifying a newer manifest.
+Copy the terminal report without editing its measurements, then verify a fresh authenticated
+download before committing either JSON file. The fetcher deliberately requires an explicit
+`GH_TOKEN` even when the maintainer already has a valid GitHub CLI session, matching the narrower
+workflow credential boundary instead of silently selecting ambient authentication:
+
+```sh
+verified=$(mktemp -d)
+GH_TOKEN="$(gh auth token)" \
+  scripts/fetch-release-soak-subject.sh \
+  docs/benchmarks/release-soak-subject.json \
+  "$report" \
+  "$verified/mealyd" \
+  "$repository"
+if git merge-base --is-ancestor "$observed" "$expected"; then
+  scripts/validate-release-soak.sh \
+    "$report" "$verified/mealyd" "$expected"
+else
+  scripts/validate-release-soak.sh \
+    "$report" "$verified/mealyd" "$expected" \
+    docs/benchmarks/release-soak-lineage.json
+fi
+rm -rf -- "$verified"
+```
+
+Do not enable shell tracing around the token assignment. Keep prior draft subjects for audit; their
+unique tags, release IDs, and asset names prevent them from qualifying a newer manifest.
 
 ## Reviewed live-provider acceptance
 
