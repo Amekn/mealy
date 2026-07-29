@@ -5,18 +5,19 @@
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_protocol::{
-    API_VERSION, CreateSessionResponse, DeliveryMode, InputAdmissionResponse, LocalConnectionInfo,
-    ProviderCatalogResponse, ProviderCatalogRouteResponse, ProviderSelectionCommand,
-    SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
-    SessionsResponse, SubmitInputRequest, TimelineCursor, TimelinePageResponse,
-    UpdateSessionProviderSelectionRequest,
+    API_VERSION, CreateSessionCheckpointRequest, CreateSessionResponse, DeliveryMode,
+    ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo, ProviderCatalogResponse,
+    ProviderCatalogRouteResponse, ProviderSelectionCommand, SessionProviderSelectionResponse,
+    SessionStatusResponse, SessionSummaryResponse, SessionsResponse, SubmitInputRequest,
+    TimelineCursor, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    UpdateSessionTitleRequest,
 };
 use rustix::{
     fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open},
@@ -25,6 +26,7 @@ use rustix::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{Read, Write},
     net::TcpListener as StdTcpListener,
@@ -55,6 +57,11 @@ struct AdmissionState {
     latest_session_available: Arc<AtomicBool>,
     created_sessions: Arc<AtomicUsize>,
     picker_sessions: Arc<Mutex<Vec<SessionSummaryResponse>>>,
+    canonical_title: Arc<Mutex<String>>,
+    session_revision: Arc<AtomicUsize>,
+    search_queries: Arc<Mutex<Vec<String>>>,
+    checkpoint_count: Arc<AtomicUsize>,
+    fork_created: Arc<AtomicBool>,
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -352,6 +359,236 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
     server.abort();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
+    let state = AdmissionState::default();
+    state.latest_session_available.store(true, Ordering::SeqCst);
+    *state.canonical_title.lock().expect("canonical title lock") = "Latest conversation".to_owned();
+    state.session_revision.store(1, Ordering::SeqCst);
+    let (base_url, server) = spawn_control_plane(state.clone()).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    let export_root = tempfile::tempdir().expect("temporary transcript export root");
+    fs::set_permissions(export_root.path(), fs::Permissions::from_mode(0o700))
+        .expect("private transcript export root");
+    write_connection(home.path(), &base_url);
+    let (mut terminal, mut child) =
+        spawn_mealyctl_pty_in_directory(home.path(), Some("tui"), &[], export_root.path());
+    let mut rendered = Vec::new();
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"\x1b[6n",
+        1,
+        Duration::from_secs(1),
+    );
+    terminal
+        .write_all(b"\x1b[1;1R")
+        .and_then(|()| terminal.flush())
+        .expect("answer terminal cursor-position query");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"MEALY",
+        1,
+        Duration::from_secs(5),
+    );
+
+    terminal
+        .write_all(b"\x1b[Z\x1b[Z/continuity\r")
+        .and_then(|()| terminal.flush())
+        .expect("search canonical transcripts through the TUI");
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "canonical transcript search",
+        || {
+            !state
+                .search_queries
+                .lock()
+                .expect("search query lock")
+                .is_empty()
+        },
+    )
+    .await;
+    assert_eq!(
+        state
+            .search_queries
+            .lock()
+            .expect("search query lock")
+            .as_slice(),
+        ["continuity"]
+    );
+
+    terminal
+        .write_all(b"\x1bOQ")
+        .and_then(|()| terminal.flush())
+        .expect("open the TUI rename overlay");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"Rename conversation",
+        1,
+        Duration::from_secs(2),
+    );
+    let mut rename = vec![0x7f; "Latest conversation".len()];
+    rename.extend_from_slice(b"Canonical continuity\r");
+    terminal
+        .write_all(&rename)
+        .and_then(|()| terminal.flush())
+        .expect("commit a canonical title through the TUI");
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "revision-fenced conversation rename",
+        || {
+            state
+                .canonical_title
+                .lock()
+                .expect("canonical title lock")
+                .as_str()
+                == "Canonical continuity"
+        },
+    )
+    .await;
+    assert_eq!(
+        state
+            .canonical_title
+            .lock()
+            .expect("canonical title lock")
+            .as_str(),
+        "Canonical continuity"
+    );
+    assert_eq!(state.session_revision.load(Ordering::SeqCst), 2);
+
+    terminal
+        .write_all(b"\x1bOR")
+        .and_then(|()| terminal.flush())
+        .expect("create an immutable checkpoint through F3");
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "immutable checkpoint",
+        || state.checkpoint_count.load(Ordering::SeqCst) >= 1,
+    )
+    .await;
+    assert_eq!(state.checkpoint_count.load(Ordering::SeqCst), 1);
+
+    terminal
+        .write_all(b"\x1b[17~")
+        .and_then(|()| terminal.flush())
+        .expect("export a verified JSON transcript through F6");
+    let export = export_root
+        .path()
+        .join(format!("mealy-session-{SESSION_ID}.json"));
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "verified private transcript export",
+        || export.is_file(),
+    )
+    .await;
+    let metadata = fs::metadata(&export).expect("private TUI transcript export");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    let exported: Value =
+        serde_json::from_slice(&fs::read(&export).expect("read private TUI transcript export"))
+            .expect("parse private TUI transcript export");
+    assert_eq!(exported["sessionId"], SESSION_ID);
+    assert_eq!(exported["title"], "Canonical continuity");
+
+    sleep(Duration::from_millis(50)).await;
+    read_available_terminal_output(&mut terminal, &mut rendered);
+    terminal
+        .write_all(b"\x1b[17;2~")
+        .and_then(|()| terminal.flush())
+        .expect("export a verified inert HTML transcript through Shift-F6");
+    let html_export = export_root
+        .path()
+        .join(format!("mealy-session-{SESSION_ID}.html"));
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "verified inert HTML transcript export",
+        || html_export.is_file(),
+    )
+    .await;
+    let html_metadata =
+        fs::metadata(&html_export).expect("private TUI inert HTML transcript export");
+    assert_eq!(html_metadata.permissions().mode() & 0o777, 0o600);
+    let html = fs::read_to_string(&html_export).expect("read private TUI inert HTML export");
+    assert!(html.contains("mealy.session-transcript.v1"));
+    assert!(html.contains(SESSION_ID));
+    assert!(!html.to_ascii_lowercase().contains("<script"));
+
+    sleep(Duration::from_millis(50)).await;
+    read_available_terminal_output(&mut terminal, &mut rendered);
+    terminal
+        .write_all(b"\x1bOS")
+        .and_then(|()| terminal.flush())
+        .expect("checkpoint and fork through F4");
+    wait_for_tui_state(
+        &mut terminal,
+        &mut rendered,
+        Duration::from_secs(3),
+        "checkpoint-backed conversation fork",
+        || state.fork_created.load(Ordering::SeqCst),
+    )
+    .await;
+    assert_eq!(state.checkpoint_count.load(Ordering::SeqCst), 2);
+    assert!(state.fork_created.load(Ordering::SeqCst));
+
+    terminal
+        .write_all(&[0x03])
+        .and_then(|()| terminal.flush())
+        .expect("exit the completed TUI workbench proof");
+    let status = wait_for_child_and_collect(
+        &mut terminal,
+        &mut child,
+        &mut rendered,
+        Duration::from_secs(5),
+    );
+    assert!(
+        status.success(),
+        "workbench control proof failed: {status}; terminal: {}",
+        String::from_utf8_lossy(&rendered)
+    );
+    assert!(
+        rendered
+            .windows(b"\x1b[?1049l".len())
+            .any(|window| window == b"\x1b[?1049l")
+    );
+    server.abort();
+}
+
+async fn wait_for_tui_state(
+    terminal: &mut File,
+    rendered: &mut Vec<u8>,
+    timeout: Duration,
+    description: &str,
+    mut condition: impl FnMut() -> bool,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        read_available_terminal_output(terminal, rendered);
+        if condition() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "TUI did not complete {description}: {}",
+            String::from_utf8_lossy(rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
 async fn select_tui_exact_provider_for_session_and_next_turn(
     state: &AdmissionState,
     terminal: &mut File,
@@ -391,6 +628,11 @@ async fn select_tui_exact_provider_for_session_and_next_turn(
         );
         sleep(Duration::from_millis(10)).await;
     }
+    // The third read occurs inside the action's final canonical refresh. Wait until that bounded
+    // refresh has returned before sending another command; the workbench deliberately accepts
+    // only Ctrl-C while its visible busy indicator is active.
+    sleep(Duration::from_millis(50)).await;
+    read_available_terminal_output(terminal, rendered);
     terminal
         .write_all(b"\x1b[19~")
         .and_then(|()| terminal.flush())
@@ -1165,7 +1407,14 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
         .route("/v1/providers/catalog", get(provider_catalog))
         .route("/v1/approvals", get(pending_approvals))
         .route("/v1/sessions", get(list_sessions).post(create_session))
+        .route("/v1/sessions/search", get(search_sessions))
+        .route("/v1/sessions/{session_id}", patch(update_session_title))
         .route("/v1/sessions/{session_id}/status", get(session_status))
+        .route(
+            "/v1/sessions/{session_id}/checkpoints",
+            post(create_session_checkpoint),
+        )
+        .route("/v1/sessions/{session_id}/forks", post(fork_session))
         .route(
             "/v1/sessions/{session_id}/provider-selection",
             get(session_provider_selection).patch(update_session_provider_selection),
@@ -1174,6 +1423,10 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
         .route(
             "/v1/sessions/{session_id}/exports/json",
             get(session_transcript),
+        )
+        .route(
+            "/v1/sessions/{session_id}/exports/html",
+            get(session_transcript_html),
         )
         .route("/v1/sessions/{session_id}/inputs", post(block_admission))
         .with_state(state);
@@ -1306,22 +1559,38 @@ async fn list_sessions(State(state): State<AdmissionState>) -> Json<SessionsResp
         .expect("picker sessions lock")
         .clone();
     let sessions = if configured.is_empty() {
-        state
-            .latest_session_available
-            .load(Ordering::SeqCst)
-            .then(|| SessionSummaryResponse {
+        let mut sessions = Vec::new();
+        if state.latest_session_available.load(Ordering::SeqCst) {
+            sessions.push(SessionSummaryResponse {
                 session_id: SESSION_ID.to_owned(),
-                title: "Latest conversation".to_owned(),
-                title_source: "derived".to_owned(),
+                title: current_title(&state),
+                title_source: if current_revision(&state) > 1 {
+                    "owner".to_owned()
+                } else {
+                    "derived".to_owned()
+                },
                 status: "active".to_owned(),
-                revision: 1,
+                revision: current_revision(&state),
                 pending_inputs: 0,
                 active_turn_id: None,
                 created_at_ms: 1_800_000_000_000,
                 updated_at_ms: 1_800_000_000_001,
-            })
-            .into_iter()
-            .collect()
+            });
+        }
+        if state.fork_created.load(Ordering::SeqCst) {
+            sessions.push(SessionSummaryResponse {
+                session_id: SECOND_SESSION_ID.to_owned(),
+                title: "Forked conversation".to_owned(),
+                title_source: "derived".to_owned(),
+                status: "active".to_owned(),
+                revision: 0,
+                pending_inputs: 0,
+                active_turn_id: None,
+                created_at_ms: 1_800_000_000_002,
+                updated_at_ms: 1_800_000_000_003,
+            });
+        }
+        sessions
     } else {
         configured
     };
@@ -1339,15 +1608,151 @@ async fn create_session(State(state): State<AdmissionState>) -> Json<CreateSessi
     })
 }
 
-async fn session_status(AxumPath(session_id): AxumPath<String>) -> Json<SessionStatusResponse> {
+async fn search_sessions(
+    State(state): State<AdmissionState>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Json<Value> {
+    let requested = query.get("query").cloned().unwrap_or_default();
+    assert_eq!(query.get("limit").map(String::as_str), Some("100"));
+    state
+        .search_queries
+        .lock()
+        .expect("search query lock")
+        .push(requested.clone());
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "query": requested,
+        "hits": [{
+            "sessionId": SESSION_ID,
+            "sessionTitle": current_title(&state),
+            "sessionTitleSource": if current_revision(&state) > 1 {
+                "owner"
+            } else {
+                "derived"
+            },
+            "turnId": "019f0000-0000-7000-8000-000000000020",
+            "taskId": "019f0000-0000-7000-8000-000000000021",
+            "userExcerpt": "continuity",
+            "userContentDigest": "c".repeat(64),
+            "assistantExcerpt": null,
+            "assistantContentDigest": null,
+            "createdAtMs": 1_800_000_000_000_i64
+        }]
+    }))
+}
+
+async fn update_session_title(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(request): Json<UpdateSessionTitleRequest>,
+) -> Json<Value> {
+    assert_eq!(session_id, SESSION_ID);
+    assert_eq!(request.api_version, API_VERSION);
+    assert_eq!(
+        request.expected_revision,
+        state.session_revision.load(Ordering::SeqCst) as u64
+    );
+    state
+        .canonical_title
+        .lock()
+        .expect("canonical title lock")
+        .clone_from(&request.title);
+    let revision = state.session_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "sessionId": session_id,
+        "title": request.title,
+        "titleSource": "owner",
+        "revision": revision,
+        "eventId": "019f0000-0000-7000-8000-000000000022",
+        "updatedAtMs": 1_800_000_000_002_i64
+    }))
+}
+
+async fn session_status(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Json<SessionStatusResponse> {
+    let revision = if session_id == SECOND_SESSION_ID {
+        0
+    } else {
+        current_revision(&state)
+    };
     Json(SessionStatusResponse {
         api_version: API_VERSION.to_owned(),
         session_id,
-        revision: 1,
+        revision,
         pending_inputs: 0,
         active_turn_id: None,
         latest_cursor: TimelineCursor(0),
     })
+}
+
+async fn create_session_checkpoint(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(request): Json<CreateSessionCheckpointRequest>,
+) -> Json<Value> {
+    assert_eq!(session_id, SESSION_ID);
+    assert_eq!(request.api_version, API_VERSION);
+    assert!(request.label.is_none());
+    assert_eq!(
+        request.expected_revision,
+        state.session_revision.load(Ordering::SeqCst) as u64
+    );
+    let ordinal = state.checkpoint_count.fetch_add(1, Ordering::SeqCst) + 1;
+    let revision = state.session_revision.fetch_add(1, Ordering::SeqCst) + 1;
+    let checkpoint_id = if ordinal == 1 {
+        "019f0000-0000-7000-8000-000000000023"
+    } else {
+        "019f0000-0000-7000-8000-000000000024"
+    };
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "checkpointId": checkpoint_id,
+        "sessionId": session_id,
+        "sourceCursor": revision,
+        "sourceTurnId": null,
+        "contextEpochId": null,
+        "sourceSessionRevision": request.expected_revision,
+        "configDigest": null,
+        "policyDigest": null,
+        "workspaceIdentity": null,
+        "workspaceAuthorityDigest": "d".repeat(64),
+        "providerId": null,
+        "modelId": null,
+        "label": null,
+        "eventId": "019f0000-0000-7000-8000-000000000025",
+        "revision": revision,
+        "createdAtMs": 1_800_000_000_004_i64
+    }))
+}
+
+async fn fork_session(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(request): Json<ForkSessionRequest>,
+) -> Json<Value> {
+    assert_eq!(session_id, SESSION_ID);
+    assert_eq!(request.api_version, API_VERSION);
+    assert_eq!(
+        request.checkpoint_id,
+        "019f0000-0000-7000-8000-000000000024"
+    );
+    assert!(!request.idempotency_key.is_empty());
+    state.fork_created.store(true, Ordering::SeqCst);
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "forkSessionId": SECOND_SESSION_ID,
+        "rootSessionId": SESSION_ID,
+        "sourceSessionId": SESSION_ID,
+        "sourceCheckpointId": request.checkpoint_id,
+        "referencedTurns": 0,
+        "eventId": "019f0000-0000-7000-8000-000000000026",
+        "correlationId": "019f0000-0000-7000-8000-000000000027",
+        "createdAtMs": 1_800_000_000_005_i64,
+        "duplicate": false
+    }))
 }
 
 async fn session_provider_selection(
@@ -1408,25 +1813,46 @@ async fn session_timeline() -> Json<TimelinePageResponse> {
     })
 }
 
-async fn session_transcript(AxumPath(session_id): AxumPath<String>) -> Response {
-    assert_eq!(session_id, SESSION_ID);
+async fn session_transcript(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    assert!(matches!(
+        session_id.as_str(),
+        SESSION_ID | SECOND_SESSION_ID
+    ));
+    let forked = session_id == SECOND_SESSION_ID;
+    let title = if forked {
+        "Forked conversation".to_owned()
+    } else {
+        current_title(&state)
+    };
+    let revision = if forked { 0 } else { current_revision(&state) };
     let value = json!({
         "apiVersion": API_VERSION,
         "schemaVersion": "mealy.session-transcript.v1",
-        "sessionId": SESSION_ID,
-        "title": "Latest conversation",
-        "titleSource": "derived",
+        "sessionId": session_id,
+        "title": title,
+        "titleSource": if forked || revision == 1 { "derived" } else { "owner" },
         "status": "active",
-        "revision": 1,
+        "revision": revision,
         "createdAtMs": 1_800_000_000_000_i64,
         "updatedAtMs": 1_800_000_000_001_i64,
         "highWatermark": 1,
         "lineage": {
             "rootSessionId": SESSION_ID,
-            "parentSessionId": null,
-            "parentCheckpointId": null,
-            "parentCheckpointCursor": null,
-            "forkEventId": null
+            "parentSessionId": if forked { Some(SESSION_ID) } else { None },
+            "parentCheckpointId": if forked {
+                Some("019f0000-0000-7000-8000-000000000024")
+            } else {
+                None
+            },
+            "parentCheckpointCursor": if forked { Some(4) } else { None },
+            "forkEventId": if forked {
+                Some("019f0000-0000-7000-8000-000000000026")
+            } else {
+                None
+            }
         },
         "bounds": {
             "maximumTurns": 1_000,
@@ -1447,7 +1873,7 @@ async fn session_transcript(AxumPath(session_id): AxumPath<String>) -> Response 
     });
     let bytes = serde_json::to_vec(&value).expect("encode session transcript");
     let digest = mealy_application::sha256_digest(&bytes);
-    let disposition = format!("attachment; filename=\"mealy-session-{SESSION_ID}.json\"");
+    let disposition = format!("attachment; filename=\"mealy-session-{session_id}.json\"");
     (
         StatusCode::OK,
         [
@@ -1464,6 +1890,50 @@ async fn session_transcript(AxumPath(session_id): AxumPath<String>) -> Response 
         bytes,
     )
         .into_response()
+}
+
+async fn session_transcript_html(AxumPath(session_id): AxumPath<String>) -> Response {
+    assert!(matches!(
+        session_id.as_str(),
+        SESSION_ID | SECOND_SESSION_ID
+    ));
+    let bytes = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta \
+         http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; \
+         form-action 'none'; frame-ancestors 'none'\"><title>Mealy transcript</title></head>\
+         <body><p>mealy.session-transcript.v1</p><p>{session_id}</p></body></html>\n"
+    )
+    .into_bytes();
+    let digest = mealy_application::sha256_digest(&bytes);
+    let disposition = format!("attachment; filename=\"mealy-session-{session_id}.html\"");
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_DISPOSITION, disposition.as_str()),
+            (
+                header::HeaderName::from_static("x-mealy-content-sha256"),
+                digest.as_str(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+fn current_title(state: &AdmissionState) -> String {
+    let title = state.canonical_title.lock().expect("canonical title lock");
+    if title.is_empty() {
+        "Latest conversation".to_owned()
+    } else {
+        title.clone()
+    }
+}
+
+fn current_revision(state: &AdmissionState) -> u64 {
+    u64::try_from(state.session_revision.load(Ordering::SeqCst))
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 async fn block_admission(
@@ -1663,7 +2133,16 @@ fn spawn_mealyctl_pty(
     subcommand: Option<&str>,
     arguments: &[&str],
 ) -> (File, Child) {
-    spawn_mealyctl_pty_with_removed_environment(home, subcommand, arguments, &[])
+    spawn_mealyctl_pty_with_options(home, subcommand, arguments, &[], None)
+}
+
+fn spawn_mealyctl_pty_in_directory(
+    home: &std::path::Path,
+    subcommand: Option<&str>,
+    arguments: &[&str],
+    working_directory: &std::path::Path,
+) -> (File, Child) {
+    spawn_mealyctl_pty_with_options(home, subcommand, arguments, &[], Some(working_directory))
 }
 
 fn spawn_mealyctl_pty_with_removed_environment(
@@ -1671,6 +2150,16 @@ fn spawn_mealyctl_pty_with_removed_environment(
     subcommand: Option<&str>,
     arguments: &[&str],
     removed_environment: &[&str],
+) -> (File, Child) {
+    spawn_mealyctl_pty_with_options(home, subcommand, arguments, removed_environment, None)
+}
+
+fn spawn_mealyctl_pty_with_options(
+    home: &std::path::Path,
+    subcommand: Option<&str>,
+    arguments: &[&str],
+    removed_environment: &[&str],
+    working_directory: Option<&std::path::Path>,
 ) -> (File, Child) {
     let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC)
         .expect("open PTY master");
@@ -1700,6 +2189,9 @@ fn spawn_mealyctl_pty_with_removed_environment(
     let stderr = Stdio::from(slave);
     let mut command = Command::new(env!("CARGO_BIN_EXE_mealyctl"));
     command.arg("--home").arg(home);
+    if let Some(working_directory) = working_directory {
+        command.current_dir(working_directory);
+    }
     if let Some(subcommand) = subcommand {
         command.arg(subcommand);
     }
