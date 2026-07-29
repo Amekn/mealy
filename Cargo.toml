@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.96"
 license-file = "LICENSE"
@@ -43,15 +43,15 @@ getrandom = "0.4.3"
 hmac = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jsonschema = { version = "0.47.0", default-features = false }
-mealy-api = { path = "crates/mealy-api", version = "=0.3.0" }
-mealy-application = { path = "crates/mealy-application", version = "=0.3.0" }
-mealy-domain = { path = "crates/mealy-domain", version = "=0.3.0" }
-mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.3.0" }
-mealy-protocol = { path = "crates/mealy-protocol", version = "=0.3.0" }
-mealy-client = { path = "crates/mealy-client", version = "=0.3.0" }
-mealy-evaluation = { path = "crates/mealy-evaluation", version = "=0.3.0" }
-mealy-observability = { path = "crates/mealy-observability", version = "=0.3.0" }
-mealy-testkit = { path = "crates/mealy-testkit", version = "=0.3.0" }
+mealy-api = { path = "crates/mealy-api", version = "=0.5.0" }
+mealy-application = { path = "crates/mealy-application", version = "=0.5.0" }
+mealy-domain = { path = "crates/mealy-domain", version = "=0.5.0" }
+mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.5.0" }
+mealy-protocol = { path = "crates/mealy-protocol", version = "=0.5.0" }
+mealy-client = { path = "crates/mealy-client", version = "=0.5.0" }
+mealy-evaluation = { path = "crates/mealy-evaluation", version = "=0.5.0" }
+mealy-observability = { path = "crates/mealy-observability", version = "=0.5.0" }
+mealy-testkit = { path = "crates/mealy-testkit", version = "=0.5.0" }
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics", "trace"] }
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "trace"] }
 opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["experimental_trace_batch_span_processor_with_async_runtime", "metrics", "trace"] }

@@ -1,8 +1,17 @@
 {
-  "schemaVersion": "mealy.release-upgrade-baseline.v1",
-  "releaseVersion": "0.3.0",
-  "releaseStateSchemaVersion": 18,
-  "baselineTag": "v0.2.1",
-  "baselineVersion": "0.2.1",
-  "baselineStateSchemaVersion": 16
+  "schemaVersion": "mealy.release-upgrade-baselines.v2",
+  "releaseVersion": "0.5.0",
+  "releaseStateSchemaVersion": 30,
+  "baselines": [
+    {
+      "tag": "v0.4.0",
+      "version": "0.4.0",
+      "stateSchemaVersion": 23
+    },
+    {
+      "tag": "v0.3.0",
+      "version": "0.3.0",
+      "stateSchemaVersion": 18
+    }
+  ]
 }

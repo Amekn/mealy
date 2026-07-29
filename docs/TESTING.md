@@ -565,11 +565,13 @@ DPKG/RPM/Pacman. The new daemon must preserve the exact owner identity, session,
 recorded-only replay; publish exactly one manifest-verified forward-migration snapshot; report the
 new schema through `doctor`; and accept a new title and checkpoint. Native removal must delete
 program paths while retaining the migrated database and snapshot. A checked
-`packaging/release-upgrade-baseline.json` binds each release to its old tag/version/schema, and its
-validator prevents a stale, same-version, future-schema, or extra-field baseline from entering the
-tag workflow. Pre-publication packages run this proof on Ubuntu-family, Fedora, and Arch lanes;
-post-publication acceptance downloads and release-verifies both versions and repeats it on every
-supported distribution/architecture lane.
+`packaging/release-upgrade-baseline.json` binds each release to a bounded, ordered, unique set of
+required old tag/version/schema identities. The validator normalizes the historical single-entry
+format and rejects an empty, duplicate, out-of-order, same-version, future-schema, oversized, or
+extra-field set. v0.5 declares both v0.4/schema 23 and v0.3/schema 18. Pre-publication packages run
+every proof on Ubuntu-family, Fedora, and Arch lanes; post-publication acceptance downloads and
+release-verifies every predecessor plus the new release and repeats all declared transitions on
+every supported distribution/architecture lane.
 For real ELF payloads, the Debian builder also compares each exact `NEEDED` set with the reviewed
 x86_64/ARM64 glibc contract. A new native dependency fails packaging until its owning package and
 the declared `Depends` field are updated deliberately.

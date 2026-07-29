@@ -163,6 +163,17 @@ The refresh changes only the exact browser-fetch helper, its integration-test ex
 documentation; it does not change either shipped Rust binary source boundary. The fresh-process
 browser and protected package/lifecycle gates must pass again before tagging.
 
+The 2026-07-29 pre-tag refresh confirmed that the stable Headless Shell remains
+`151.0.7922.47`; Checkout `v7.0.1`, artifact upload `v7.0.1`, artifact download `v8.0.1`,
+Attest `v4.2.0`, the Pages actions, SBOM Action `v0.24.0`, Cargo Audit `0.22.2`,
+Cargo Auditable `0.7.5`, Cargo About `0.9.1`, Cargo Deny `0.20.2`, and zizmor `1.28.0`
+remain the current reviewed releases. Syft advanced to `v1.50.0`; its upstream release notes
+identify a high-severity gRPC dependency vulnerability remediated by that release, so the release
+workflow now requests `v1.50.0` from the already commit-pinned SBOM Action. This workflow and
+documentation-only refresh does not change a previously soaked Rust binary source boundary.
+Protected CI and the tag workflow still validate the updated workflow and generated SBOM before
+publication.
+
 The native tag jobs run
 `scripts/validate-public-license.sh` and refuse publication if restrictive terms,
 redirected/mismatched license metadata, an unsupported/mismatched license text, or a workspace
@@ -451,14 +462,16 @@ packages. They reject maintainer scripts/install hooks and wrong architecture, r
 embedded payload, install with the native package manager, check root ownership/modes and the
 generated owner-service unit, complete and recorded-replay a real daemon task, drain, remove the
 package, and prove the temporary user database remains.
-The checked `packaging/release-upgrade-baseline.json` separately identifies the prior public
-tag/version/schema for this candidate. Each tag runner downloads and cryptographically verifies
-that release's native package and checksum manifest before replacing it with the just-built
-candidate. `scripts/installed-native-upgrade-smoke.sh` requires the prior durable task, replay, and
+The checked `packaging/release-upgrade-baseline.json` separately identifies every prior public
+tag/version/schema required for this candidate. The validator accepts the historical single-entry
+format and normalizes it to the bounded ordered v2 baseline set; v0.5 explicitly names both v0.4
+and v0.3. Each tag runner downloads and cryptographically verifies every declared release's native
+package and checksum manifest before replacing it with the just-built candidate.
+`scripts/installed-native-upgrade-smoke.sh` requires each predecessor's durable task, replay, and
 owner identity to survive the schema transition, verifies the automatic migration snapshot,
 creates new-version title/checkpoint records, and proves native removal preserves the migrated
-home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats the same
-old-public-to-new-public proof rather than inheriting a build-runner result.
+home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats every
+declared old-public-to-new-public proof rather than inheriting a build-runner result.
 Before packaging, each native tag runner launches the exact auditable binaries through their
 generated systemd user unit. After constructing the native system packages, clean distribution
 containers install each exact package and repeat the same proof from the root-owned package paths

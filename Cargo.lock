@@ -1783,7 +1783,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mealy-api"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "async-stream",
  "axum",
@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-application"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "chrono",
@@ -1822,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-client"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "base64",
  "mealy-protocol",
@@ -1836,7 +1836,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-domain"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "proptest",
  "serde",
@@ -1847,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-evaluation"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "mealy-client",
  "mealy-protocol",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-infrastructure"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "argon2",
  "base64",
@@ -1889,7 +1889,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-observability"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-protocol"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "mealy-domain",
  "serde",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "mealy-testkit"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "mealy-application",
  "mealy-domain",
@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "mealyctl"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "mealyd"
-version = "0.3.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64",
