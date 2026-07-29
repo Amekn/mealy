@@ -105,20 +105,28 @@ ordered artifact receipt; evidence drift conflicts; dangling or corrupt blob/art
 fails closed; a late transaction failure leaves no database link; and a fresh precommitted orphan
 is retained by age-gated collection.
 
-The first public slice is API plus scriptable CLI only. A stopped-daemon, explicitly approved
+The public slice includes the API, scriptable CLI, full-screen TUI, and temporary owner-local
+dashboard. A stopped-daemon, explicitly approved
 `media image-input` configuration change can activate image input only when every configured
 route is a direct OpenAI Responses or Anthropic Messages route. The API accepts one to four
 client-identified source images through a separate 6 MiB transport boundary; the CLI opens only
 no-follow regular PNG/JPEG/WebP files outside the Mealy home. Both require an exact provider/model
 selection and preserve the delivery key plus client UUIDv7 artifact IDs for ambiguous retry.
+The TUI reuses the no-follow opener through `F9`, keeps pending paths only in memory, and renders
+path-free transcript evidence. The dashboard accepts only browser-selected bytes, creates stable
+UUIDv7 identities before dispatch, and exposes an owner-scoped PNG/JPEG viewer that verifies
+metadata, media type, byte length, and SHA-256 in both the loopback adapter and page before an
+in-memory preview or download.
 A real daemon/provider process proof covers isolated PNG normalization, canonical JPEG dispatch,
 duplicate admission, context-manifest evidence, transcript export, and zero-live-call replay.
+Public-process pseudo-terminal and dashboard-adapter tests cover the two interactive paths.
 
-TUI, dashboard, and channel image attachment/rendering remain disabled. Forked lineage does not
-yet project source-turn images, and audio and video are separate unfinished capabilities. Image
-generation is now implemented through the independent high-risk effect contract in
-[ADR 0018](0018-governed-image-generation-effect.md); its backend artifact support does not
-activate any client preview. Those limitations keep the broader multimodal production gate open.
+Line chat and external channel image attachment/rendering remain disabled. The TUI intentionally
+does not use terminal-specific pixel protocols. Forked lineage does not yet project source-turn
+images, and reference/edit workflows, audio, and video are separate unfinished capabilities.
+Image generation is implemented through the independent high-risk effect contract in
+[ADR 0018](0018-governed-image-generation-effect.md); successful artifacts use the same verified
+dashboard viewer. Those limitations remain explicit non-v0.4 scope.
 
 ## Rejected alternatives
 

@@ -10,14 +10,18 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
+use mealy_domain::ArtifactId;
 use mealy_protocol::{
     API_VERSION, CreateSessionCheckpointRequest, CreateSessionResponse, DeliveryMode,
     ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo, ProviderCatalogResponse,
     ProviderCatalogRouteResponse, ProviderSelectionCommand, SessionProviderSelectionResponse,
-    SessionStatusResponse, SessionSummaryResponse, SessionsResponse, SubmitInputRequest,
-    TimelineCursor, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    UpdateSessionTitleRequest,
+    SessionStatusResponse, SessionSummaryResponse, SessionsResponse, SubmitImageInputRequest,
+    SubmitInputRequest, TimelineCursor, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
 };
 use rustix::{
     fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open},
@@ -52,6 +56,7 @@ struct AdmissionState {
     completed: Arc<AtomicBool>,
     submitted_content: Arc<Mutex<Option<String>>>,
     submitted_provider_selections: Arc<Mutex<Vec<Option<ProviderSelectionCommand>>>>,
+    submitted_image_input: Arc<Mutex<Option<SubmitImageInputRequest>>>,
     session_provider_selection: Arc<Mutex<Option<ProviderSelectionCommand>>>,
     provider_selection_reads: Arc<AtomicUsize>,
     latest_session_available: Arc<AtomicBool>,
@@ -253,6 +258,124 @@ async fn tui_enters_canonical_workbench_and_restores_terminal_on_ctrl_c() {
         !rendered
             .windows(bearer.len())
             .any(|window| window == bearer.as_bytes())
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn tui_attaches_an_owner_selected_image_to_an_exact_route() {
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+    let state = AdmissionState::default();
+    state.latest_session_available.store(true, Ordering::SeqCst);
+    let (base_url, server) = spawn_control_plane(state.clone()).await;
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700))
+        .expect("private temporary Mealy home");
+    let attachment_root = tempfile::tempdir().expect("image attachment root");
+    let image_path = attachment_root.path().join("selected.png");
+    fs::write(
+        &image_path,
+        BASE64_STANDARD
+            .decode(ONE_PIXEL_PNG)
+            .expect("one-pixel PNG fixture"),
+    )
+    .expect("write image fixture");
+    write_connection(home.path(), &base_url);
+    let (mut terminal, mut child) = spawn_mealyctl_pty(home.path(), Some("tui"), &[]);
+    let mut rendered = Vec::new();
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"\x1b[6n",
+        1,
+        Duration::from_secs(1),
+    );
+    terminal
+        .write_all(b"\x1b[1;1R")
+        .and_then(|()| terminal.flush())
+        .expect("answer terminal cursor-position query");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"MEALY",
+        1,
+        Duration::from_secs(5),
+    );
+    let exact_selection =
+        select_tui_exact_provider_for_session_and_next_turn(&state, &mut terminal, &mut rendered)
+            .await;
+    terminal
+        .write_all(b"\x1b[20~")
+        .and_then(|()| terminal.flush())
+        .expect("open image attachment overlay through F9");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"Attach local image",
+        1,
+        Duration::from_secs(2),
+    );
+    terminal
+        .write_all(format!("{}\r", image_path.display()).as_bytes())
+        .and_then(|()| terminal.flush())
+        .expect("select local image path");
+    wait_for_occurrences(
+        &mut terminal,
+        &mut rendered,
+        b"1 image(s) attached.",
+        1,
+        Duration::from_secs(2),
+    );
+    terminal
+        .write_all(b"Describe the selected pixel.\r")
+        .and_then(|()| terminal.flush())
+        .expect("submit image-bearing TUI turn");
+    let admission_deadline = Instant::now() + Duration::from_secs(5);
+    let request = loop {
+        if let Some(request) = state
+            .submitted_image_input
+            .lock()
+            .expect("submitted image input lock")
+            .clone()
+        {
+            break request;
+        }
+        assert!(
+            Instant::now() < admission_deadline,
+            "workbench did not submit image input: {}",
+            String::from_utf8_lossy(&rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(request.content, "Describe the selected pixel.");
+    assert_eq!(request.provider_selection, exact_selection);
+    assert_eq!(request.images.len(), 1);
+    assert_eq!(request.images[0].media_type, "image/png");
+    assert_eq!(request.images[0].data_base64, ONE_PIXEL_PNG);
+    assert_eq!(
+        request.images[0]
+            .artifact_id
+            .parse::<ArtifactId>()
+            .expect("artifact UUID")
+            .as_uuid()
+            .get_version_num(),
+        7
+    );
+    terminal
+        .write_all(&[0x03])
+        .and_then(|()| terminal.flush())
+        .expect("exit image-capable workbench");
+    let status = wait_for_child_and_collect(
+        &mut terminal,
+        &mut child,
+        &mut rendered,
+        Duration::from_secs(5),
+    );
+    assert!(
+        status.success(),
+        "image-capable workbench failed: {status}; terminal: {}",
+        String::from_utf8_lossy(&rendered)
     );
     server.abort();
 }
@@ -1446,6 +1569,10 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
             get(session_transcript_html),
         )
         .route("/v1/sessions/{session_id}/inputs", post(block_admission))
+        .route(
+            "/v1/sessions/{session_id}/image-inputs",
+            post(admit_image_input),
+        )
         .with_state(state);
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -1983,6 +2110,39 @@ async fn block_admission(
         accepted_at_ms: 1_800_000_000_000,
         duplicate: false,
         cursor: TimelineCursor(1),
+    })
+}
+
+async fn admit_image_input(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(request): Json<SubmitImageInputRequest>,
+) -> Json<InputAdmissionResponse> {
+    assert_eq!(session_id, SESSION_ID);
+    let image_artifact_ids = request
+        .images
+        .iter()
+        .map(|image| image.artifact_id.clone())
+        .collect();
+    let provider_selection = request.provider_selection.clone();
+    *state
+        .submitted_image_input
+        .lock()
+        .expect("submitted image input lock") = Some(request);
+    Json(InputAdmissionResponse {
+        api_version: API_VERSION.to_owned(),
+        session_id: SESSION_ID.to_owned(),
+        inbox_entry_id: "019f0000-0000-7000-8000-000000000040".to_owned(),
+        image_artifact_ids,
+        inbox_sequence: 2,
+        delivery_mode: DeliveryMode::Queue,
+        provider_selection,
+        provider_selection_source: "explicit".to_owned(),
+        event_id: "019f0000-0000-7000-8000-000000000041".to_owned(),
+        outbox_id: "019f0000-0000-7000-8000-000000000042".to_owned(),
+        accepted_at_ms: 1_800_000_000_010,
+        duplicate: false,
+        cursor: TimelineCursor(2),
     })
 }
 

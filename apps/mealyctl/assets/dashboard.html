@@ -325,6 +325,41 @@
       line-height: 1.5;
     }
     .composer textarea::placeholder { color: var(--faint); }
+    .image-attachments { display: flex; min-height: 24px; margin-top: 9px; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .image-chip {
+      max-width: 280px;
+      padding: 5px 8px;
+      border: 1px solid rgba(211, 159, 255, .28);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(88, 48, 112, .22);
+      font-size: 10px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .image-picker { max-width: 260px; color: var(--muted); font-size: 11px; }
+    .image-picker::file-selector-button {
+      min-height: 34px;
+      margin-right: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      color: var(--ink);
+      background: var(--surface);
+      cursor: pointer;
+    }
+    .artifact-preview {
+      display: block;
+      max-width: 100%;
+      max-height: 520px;
+      margin-top: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(7, 15, 14, .65);
+      object-fit: contain;
+    }
+    .artifact-preview[hidden] { display: none; }
     .composer-actions, .command-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
     .composer-actions { justify-content: space-between; margin-top: 10px; }
     .command-actions { margin-top: 10px; }
@@ -539,6 +574,7 @@
             <div class="composer">
               <label class="label" for="prompt">Message</label>
               <textarea id="prompt" maxlength="16384" placeholder="Ask Mealy to reason, research, or perform a governed task…" disabled></textarea>
+              <div id="image-attachments" class="image-attachments" aria-live="polite"><span class="metric-note">No images attached.</span></div>
               <div class="composer-actions">
                 <div class="command-actions">
                   <label class="label" for="delivery-mode">Delivery</label>
@@ -549,6 +585,8 @@
                   </select>
                   <label class="label" for="turn-provider">This turn</label>
                   <select id="turn-provider" class="delivery-mode" disabled></select>
+                  <label class="label" for="image-input">Images</label>
+                  <input id="image-input" class="image-picker" type="file" accept="image/png,image/jpeg,image/webp" multiple disabled>
                 </div>
                 <div class="command-actions">
                   <button id="cancel-task" class="action danger" type="button" disabled>Cancel active task</button>
@@ -579,6 +617,26 @@
       <article class="panel">
         <header class="panel-head"><div><h3>Pending approvals</h3><p class="panel-subtitle">Review and resolve digest-bound effect subjects</p></div><span id="approval-count" class="count">0 pending</span></header>
         <div class="panel-body"><ul id="approvals" class="list"></ul></div>
+      </article>
+
+      <article class="panel full">
+        <header class="panel-head"><div><h3>Image artifacts</h3><p class="panel-subtitle">Digest-verify and safely preview canonical input or generated images</p></div><span id="artifact-state" class="badge">Not loaded</span></header>
+        <div class="panel-body recovery-layout">
+          <div class="recovery-controls">
+            <div class="recovery-fields">
+              <label class="recovery-field"><span class="label">Artifact ID</span><input id="artifact-id" type="text" maxlength="36" autocomplete="off" spellcheck="false" placeholder="UUID from an image receipt or effect outcome"></label>
+            </div>
+            <div class="command-actions">
+              <button id="load-artifact" class="action" type="button">Verify and preview</button>
+              <button id="download-artifact" class="action" type="button" disabled>Download verified image</button>
+            </div>
+            <p class="command-note">The loopback adapter accepts only owner-authorized canonical PNG/JPEG artifacts up to 2 MiB, rechecks size and SHA-256 against immutable metadata, and keeps preview bytes only in this page.</p>
+          </div>
+          <div>
+            <pre id="artifact-detail" class="evidence-output">Enter an image artifact UUID or load image-generation effect evidence.</pre>
+            <img id="artifact-preview" class="artifact-preview" alt="Verified Mealy image artifact" hidden>
+          </div>
+        </div>
       </article>
 
       <article class="panel full">
@@ -759,7 +817,7 @@
     </section>
 
     <footer class="footer">
-      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/forks/transcript exports/input/control, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
+      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/forks/transcript exports/text-or-image input/control, digest-verified image artifacts, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
       <p>Close the terminal command to destroy this dashboard capability. Data is never cached by this server.</p>
     </footer>
   </main>
@@ -781,8 +839,16 @@
     const promptInput = document.getElementById("prompt");
     const deliveryMode = document.getElementById("delivery-mode");
     const turnProvider = document.getElementById("turn-provider");
+    const imageInput = document.getElementById("image-input");
+    const imageAttachments = document.getElementById("image-attachments");
     const sendInputButton = document.getElementById("send-input");
     const cancelTaskButton = document.getElementById("cancel-task");
+    const artifactIdInput = document.getElementById("artifact-id");
+    const artifactState = document.getElementById("artifact-state");
+    const artifactDetail = document.getElementById("artifact-detail");
+    const artifactPreview = document.getElementById("artifact-preview");
+    const loadArtifactButton = document.getElementById("load-artifact");
+    const downloadArtifactButton = document.getElementById("download-artifact");
     const taskUsageIdInput = document.getElementById("task-usage-id");
     const loadTaskUsageButton = document.getElementById("load-task-usage");
     const taskUsageDetail = document.getElementById("task-usage-detail");
@@ -850,8 +916,11 @@
     let timelineEvents = [];
     let activeTaskId = null;
     let loadedTaskUsage = null;
+    let loadedArtifact = null;
+    let artifactObjectUrl = null;
     let taskUsageLoading = false;
     let pendingInputCommand = null;
+    let pendingImages = [];
     let loadedEffect = null;
     let loadedAttempt = null;
     let pendingReconciliationCommand = null;
@@ -936,6 +1005,88 @@
       commandKeys.delete(scope);
     }
 
+    function clearPendingInputCommand() {
+      if (pendingInputCommand) clearCommandKey(pendingInputCommand.scope);
+      pendingInputCommand = null;
+      sendInputButton.textContent = "Send";
+    }
+
+    function uuidV7() {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      let timestamp = Date.now();
+      for (let index = 5; index >= 0; index -= 1) {
+        bytes[index] = timestamp % 256;
+        timestamp = Math.floor(timestamp / 256);
+      }
+      bytes[6] = (bytes[6] & 0x0f) | 0x70;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    function imageMediaType(file) {
+      if (["image/png", "image/jpeg", "image/webp"].includes(file.type)) return file.type;
+      const name = String(file.name || "").toLowerCase();
+      if (name.endsWith(".png")) return "image/png";
+      if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+      if (name.endsWith(".webp")) return "image/webp";
+      return null;
+    }
+
+    function renderPendingImages() {
+      if (!pendingImages.length) {
+        imageAttachments.replaceChildren(element("span", "metric-note", "No images attached."));
+        return;
+      }
+      imageAttachments.replaceChildren(...pendingImages.map(image =>
+        element("span", "image-chip", `${image.file.name} · ${formatBytes(image.file.size)}`)
+      ));
+    }
+
+    function selectPendingImages(files) {
+      const selected = Array.from(files || []);
+      if (selected.length > 4) throw new Error("Choose at most four images for one turn.");
+      let total = 0;
+      const next = selected.map(file => {
+        const mediaType = imageMediaType(file);
+        if (!mediaType || file.size <= 0 || file.size > 2 * 1024 * 1024) {
+          throw new Error("Each image must be a non-empty PNG, JPEG, or WebP no larger than 2 MiB.");
+        }
+        total += file.size;
+        if (total > 4 * 1024 * 1024) throw new Error("The selected images exceed the 4 MiB turn limit.");
+        return { file, mediaType, artifactId: uuidV7() };
+      });
+      clearPendingInputCommand();
+      pendingImages = next;
+      renderPendingImages();
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 32768) {
+        const chunk = bytes.subarray(offset, Math.min(offset + 32768, bytes.length));
+        binary += String.fromCharCode(...chunk);
+      }
+      return btoa(binary);
+    }
+
+    async function encodePendingImages(images) {
+      const encoded = [];
+      for (const image of images) {
+        const bytes = new Uint8Array(await image.file.arrayBuffer());
+        if (bytes.length !== image.file.size || bytes.length === 0 || bytes.length > 2 * 1024 * 1024) {
+          throw new Error("An attached image changed or exceeded its bound before admission.");
+        }
+        encoded.push({
+          artifactId: image.artifactId,
+          mediaType: image.mediaType,
+          dataBase64: bytesToBase64(bytes)
+        });
+      }
+      return encoded;
+    }
+
     function showError(error, fallback) {
       errorBanner.textContent = error instanceof Error ? error.message : fallback;
       errorBanner.classList.add("visible");
@@ -999,6 +1150,26 @@
       effectRecoveryState.textContent = eligible ? "Reconciliation required" : state;
     }
 
+    function findArtifactId(value, depth) {
+      if (depth > 6 || value === null || value === undefined) return null;
+      if (Array.isArray(value)) {
+        for (const item of value.slice(0, 32)) {
+          const found = findArtifactId(item, depth + 1);
+          if (found) return found;
+        }
+        return null;
+      }
+      if (typeof value !== "object") return null;
+      for (const key of ["artifactId", "artifact_id"]) {
+        if (validEntityId(value[key])) return value[key];
+      }
+      for (const nested of Object.values(value).slice(0, 64)) {
+        const found = findArtifactId(nested, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+
     function renderEffectEvidence() {
       if (!loadedEffect) {
         effectDetail.textContent = "Choose an effect from a timeline or approval, or enter its exact UUID.";
@@ -1007,8 +1178,93 @@
           effect: loadedEffect,
           attempt: loadedAttempt
         }, null, 2);
+        const artifactId = findArtifactId(loadedAttempt, 0);
+        if (artifactId) {
+          artifactIdInput.value = artifactId;
+          artifactState.className = "badge info";
+          artifactState.textContent = "Outcome image available";
+        }
       }
       updateRecoveryControls();
+    }
+
+    function clearArtifactPreview() {
+      if (artifactObjectUrl) URL.revokeObjectURL(artifactObjectUrl);
+      artifactObjectUrl = null;
+      loadedArtifact = null;
+      artifactPreview.removeAttribute("src");
+      artifactPreview.hidden = true;
+      downloadArtifactButton.disabled = true;
+    }
+
+    async function sha256Hex(bytes) {
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      return Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function loadArtifactImage() {
+      const artifactId = artifactIdInput.value.trim();
+      if (!validEntityId(artifactId)) {
+        showError(new Error("Enter one canonical image artifact UUID."), "The artifact identifier is invalid.");
+        return;
+      }
+      loadArtifactButton.disabled = true;
+      loadArtifactButton.textContent = "Verifying…";
+      clearArtifactPreview();
+      clearError();
+      try {
+        const metadata = await requestJson(`/api/artifacts/${encodeURIComponent(artifactId)}`);
+        if (metadata.artifactId !== artifactId
+          || !["image/png", "image/jpeg"].includes(metadata.mediaType)
+          || asNumber(metadata.sizeBytes) <= 0
+          || asNumber(metadata.sizeBytes) > 2 * 1024 * 1024
+          || typeof metadata.digest !== "string"
+          || !/^[0-9a-f]{64}$/.test(metadata.digest)) {
+          throw new Error("Artifact metadata is outside the safe image-preview contract.");
+        }
+        const response = await fetch(`/api/artifacts/${encodeURIComponent(artifactId)}/content`, {
+          method: "GET",
+          cache: "no-store",
+          credentials: "omit",
+          headers: { "X-Mealy-Dashboard": DASHBOARD_TOKEN, "Accept": "image/png,image/jpeg" }
+        });
+        if (!response.ok) throw new Error(`Verified artifact content is unavailable (${response.status}).`);
+        if (response.headers.get("content-type") !== metadata.mediaType
+          || response.headers.get("x-mealy-content-sha256") !== metadata.digest) {
+          throw new Error("Artifact response headers do not match immutable metadata.");
+        }
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== asNumber(metadata.sizeBytes)
+          || await sha256Hex(bytes) !== metadata.digest) {
+          throw new Error("Artifact bytes do not match immutable metadata.");
+        }
+        artifactObjectUrl = URL.createObjectURL(new Blob([bytes], { type: metadata.mediaType }));
+        artifactPreview.src = artifactObjectUrl;
+        artifactPreview.hidden = false;
+        loadedArtifact = metadata;
+        artifactDetail.textContent = JSON.stringify(metadata, null, 2);
+        artifactState.className = "badge ok";
+        artifactState.textContent = "Digest verified";
+        downloadArtifactButton.disabled = false;
+      } catch (error) {
+        artifactState.className = "badge bad";
+        artifactState.textContent = "Verification failed";
+        artifactDetail.textContent = "The image was not rendered because verification did not complete.";
+        showError(error, "The image artifact could not be verified.");
+      } finally {
+        loadArtifactButton.disabled = false;
+        loadArtifactButton.textContent = "Verify and preview";
+      }
+    }
+
+    function downloadArtifactImage() {
+      if (!loadedArtifact || !artifactObjectUrl) return;
+      const extension = loadedArtifact.mediaType === "image/png" ? "png" : "jpg";
+      const link = document.createElement("a");
+      link.href = artifactObjectUrl;
+      link.download = `mealy-artifact-${loadedArtifact.artifactId}.${extension}`;
+      link.rel = "noopener";
+      link.click();
     }
 
     async function selectEffectEvidence(effectId, attemptId) {
@@ -1303,6 +1559,7 @@
       promptInput.disabled = !selected;
       deliveryMode.disabled = !selected;
       turnProvider.disabled = !selected;
+      imageInput.disabled = !selected;
       sendInputButton.disabled = !selected;
       cancelTaskButton.disabled = !selected || !activeTaskId;
       renameSessionButton.disabled = !selected || currentSessionRevision === null;
@@ -1346,8 +1603,10 @@
         currentSessionRevision = null;
         currentSessionQuiescent = false;
         turnProvider.value = "inherit";
-        if (pendingInputCommand) clearCommandKey(pendingInputCommand.scope);
-        pendingInputCommand = null;
+        clearPendingInputCommand();
+        pendingImages = [];
+        imageInput.value = "";
+        renderPendingImages();
       }
       document.querySelectorAll(".session-choice").forEach(choice => {
         choice.classList.toggle("selected", choice.dataset.sessionId === selectedSessionId);
@@ -1599,9 +1858,9 @@
 
     async function submitInput() {
       if (!selectedSessionId) return;
-      const content = promptInput.value;
+      const content = promptInput.value || (pendingImages.length ? "Describe the attached image or images." : "");
       const mode = deliveryMode.value;
-      if (!content.trim()) {
+      if (!content.trim() && !pendingImages.length) {
         showError(new Error("Enter a non-blank message before sending."), "The message is invalid.");
         return;
       }
@@ -1610,34 +1869,59 @@
         return;
       }
       const providerValueForTurn = turnProvider.value;
-      const providerSelection = providerSelectionFromValue(providerValueForTurn, true);
-      if (!pendingInputCommand || pendingInputCommand.sessionId !== selectedSessionId || pendingInputCommand.content !== content || pendingInputCommand.deliveryMode !== mode || pendingInputCommand.providerValue !== providerValueForTurn) {
-        const scope = `input:${selectedSessionId}:${Date.now()}:${content.length}`;
-        pendingInputCommand = {
-          sessionId: selectedSessionId,
-          content,
-          deliveryMode: mode,
-          providerValue: providerValueForTurn,
-          providerSelection,
-          scope,
-          idempotencyKey: commandKey(scope)
-        };
-      }
       sendInputButton.disabled = true;
-      sendInputButton.textContent = "Sending…";
+      sendInputButton.textContent = pendingImages.length ? "Preparing images…" : "Sending…";
       clearError();
       try {
-        await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/inputs`, {
+        let providerSelection = providerSelectionFromValue(providerValueForTurn, true);
+        if (pendingImages.length && providerSelection === null) {
+          providerSelection = providerSelectionFromValue(sessionProvider.value, false);
+        }
+        if (pendingImages.length && (!providerSelection || providerSelection.mode !== "exact")) {
+          throw new Error("Image turns require one exact vision-capable provider/model route.");
+        }
+        const imageFingerprint = pendingImages
+          .map(image => `${image.artifactId}:${image.mediaType}:${image.file.size}`)
+          .join(",");
+        if (!pendingInputCommand
+          || pendingInputCommand.sessionId !== selectedSessionId
+          || pendingInputCommand.content !== content
+          || pendingInputCommand.deliveryMode !== mode
+          || pendingInputCommand.providerValue !== providerValueForTurn
+          || pendingInputCommand.imageFingerprint !== imageFingerprint) {
+          clearPendingInputCommand();
+          const scope = `input:${selectedSessionId}:${Date.now()}:${content.length}:${pendingImages.length}`;
+          pendingInputCommand = {
+            sessionId: selectedSessionId,
+            content,
+            deliveryMode: mode,
+            providerValue: providerValueForTurn,
+            providerSelection,
+            imageFingerprint,
+            images: pendingImages.length ? await encodePendingImages(pendingImages) : [],
+            scope,
+            idempotencyKey: commandKey(scope)
+          };
+        }
+        sendInputButton.textContent = "Sending…";
+        const imageBearing = pendingInputCommand.images.length > 0;
+        const endpoint = imageBearing ? "image-inputs" : "inputs";
+        const body = {
           apiVersion: "v1",
           idempotencyKey: pendingInputCommand.idempotencyKey,
           deliveryMode: pendingInputCommand.deliveryMode,
           content: pendingInputCommand.content,
           providerSelection: pendingInputCommand.providerSelection
-        });
+        };
+        if (imageBearing) body.images = pendingInputCommand.images;
+        await postJson(`/api/sessions/${encodeURIComponent(selectedSessionId)}/${endpoint}`, body);
         clearCommandKey(pendingInputCommand.scope);
         pendingInputCommand = null;
         promptInput.value = "";
         turnProvider.value = "inherit";
+        pendingImages = [];
+        imageInput.value = "";
+        renderPendingImages();
         sendInputButton.textContent = "Send";
         await refreshConversation(false);
         await refresh();
@@ -2876,6 +3160,20 @@
         void loadTaskUsage();
       }
     });
+    loadArtifactButton.addEventListener("click", () => { void loadArtifactImage(); });
+    downloadArtifactButton.addEventListener("click", downloadArtifactImage);
+    artifactIdInput.addEventListener("input", () => {
+      clearArtifactPreview();
+      artifactState.className = "badge";
+      artifactState.textContent = "Not loaded";
+      artifactDetail.textContent = "Verify the exact canonical image artifact before rendering.";
+    });
+    artifactIdInput.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void loadArtifactImage();
+      }
+    });
     reconcileOutcome.addEventListener("change", clearPendingReconciliation);
     reconcileEvidence.addEventListener("input", clearPendingReconciliation);
     promptInput.addEventListener("keydown", event => {
@@ -2885,24 +3183,23 @@
       }
     });
     promptInput.addEventListener("input", () => {
-      if (pendingInputCommand && pendingInputCommand.content !== promptInput.value) {
-        clearCommandKey(pendingInputCommand.scope);
-        pendingInputCommand = null;
-        sendInputButton.textContent = "Send";
-      }
+      if (pendingInputCommand && pendingInputCommand.content !== promptInput.value) clearPendingInputCommand();
     });
     deliveryMode.addEventListener("change", () => {
-      if (pendingInputCommand && pendingInputCommand.deliveryMode !== deliveryMode.value) {
-        clearCommandKey(pendingInputCommand.scope);
-        pendingInputCommand = null;
-        sendInputButton.textContent = "Send";
-      }
+      if (pendingInputCommand && pendingInputCommand.deliveryMode !== deliveryMode.value) clearPendingInputCommand();
     });
     turnProvider.addEventListener("change", () => {
-      if (pendingInputCommand && pendingInputCommand.providerValue !== turnProvider.value) {
-        clearCommandKey(pendingInputCommand.scope);
-        pendingInputCommand = null;
-        sendInputButton.textContent = "Send";
+      if (pendingInputCommand && pendingInputCommand.providerValue !== turnProvider.value) clearPendingInputCommand();
+    });
+    imageInput.addEventListener("change", () => {
+      try {
+        selectPendingImages(imageInput.files);
+        clearError();
+      } catch (error) {
+        pendingImages = [];
+        imageInput.value = "";
+        renderPendingImages();
+        showError(error, "The selected images are invalid.");
       }
     });
     document.addEventListener("visibilitychange", () => {
@@ -2911,10 +3208,12 @@
         void refreshConversation(false);
       }
     });
+    window.addEventListener("pagehide", clearArtifactPreview);
     window.setInterval(() => { if (!document.hidden) refresh(); }, 15000);
     window.setInterval(() => { if (!document.hidden) void refreshConversation(false); }, 1500);
     renderExtensionGrantReview();
     renderTaskUsage();
+    renderPendingImages();
     void refresh();
   </script>
 </body>

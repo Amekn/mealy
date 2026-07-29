@@ -583,10 +583,14 @@ no-redispatch reconciliation, exact request bounds, immutable reservation, zero-
 and missing-blob corruption. [ADR 0018](decisions/0018-governed-image-generation-effect.md)
 defines the boundary.
 
-The broader gate remains open: TUI/dashboard/chat-native/channel image upload and safe rendering,
-fork-lineage image projection, generation previews,
-reference/edit workflows, audio, and video are not implemented. The backend slice is therefore
-implementation evidence for v0.4, not a production-qualified v0.4 release.
+The interactive v0.4 image gate is implemented: the TUI submits no-follow local images to one exact
+route and renders path-free canonical evidence, while the temporary dashboard uses browser-selected
+bytes and rechecks owner-scoped media type, length, and SHA-256 before PNG/JPEG preview or download.
+Public-process pseudo-terminal and loopback-adapter tests cover both paths. Line-chat/channel image
+UX, terminal pixel protocols, fork-lineage image projection, reference/edit workflows, audio, and
+video remain later scope. The v0.4 branch remains a release candidate until its inherited v0.3
+publication, exact v0.4 qualification, protected CI, provider acceptance, and attested publication
+gates complete.
 
 ## Required evidence per implementation slice
 

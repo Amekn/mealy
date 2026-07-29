@@ -47,6 +47,8 @@ const SECOND_MEMORY_REVISION_ID: &str = "019f0000-0000-7000-8000-000000000045";
 const MEMORY_WORKSPACE: &str = "mealy://assistant/no-workspace";
 const EXTENSION_ID: &str = "019f0000-0000-7000-8000-000000000060";
 const EXTENSION_GRANT_ID: &str = "019f0000-0000-7000-8000-000000000061";
+const IMAGE_ARTIFACT_ID: &str = "019f0000-0000-7000-8000-000000000071";
+const IMAGE_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nfixture-canonical-image";
 const SUBJECT_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DAY_MS: i64 = 86_400_000;
 
@@ -1715,15 +1717,108 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         provider_selection["providerSelection"]["providerId"],
         "dashboard-fixture"
     );
-    let commands = commands.lock().expect("recorded provider command");
-    assert_eq!(commands.len(), 23);
-    assert_eq!(commands[22].0, "update_provider_selection");
-    assert_eq!(commands[22].1["expectedRevision"], 3);
+    {
+        let recorded_commands = commands.lock().expect("recorded provider command");
+        assert_eq!(recorded_commands.len(), 23);
+        assert_eq!(recorded_commands[22].0, "update_provider_selection");
+        assert_eq!(recorded_commands[22].1["expectedRevision"], 3);
+        assert_eq!(
+            recorded_commands[22].1["providerSelection"]["modelId"],
+            "fixture-model"
+        );
+    }
+
+    let image_body = json!({
+        "apiVersion": API_VERSION,
+        "idempotencyKey": "dashboard-image-stable-1",
+        "deliveryMode": "queue",
+        "content": "Describe this selected image.",
+        "providerSelection": {
+            "mode": "exact",
+            "providerId": "dashboard-fixture",
+            "modelId": "fixture-model"
+        },
+        "images": [{
+            "artifactId": IMAGE_ARTIFACT_ID,
+            "mediaType": "image/png",
+            "dataBase64": "iVBORw0KGgpmaXh0dXJlLWNhbm9uaWNhbC1pbWFnZQ=="
+        }]
+    });
+    let image_input = client
+        .post(format!(
+            "{dashboard_origin}/api/sessions/{SESSION_ID}/image-inputs"
+        ))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .header(header::ORIGIN, &dashboard_origin)
+        .json(&image_body)
+        .send()
+        .await
+        .expect("submit dashboard image");
+    assert_eq!(image_input.status(), StatusCode::OK);
+    let receipt = image_input
+        .json::<Value>()
+        .await
+        .expect("image admission receipt");
+    assert_eq!(receipt["imageArtifactIds"][0], IMAGE_ARTIFACT_ID);
+    {
+        let recorded_commands = commands.lock().expect("recorded image command");
+        assert_eq!(recorded_commands.len(), 24);
+        assert_eq!(recorded_commands[23].0, "submit_image_input");
+        assert_eq!(recorded_commands[23].1, image_body);
+    }
+
+    let metadata = client
+        .get(format!(
+            "{dashboard_origin}/api/artifacts/{IMAGE_ARTIFACT_ID}"
+        ))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .send()
+        .await
+        .expect("load dashboard artifact metadata");
+    assert_eq!(metadata.status(), StatusCode::OK);
     assert_eq!(
-        commands[22].1["providerSelection"]["modelId"],
-        "fixture-model"
+        metadata.json::<Value>().await.expect("artifact metadata")["mediaType"],
+        "image/png"
     );
-    drop(commands);
+    let content = client
+        .get(format!(
+            "{dashboard_origin}/api/artifacts/{IMAGE_ARTIFACT_ID}/content"
+        ))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .send()
+        .await
+        .expect("load dashboard artifact content");
+    assert_eq!(content.status(), StatusCode::OK);
+    assert_eq!(
+        content
+            .headers()
+            .get("x-mealy-content-sha256")
+            .and_then(|value| value.to_str().ok()),
+        Some(mealy_application::sha256_digest(IMAGE_BYTES).as_str())
+    );
+    assert_eq!(
+        content.bytes().await.expect("artifact content").as_ref(),
+        IMAGE_BYTES
+    );
+
+    let mut malformed_image_body = image_body;
+    malformed_image_body["idempotencyKey"] = json!("dashboard-image-invalid");
+    malformed_image_body["images"][0]["dataBase64"] = json!("not-canonical+");
+    let malformed = client
+        .post(format!(
+            "{dashboard_origin}/api/sessions/{SESSION_ID}/image-inputs"
+        ))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .header(header::ORIGIN, &dashboard_origin)
+        .json(&malformed_image_body)
+        .send()
+        .await
+        .expect("reject malformed dashboard image");
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        commands.lock().expect("malformed command recorder").len(),
+        24
+    );
 
     dashboard.0.kill().expect("stop dashboard");
     dashboard.0.wait().expect("join dashboard");
@@ -1863,6 +1958,12 @@ async fn spawn_mock_daemon() -> (
             get(session_transcript_export),
         )
         .route("/v1/sessions/{session_id}/inputs", post(submit_input))
+        .route(
+            "/v1/sessions/{session_id}/image-inputs",
+            post(submit_image_input),
+        )
+        .route("/v1/artifacts/{artifact_id}", get(artifact_metadata))
+        .route("/v1/artifacts/{artifact_id}/content", get(artifact_content))
         .route("/v1/approvals", get(approvals))
         .route(
             "/v1/approvals/{approval_id}/resolve",
@@ -2547,6 +2648,90 @@ async fn submit_input(
             "cursor": 2
         }),
     )
+}
+
+async fn submit_image_input(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    assert_eq!(session_id, SESSION_ID);
+    authenticated_command(
+        &state,
+        &headers,
+        "submit_image_input",
+        body,
+        json!({
+            "apiVersion": API_VERSION,
+            "sessionId": SESSION_ID,
+            "inboxEntryId": "019f0000-0000-7000-8000-000000000073",
+            "imageArtifactIds": [IMAGE_ARTIFACT_ID],
+            "inboxSequence": 3,
+            "deliveryMode": "queue",
+            "providerSelection": {
+                "mode": "exact",
+                "providerId": "dashboard-fixture",
+                "modelId": "fixture-model"
+            },
+            "providerSelectionSource": "explicit",
+            "eventId": "019f0000-0000-7000-8000-000000000074",
+            "outboxId": "019f0000-0000-7000-8000-000000000075",
+            "acceptedAtMs": 1_800_000_000_050_i64,
+            "duplicate": false,
+            "cursor": 3
+        }),
+    )
+}
+
+async fn artifact_metadata(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path(artifact_id): Path<String>,
+) -> Response {
+    assert_eq!(artifact_id, IMAGE_ARTIFACT_ID);
+    authenticated_json(
+        &state,
+        &headers,
+        json!({
+            "apiVersion": API_VERSION,
+            "artifactId": IMAGE_ARTIFACT_ID,
+            "algorithm": "sha256",
+            "digest": mealy_application::sha256_digest(IMAGE_BYTES),
+            "sizeBytes": IMAGE_BYTES.len(),
+            "mediaType": "image/png",
+            "originKind": "inbox_entry",
+            "originId": "019f0000-0000-7000-8000-000000000073",
+            "producerKind": "media_normalizer",
+            "producerId": "isolated-worker",
+            "sensitivity": "private",
+            "retentionClass": "session_evidence",
+            "accessPolicyDigest": "a".repeat(64),
+            "createdAtMs": 1_800_000_000_050_i64
+        }),
+    )
+}
+
+async fn artifact_content(
+    State(state): State<MockState>,
+    headers: HeaderMap,
+    Path(artifact_id): Path<String>,
+) -> Response {
+    assert_eq!(artifact_id, IMAGE_ARTIFACT_ID);
+    if !authenticate(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"mealy-artifact\"",
+            ),
+        ],
+        IMAGE_BYTES,
+    )
+        .into_response()
 }
 
 async fn resolve_approval(

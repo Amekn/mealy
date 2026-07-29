@@ -475,8 +475,10 @@ When the command generates its delivery key and UUIDv7 artifact IDs, it prints
 `MEALY_IDEMPOTENCY_KEY` and one `MEALY_IMAGE_ARTIFACT_ID` line per image before the request. After
 an ambiguous client failure, retry with the exact printed values using `--idempotency-key` and one
 `--artifact-id` per path in the original order. Reusing a key or artifact ID with different
-evidence fails closed. TUI, dashboard, chat-native, and channel image attachment/rendering are not
-enabled by this command.
+evidence fails closed. The full-screen TUI exposes the same bounded admission through `F9`: choose
+an exact vision-capable route with `F8`, attach one path at a time, and submit the composer. The
+dashboard accepts one to four browser-selected files and never receives a host path. Chat-native
+and channel image attachment remain unavailable.
 
 Image generation is a separate high-risk capability. While the daemon is stopped, enable one exact
 adapter and optionally import its credential from a one-shot environment variable into the private
@@ -517,8 +519,12 @@ approval after reserving the configured cost/output ceilings. Denial makes no pr
 An interrupted dispatch is never retried and becomes `outcome_unknown`; inspect it with
 `effect status` and reconcile only from external evidence. A confirmed output is normalized to a
 private canonical JPEG and identified by an artifact ID in the tool observation. Retrieve it
-through the authenticated artifact metadata/content API. TUI/dashboard/channel previews and image
-edits are not enabled by this backend command.
+through the authenticated artifact metadata/content API. The TUI renders path-free canonical image
+and artifact metadata in its verified transcript. The dashboard's Image artifacts panel accepts
+the returned UUID, rechecks owner-scoped metadata, byte length, media type, and SHA-256, then
+previews or downloads only canonical PNG/JPEG bytes. Loading exact image-generation attempt
+evidence pre-fills the discovered artifact UUID. Chat/channel previews, reference images, masks,
+and image edits are not enabled.
 
 Transactional browser authority is separate from installing or enabling the default read-only
 browser. With the daemon stopped, activate or remove it explicitly:

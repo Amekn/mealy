@@ -253,9 +253,15 @@ tokens before dispatch. Trusted hydration rechecks authorization, metadata, dige
 bytes; missing, dangling, cross-owner, or corrupt evidence fails the turn rather than silently
 dropping an image. Recorded-only replay compares the exact normalized request and performs no live
 provider or decoder call. Transcript v2 discloses ordered path-free metadata but embeds neither
-private paths nor image bytes. TUI, dashboard, chat-native, and channel visual surfaces stay
-disabled until they have independent hostile-rendering and retry/recovery evidence. A magic prefix
-alone is never accepted as public-ingress proof.
+private paths nor image bytes. The TUI `F9` adapter reuses the no-follow CLI opener, retains only
+pending paths in process memory, requires an exact route, and renders metadata rather than terminal
+pixel protocols. The dashboard accepts only browser-selected bytes through a separate 6 MiB route,
+creates retry-stable UUIDv7 identities before dispatch, and applies the same per-image/aggregate
+limits before forwarding. Its viewer first authenticates exact-owner metadata, permits only
+canonical PNG/JPEG up to 2 MiB, and rechecks media type, length, and SHA-256 in both the loopback
+adapter and page before creating a lifetime-only object URL. It revokes the URL on replacement or
+page exit. The normalized browser decoder remains trusted client code; line-chat and channel visual
+surfaces remain disabled. A magic prefix alone is never accepted as public-ingress proof.
 
 Remote image URLs and provider file IDs are outside the contract, preventing mutable fetches,
 ambient network authority, and provider-retention dependence. See
@@ -414,13 +420,15 @@ a no-store page; the daemon bearer is retained only by the CLI process and is ne
 HTML, JSON, URLs, logs, or browser storage. Every request requires the exact numeric Host, API
 access additionally uses constant-time capability validation, and every mutation requires the
 exact loopback Origin rather than accepting an Origin-less request. A restrictive CSP,
-`frame-ancestors 'none'`, same-origin resource/opener policies, no CORS allowance, 64 KiB request
-bodies, canonical UUID route parsing, bounded timelines/evidence, and separate one-at-a-time
+`frame-ancestors 'none'`, same-origin resource/opener policies, no CORS allowance, 64 KiB ordinary
+request bodies plus one exact 6 MiB image-ingress route, canonical UUID route parsing, bounded
+timelines/evidence, and separate one-at-a-time
 snapshot, timeline, detail, and command permits limit compromise. Every ordinary daemon body is
 streamed under an 8 MiB ceiling before decode; transcript attachments have a separate 32 MiB
 ceiling and are verified before browser download. The adapter exposes only a hard-coded snapshot,
-session create/title/checkpoint/fork/input, transcript export, timeline, exact approval-resolution,
-cooperative task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost
+session create/title/checkpoint/fork/text-or-image input, transcript export, timeline, exact
+owner-scoped PNG/JPEG artifact metadata/content, exact approval-resolution, cooperative
+task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost
 inspection, effect/attempt inspection,
 unknown-effect reconciliation, and exact
 schedule-create/detail/run-history/pause/resume/cancel plus fixed governed-memory
@@ -873,9 +881,11 @@ release publication must place it in the ordinary attestation chain.
 - API binds loopback only and rejects missing credentials and disallowed Origins.
 - The dashboard process test proves exact Host/Origin/token enforcement, DNS-rebinding rejection,
   no daemon-bearer disclosure, fixed snapshot/timeline aggregation, exact typed command forwarding,
-  stable idempotency, subject-digest binding, exact schedule identity/revision/status validation,
-  malformed/oversized/arbitrary-route denial before daemon access, CSP/no-store headers, and
-  lifetime cleanup.
+  stable image delivery/artifact identities, canonical base64 and exact-route enforcement,
+  double-verified image artifact content, stable idempotency, subject-digest binding, exact schedule
+  identity/revision/status validation, malformed/oversized/arbitrary-route denial before daemon
+  access, CSP/no-store headers, and lifetime cleanup. A pseudo-terminal process test separately
+  proves `F9` no-follow admission to the selected exact route and terminal restoration.
 
 ## Deferred risks
 
