@@ -50,6 +50,14 @@ if ! jq -e --arg repository "$repository" '
   exit 65
 fi
 
+capture immutable_releases gh api "repos/$repository/immutable-releases"
+if ! jq -e '
+  .enabled == true
+' "$temporary/immutable_releases.json" >/dev/null; then
+  echo "repository-level immutable releases are not enabled" >&2
+  exit 65
+fi
+
 capture actions_permissions gh api "repos/$repository/actions/permissions"
 if ! jq -e '
   .enabled == true

@@ -21,6 +21,10 @@ jq -n '{
 }' >"$temporary/fixtures/repository.json"
 jq -n '{
   enabled: true,
+  enforced_by_owner: false
+}' >"$temporary/fixtures/immutable_releases.json"
+jq -n '{
+  enabled: true,
   allowed_actions: "selected",
   sha_pinning_required: true
 }' >"$temporary/fixtures/actions_permissions.json"
@@ -85,6 +89,9 @@ set -euo pipefail
 case "$*" in
   "api repos/Amekn/mealy")
     cat "$MOCK_FIXTURES/repository.json"
+    ;;
+  "api repos/Amekn/mealy/immutable-releases")
+    cat "$MOCK_FIXTURES/immutable_releases.json"
     ;;
   "api repos/Amekn/mealy/actions/permissions")
     cat "$MOCK_FIXTURES/actions_permissions.json"
@@ -155,6 +162,7 @@ expect_rejection() {
 
 expect_rejection renamed-repository repository '.full_name = "Amekn/project_mealy"'
 expect_rejection private-repository repository '.private = true'
+expect_rejection mutable-releases immutable_releases '.enabled = false'
 expect_rejection disabled-actions actions_permissions '.enabled = false'
 expect_rejection unrestricted-actions actions_permissions '.allowed_actions = "all"'
 expect_rejection mutable-action-tags actions_permissions '.sha_pinning_required = false'
