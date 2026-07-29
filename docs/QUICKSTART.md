@@ -99,7 +99,7 @@ passive: installing one does not create a user, start a service, or modify `$HOM
 - GitHub CLI with `gh attestation verify --bundle` support for the stable-release bootstrap and
   provenance checks. The published offline Sigstore bundles remove any GitHub login/token
   requirement. Source builds do not need `gh`.
-- For source builds only, Rust `1.96.0` through `rustup`; the repository's
+- For source builds only, Rust `1.97.1` through `rustup`; the repository's
   `rust-toolchain.toml` selects it automatically.
 - For source builds only, a supported SQLite build, C toolchain, and normal Rust native-build
   prerequisites.

@@ -28,7 +28,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - run: rustup show
+      - name: Verify release-qualified Rust toolchain
+        run: |
+          rustup show
+          scripts/validate-rust-toolchain.sh
       - name: Prepare Bubblewrap boundary
         shell: bash
         run: |
@@ -205,7 +208,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup show
+      - name: Verify release-qualified Rust toolchain
+        run: |
+          rustup show
+          scripts/validate-rust-toolchain.sh
       - run: cargo check --locked --workspace --all-targets --all-features
       - run: cargo test --locked -p mealyctl --bin mealyctl --all-features
 
@@ -325,7 +331,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup show
+      - name: Verify release-qualified Rust toolchain
+        run: |
+          rustup show
+          scripts/validate-rust-toolchain.sh
       - name: Prepare Bubblewrap boundary
         shell: bash
         run: |
@@ -378,7 +387,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup show
+      - name: Verify release-qualified Rust toolchain
+        run: |
+          rustup show
+          scripts/validate-rust-toolchain.sh
       - name: Prepare Bubblewrap and pinned Chrome Headless Shell
         shell: bash
         run: |
