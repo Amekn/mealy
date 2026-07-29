@@ -122,6 +122,7 @@ jobs:
             scripts/installed-deb-smoke.sh
             scripts/installed-native-upgrade-smoke.sh
             scripts/installed-rpm-smoke.sh
+            scripts/normalize-stacked-release-candidate.sh
             scripts/preflight-release-environments.sh
             scripts/render-release-notes.sh
             scripts/run-soak.sh
@@ -143,6 +144,7 @@ jobs:
             scripts/test-release-tag-validator.sh
             scripts/test-release-upgrade-baseline-fetch.sh
             scripts/test-release-upgrade-baseline-validator.sh
+            scripts/test-stacked-release-normalization.sh
             scripts/validate-public-license.sh
             scripts/validate-release-upgrade-baseline.sh
             scripts/verify-sdk-packages.sh
@@ -162,6 +164,8 @@ jobs:
         run: |
           scripts/test-release-soak-lineage-generator.sh
           scripts/test-release-soak-validator.sh
+      - name: Verify stacked release normalization gate
+        run: scripts/test-stacked-release-normalization.sh
       - name: Verify exact soak-subject promotion gate
         run: scripts/test-release-soak-subject-fetch.sh
       - name: Verify exact dual-provider acceptance gate
