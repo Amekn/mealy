@@ -145,8 +145,9 @@ cannot retrieve secret values. It fails unless the canonical repository is publi
 Pages is a public HTTPS workflow deployment, both signing and Pages environments admit only stable
 version tags, signing requires owner review, the Pages URL and uppercase primary fingerprint are
 exact, the signing-subkey secret name exists, and the reviewed free-OpenRouter environment remains
-restricted to protected branches. This catches an incomplete trust-root ceremony before an
-immutable tag exists.
+restricted to protected branches with both the strict-free OpenRouter and pinned private-endpoint
+secret names present. This catches an incomplete trust-root or provider-acceptance ceremony before
+an immutable tag exists.
 
 The release report at `docs/benchmarks/release-soak.json` must pass
 `scripts/validate-release-soak.sh`. For release one it must represent a clean, retained-disk,
@@ -256,6 +257,18 @@ gh workflow run live-smoke.yml --ref main \
   -f run_brave_search=false
 ```
 
+For a release that claims the pinned private endpoint, also dispatch its separately reviewed
+acceptance against the same final `main` commit. The model and context below are the most recently
+verified non-secret server identity; recheck them deliberately if the server changes:
+
+```sh
+gh workflow run live-smoke.yml --ref main \
+  -f provider=private-responses \
+  -f model=Qwen3.6-27B \
+  -f context_tokens=32768 \
+  -f run_brave_search=false
+```
+
 The environment must require an owner review, admit protected branches only, and expose
 `OPENROUTER_API_KEY` and `LOCAL_API_KEY` only as environment secrets; the release-environment
 preflight requires both so strict-free and pinned private-endpoint acceptance remain runnable.
@@ -275,7 +288,7 @@ workflow path, successful `workflow_dispatch` result, repository run URL, and
 `openrouter-free` provider. A success on an earlier commit does not qualify a later tag, and a
 successful private/direct-provider run cannot substitute for the free-model gate.
 `LOCAL_API_KEY`, direct paid API keys, and the owner-local ChatGPT subscription bridge remain
-useful additional acceptance, but should not be used for frequent CI traffic. Claude Free, Pro,
+separately reviewed additional acceptance and should not be used for frequent CI traffic. Claude Free, Pro,
 and Max subscription credentials are not a supported Mealy route under Anthropic's current
 third-party terms; exercise the direct Anthropic API only with separately approved paid credentials.
 
