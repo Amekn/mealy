@@ -2,7 +2,8 @@
 
 - Status: v0.2.1 is the qualified public Linux release; v0.3.0 daily-use release
   qualification is active; the v0.4.0 governed-capability and v0.5.0 ecosystem
-  implementations are complete but remain sequential pre-release candidates
+  implementations are complete but remain sequential pre-release candidates;
+  broader competitive-personal-agent breadth remains incomplete
 - Reviewed: 2026-07-29
 - Target: one-owner Linux production release across Ubuntu, Debian, Fedora, Arch, and compatible
   derivatives; macOS and Windows are outside the active production contract

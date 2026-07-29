@@ -123,6 +123,7 @@ release_documents=(
   releases/v0.2.0.md
   releases/v0.2.1.md
   releases/v0.3.0.md
+  releases/v0.4.0.md
   releases/v0.5.0.md
 )
 
