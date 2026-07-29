@@ -11,11 +11,12 @@ use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 use std::{
     env, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, SystemTime},
 };
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
 use tokio::time::{Instant, sleep};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -497,10 +498,7 @@ async fn bounded_soak_restarts_and_reports_durable_measurements() {
     let encoded = serde_json::to_vec_pretty(&report).expect("encode soak report");
     println!("{}", String::from_utf8_lossy(&encoded));
     if let Some(path) = configuration.report_path {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("create soak report directory");
-        }
-        fs::write(path, encoded).expect("write soak report");
+        write_report_atomically(&path, &encoded).expect("publish soak report atomically");
     }
 }
 
@@ -537,10 +535,83 @@ fn write_failure_report(
             .and_then(|value| value.to_str())
             .unwrap_or("soak-report.json");
         let failure_path = path.with_file_name(format!("{file_name}.failure.json"));
-        if let Some(parent) = failure_path.parent() {
-            fs::create_dir_all(parent).expect("create soak failure report directory");
+        write_report_atomically(&failure_path, &encoded)
+            .expect("publish soak failure report atomically");
+    }
+}
+
+fn write_report_atomically(path: &Path, encoded: &[u8]) -> io::Result<()> {
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "soak report path has no file name",
+        )
+    })?;
+    let parent = path
+        .parent()
+        .filter(|candidate| !candidate.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let parent = parent.canonicalize()?;
+    if !fs::metadata(&parent)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "soak report parent is not a directory",
+        ));
+    }
+    let destination = parent.join(file_name);
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "soak report destination already exists",
+            ));
         }
-        fs::write(failure_path, encoded).expect("write soak failure report");
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let mut staged = NamedTempFile::new_in(&parent)?;
+    staged.write_all(encoded)?;
+    staged.as_file().sync_all()?;
+    staged
+        .persist_noclobber(&destination)
+        .map_err(|error| error.error)?;
+    fs::File::open(parent)?.sync_all()
+}
+
+#[test]
+fn soak_report_publication_is_atomic_and_refuses_existing_destinations() {
+    let temporary = TempDir::new().expect("create report publication directory");
+    let report = temporary.path().join("report.json");
+    let encoded = br#"{"status":"complete"}"#;
+    write_report_atomically(&report, encoded).expect("publish report");
+    assert_eq!(fs::read(&report).expect("read report"), encoded);
+    assert_eq!(
+        write_report_atomically(&report, b"replacement")
+            .expect_err("existing report must not be replaced")
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+
+        let protected = temporary.path().join("protected.json");
+        fs::write(&protected, b"retained").expect("write protected fixture");
+        let symlink_report = temporary.path().join("symlink-report.json");
+        symlink(&protected, &symlink_report).expect("create report symlink");
+        assert_eq!(
+            write_report_atomically(&symlink_report, b"replacement")
+                .expect_err("report publication must not follow a symlink")
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(&protected).expect("read protected fixture"),
+            b"retained"
+        );
     }
 }
 

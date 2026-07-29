@@ -684,7 +684,9 @@ connection metadata and the daemon bearer are never included. Report v2 also att
 pages/payload/unused bytes to the largest
 objects and counts context-manifest rows, inline bytes, artifact references, and source classes.
 This prevents a large database from being mislabeled as one opaque regression. The runner defaults
-to an optimized build and supports explicit round pacing for long durability runs. See
+to an optimized build and supports explicit round pacing for long durability runs. Success and
+failure reports are synced and atomically published from the destination directory; existing
+files and symlink destinations fail closed instead of being replaced or followed. See
 [`benchmarks/README.md`](benchmarks/README.md) and the checked
 [2026-07-13 development baseline](benchmarks/2026-07-13-development-soak.json): 504 turns, eight
 sessions, 12 hard restarts, p95 1.285 seconds, SQLite integrity `ok`, and zero residual work. The
