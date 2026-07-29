@@ -21,7 +21,7 @@ use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, p
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::{Read as _, Write as _},
     str::FromStr,
     time::{Duration, SystemTime},
@@ -5985,7 +5985,7 @@ fn verify_run_capability_authority(
         return Ok(false);
     };
     if capability.validate().is_err()
-        || serde_json::to_string(&capability).ok().as_deref() != Some(capability_json.as_str())
+        || !canonical_capability_json_matches(&capability, &capability_json)
     {
         return Ok(false);
     }
@@ -6000,6 +6000,40 @@ fn verify_run_capability_authority(
         .iter()
         .all(|effect| recorded_effect_within_capability(effect, &capability));
     Ok(declared_tools_valid && recorded_tools_valid && recorded_effects_valid)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyCapabilityGrant<'a> {
+    tools: &'a BTreeSet<String>,
+    effect_classes: &'a BTreeSet<EffectClass>,
+    workspace_roots: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    writable_workspace_roots: &'a BTreeSet<String>,
+    network_destinations: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    executable_identity_digests: &'a BTreeSet<String>,
+    secret_references: &'a BTreeSet<String>,
+    profiles: &'a BTreeSet<PolicyProfile>,
+    maximum_delegated_runs: u64,
+}
+
+fn canonical_capability_json_matches(capability: &CapabilityGrant, durable_json: &str) -> bool {
+    if serde_json::to_string(capability).ok().as_deref() == Some(durable_json) {
+        return true;
+    }
+    let legacy = LegacyCapabilityGrant {
+        tools: &capability.tools,
+        effect_classes: &capability.effect_classes,
+        workspace_roots: &capability.workspace_roots,
+        writable_workspace_roots: &capability.writable_workspace_roots,
+        network_destinations: &capability.network_destinations,
+        executable_identity_digests: &capability.executable_identity_digests,
+        secret_references: &capability.secret_references,
+        profiles: &capability.profiles,
+        maximum_delegated_runs: capability.maximum_delegated_runs,
+    };
+    serde_json::to_string(&legacy).ok().as_deref() == Some(durable_json)
 }
 
 fn declared_tool_within_capability(tool_id: &str, capability: &CapabilityGrant) -> bool {
@@ -10610,6 +10644,38 @@ mod mcp_http_capability_tests {
         assert!(!mcp_descriptor_authority_within_capability_ceiling(
             &descriptor,
             &changed
+        ));
+    }
+}
+
+#[cfg(test)]
+mod capability_json_compatibility_tests {
+    use super::canonical_capability_json_matches;
+    use mealy_domain::CapabilityGrant;
+
+    const LEGACY_EMPTY_GRANT: &str = concat!(
+        r#"{"tools":[],"effectClasses":[],"workspaceRoots":[],"networkDestinations":[],"#,
+        r#""secretReferences":[],"profiles":[],"maximumDelegatedRuns":0}"#
+    );
+
+    #[test]
+    fn replay_accepts_only_canonical_current_or_v03_capability_json() {
+        let legacy =
+            serde_json::from_str::<CapabilityGrant>(LEGACY_EMPTY_GRANT).expect("legacy grant");
+        assert!(canonical_capability_json_matches(
+            &legacy,
+            LEGACY_EMPTY_GRANT
+        ));
+
+        let current = serde_json::to_string(&legacy).expect("current grant");
+        assert!(canonical_capability_json_matches(&legacy, &current));
+        assert!(!canonical_capability_json_matches(
+            &legacy,
+            r#"{"effectClasses":[],"tools":[],"workspaceRoots":[],"networkDestinations":[],"secretReferences":[],"profiles":[],"maximumDelegatedRuns":0}"#
+        ));
+        assert!(!canonical_capability_json_matches(
+            &legacy,
+            r#"{"tools":[],"effectClasses":[],"workspaceRoots":[],"networkDestinations":[],"secretReferences":[],"profiles":[]}"#
         ));
     }
 }
