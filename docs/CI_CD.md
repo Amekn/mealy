@@ -162,7 +162,8 @@ Run the preflight from the canonical source checkout before creating any release
 public repository/branch-protection/Actions/Pages/environment policy plus GitHub's variable and
 secret-name metadata; it cannot retrieve secret values. The authenticated caller needs repository
 administration read access. The check fails unless the canonical repository is public and enabled;
-`main` is administrator-enforced, pull-request-only, strictly current, linear, conversation-clean,
+the required rebase-merge method is available; `main` is administrator-enforced, pull-request-only,
+strictly current, linear, conversation-clean,
 non-force-pushable, non-deletable, and protected by the exact six GitHub Actions contexts;
 vulnerability alerts, unpaused Dependabot security updates, and repository-level immutable
 releases are enabled; Actions are restricted to the exact allowlist with full-SHA pinning; Pages
@@ -220,6 +221,7 @@ repository=Amekn/mealy
 pr_number=PR_NUMBER
 report=/absolute/path/to/release-soak.json
 mealyd=/absolute/path/to/the/exact/soaked/mealyd
+scripts/preflight-release-environments.sh "$repository"
 candidate=$(gh pr view "$pr_number" --repo "$repository" --json headRefOid --jq .headRefOid)
 scripts/validate-release-soak.sh "$report" "$mealyd" "$candidate"
 git fetch origin main
