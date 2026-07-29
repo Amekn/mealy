@@ -10,6 +10,7 @@ fi
 
 package_directory=$1
 version=$2
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "SDK package version must be stable semantic version" >&2
   exit 64
@@ -20,7 +21,7 @@ if [[ -L $package_directory || ! -d $package_directory ]]; then
 fi
 package_directory=$(cd "$package_directory" && pwd -P)
 
-for command in cargo find grep sha256sum stat tar; do
+for command in cargo cmp find grep sha256sum stat tar; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "SDK package verification requires $command" >&2
     exit 69
@@ -108,7 +109,12 @@ for crate in "${crates[@]}"; do
   done
   grep -Eq "^name = \"${crate}\"$" "$extracted/Cargo.toml"
   grep -Eq "^version = \"${version}\"$" "$extracted/Cargo.toml"
+  grep -Eq '^license = "Apache-2.0"$' "$extracted/Cargo.toml"
   grep -Eq '^publish = true$' "$extracted/Cargo.toml"
+  if ! cmp "$repository_root/LICENSE" "$extracted/LICENSE"; then
+    echo "SDK package license differs from the canonical Apache-2.0 text: $archive" >&2
+    exit 65
+  fi
 done
 
 consumer="$temporary/consumer"

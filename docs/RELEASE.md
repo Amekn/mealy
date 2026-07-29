@@ -62,10 +62,12 @@ release retains `ATTESTATION-linux-repositories.sigstore.json`, while the public
 the OpenPGP-signed complete manifest and minimal public certificate.
 
 The copyright holder selected Apache-2.0 on 2026-07-15. The repository now carries the canonical
-Apache License 2.0 text through the existing exact `license-file = "LICENSE"` inheritance, so the
-choice does not introduce an unrelated package-metadata change.
-A clean auditable fingerprint probe at commit `0be7f63` changed only the referenced license-file
-content and reproduced the then-active soak subject exactly: `mealyd` SHA-256
+Apache License 2.0 text and every workspace package inherits the matching `Apache-2.0` SPDX
+identity. Each publishable SDK crate also embeds an exact copy checked against the canonical file
+before packaging, so dependency-notice generation and standalone crate distribution retain the
+same reviewed terms. A clean auditable fingerprint probe at commit `0be7f63` changed only the
+then-referenced license-file content and reproduced the then-active soak subject exactly:
+`mealyd` SHA-256
 `649db94894de63fb973c7d2ef7a4749100d5c9b3ca77524a0f8cbfde66c39572` and `mealyctl` SHA-256
 `e96d0012fb07b62d033d385257e3cc3a1c75f93d3a256a8804e213405c2dcf90`. That soak later failed and
 is superseded by the corrected candidate described in the
@@ -675,9 +677,10 @@ through a separate evidence-only pull request. The final evidence commit—not t
 head—is the commit used for protected main CI, live-provider acceptance, the stable tag,
 attestations, and publication.
 
-1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` remains inherited by every
-   workspace package and run `scripts/validate-public-license.sh .`. Then make the workspace version
-   and intended stable `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
+1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` still matches the
+   workspace SPDX declaration and each publishable SDK crate copy, then run
+   `scripts/validate-public-license.sh .`. Make the workspace version and intended stable
+   `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
    rejects prerelease/build metadata and leading-zero version components. From the canonical source
    checkout, run `scripts/preflight-release-environments.sh Amekn/mealy`; do not tag until its
    read-only Pages, tag-policy, owner-review, fingerprint, signing-secret-name, and protected

@@ -1015,7 +1015,8 @@ MIT/Apache workspaces with either matching SPDX metadata or the existing exact `
 inheritance, while rejecting restrictive terms, redirected/mismatched metadata, an unsupported
 expression, and a member package that does not inherit the workspace license. The tag workflow
 runs the validator on the real checkout; the copyright-holder-selected canonical Apache-2.0 text
-and existing exact license-file inheritance now pass that public-use gate.
+and exact workspace SPDX inheritance now pass that public-use gate. SDK package construction also
+requires each publishable crate's embedded license copy to match the canonical root file.
 The current tree additionally passed the equivalent GCC cross-check for
 `aarch64-unknown-linux-gnu`; ARM64 Linux runtime/package evidence remains the native CI and tag
 matrix's responsibility. macOS and Windows are outside the active support and CI contract.

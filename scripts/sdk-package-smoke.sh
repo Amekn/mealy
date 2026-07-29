@@ -64,6 +64,20 @@ tar -czf "$temporary/nonpublishable/mealy-client-${version}.crate" \
     sort -k 2 >SHA256SUMS-sdk)
 expect_rejection "a non-publishable client manifest" "$temporary/nonpublishable"
 
+cp -a "$temporary/packages" "$temporary/license-drift"
+mkdir "$temporary/license-drift-unpacked"
+tar -xzf "$temporary/license-drift/mealy-client-${version}.crate" \
+  -C "$temporary/license-drift-unpacked"
+printf 'drift\n' >>"$temporary/license-drift-unpacked/mealy-client-${version}/LICENSE"
+rm "$temporary/license-drift/mealy-client-${version}.crate"
+tar -czf "$temporary/license-drift/mealy-client-${version}.crate" \
+  -C "$temporary/license-drift-unpacked" "mealy-client-${version}"
+(cd "$temporary/license-drift" &&
+  sha256sum "mealy-client-${version}.crate" "mealy-domain-${version}.crate" \
+    "mealy-protocol-${version}.crate" "mealy-sdk-${version}-Cargo.lock" |
+    sort -k 2 >SHA256SUMS-sdk)
+expect_rejection "a package archive with license drift" "$temporary/license-drift"
+
 cp -a "$temporary/packages" "$temporary/link-archive"
 mkdir "$temporary/link-unpacked"
 tar -xzf "$temporary/link-archive/mealy-client-${version}.crate" \

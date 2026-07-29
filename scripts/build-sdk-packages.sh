@@ -43,6 +43,14 @@ if [[ $allow_dirty != true ]] \
   exit 65
 fi
 
+for crate in mealy-domain mealy-protocol mealy-client; do
+  crate_license="crates/$crate/LICENSE"
+  if [[ -L $crate_license || ! -f $crate_license ]] || ! cmp LICENSE "$crate_license"; then
+    echo "publishable SDK crate license differs from the canonical Apache-2.0 text: $crate" >&2
+    exit 65
+  fi
+done
+
 mkdir -p "$output_directory"
 output_directory=$(cd "$output_directory" && pwd -P)
 
