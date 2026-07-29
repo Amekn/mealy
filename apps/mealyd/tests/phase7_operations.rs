@@ -890,6 +890,7 @@ async fn bounded_drain_records_forced_termination_durably() {
     )
     .await;
     assert_eq!(paused.status, TaskStatus::Paused);
+    wait_for_provider_in_flight(&client, &connection, 0).await;
     let stale_pause = authorized_post_response(
         &client,
         &connection,
@@ -912,6 +913,7 @@ async fn bounded_drain_records_forced_termination_durably() {
     )
     .await;
     assert_eq!(resumed.status, TaskStatus::Queued);
+    wait_for_provider_in_flight(&client, &connection, 1).await;
 
     let _: DrainDaemonResponse = authorized_post(
         &client,
@@ -1114,6 +1116,30 @@ async fn wait_for_prepared_model_attempt(home: &Path) {
         assert!(
             Instant::now() < deadline,
             "provider attempt was not prepared"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_provider_in_flight(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    expected: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(7);
+    loop {
+        let status: AdminStatusResponse =
+            authorized_get(client, connection, "/v1/admin/status").await;
+        if status
+            .provider_endpoints
+            .first()
+            .is_some_and(|endpoint| endpoint.in_flight_requests == expected)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "provider in-flight count did not become {expected}"
         );
         sleep(Duration::from_millis(10)).await;
     }
