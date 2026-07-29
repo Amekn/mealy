@@ -356,8 +356,8 @@ Status: v0.5 stable blocking SDK boundary implemented. `mealy-client` is an inde
 Rust client over the canonical `mealy-protocol` DTOs. Its initial stable surface covers daemon
 health/status and provider catalog, session create/list/search/status/title/provider-selection/
 checkpoint/fork/text-or-image-admission/timeline, task status/pause/resume/cancel/recorded replay,
-exact approval resolution, governed extension install/stage/lifecycle/invoke, and webhook,
-Telegram, Discord, and Slack administration.
+durable child delegation list/detail inspection, exact approval resolution, governed extension
+install/stage/lifecycle/invoke, and webhook, Telegram, Discord, and Slack administration.
 
 Construction rejects URL credentials, base paths, queries, fragments, unsupported schemes, and
 non-loopback clear-text origins. The client disables ambient proxies and redirects, applies

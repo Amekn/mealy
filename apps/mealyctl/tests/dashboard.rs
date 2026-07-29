@@ -34,6 +34,9 @@ const APPROVAL_ID: &str = "019f0000-0000-7000-8000-000000000013";
 const EFFECT_ID: &str = "019f0000-0000-7000-8000-000000000014";
 const ATTEMPT_ID: &str = "019f0000-0000-7000-8000-000000000015";
 const RUN_ID: &str = "019f0000-0000-7000-8000-000000000016";
+const DELEGATION_ID: &str = "019f0000-0000-7000-8000-000000000072";
+const CHILD_TASK_ID: &str = "019f0000-0000-7000-8000-000000000073";
+const CHILD_RUN_ID: &str = "019f0000-0000-7000-8000-000000000074";
 const SCHEDULE_ID: &str = "019f0000-0000-7000-8000-000000000017";
 const SCHEDULE_RUN_ID: &str = "019f0000-0000-7000-8000-000000000018";
 const SCHEDULE_INBOX_ID: &str = "019f0000-0000-7000-8000-000000000019";
@@ -1820,6 +1823,29 @@ async fn dashboard_is_interactive_idempotent_origin_bound_and_never_exposes_daem
         24
     );
 
+    let unauthorized_delegations = client
+        .get(format!("{dashboard_origin}/api/delegations"))
+        .send()
+        .await
+        .expect("unauthorized delegation projection");
+    assert_eq!(unauthorized_delegations.status(), StatusCode::UNAUTHORIZED);
+    let delegations = client
+        .get(format!("{dashboard_origin}/api/delegations"))
+        .header("x-mealy-dashboard", &dashboard_token)
+        .send()
+        .await
+        .expect("load delegated work");
+    assert_eq!(delegations.status(), StatusCode::OK);
+    let delegations = delegations
+        .json::<Value>()
+        .await
+        .expect("delegation projection JSON");
+    assert_eq!(delegations["delegations"][0]["delegationId"], DELEGATION_ID);
+    assert_eq!(delegations["delegations"][0]["parentRunId"], RUN_ID);
+    assert_eq!(delegations["delegations"][0]["childTaskId"], CHILD_TASK_ID);
+    assert_eq!(delegations["delegations"][0]["state"], "running");
+    assert!(!delegations.to_string().contains(DAEMON_TOKEN));
+
     dashboard.0.kill().expect("stop dashboard");
     dashboard.0.wait().expect("join dashboard");
     daemon.abort();
@@ -1965,6 +1991,7 @@ async fn spawn_mock_daemon() -> (
         .route("/v1/artifacts/{artifact_id}", get(artifact_metadata))
         .route("/v1/artifacts/{artifact_id}/content", get(artifact_content))
         .route("/v1/approvals", get(approvals))
+        .route("/v1/delegations", get(delegations))
         .route(
             "/v1/approvals/{approval_id}/resolve",
             post(resolve_approval),
@@ -2221,6 +2248,34 @@ async fn approvals(State(state): State<MockState>, headers: HeaderMap) -> Respon
                 "decision": null,
                 "requestedAtMs": 1_800_000_000_020_i64,
                 "resolvedAtMs": null
+            }]
+        }),
+    )
+}
+
+async fn delegations(State(state): State<MockState>, headers: HeaderMap) -> Response {
+    authenticated_json(
+        &state,
+        &headers,
+        json!({
+            "apiVersion": API_VERSION,
+            "delegations": [{
+                "apiVersion": API_VERSION,
+                "delegationId": DELEGATION_ID,
+                "parentRunId": RUN_ID,
+                "childTaskId": CHILD_TASK_ID,
+                "childRunId": CHILD_RUN_ID,
+                "effectiveCapabilities": {
+                    "enabledReadTools": ["workspace.read"],
+                    "enabledActionTools": []
+                },
+                "childBudget": {
+                    "maximumModelCalls": 2,
+                    "maximumToolCalls": 1,
+                    "maximumDelegatedRuns": 0
+                },
+                "state": "running",
+                "result": null
             }]
         }),
     )

@@ -910,6 +910,9 @@ success and structured-error decoding; pre-dispatch request-version and path-ide
 response-version and nested-envelope rejection; strict descriptor validation; request/response
 size enforcement; and credential-free builder/client debug output. `mealy-client` also runs under
 the workspace's all-target/all-feature strict Clippy, doc-test, and warning-denied rustdoc gates.
+The same real-socket suite proves typed, version-checked list/detail reads for durable child
+delegations, and the clean packaged consumer compiles those methods from the extracted release
+archives.
 Frozen daemon fixtures additionally run the current stable client against retained v0.2.1,
 v0.3.0, v0.4.0, and v0.5.0 liveness/readiness/session/error shapes, including the v0.2.1
 title defaults and the titled v0.3-or-newer contract.

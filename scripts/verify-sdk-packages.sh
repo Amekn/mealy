@@ -135,8 +135,8 @@ mealy-protocol = { path = "$temporary/unpacked/mealy-protocol-${version}" }
 EOF
 cat >"$consumer/src/main.rs" <<'EOF'
 use mealy_client::{
-    MealyClient,
-    protocol::{API_VERSION, CreateSessionRequest},
+    ClientError, MealyClient,
+    protocol::{API_VERSION, CreateSessionRequest, DelegationResponse, DelegationsResponse},
 };
 
 fn main() {
@@ -147,6 +147,10 @@ fn main() {
     assert_eq!(request.api_version, API_VERSION);
     let client = MealyClient::new("http://127.0.0.1:37281", "downstream-smoke-token")
         .expect("construct packaged client");
+    let _: fn(&MealyClient, usize) -> Result<DelegationsResponse, ClientError> =
+        MealyClient::delegations;
+    let _: fn(&MealyClient, &str) -> Result<DelegationResponse, ClientError> =
+        MealyClient::delegation;
     drop(client);
 }
 EOF

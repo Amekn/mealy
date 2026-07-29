@@ -640,6 +640,14 @@
       </article>
 
       <article class="panel full">
+        <header class="panel-head"><div><h3>Delegated work</h3><p class="panel-subtitle">Bounded child runs, isolated authority, budgets, and terminal results from canonical daemon state</p></div><span id="delegation-count" class="count">0 child runs</span></header>
+        <div class="panel-body recovery-layout">
+          <ul id="delegations" class="list"><li class="empty">No recent delegated child runs.</li></ul>
+          <pre id="delegation-detail" class="evidence-output">Choose a delegated child to inspect its exact parent/run identity, least-authority capabilities, separate budget, state, and structured result.</pre>
+        </div>
+      </article>
+
+      <article class="panel full">
         <header class="panel-head"><div><h3>30-day settled usage</h3><p class="panel-subtitle">Exact owner-scoped terminal runs grouped by UTC completion day</p></div><span id="usage-history-state" class="badge">Not loaded</span></header>
         <div class="panel-body recovery-layout">
           <div class="recovery-controls">
@@ -817,7 +825,7 @@
     </section>
 
     <footer class="footer">
-      <p>This console exposes a fixed allowlist: operational snapshots, exact 30-day and per-task usage/cost, session titles/checkpoints/forks/transcript exports/text-or-image input/control, digest-verified image artifacts, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
+      <p>This console exposes a fixed allowlist: operational snapshots, recent delegated-child evidence, exact 30-day and per-task usage/cost, session titles/checkpoints/forks/transcript exports/text-or-image input/control, digest-verified image artifacts, exact approvals, keyed schedule creation/lifecycle, effect recovery, governed-memory administration, and extension inventory/detail/enable/disable/revoke. Extension install/stage/invoke, configuration, credential values, provider-invoice inference, and arbitrary daemon proxying remain unavailable.</p>
       <p>Close the terminal command to destroy this dashboard capability. Data is never cached by this server.</p>
     </footer>
   </main>
@@ -2973,6 +2981,56 @@
       }));
     }
 
+    function renderDelegations(payload) {
+      const target = document.getElementById("delegations");
+      const detail = document.getElementById("delegation-detail");
+      const delegations = Array.isArray(payload.delegations) ? payload.delegations : [];
+      document.getElementById("delegation-count").textContent = `${formatCount(delegations.length)} child run${delegations.length === 1 ? "" : "s"}`;
+      if (!delegations.length) {
+        emptyList(target, "No recent delegated child runs are visible to this exact owner binding.");
+        detail.textContent = "A delegated child will appear here after the agent durably prepares it.";
+        return;
+      }
+      target.replaceChildren(...delegations.map(delegation => {
+        const item = element("li", "item");
+        const body = element("div");
+        body.append(
+          element("p", "item-title", `Child ${delegation.childTaskId || "unknown"} · ${delegation.state || "unknown"}`),
+          element("p", "item-meta", `Delegation ${delegation.delegationId || "unknown"} · parent run ${delegation.parentRunId || "unknown"}`),
+          element("p", "item-meta", `Child run ${delegation.childRunId || "unknown"}`)
+        );
+        const side = element("div", "item-side");
+        const inspect = element("button", "action", "Inspect exact");
+        inspect.type = "button";
+        inspect.disabled = !validEntityId(delegation.delegationId);
+        inspect.addEventListener("click", () => {
+          detail.textContent = JSON.stringify({
+            delegationId: delegation.delegationId,
+            parentRunId: delegation.parentRunId,
+            childTaskId: delegation.childTaskId,
+            childRunId: delegation.childRunId,
+            state: delegation.state,
+            childBudget: delegation.childBudget,
+            effectiveCapabilities: delegation.effectiveCapabilities,
+            result: delegation.result
+          }, null, 2);
+        });
+        side.append(badge(delegation.state || "unknown"), inspect);
+        item.append(body, side);
+        return item;
+      }));
+    }
+
+    async function refreshDelegations() {
+      try {
+        renderDelegations(await requestJson("/api/delegations"));
+      } catch (error) {
+        document.getElementById("delegation-count").textContent = "Unavailable";
+        emptyList(document.getElementById("delegations"), "The canonical delegated-work projection could not be loaded.");
+        document.getElementById("delegation-detail").textContent = `Delegated-work projection unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+
     function renderSchedules(payload) {
       const target = document.getElementById("schedules");
       const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
@@ -3065,6 +3123,7 @@
       try {
         const snapshot = await requestJson("/api/snapshot");
         render(snapshot);
+        await refreshDelegations();
         clearError();
       } catch (error) {
         document.getElementById("live-dot").className = "dot bad";

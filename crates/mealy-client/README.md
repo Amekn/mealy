@@ -36,12 +36,12 @@ boundary.
 
 The stable surface covers health and owner status, provider discovery, session creation,
 search, titles, provider switching, checkpoints, forks, text/image admission and timelines; task
-status, pause, resume, cancellation and recorded replay; approval resolution; governed extension
-lifecycle and invocation; and webhook, Telegram, Discord, and Slack channel lifecycle. Methods
-return the versioned DTO for successful responses and `ClientError` for local validation,
-transport, compatibility, bounded-decoding, or structured daemon failures. Match specific
-variants only when behavior needs to differ; the enum is non-exhaustive so compatible SDK releases
-may add more precise failures.
+status, pause, resume, cancellation and recorded replay; durable child delegation list/detail
+inspection; approval resolution; governed extension lifecycle and invocation; and webhook,
+Telegram, Discord, and Slack channel lifecycle. Methods return the versioned DTO for successful
+responses and `ClientError` for local validation, transport, compatibility, bounded-decoding, or
+structured daemon failures. Match specific variants only when behavior needs to differ; the enum
+is non-exhaustive so compatible SDK releases may add more precise failures.
 
 Every v0.5-or-newer GitHub release publishes reproducible `mealy-domain`, `mealy-protocol`, and
 `mealy-client` `.crate` archives with a pinned qualification-consumer lock, checksums, and retained

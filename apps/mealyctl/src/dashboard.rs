@@ -27,7 +27,7 @@ use mealy_application::{
     validate_schedule_definition,
 };
 use mealy_domain::{
-    ApprovalId, ArtifactId, AttemptId, ContextManifestId, EffectId, EventId,
+    ApprovalId, ArtifactId, AttemptId, ContextManifestId, DelegationId, EffectId, EventId,
     ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId,
     MemoryId, MemoryRevisionId, PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId,
     SessionId, TaskId, ValidationId,
@@ -36,8 +36,8 @@ use mealy_protocol::{
     API_VERSION, AdminStatusResponse, AdminUsageReportResponse, ApprovalDecisionCommand,
     ApprovalResolutionReceipt, ArtifactMetadataResponse, CancelTaskRequest, CorrectMemoryRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, DeliveryMode, DoctorResponse, EffectAttemptResponse,
-    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
+    CreateSessionResponse, DelegationsResponse, DeliveryMode, DoctorResponse,
+    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
     ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest, ExtensionResponse,
     ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest, InputAdmissionResponse,
     LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand, MemoryLifecycleRequest,
@@ -77,6 +77,8 @@ const MAXIMUM_IDEMPOTENCY_KEY_BYTES: usize = 256;
 const MAXIMUM_CANCELLATION_REASON_BYTES: usize = 1024;
 const MAXIMUM_TIMELINE_PAGE_SIZE: usize = 200;
 const MAXIMUM_DASHBOARD_SCHEDULES: usize = 1_000;
+const MAXIMUM_DASHBOARD_DELEGATIONS: usize = 20;
+const MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SCHEDULE_RUNS_PAGE_SIZE: usize = 100;
 const MAXIMUM_SCHEDULE_RUN_REASON_BYTES: usize = 4 * 1024;
 const MAXIMUM_DASHBOARD_SCHEDULE_PROMPT_BYTES: usize = 48 * 1024;
@@ -495,6 +497,7 @@ pub(crate) async fn run(
     let application = Router::new()
         .route("/", get(index))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/delegations", get(delegations))
         .route("/api/sessions", post(create_session))
         .route(
             "/api/sessions/{session_id}/title",
@@ -636,6 +639,29 @@ async fn snapshot(State(state): State<DashboardState>, headers: HeaderMap) -> Ax
         eprintln!("dashboard snapshot refresh could not load the connection descriptor");
         let _ = std::io::stderr().flush();
         dashboard_connection_error()
+    };
+    secure_response(response, &state)
+}
+
+async fn delegations(State(state): State<DashboardState>, headers: HeaderMap) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(detail_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let path = format!("/v1/delegations?limit={MAXIMUM_DASHBOARD_DELEGATIONS}");
+            match fetch::<DelegationsResponse>(&state.client, &connection, &path).await {
+                Ok(response) if valid_delegation_projection(&response) => {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("delegation projection"),
+                Err(error) => dashboard_backend_error(&error, "delegation projection"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
     };
     secure_response(response, &state)
 }
@@ -3122,6 +3148,32 @@ async fn fetch_snapshot(
     Ok(snapshot)
 }
 
+fn valid_delegation_projection(response: &DelegationsResponse) -> bool {
+    let mut ids = BTreeSet::new();
+    response.api_version == API_VERSION
+        && response.delegations.len() <= MAXIMUM_DASHBOARD_DELEGATIONS
+        && response.delegations.iter().all(|delegation| {
+            delegation.api_version == API_VERSION
+                && delegation.delegation_id.parse::<DelegationId>().is_ok()
+                && delegation.parent_run_id.parse::<RunId>().is_ok()
+                && delegation.child_task_id.parse::<TaskId>().is_ok()
+                && delegation.child_run_id.parse::<RunId>().is_ok()
+                && ids.insert(delegation.delegation_id.as_str())
+                && matches!(
+                    delegation.state.as_str(),
+                    "queued" | "running" | "succeeded" | "failed" | "cancelled"
+                )
+                && bounded_json_value(&delegation.effective_capabilities)
+                && bounded_json_value(&delegation.child_budget)
+                && delegation.result.as_ref().is_none_or(bounded_json_value)
+        })
+}
+
+fn bounded_json_value(value: &serde_json::Value) -> bool {
+    serde_json::to_vec(value)
+        .is_ok_and(|bytes| bytes.len() <= MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES)
+}
+
 fn dashboard_snapshot_source<T>(result: Result<T, CliError>, source: &str) -> Result<T, CliError> {
     result.map_err(|error| {
         CliError::Protocol(format!(
@@ -4586,23 +4638,26 @@ fn current_epoch_milliseconds() -> Result<u64, CliError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DASHBOARD_TEMPLATE, DASHBOARD_TOKEN_PLACEHOLDER, DashboardCreateScheduleRequest,
-        DashboardEnableExtensionRequest, DashboardState, MAXIMUM_JAVASCRIPT_SAFE_INTEGER,
-        dashboard_memory_source_locator, schedule_matches_create_request, valid_admin_usage_report,
-        valid_dashboard_image_artifact, valid_dashboard_image_input,
-        valid_dashboard_mutation_origin, valid_dashboard_request_origin,
-        valid_dashboard_schedule_create_request, valid_dashboard_token,
-        valid_extension_enable_request, valid_extension_response, valid_memories_response,
-        valid_memory_response, valid_memory_search_response, valid_reconciliation_evidence,
-        valid_schedule_response, valid_schedule_runs_response, valid_task_response,
+        API_VERSION, DASHBOARD_TEMPLATE, DASHBOARD_TOKEN_PLACEHOLDER,
+        DashboardCreateScheduleRequest, DashboardEnableExtensionRequest, DashboardState,
+        MAXIMUM_JAVASCRIPT_SAFE_INTEGER, dashboard_memory_source_locator,
+        schedule_matches_create_request, valid_admin_usage_report, valid_dashboard_image_artifact,
+        valid_dashboard_image_input, valid_dashboard_mutation_origin,
+        valid_dashboard_request_origin, valid_dashboard_schedule_create_request,
+        valid_dashboard_token, valid_delegation_projection, valid_extension_enable_request,
+        valid_extension_response, valid_memories_response, valid_memory_response,
+        valid_memory_search_response, valid_reconciliation_evidence, valid_schedule_response,
+        valid_schedule_runs_response, valid_task_response,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
+    use mealy_domain::{DelegationId, RunId, TaskId};
     use mealy_protocol::{
         AdminUsageBucketResponse, AdminUsageReportResponse, ArtifactMetadataResponse,
-        ExtensionFilesystemAccessCommand, ExtensionMountGrantCommand, ExtensionResponse,
-        ExtensionStatusResponse, MemoriesResponse, MemoryResponse, MemorySearchResponse,
-        MemorySensitivityCommand, MissedRunPolicyCommand, ScheduleOverlapPolicyCommand,
-        ScheduleResponse, ScheduleRunsResponse, SubmitImageInputRequest, TaskResponse,
+        DelegationResponse, DelegationsResponse, ExtensionFilesystemAccessCommand,
+        ExtensionMountGrantCommand, ExtensionResponse, ExtensionStatusResponse, MemoriesResponse,
+        MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, MissedRunPolicyCommand,
+        ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
+        SubmitImageInputRequest, TaskResponse,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -4674,6 +4729,36 @@ mod tests {
         assert!(valid_dashboard_image_artifact(&metadata, artifact_id));
         metadata.media_type = "image/svg+xml".to_owned();
         assert!(!valid_dashboard_image_artifact(&metadata, artifact_id));
+    }
+
+    #[test]
+    fn delegation_cards_require_unique_canonical_bounded_evidence() {
+        let delegation = DelegationResponse {
+            api_version: API_VERSION.to_owned(),
+            delegation_id: DelegationId::new().to_string(),
+            parent_run_id: RunId::new().to_string(),
+            child_task_id: TaskId::new().to_string(),
+            child_run_id: RunId::new().to_string(),
+            effective_capabilities: json!({"enabledReadTools": ["workspace.read"]}),
+            child_budget: json!({"maximumModelCalls": 2}),
+            state: "running".to_owned(),
+            result: None,
+        };
+        let response = DelegationsResponse {
+            api_version: API_VERSION.to_owned(),
+            delegations: vec![delegation.clone()],
+        };
+        assert!(valid_delegation_projection(&response));
+
+        let mut duplicate = response.clone();
+        duplicate.delegations.push(delegation);
+        assert!(!valid_delegation_projection(&duplicate));
+
+        let mut oversized = response;
+        oversized.delegations[0].result = Some(json!(
+            "x".repeat(super::MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES + 1)
+        ));
+        assert!(!valid_delegation_projection(&oversized));
     }
 
     #[test]

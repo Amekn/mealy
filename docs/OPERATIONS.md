@@ -79,6 +79,13 @@ locator before any write. Proposal never implies activation. The UI accepts at m
 memory content and never accepts caller-selected provenance locators. There is no arbitrary proxy or general
 configuration/credential route.
 
+Delegated work is a separate bounded read-only projection rather than part of the snapshot fan-out.
+The page loads at most 20 recent owner-authorized children and shows their canonical delegation,
+parent-run, child-task, child-run, and lifecycle identities. Opening one card renders only the
+daemon-projected effective capability object, separately enforced budget, state, and structured
+result. It cannot create a child, steer a child directly, resolve authority, or synthesize group
+state; cancellation remains the ordinary parent-task command and canonical propagation contract.
+
 The read-only 30-day report is exact-owner scoped and includes root, delegated, and validation
 runs through durable root lineage. It accepts at most 31 days, groups only terminal runs by UTC
 completion day, attributes a run's complete settled usage to that day, omits empty days, and fails

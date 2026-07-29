@@ -30,22 +30,22 @@ use mealy_protocol::{
     CancelTaskRequest, ControlTaskRequest, CreateAutomationRequest, CreateDiscordChannelRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
     CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
-    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DiscordChannelResponse,
-    DiscordChannelsResponse, EditAutomationRequest, EnableExtensionRequest,
-    ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse,
-    ForkSessionRequest, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
-    ReadinessResponse, ResolveApprovalRequest, RevokeDiscordChannelRequest,
-    RevokeSlackChannelRequest, RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
-    RevokeWebhookChannelRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
-    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionTitleResponse, SessionsResponse, SlackChannelResponse,
-    SlackChannelsResponse, SlackRemoteContinuationResponse, SlackRemoteContinuationsResponse,
-    StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
-    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
-    TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
-    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, WebhookChannelResponse,
-    WebhookChannelsResponse,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
+    DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse, EditAutomationRequest,
+    EnableExtensionRequest, ExtensionInvocationResponse, ExtensionLifecycleRequest,
+    ExtensionResponse, ExtensionsResponse, ForkSessionRequest, HealthResponse,
+    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo,
+    PendingApprovalsResponse, ProviderCatalogResponse, ReadinessResponse, ResolveApprovalRequest,
+    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeSlackRemoteContinuationRequest,
+    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
+    SlackChannelResponse, SlackChannelsResponse, SlackRemoteContinuationResponse,
+    SlackRemoteContinuationsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
+    SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse,
+    TaskResponse, TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+    WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::Method;
 use reqwest::blocking::{Body, Client as HttpClient, RequestBuilder, Response};
@@ -671,6 +671,27 @@ impl MealyClient {
     /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
     pub fn task_replay(&self, task_id: &str) -> Result<TaskReplayResponse, ClientError> {
         self.get(&["v1", "tasks", path_identifier(task_id)?, "replay"])
+    }
+
+    /// Lists recent owner-authorized durable child delegations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn delegations(&self, limit: usize) -> Result<DelegationsResponse, ClientError> {
+        let mut url = self.endpoint(&["v1", "delegations"])?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
+        self.get_url(url, ResponseVersion::TopLevel)
+    }
+
+    /// Returns one owner-authorized durable child delegation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn delegation(&self, delegation_id: &str) -> Result<DelegationResponse, ClientError> {
+        self.get(&["v1", "delegations", path_identifier(delegation_id)?])
     }
 
     /// Lists approval subjects awaiting an exact owner decision.
@@ -1877,6 +1898,47 @@ mod tests {
                 "deliveryMode": "queue",
                 "content": "hello"
             })
+        );
+    }
+
+    #[test]
+    fn inspects_typed_durable_delegation_evidence() {
+        let (base_url, server) = serve_once(
+            "200 OK",
+            format!(
+                r#"{{"apiVersion":"{API_VERSION}","delegations":[{{"apiVersion":"{API_VERSION}","delegationId":"delegation-1","parentRunId":"run-1","childTaskId":"task-1","childRunId":"run-2","effectiveCapabilities":{{"enabledReadTools":["workspace.read"]}},"childBudget":{{"maximumModelCalls":2}},"state":"running","result":null}}]}}"#
+            ),
+        );
+        let client = MealyClient::new(base_url, "owner-token").unwrap();
+        let response = client.delegations(20).unwrap();
+        assert_eq!(response.delegations[0].delegation_id, "delegation-1");
+        assert_eq!(response.delegations[0].state, "running");
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .to_ascii_lowercase()
+                .starts_with("get /v1/delegations?limit=20 http/1.1\r\n")
+        );
+
+        let (base_url, server) = serve_once(
+            "200 OK",
+            format!(
+                r#"{{"apiVersion":"{API_VERSION}","delegationId":"delegation-1","parentRunId":"run-1","childTaskId":"task-1","childRunId":"run-2","effectiveCapabilities":{{}},"childBudget":{{}},"state":"succeeded","result":{{"summary":"complete"}}}}"#
+            ),
+        );
+        let client = MealyClient::new(base_url, "owner-token").unwrap();
+        let response = client.delegation("delegation-1").unwrap();
+        assert_eq!(
+            response.result,
+            Some(serde_json::json!({"summary": "complete"}))
+        );
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .to_ascii_lowercase()
+                .starts_with("get /v1/delegations/delegation-1 http/1.1\r\n")
         );
     }
 

@@ -19,17 +19,20 @@ use futures_util::StreamExt as _;
 use mealy_application::{
     ApprovalSubject, InputAdmissionLimits, MAXIMUM_PROVIDER_IMAGE_INPUTS, valid_session_metadata,
 };
-use mealy_domain::{ApprovalId, ArtifactId, EffectId, PrincipalId, SessionId, TaskId};
+use mealy_domain::{
+    ApprovalId, ArtifactId, DelegationId, EffectId, PrincipalId, RunId, SessionId, TaskId,
+};
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
     ApprovalResponse, ApprovalStatusResponse, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, DeliveryMode, ForkSessionRequest, LocalConnectionInfo,
-    PendingApprovalsResponse, ProviderCatalogResponse, ProviderCatalogRouteResponse,
-    ProviderSelectionCommand, ResolveApprovalRequest, SessionCheckpointResponse,
-    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionSummaryResponse, SessionTranscriptExport, SessionsResponse,
-    SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput, TimelineEvent,
-    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+    CreateSessionResponse, DelegationResponse, DelegationsResponse, DeliveryMode,
+    ForkSessionRequest, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
+    ProviderCatalogRouteResponse, ProviderSelectionCommand, ResolveApprovalRequest,
+    SessionCheckpointResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse, SessionTranscriptExport,
+    SessionsResponse, SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput,
+    TimelineEvent, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    UpdateSessionTitleRequest,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -49,6 +52,7 @@ use std::{
 const MAXIMUM_SESSIONS: usize = 100;
 const MAXIMUM_SEARCH_RESULTS: usize = 100;
 const MAXIMUM_APPROVALS: usize = 100;
+const MAXIMUM_DELEGATIONS: usize = 20;
 const MAXIMUM_RECENT_EVENTS: usize = 500;
 const TIMELINE_INITIAL_CURSOR_WINDOW: u64 = 10_000;
 const MAXIMUM_RENDERED_EVENT_DETAIL_BYTES: usize = 8 * 1024;
@@ -275,6 +279,7 @@ struct Workbench {
     session_provider_selection: Option<SessionProviderSelectionResponse>,
     next_turn_provider_selection: Option<ProviderSelectionCommand>,
     approvals: Vec<ApprovalResponse>,
+    delegations: Vec<DelegationResponse>,
     composer: Editor,
     pending_image_paths: Vec<PathBuf>,
     focus: Focus,
@@ -304,6 +309,7 @@ impl Workbench {
             session_provider_selection: None,
             next_turn_provider_selection: None,
             approvals: Vec::new(),
+            delegations: Vec::new(),
             composer: Editor::default(),
             pending_image_paths: Vec::new(),
             focus: Focus::Composer,
@@ -1022,6 +1028,7 @@ async fn refresh_all(
     state.admin = Some(fetch_admin_status(client, &connection).await?);
     state.provider_catalog = Some(fetch_provider_catalog(client, &connection).await?);
     state.approvals = fetch_approvals(client, &connection).await?;
+    state.delegations = fetch_delegations(client, &connection).await?;
     refresh_selected(client, home, state, force_selected).await
 }
 
@@ -1353,6 +1360,46 @@ async fn fetch_approvals(
         ));
     }
     Ok(pending.approvals)
+}
+
+async fn fetch_delegations(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+) -> Result<Vec<DelegationResponse>, CliError> {
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/delegations?limit={MAXIMUM_DELEGATIONS}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    let response = decode::<DelegationsResponse>(response).await?;
+    if !valid_delegations(&response) {
+        return Err(CliError::Protocol(
+            "terminal workbench received an invalid delegation projection".to_owned(),
+        ));
+    }
+    Ok(response.delegations)
+}
+
+fn valid_delegations(response: &DelegationsResponse) -> bool {
+    let mut ids = BTreeSet::new();
+    response.api_version == API_VERSION
+        && response.delegations.len() <= MAXIMUM_DELEGATIONS
+        && response.delegations.iter().all(|delegation| {
+            delegation.api_version == API_VERSION
+                && delegation.delegation_id.parse::<DelegationId>().is_ok()
+                && delegation.parent_run_id.parse::<RunId>().is_ok()
+                && delegation.child_task_id.parse::<TaskId>().is_ok()
+                && delegation.child_run_id.parse::<RunId>().is_ok()
+                && ids.insert(delegation.delegation_id.as_str())
+                && matches!(
+                    delegation.state.as_str(),
+                    "queued" | "running" | "succeeded" | "failed" | "cancelled"
+                )
+        })
 }
 
 fn valid_approval(approval: &ApprovalResponse) -> bool {
@@ -2137,9 +2184,10 @@ fn extend_safe_text_lines(lines: &mut Vec<Line<'static>>, value: &str, style: St
 
 fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
     let sections = Layout::vertical([
-        Constraint::Percentage(48),
-        Constraint::Percentage(32),
-        Constraint::Percentage(20),
+        Constraint::Percentage(38),
+        Constraint::Percentage(25),
+        Constraint::Percentage(21),
+        Constraint::Percentage(16),
     ])
     .split(area);
     let start = state.timeline.len().saturating_sub(20);
@@ -2195,6 +2243,17 @@ fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
         sections[1],
     );
 
+    frame.render_widget(
+        Paragraph::new(delegation_summary(&state.delegations))
+            .block(
+                Block::default()
+                    .title(format!(" Delegated work ({}) ", state.delegations.len()))
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: true }),
+        sections[2],
+    );
+
     let approval_text = if let Some(approval) = state.approvals.first() {
         format!(
             "{} pending\n{} · {}\nF7 to review exact subject",
@@ -2209,8 +2268,28 @@ fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
         Paragraph::new(approval_text)
             .block(Block::default().title(" Approvals ").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
-        sections[2],
+        sections[3],
     );
+}
+
+fn delegation_summary(delegations: &[DelegationResponse]) -> String {
+    if delegations.is_empty() {
+        return "No recent delegated child runs.".to_owned();
+    }
+    delegations
+        .iter()
+        .take(3)
+        .map(|delegation| {
+            format!(
+                "{} · child {}\n  delegation {} · parent {}",
+                bounded_single_line(&delegation.state, 16).to_ascii_uppercase(),
+                short_id(&delegation.child_task_id),
+                short_id(&delegation.delegation_id),
+                short_id(&delegation.parent_run_id),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn event_detail(event: &TimelineEvent) -> String {
@@ -2631,7 +2710,11 @@ fn bounded_single_line(value: &str, maximum_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Editor, Workbench, bounded_single_line};
+    use super::{
+        API_VERSION, DelegationResponse, DelegationsResponse, Editor, Workbench,
+        bounded_single_line, delegation_summary, valid_delegations,
+    };
+    use mealy_domain::{DelegationId, RunId, TaskId};
 
     #[test]
     fn editor_keeps_utf8_cursor_on_boundaries_and_enforces_bytes() {
@@ -2661,5 +2744,33 @@ mod tests {
         assert!(!state.select_index(100));
         state.next_activity(1);
         assert_eq!(state.activity_selected, 0);
+    }
+
+    #[test]
+    fn delegation_cards_accept_only_canonical_bounded_child_evidence() {
+        let delegation = DelegationResponse {
+            api_version: API_VERSION.to_owned(),
+            delegation_id: DelegationId::new().to_string(),
+            parent_run_id: RunId::new().to_string(),
+            child_task_id: TaskId::new().to_string(),
+            child_run_id: RunId::new().to_string(),
+            effective_capabilities: serde_json::json!({"enabledReadTools": ["workspace.read"]}),
+            child_budget: serde_json::json!({"maximumModelCalls": 2}),
+            state: "running".to_owned(),
+            result: None,
+        };
+        let response = DelegationsResponse {
+            api_version: API_VERSION.to_owned(),
+            delegations: vec![delegation.clone()],
+        };
+        assert!(valid_delegations(&response));
+        let rendered = delegation_summary(&response.delegations);
+        assert!(rendered.contains("RUNNING · child"));
+        assert!(rendered.contains("delegation"));
+        assert!(!rendered.contains("workspace.read"));
+
+        let mut malformed = response;
+        malformed.delegations.push(delegation);
+        assert!(!valid_delegations(&malformed));
     }
 }

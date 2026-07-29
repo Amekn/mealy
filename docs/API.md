@@ -428,8 +428,9 @@ blocking client intended for owner-local integrations and later HTTPS-protected 
 continuation. It covers health/status, providers, session workbench, approvals, complete
 automation lifecycle/history, extensions, and webhook, Telegram, Discord, and Slack
 administration. Session workbench includes text/image admission plus task status, pause, resume,
-cancellation, and recorded replay. Import DTOs through `mealy_client::protocol` so client and
-wire-contract versions remain coordinated.
+cancellation, recorded replay, and read-only list/detail inspection of durable child delegations.
+Import DTOs through `mealy_client::protocol` so client and wire-contract versions remain
+coordinated.
 
 The SDK accepts clear-text HTTP only for literal `127.0.0.0/8` or `::1` addresses and requires
 HTTPS elsewhere. URL credentials, base paths, queries, and fragments are invalid. Ambient proxies
