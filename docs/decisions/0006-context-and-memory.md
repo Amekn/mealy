@@ -14,6 +14,9 @@ Persist an ordered context manifest for every model attempt. Pin baseline instru
 
 Long-term memory has a proposal/review/active/superseded/expired/deleted lifecycle with provenance, namespace, sensitivity, confidence, and retention. V1 uses SQLite and FTS5; embeddings are optional derived indexes.
 
+[ADR 0021](0021-derived-semantic-memory-index.md) defines the accepted optional embedding privacy,
+atomic rebuild, lifecycle invalidation, hybrid ranking, and lexical-fallback boundary.
+
 ## Consequences
 
 - Debugging and privacy explanations become concrete.

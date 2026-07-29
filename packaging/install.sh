@@ -57,6 +57,7 @@ release_documents=(
   README.md
   RELEASE.md
   REQUIREMENTS_COVERAGE.md
+  SEMANTIC_MEMORY.md
   TESTING.md
   THREAT_MODEL.md
   V0_3_TO_V0_5_ROADMAP.md
@@ -109,6 +110,7 @@ release_documents=(
   decisions/0018-governed-image-generation-effect.md
   decisions/0019-one-shot-transactional-browser-effects.md
   decisions/0020-threshold-signed-inert-package-registry.md
+  decisions/0021-derived-semantic-memory-index.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md

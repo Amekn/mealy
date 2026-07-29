@@ -13,6 +13,7 @@ mod mcp;
 mod mcp_oauth;
 mod mcp_oauth_token;
 mod media;
+mod memory_embedding;
 mod provider_secret;
 mod registry_mirror;
 mod registry_package;
@@ -70,6 +71,7 @@ pub use mcp_oauth_token::{
 pub use media::{
     CanonicalImage, LinuxBubblewrapMediaNormalizer, MediaNormalizerError, media_worker_main,
 };
+pub use memory_embedding::{MemoryEmbedding, MemoryEmbeddingError, OpenAiCompatibleMemoryEmbedder};
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use registry_mirror::HttpsRegistryMirrorTransport;
 pub use registry_package::{

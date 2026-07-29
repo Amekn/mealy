@@ -2,8 +2,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use mealy_application::ProviderConfig;
 use mealy_application::{
     AgentLoopLimits, BrowserConfig, ImageGenerationConfig, LeaseConcurrencyLimits,
-    McpHttpServerConfig, McpServerConfig, WebAccessConfig, is_sha256_digest, sha256_digest,
-    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_chain,
+    McpHttpServerConfig, McpServerConfig, MemoryEmbeddingConfig, WebAccessConfig, is_sha256_digest,
+    sha256_digest, validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_chain,
 };
 use mealy_domain::{ChannelBindingId, CorrelationId, PrincipalId};
 use mealy_infrastructure::{inspect_browser_bundle, is_trusted_system_executable};
@@ -59,6 +59,8 @@ pub struct DaemonConfig {
     image_input_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image_generation: Option<ImageGenerationConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    memory_embedding: Option<MemoryEmbeddingConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_roots: Vec<WorkspaceRootConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -279,6 +281,7 @@ impl Default for DaemonConfig {
             provider_fallbacks: Vec::new(),
             image_input_enabled: false,
             image_generation: None,
+            memory_embedding: None,
             workspace_roots: Vec::new(),
             command_tools: Vec::new(),
             web_access: WebAccessConfig::default(),
@@ -374,6 +377,12 @@ impl DaemonConfig {
     #[must_use]
     pub const fn image_generation(&self) -> Option<&ImageGenerationConfig> {
         self.image_generation.as_ref()
+    }
+
+    /// Returns the optional exact semantic-memory embedding and privacy policy.
+    #[must_use]
+    pub const fn memory_embedding(&self) -> Option<&MemoryEmbeddingConfig> {
+        self.memory_embedding.as_ref()
     }
 
     /// Returns explicitly granted workspace roots in deterministic configuration order.
@@ -477,6 +486,10 @@ impl DaemonConfig {
                     })
             || self
                 .image_generation
+                .as_ref()
+                .is_some_and(|config| config.validate().is_err())
+            || self
+                .memory_embedding
                 .as_ref()
                 .is_some_and(|config| config.validate().is_err())
             || !valid_workspace_roots(&self.workspace_roots)
@@ -1311,6 +1324,44 @@ mod tests {
             serde_json::to_vec_pretty(&missing_remote_credential).expect("config bytes"),
         )
         .expect("write unsafe remote image config");
+        assert!(matches!(
+            load_or_create_daemon_config(home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
+    }
+
+    #[test]
+    fn memory_embedding_configuration_is_optional_private_and_transport_scoped() {
+        let home = tempfile::tempdir().expect("home");
+        let config = load_or_create_daemon_config(home.path()).expect("default config");
+        assert!(config.memory_embedding().is_none());
+        let mut value = serde_json::to_value(config).expect("config JSON");
+        value["memoryEmbedding"] = json!({
+            "baseUrl": "http://127.0.0.1:8080/v1",
+            "model": "nomic-embed-text",
+            "residency": "owner-host",
+            "dimensions": 768,
+            "documentPrefix": "search_document: ",
+            "queryPrefix": "search_query: ",
+            "requestTimeoutMs": 30_000
+        });
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("config bytes"),
+        )
+        .expect("write local embedding config");
+        let loaded = load_or_create_daemon_config(home.path()).expect("embedding config");
+        let embedding = loaded.memory_embedding().expect("configured embedding");
+        assert_eq!(embedding.model(), "nomic-embed-text");
+        assert_eq!(embedding.dimensions(), 768);
+        assert!(embedding.is_local().expect("locality"));
+
+        value["memoryEmbedding"]["baseUrl"] = json!("https://embeddings.example.test/v1");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("config bytes"),
+        )
+        .expect("write unsafe remote embedding config");
         assert!(matches!(
             load_or_create_daemon_config(home.path()),
             Err(LocalConfigError::InvalidConfiguration)

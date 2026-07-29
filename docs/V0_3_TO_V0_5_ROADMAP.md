@@ -325,6 +325,19 @@ release qualification remain separate slices.
   justified, schedule editing, webhooks, completion/approval notifications,
   and durable deduplication.
 
+The semantic-memory foundation is implemented through schema 28 and
+[ADR 0021](decisions/0021-derived-semantic-memory-index.md). It is disabled by default and pins one
+exact OpenAI-compatible endpoint/model/dimension/prefix/residency policy. Literal-loopback models
+may be credentialless; remote models require HTTPS and a broker credential. A bounded dedicated
+worker prevents blocking-client lifetime from crossing the async daemon boundary. Explicit
+rebuild snapshots all active owner revisions, embeds outside the writer, and publishes only a
+complete revision/content/configuration-fenced set. Correction/deletion/status drift marks the
+index stale transactionally. Hybrid search applies canonical scope and sensitivity first,
+combines FTS5/cosine ranks deterministically, and reports lexical fallback rather than failing or
+claiming semantic success. Adapter, store, CLI/config, and real-daemon hard-restart tests cover
+dimensions, credentials, prefix/order, atomic replacement, ranking, stale fallback, and rebuild
+recovery. Release qualification and the automation half of this section remain open.
+
 ### SDK, observability, evaluation, and remote continuation
 
 - Publish stable typed clients for the daemon, timeline, approvals, extensions,

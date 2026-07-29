@@ -59,10 +59,11 @@ use mealy_domain::{
 use mealy_infrastructure::{
     BrowserReadTool, BrowserTransactionTool, FileArtifactBlobStore, FileChannelSecretStore,
     FileMcpOAuthTokenStore, FileProviderSecretStore, ImageGenerationAdapter, LATEST_SCHEMA_VERSION,
-    LinuxBubblewrapMediaNormalizer, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
-    SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
-    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_tools,
-    load_mcp_tools, mcp_stdio_launcher_main, media_worker_main, preserve_forensic_database,
+    LinuxBubblewrapMediaNormalizer, OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError,
+    SqliteStore, StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant,
+    WorkspaceReadTool, browser_worker_main, create_pre_migration_backup,
+    inspect_existing_schema_version, load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main,
+    media_worker_main, preserve_forensic_database,
 };
 use mealy_observability::{TelemetryConfig, TelemetryRuntime};
 use serde::{Deserialize, Serialize};
@@ -478,6 +479,33 @@ async fn run_daemon(
             }
         };
         Some(ImageGenerationAdapter::new(config, credential)?)
+    } else {
+        None
+    };
+    let memory_embedder = if arguments.safe_mode {
+        None
+    } else if let Some(config) = daemon_config.memory_embedding() {
+        let credential = match config.credential() {
+            None => None,
+            Some(ProviderCredentialReference::Broker { secret_id }) => Some(
+                FileProviderSecretStore::new(arguments.home.join("provider-secrets"))?
+                    .read(secret_id)?,
+            ),
+            Some(ProviderCredentialReference::Environment { variable }) => {
+                Some(std::env::var(variable).map(Zeroizing::new).map_err(
+                    |_| "memory-embedding credential environment variable is unavailable",
+                )?)
+            }
+        };
+        let adapter = Arc::new(OpenAiCompatibleMemoryEmbedder::new(config, credential)?);
+        tracing::info!(
+            config_digest = adapter.config_digest(),
+            dimensions = adapter.dimensions(),
+            local = config.is_local().unwrap_or(false),
+            residency = config.residency(),
+            "optional derived semantic-memory retrieval enabled"
+        );
+        Some(adapter)
     } else {
         None
     };
@@ -978,6 +1006,7 @@ async fn run_daemon(
             home: arguments.home.clone(),
             artifact_gc_minimum_age_hours: daemon_config.artifact_gc_minimum_age_hours(),
             media_normalizer,
+            memory_embedder,
             maximum_pending_inputs_per_session: daemon_config.maximum_pending_inputs_per_session(),
             maximum_extension_invocations: daemon_config.maximum_extension_invocations(),
             enabled_read_tools,

@@ -240,7 +240,7 @@ this first surface.
 | `GET` | `/v1/schedules/{schedule_id}/runs` | optional `limit` (default 100) | `ScheduleRunsResponse` |
 | `GET` | `/v1/memories` | `workspaceIdentity`, optional `includeDeleted` | `MemoriesResponse` |
 | `POST` | `/v1/memories` | `ProposeMemoryRequest` | `MemoryResponse` |
-| `GET` | `/v1/memories/search` | `workspaceIdentity`, `query`, optional `maximumSensitivity`, optional `limit` | `MemorySearchResponse` |
+| `GET` | `/v1/memories/search` | `workspaceIdentity`, `query`, optional `maximumSensitivity`, optional `limit`, optional `retrievalMode` | `MemorySearchResponse` |
 | `GET` | `/v1/memories/{memory_id}` | `workspaceIdentity` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/activate` | `PromoteMemoryRequest` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/correct` | `CorrectMemoryRequest` | `MemoryResponse` |
@@ -249,6 +249,23 @@ this first surface.
 | `POST` | `/v1/memories/{memory_id}/reject` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/delete` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memory-index/rebuild` | `RebuildMemoryIndexRequest` | `MemoryIndexRebuildResponse` |
+
+`retrievalMode` defaults to `lexical`. `hybrid` requests an explicitly configured semantic path
+and never silently claims it was used: the response returns actual `retrievalMode` as `hybrid` or
+`lexical_fallback`, plus `semanticStatus` as one of `healthy`, `disabled`, `not_built`, `stale`,
+`degraded`, `embedding_unavailable`, or `incompatible`. Hits retain the complete cited canonical
+`memory` projection and may include `lexicalRank`, `semanticSimilarity`, and deterministic
+`fusedRankScore`. Namespace, ownership, active status, sensitivity, and content-digest checks run
+before either rank contributes.
+
+`RebuildMemoryIndexRequest` accepts `{ "apiVersion": "v1", "semantic": true }`. Lexical rebuild
+always occurs first. Semantic rebuild is accepted only when the daemon has an explicit embedding
+privacy policy; it snapshots every active revision for that authenticated principal, embeds
+bounded batches outside the writer, and atomically replaces the complete derived set under exact
+revision/content/configuration fences. Its optional `semanticIndex` receipt reports the fixed
+status, non-secret policy digest, dimensions, active-revision count, last successful rebuild, and
+safe error code. Endpoint failure can yield a degraded semantic receipt while canonical lexical
+memory remains usable. See [the semantic-memory guide](SEMANTIC_MEMORY.md).
 
 ### Approvals, effects, and extensions
 

@@ -593,6 +593,46 @@ referenced blob regardless of age and erases only configured-age temporary or un
 User-visible memory deletion remains an immutable tombstone; backups and audit history retain what
 their manifest/retention constraints require.
 
+## Semantic memory operations
+
+Optional semantic retrieval is an explicitly configured derived cache, not canonical state. It is
+off when `memoryEmbedding` is absent. Configure or disable it only while the daemon is stopped;
+each command archives the replaced configuration and reports that restart is required. Remote
+endpoints require HTTPS and a credential imported from a named environment variable into the
+private provider-secret broker. Literal-loopback HTTP may be credentialless.
+
+After activation, run:
+
+```sh
+mealyctl --home "$HOME/.mealy" memory rebuild-index --semantic
+```
+
+This first rebuild snapshots all active governed-memory revisions for the authenticated principal,
+sends them to the exact configured endpoint in batches of at most 32, and atomically publishes the
+complete derived set only when every revision and content digest still matches. The initial exact
+cosine implementation caps the principal at 10,000 active revisions and vectors at 8,192
+dimensions. Rebuild networking occurs outside the SQLite writer lane.
+
+Inspect the JSON receipt before treating hybrid search as active:
+
+- `healthy` means the complete current policy/dimension set was committed;
+- `degraded` means the explicit endpoint rebuild failed and no partial set is searchable;
+- a changed policy digest or dimension is incompatible until a complete rebuild; and
+- zero active memories may produce a healthy empty set.
+
+Correction, activation-status drift, expiry, rejection, and deletion remove affected vector rows
+and mark the principal's set stale in the same transaction. That stale state survives restart.
+Hybrid queries then return `lexical_fallback`/`stale`; ordinary governed memory remains available.
+Run another explicit semantic rebuild after reviewing the lifecycle change. Temporary query
+endpoint failure reports `embedding_unavailable` without changing canonical memory.
+
+Do not copy derived-vector tables into another service as authoritative memory. Clean
+reconstruction from canonical active revisions is the recovery procedure. Changing the endpoint,
+model, prefixes, dimensions, residency, or credential policy requires an approved stopped-home
+configuration update and complete rebuild. Disabling the policy prevents future calls but retains
+canonical memory and the separately managed broker credential for rollback. See
+[the semantic-memory guide](SEMANTIC_MEMORY.md) for setup and response examples.
+
 ## Configuration activation and rollback
 
 Only validated non-secret `config.json` is activated, and its canonical digest is recorded on every

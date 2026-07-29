@@ -1,19 +1,30 @@
 use super::{SqliteStore, agent};
 use mealy_application::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,
-    MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit, MemorySearchQuery,
-    MemorySource, MemoryStore, MemoryStoreError, MemoryView, OwnershipContext, PromoteMemoryCommit,
-    ProposeMemoryCommit, RejectMemoryCommit, SetMemoryPinCommit, is_sha256_digest, sha256_digest,
-    validate_memory_proposal, validate_memory_search,
+    MemoryEmbeddingCandidate, MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit,
+    MemorySearchQuery, MemorySemanticIndexHealth, MemorySemanticIndexView, MemorySemanticSearchHit,
+    MemorySemanticSearchQuery, MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError,
+    MemoryView, OwnershipContext, PromoteMemoryCommit, ProposeMemoryCommit, RejectMemoryCommit,
+    ReplaceMemorySemanticIndexCommit, SetMemoryPinCommit, is_sha256_digest, sha256_digest,
+    valid_memory_semantic_error_code, validate_memory_embedding_vector, validate_memory_proposal,
+    validate_memory_search,
 };
 use mealy_domain::{
     CorrelationId, EventId, MemoryCategory, MemoryConfidence, MemoryId,
     MemoryPromotionAuthorization, MemoryRetention, MemoryRevisionId, MemorySensitivity,
     MemoryStatus, PrincipalId,
 };
-use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use serde_json::json;
-use std::{str::FromStr, time::SystemTime};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+    time::SystemTime,
+};
+
+const MAXIMUM_SEMANTIC_INDEX_REVISIONS: usize = 10_000;
 
 impl MemoryStore for SqliteStore {
     fn propose_memory(
@@ -676,6 +687,524 @@ impl MemoryStore for SqliteStore {
             rebuilt_at_ms,
         })
     }
+
+    fn memory_embedding_candidates(
+        &self,
+        ownership: OwnershipContext,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, MemoryStoreError> {
+        authorize_principal_channel(&self.connection, ownership)?;
+        load_active_embedding_candidates(&self.connection, ownership.principal_id())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn replace_memory_semantic_index(
+        &mut self,
+        commit: ReplaceMemorySemanticIndexCommit,
+    ) -> Result<MemorySemanticIndexView, MemoryStoreError> {
+        if !is_sha256_digest(&commit.config_digest)
+            || !(1..=mealy_application::MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS)
+                .contains(&commit.dimensions)
+            || commit.vectors.len() > MAXIMUM_SEMANTIC_INDEX_REVISIONS
+        {
+            return Err(invalid_contract(
+                "semantic index replacement contract is invalid",
+            ));
+        }
+        let rebuilt_at_ms = epoch_milliseconds(commit.rebuilt_at)?;
+        let prepared = prepare_semantic_vectors(&commit.vectors, commit.dimensions)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        authorize_principal_channel(&transaction, commit.ownership)?;
+        let active =
+            load_active_embedding_candidates(&transaction, commit.ownership.principal_id())?;
+        let active_by_revision = active
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.revision_id,
+                    (candidate.memory_id, candidate.content_digest.as_str()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if active_by_revision.len() != prepared.len()
+            || prepared.iter().any(|vector| {
+                active_by_revision.get(&vector.revision_id).is_none_or(
+                    |(memory_id, content_digest)| {
+                        *memory_id != vector.memory_id
+                            || *content_digest != vector.content_digest.as_str()
+                    },
+                )
+            })
+        {
+            return Err(MemoryStoreError::Conflict);
+        }
+        let principal_id = commit.ownership.principal_id().to_string();
+        transaction
+            .execute(
+                "DELETE FROM memory_semantic_vector WHERE principal_id = ?1",
+                [&principal_id],
+            )
+            .map_err(map_sqlite_error)?;
+        for vector in &prepared {
+            let inserted = transaction
+                .execute(
+                    "INSERT INTO memory_semantic_vector(\
+                        revision_id, memory_id, principal_id, workspace_identity, content_digest, \
+                        config_digest, dimensions, vector_blob, indexed_at_ms\
+                     ) \
+                     SELECT revision.id, owner.id, owner.principal_id, owner.workspace_identity, \
+                            revision.content_digest, ?1, ?2, ?3, ?4 \
+                     FROM memory_revision revision \
+                     JOIN memory owner ON owner.id = revision.memory_id \
+                     WHERE revision.id = ?5 AND owner.id = ?6 AND owner.principal_id = ?7 \
+                       AND owner.status = 'active' AND revision.status = 'active' \
+                       AND revision.content_digest = ?8",
+                    params![
+                        commit.config_digest,
+                        i64::from(commit.dimensions),
+                        vector.blob,
+                        rebuilt_at_ms,
+                        vector.revision_id.to_string(),
+                        vector.memory_id.to_string(),
+                        principal_id,
+                        vector.content_digest,
+                    ],
+                )
+                .map_err(map_sqlite_error)?;
+            if inserted != 1 {
+                return Err(MemoryStoreError::Conflict);
+            }
+        }
+        let indexed_revision_count = u64::try_from(prepared.len())
+            .map_err(|_| invariant("semantic index count overflowed"))?;
+        transaction
+            .execute(
+                "INSERT INTO memory_semantic_index_state(\
+                    principal_id, config_digest, health, dimensions, indexed_revision_count, \
+                    last_rebuilt_at_ms, last_error_code\
+                 ) VALUES (?1, ?2, 'healthy', ?3, ?4, ?5, NULL) \
+                 ON CONFLICT(principal_id) DO UPDATE SET \
+                    config_digest = excluded.config_digest, health = 'healthy', \
+                    dimensions = excluded.dimensions, \
+                    indexed_revision_count = excluded.indexed_revision_count, \
+                    last_rebuilt_at_ms = excluded.last_rebuilt_at_ms, last_error_code = NULL",
+                params![
+                    principal_id,
+                    commit.config_digest,
+                    i64::from(commit.dimensions),
+                    i64::try_from(indexed_revision_count)
+                        .map_err(|_| invariant("semantic index count overflowed"))?,
+                    rebuilt_at_ms,
+                ],
+            )
+            .map_err(map_sqlite_error)?;
+        transaction.commit().map_err(map_sqlite_error)?;
+        Ok(MemorySemanticIndexView {
+            principal_id: commit.ownership.principal_id(),
+            config_digest: commit.config_digest,
+            health: MemorySemanticIndexHealth::Healthy,
+            dimensions: commit.dimensions,
+            indexed_revision_count,
+            last_rebuilt_at_ms: Some(rebuilt_at_ms),
+            last_error_code: None,
+        })
+    }
+
+    fn memory_semantic_index(
+        &self,
+        ownership: OwnershipContext,
+    ) -> Result<Option<MemorySemanticIndexView>, MemoryStoreError> {
+        authorize_principal_channel(&self.connection, ownership)?;
+        load_semantic_index_view(&self.connection, ownership.principal_id())
+    }
+
+    fn degrade_memory_semantic_index(
+        &mut self,
+        ownership: OwnershipContext,
+        config_digest: &str,
+        dimensions: u32,
+        error_code: &str,
+    ) -> Result<MemorySemanticIndexView, MemoryStoreError> {
+        if !is_sha256_digest(config_digest)
+            || !(1..=mealy_application::MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS).contains(&dimensions)
+            || !valid_memory_semantic_error_code(error_code)
+        {
+            return Err(invalid_contract(
+                "semantic index degradation contract is invalid",
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        authorize_principal_channel(&transaction, ownership)?;
+        let principal_id = ownership.principal_id().to_string();
+        let indexed_count = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM memory_semantic_vector WHERE principal_id = ?1",
+                [&principal_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(map_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO memory_semantic_index_state(\
+                    principal_id, config_digest, health, dimensions, indexed_revision_count, \
+                    last_rebuilt_at_ms, last_error_code\
+                 ) VALUES (?1, ?2, 'degraded', ?3, ?4, NULL, ?5) \
+                 ON CONFLICT(principal_id) DO UPDATE SET \
+                    config_digest = excluded.config_digest, health = 'degraded', \
+                    dimensions = excluded.dimensions, \
+                    indexed_revision_count = excluded.indexed_revision_count, \
+                    last_error_code = excluded.last_error_code",
+                params![
+                    principal_id,
+                    config_digest,
+                    i64::from(dimensions),
+                    indexed_count,
+                    error_code,
+                ],
+            )
+            .map_err(map_sqlite_error)?;
+        transaction.commit().map_err(map_sqlite_error)?;
+        Ok(MemorySemanticIndexView {
+            principal_id: ownership.principal_id(),
+            config_digest: config_digest.to_owned(),
+            health: MemorySemanticIndexHealth::Degraded,
+            dimensions,
+            indexed_revision_count: u64::try_from(indexed_count)
+                .map_err(|_| invariant("semantic index count is negative"))?,
+            last_rebuilt_at_ms: self
+                .connection
+                .query_row(
+                    "SELECT last_rebuilt_at_ms FROM memory_semantic_index_state \
+                     WHERE principal_id = ?1",
+                    [ownership.principal_id().to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite_error)?,
+            last_error_code: Some(error_code.to_owned()),
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn search_memories_semantic(
+        &self,
+        query: MemorySemanticSearchQuery,
+    ) -> Result<Vec<MemorySemanticSearchHit>, MemoryStoreError> {
+        validate_memory_search(&query.search)?;
+        if !is_sha256_digest(&query.config_digest) {
+            return Err(invalid_contract(
+                "semantic search configuration digest is invalid",
+            ));
+        }
+        let normalized_query = normalized_vector(&query.query_vector)?;
+        authorize_workspace(
+            &self.connection,
+            query.search.ownership,
+            &query.search.workspace_identity,
+        )?;
+        let state =
+            load_semantic_index_view(&self.connection, query.search.ownership.principal_id())?
+                .ok_or_else(|| semantic_unavailable("not_configured"))?;
+        let query_dimensions = u32::try_from(normalized_query.len())
+            .map_err(|_| invalid_contract("semantic query dimensions overflowed"))?;
+        if state.config_digest != query.config_digest || state.dimensions != query_dimensions {
+            return Err(semantic_unavailable("incompatible"));
+        }
+        match state.health {
+            MemorySemanticIndexHealth::Healthy => {}
+            MemorySemanticIndexHealth::Stale => return Err(semantic_unavailable("stale")),
+            MemorySemanticIndexHealth::Degraded => return Err(semantic_unavailable("degraded")),
+        }
+        let maximum_sensitivity = sensitivity_rank(query.search.maximum_sensitivity);
+        let limit = i64::try_from(MAXIMUM_SEMANTIC_INDEX_REVISIONS + 1)
+            .map_err(|_| invariant("semantic scan limit overflowed"))?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT owner.id, vector.vector_blob, owner.last_verified_at_ms \
+                 FROM memory_semantic_vector vector \
+                 JOIN memory owner ON owner.id = vector.memory_id \
+                 JOIN memory_revision revision ON revision.id = vector.revision_id \
+                 WHERE vector.principal_id = ?1 AND vector.workspace_identity = ?2 \
+                   AND vector.config_digest = ?3 AND vector.dimensions = ?4 \
+                   AND owner.principal_id = ?1 AND owner.workspace_identity = ?2 \
+                   AND owner.status = 'active' AND revision.status = 'active' \
+                   AND revision.content_digest = vector.content_digest \
+                   AND CASE owner.sensitivity \
+                       WHEN 'public' THEN 0 WHEN 'internal' THEN 1 \
+                       WHEN 'private' THEN 2 ELSE 3 END <= ?5 \
+                 ORDER BY owner.id LIMIT ?6",
+            )
+            .map_err(map_sqlite_error)?;
+        let rows = statement
+            .query_map(
+                params![
+                    query.search.ownership.principal_id().to_string(),
+                    query.search.workspace_identity,
+                    query.config_digest,
+                    i64::from(state.dimensions),
+                    maximum_sensitivity,
+                    limit,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)?;
+        if rows.len() > MAXIMUM_SEMANTIC_INDEX_REVISIONS {
+            return Err(semantic_unavailable("scan_bound_exceeded"));
+        }
+        let mut ranked = rows
+            .into_iter()
+            .map(|(memory_id, blob, last_verified_at_ms)| {
+                let vector = decode_vector(&blob, state.dimensions)?;
+                let similarity = normalized_query
+                    .iter()
+                    .zip(vector)
+                    .map(|(left, right)| f64::from(*left) * f64::from(right))
+                    .sum::<f64>()
+                    .clamp(-1.0, 1.0);
+                Ok((
+                    parse_id::<MemoryId>(&memory_id, "memory ID")?,
+                    similarity,
+                    last_verified_at_ms,
+                ))
+            })
+            .collect::<Result<Vec<_>, MemoryStoreError>>()?;
+        ranked.sort_by(|left, right| {
+            right
+                .1
+                .total_cmp(&left.1)
+                .then_with(|| right.2.cmp(&left.2))
+                .then_with(|| left.0.to_string().cmp(&right.0.to_string()))
+        });
+        ranked.truncate(query.search.limit);
+        ranked
+            .into_iter()
+            .map(|(memory_id, semantic_similarity, _)| {
+                Ok(MemorySemanticSearchHit {
+                    memory: load_memory_view(
+                        &self.connection,
+                        query.search.ownership,
+                        &query.search.workspace_identity,
+                        memory_id,
+                    )?,
+                    semantic_similarity,
+                })
+            })
+            .collect()
+    }
+}
+
+struct PreparedSemanticVector {
+    memory_id: MemoryId,
+    revision_id: MemoryRevisionId,
+    content_digest: String,
+    blob: Vec<u8>,
+}
+
+fn prepare_semantic_vectors(
+    vectors: &[MemorySemanticVector],
+    dimensions: u32,
+) -> Result<Vec<PreparedSemanticVector>, MemoryStoreError> {
+    let mut revision_ids = BTreeSet::new();
+    let mut memory_ids = BTreeSet::new();
+    vectors
+        .iter()
+        .map(|vector| {
+            if !is_sha256_digest(&vector.content_digest)
+                || !revision_ids.insert(vector.revision_id)
+                || !memory_ids.insert(vector.memory_id)
+                || validate_memory_embedding_vector(&vector.values)? != dimensions
+            {
+                return Err(invalid_contract(
+                    "semantic vector identity, digest, or dimensions are invalid",
+                ));
+            }
+            let normalized = normalized_vector(&vector.values)?;
+            Ok(PreparedSemanticVector {
+                memory_id: vector.memory_id,
+                revision_id: vector.revision_id,
+                content_digest: vector.content_digest.clone(),
+                blob: encode_vector(&normalized),
+            })
+        })
+        .collect()
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn normalized_vector(values: &[f32]) -> Result<Vec<f32>, MemoryStoreError> {
+    validate_memory_embedding_vector(values)?;
+    let norm = values
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>()
+        .sqrt();
+    values
+        .iter()
+        .map(|value| {
+            let normalized = (f64::from(*value) / norm) as f32;
+            normalized
+                .is_finite()
+                .then_some(normalized)
+                .ok_or_else(|| invalid_contract("semantic vector cannot be normalized"))
+        })
+        .collect()
+}
+
+fn encode_vector(values: &[f32]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        encoded.extend_from_slice(&value.to_le_bytes());
+    }
+    encoded
+}
+
+fn decode_vector(blob: &[u8], dimensions: u32) -> Result<Vec<f32>, MemoryStoreError> {
+    let dimensions =
+        usize::try_from(dimensions).map_err(|_| invariant("semantic dimensions overflowed"))?;
+    if blob.len() != dimensions.saturating_mul(std::mem::size_of::<f32>()) {
+        return Err(invariant("stored semantic vector length is invalid"));
+    }
+    let values = blob
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|bytes| {
+            Ok(f32::from_le_bytes(bytes.try_into().map_err(|_| {
+                invariant("stored semantic vector chunk is invalid")
+            })?))
+        })
+        .collect::<Result<Vec<_>, MemoryStoreError>>()?;
+    let normalized = normalized_vector(&values)
+        .map_err(|_| invariant("stored semantic vector values are invalid"))?;
+    Ok(normalized)
+}
+
+fn load_active_embedding_candidates(
+    connection: &Connection,
+    principal_id: PrincipalId,
+) -> Result<Vec<MemoryEmbeddingCandidate>, MemoryStoreError> {
+    let limit = i64::try_from(MAXIMUM_SEMANTIC_INDEX_REVISIONS + 1)
+        .map_err(|_| invariant("semantic candidate limit overflowed"))?;
+    let mut statement = connection
+        .prepare(
+            "SELECT owner.id, revision.id, revision.content_text, revision.content_digest \
+             FROM memory owner \
+             JOIN memory_revision revision \
+               ON revision.memory_id = owner.id AND revision.status = 'active' \
+             WHERE owner.principal_id = ?1 AND owner.status = 'active' \
+               AND revision.content_text IS NOT NULL \
+             ORDER BY owner.workspace_identity, owner.id, revision.id LIMIT ?2",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(params![principal_id.to_string(), limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    if rows.len() > MAXIMUM_SEMANTIC_INDEX_REVISIONS {
+        return Err(semantic_unavailable("candidate_bound_exceeded"));
+    }
+    rows.into_iter()
+        .map(|(memory_id, revision_id, content, content_digest)| {
+            if !is_sha256_digest(&content_digest)
+                || sha256_digest(content.as_bytes()) != content_digest
+            {
+                return Err(invariant(
+                    "active semantic candidate content evidence is inconsistent",
+                ));
+            }
+            Ok(MemoryEmbeddingCandidate {
+                memory_id: parse_id(&memory_id, "memory ID")?,
+                revision_id: parse_id(&revision_id, "memory revision ID")?,
+                content,
+                content_digest,
+            })
+        })
+        .collect()
+}
+
+fn load_semantic_index_view(
+    connection: &Connection,
+    principal_id: PrincipalId,
+) -> Result<Option<MemorySemanticIndexView>, MemoryStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT config_digest, health, dimensions, indexed_revision_count, \
+                    last_rebuilt_at_ms, last_error_code \
+             FROM memory_semantic_index_state WHERE principal_id = ?1",
+            [principal_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((
+        config_digest,
+        health,
+        dimensions,
+        indexed_revision_count,
+        last_rebuilt_at_ms,
+        last_error_code,
+    )) = row
+    else {
+        return Ok(None);
+    };
+    if !is_sha256_digest(&config_digest)
+        || dimensions <= 0
+        || indexed_revision_count < 0
+        || last_rebuilt_at_ms.is_some_and(|value| value < 0)
+        || last_error_code
+            .as_deref()
+            .is_some_and(|value| !valid_memory_semantic_error_code(value))
+    {
+        return Err(invariant("stored semantic index state is invalid"));
+    }
+    let health = match health.as_str() {
+        "healthy" if last_error_code.is_none() => MemorySemanticIndexHealth::Healthy,
+        "stale" if last_error_code.is_none() => MemorySemanticIndexHealth::Stale,
+        "degraded" if last_error_code.is_some() => MemorySemanticIndexHealth::Degraded,
+        _ => return Err(invariant("stored semantic index health is invalid")),
+    };
+    Ok(Some(MemorySemanticIndexView {
+        principal_id,
+        config_digest,
+        health,
+        dimensions: u32::try_from(dimensions)
+            .map_err(|_| invariant("semantic index dimensions overflowed"))?,
+        indexed_revision_count: u64::try_from(indexed_revision_count)
+            .map_err(|_| invariant("semantic index count is negative"))?,
+        last_rebuilt_at_ms,
+        last_error_code,
+    }))
+}
+
+fn semantic_unavailable(code: &str) -> MemoryStoreError {
+    MemoryStoreError::SemanticIndexUnavailable(code.to_owned())
 }
 
 #[derive(Debug)]
@@ -1590,8 +2119,9 @@ mod tests {
     use super::SqliteStore;
     use mealy_application::{
         CorrectMemoryCommit, DeleteMemoryCommit, MEMORY_POLICY_VERSION, MemorySearchQuery,
-        MemorySource, MemoryStore, MemoryStoreError, OwnershipContext, PromoteMemoryCommit,
-        ProposeMemoryCommit, SetMemoryPinCommit,
+        MemorySemanticIndexHealth, MemorySemanticSearchQuery, MemorySemanticVector, MemorySource,
+        MemoryStore, MemoryStoreError, OwnershipContext, PromoteMemoryCommit, ProposeMemoryCommit,
+        ReplaceMemorySemanticIndexCommit, SetMemoryPinCommit,
     };
     use mealy_domain::{
         ChannelBindingId, ContextEpochId, CorrelationId, EventId, MemoryCategory, MemoryConfidence,
@@ -1853,6 +2383,210 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn semantic_index_is_complete_fenced_scoped_rebuildable_and_deleted_with_memory() {
+        let mut fixture = Fixture::new();
+        let mut active_ids = Vec::new();
+        for (offset, content) in [
+            (20, "The deployment window is Tuesday"),
+            (30, "The design review is Thursday"),
+        ] {
+            let proposal = fixture.proposal(
+                MemoryCategory::Fact,
+                MemorySensitivity::Internal,
+                content,
+                NOW + offset,
+            );
+            let memory_id = proposal.memory_id;
+            let revision_id = proposal.revision_id;
+            fixture
+                .store
+                .propose_memory(proposal)
+                .expect("propose memory");
+            fixture
+                .store
+                .promote_memory(PromoteMemoryCommit {
+                    ownership: fixture.ownership,
+                    memory_id,
+                    revision_id,
+                    authorization: None,
+                    authorization_event_id: None,
+                    activation_event_id: EventId::new(),
+                    correlation_id: CorrelationId::new(),
+                    activated_at: at(NOW + offset + 1),
+                })
+                .expect("activate memory");
+            active_ids.push((memory_id, revision_id, content));
+        }
+        assert_eq!(
+            fixture
+                .store
+                .memory_semantic_index(fixture.ownership)
+                .expect("inspect absent index"),
+            None
+        );
+        let candidates = fixture
+            .store
+            .memory_embedding_candidates(fixture.ownership)
+            .expect("load canonical candidates");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(
+            fixture
+                .store
+                .memory_embedding_candidates(fixture.other_ownership)
+                .expect("other owner candidates")
+                .len(),
+            0
+        );
+        let config_digest = "c".repeat(64);
+        let vectors = candidates
+            .iter()
+            .map(|candidate| MemorySemanticVector {
+                memory_id: candidate.memory_id,
+                revision_id: candidate.revision_id,
+                content_digest: candidate.content_digest.clone(),
+                values: if candidate.content.contains("deployment") {
+                    vec![1.0, 0.0, 0.0]
+                } else {
+                    vec![0.0, 1.0, 0.0]
+                },
+            })
+            .collect();
+        let healthy = fixture
+            .store
+            .replace_memory_semantic_index(ReplaceMemorySemanticIndexCommit {
+                ownership: fixture.ownership,
+                config_digest: config_digest.clone(),
+                dimensions: 3,
+                vectors,
+                rebuilt_at: at(NOW + 40),
+            })
+            .expect("replace complete semantic index");
+        assert_eq!(healthy.health, MemorySemanticIndexHealth::Healthy);
+        assert_eq!(healthy.indexed_revision_count, 2);
+
+        let hits = fixture
+            .store
+            .search_memories_semantic(MemorySemanticSearchQuery {
+                search: search(fixture.ownership, "release timing"),
+                config_digest: config_digest.clone(),
+                query_vector: vec![0.9, 0.1, 0.0],
+            })
+            .expect("semantic search");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].memory.memory_id, active_ids[0].0);
+        assert!(hits[0].semantic_similarity > hits[1].semantic_similarity);
+        assert!(matches!(
+            fixture
+                .store
+                .search_memories_semantic(MemorySemanticSearchQuery {
+                    search: search(fixture.other_ownership, "release timing"),
+                    config_digest: config_digest.clone(),
+                    query_vector: vec![1.0, 0.0, 0.0],
+                }),
+            Err(MemoryStoreError::SemanticIndexUnavailable(_))
+        ));
+
+        let corrected_revision_id = MemoryRevisionId::new();
+        fixture
+            .store
+            .correct_memory(CorrectMemoryCommit {
+                ownership: fixture.ownership,
+                memory_id: active_ids[0].0,
+                expected_revision: 1,
+                revision_id: corrected_revision_id,
+                content: "The deployment window moved to Wednesday".to_owned(),
+                confidence: MemoryConfidence::new(9_000).expect("confidence"),
+                sensitivity: MemorySensitivity::Internal,
+                retention: MemoryRetention::Standard,
+                sources: vec![MemorySource {
+                    locator: "event://semantic-correction".to_owned(),
+                    digest: "d".repeat(64),
+                }],
+                authorization: None,
+                revision_event_id: EventId::new(),
+                authorization_event_id: None,
+                corrected_event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                corrected_at: at(NOW + 41),
+            })
+            .expect("correct canonical memory");
+        let stale = fixture
+            .store
+            .memory_semantic_index(fixture.ownership)
+            .expect("inspect stale index")
+            .expect("index state");
+        assert_eq!(stale.health, MemorySemanticIndexHealth::Stale);
+        assert_eq!(stale.indexed_revision_count, 1);
+        assert!(matches!(
+            fixture
+                .store
+                .search_memories_semantic(MemorySemanticSearchQuery {
+                    search: search(fixture.ownership, "release timing"),
+                    config_digest: config_digest.clone(),
+                    query_vector: vec![1.0, 0.0, 0.0],
+                }),
+            Err(MemoryStoreError::SemanticIndexUnavailable(_))
+        ));
+
+        let candidates = fixture
+            .store
+            .memory_embedding_candidates(fixture.ownership)
+            .expect("reload candidates");
+        let vectors = candidates
+            .iter()
+            .map(|candidate| MemorySemanticVector {
+                memory_id: candidate.memory_id,
+                revision_id: candidate.revision_id,
+                content_digest: candidate.content_digest.clone(),
+                values: if candidate.revision_id == corrected_revision_id {
+                    vec![1.0, 0.0, 0.0]
+                } else {
+                    vec![0.0, 1.0, 0.0]
+                },
+            })
+            .collect();
+        fixture
+            .store
+            .replace_memory_semantic_index(ReplaceMemorySemanticIndexCommit {
+                ownership: fixture.ownership,
+                config_digest: config_digest.clone(),
+                dimensions: 3,
+                vectors,
+                rebuilt_at: at(NOW + 42),
+            })
+            .expect("rebuild corrected semantic index");
+        fixture
+            .store
+            .delete_memory(DeleteMemoryCommit {
+                ownership: fixture.ownership,
+                memory_id: active_ids[0].0,
+                expected_revision: 2,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                deleted_at: at(NOW + 43),
+            })
+            .expect("scrub canonical memory");
+        let stale = fixture
+            .store
+            .memory_semantic_index(fixture.ownership)
+            .expect("inspect deletion propagation")
+            .expect("index state");
+        assert_eq!(stale.health, MemorySemanticIndexHealth::Stale);
+        assert_eq!(stale.indexed_revision_count, 1);
+        let deleted_vector_count: i64 = fixture
+            .store
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM memory_semantic_vector WHERE memory_id = ?1",
+                [active_ids[0].0.to_string()],
+                |row| row.get(0),
+            )
+            .expect("count deleted vectors");
+        assert_eq!(deleted_vector_count, 0);
     }
 
     #[test]

@@ -81,6 +81,45 @@ fails. It never resolves approvals or exposes prompt/response bodies in the repo
 [evaluation guide](EVALUATIONS.md) for the contract, safety/recovery composition, privacy limits,
 and CI workflow.
 
+## Optional semantic memory
+
+Semantic retrieval is disabled until the owner stops the daemon and approves an exact
+OpenAI-compatible embedding policy:
+
+```sh
+systemctl --user stop mealy.service
+mealyctl --home "$HOME/.mealy" config memory-embedding \
+  --base-url http://127.0.0.1:8080/v1 \
+  --model nomic-embed-text \
+  --dimensions 768 \
+  --residency owner-host \
+  --document-prefix 'search_document: ' \
+  --query-prefix 'search_query: ' \
+  --approve
+systemctl --user start mealy.service
+```
+
+Non-loopback endpoints require HTTPS and paired `--secret-id` / `--credential-env` arguments; the
+environment value is probed and imported once into the private broker. The command preserves the
+replaced configuration, prints the non-secret policy digest, and requires explicit `--approve`.
+Its compatibility probe is enabled by default. `--skip-connectivity-test` stages an unproved
+policy rather than making it production-ready.
+
+Build the complete derived set and request hybrid retrieval:
+
+```sh
+mealyctl --home "$HOME/.mealy" memory rebuild-index --semantic
+mealyctl --home "$HOME/.mealy" memory search \
+  --workspace WORKSPACE_IDENTITY --hybrid 'related meaning'
+```
+
+The response distinguishes actual hybrid retrieval from safe lexical fallback. Correction,
+expiry, rejection, deletion, or active-revision drift marks the complete semantic set stale until
+another approved rebuild. Stop the daemon and run
+`mealyctl config memory-embedding-disable --approve` to disable future embedding calls while
+retaining canonical memory and the separately managed broker credential. See
+[the semantic-memory guide](SEMANTIC_MEMORY.md) for the privacy and recovery contract.
+
 ## Signed registry trust metadata
 
 The v0.5 registry trust-bootstrap surface is deliberately local-file-only. First obtain an initial

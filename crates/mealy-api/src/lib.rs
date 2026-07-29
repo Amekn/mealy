@@ -33,9 +33,9 @@ use mealy_protocol::{
     ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
     GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
     InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
+    MemoryResponse, MemoryRetrievalMode, MemorySearchResponse, MemorySensitivityCommand,
+    PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
     RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
     ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
@@ -754,6 +754,7 @@ pub trait ApiBackend: Send + Sync + 'static {
         query: String,
         maximum_sensitivity: MemorySensitivityCommand,
         limit: usize,
+        retrieval_mode: MemoryRetrievalMode,
     ) -> Result<MemorySearchResponse, BackendError>;
 
     /// Corrects a memory by superseding, not rewriting, its active revision.
@@ -2315,6 +2316,8 @@ struct MemorySearchParameters {
     maximum_sensitivity: MemorySensitivityCommand,
     #[serde(default = "default_memory_limit")]
     limit: usize,
+    #[serde(default)]
+    retrieval_mode: MemoryRetrievalMode,
 }
 
 const fn default_memory_sensitivity() -> MemorySensitivityCommand {
@@ -2398,6 +2401,7 @@ async fn search_memories_handler(
             parameters.query,
             parameters.maximum_sensitivity,
             parameters.limit,
+            parameters.retrieval_mode,
         )
     })
     .await?;
@@ -3371,16 +3375,16 @@ mod tests {
         ContextManifestEvidenceResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
         CreateSessionResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
         ForkSessionRequest, InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
-        MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
-        PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-        ProviderCatalogResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
-        ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-        SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
-        SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
-        SessionTitleResponse, SessionsResponse, SetMemoryPinRequest, SubmitInputRequest,
-        TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass,
-        TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor, TimelinePageResponse,
-        UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+        MemoryLifecycleRequest, MemoryResponse, MemoryRetrievalMode, MemorySearchResponse,
+        MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest,
+        ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+        RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+        ResolveApprovalRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
+        SessionForkResponse, SessionProviderSelectionResponse, SessionStatusResponse,
+        SessionSummaryResponse, SessionTitleResponse, SessionsResponse, SetMemoryPinRequest,
+        SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse,
+        TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor,
+        TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3919,9 +3923,12 @@ mod tests {
             _query: String,
             _maximum_sensitivity: MemorySensitivityCommand,
             _limit: usize,
+            _retrieval_mode: MemoryRetrievalMode,
         ) -> Result<MemorySearchResponse, BackendError> {
             Ok(MemorySearchResponse {
                 api_version: API_VERSION.to_owned(),
+                retrieval_mode: MemoryRetrievalMode::Lexical,
+                semantic_status: None,
                 hits: Vec::new(),
             })
         }
@@ -3980,6 +3987,7 @@ mod tests {
                 api_version: API_VERSION.to_owned(),
                 indexed_revision_count: 0,
                 rebuilt_at_ms: 1,
+                semantic_index: None,
             })
         }
 

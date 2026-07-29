@@ -23,22 +23,23 @@ use mealy_application::{
     MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
     McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
-    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, OwnershipContext, ProviderConfig,
-    ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryContentDescriptor,
-    RegistryDependencyLock, RegistryError, RegistryInstalledPackageDisposition,
-    RegistryInstalledPackagePolicy, RegistryMetadataStore, RegistryMetadataStoreError,
-    RegistryMirror, RegistryMirrorError, RegistryPackageKind, RegistryPackageManifest,
-    RegistryPackageState, RegistryReleaseState, RegistrySnapshotState, RegistryUseCaseError,
-    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    StageExtensionManifestCommit, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
-    accept_registry_release, accept_registry_snapshot, active_registry_snapshot,
-    bootstrap_registry_trust_root, default_daemon_config_document, diff_extension_permissions,
-    diff_skill_permissions, fetch_registry_content, fetch_registry_snapshot_envelope,
-    inspect_active_registry_release, inspect_initial_registry_trust_root,
-    inspect_installed_registry_package_policy, inspect_registry_snapshot, is_sha256_digest,
-    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    McpToolGrant, MemoryEmbeddingConfig, MessageRole, ModelProvider, NormalizedMessage,
+    OwnershipContext, ProviderConfig, ProviderCredentialReference, ProviderRequest,
+    ProviderResponse, RegistryContentDescriptor, RegistryDependencyLock, RegistryError,
+    RegistryInstalledPackageDisposition, RegistryInstalledPackagePolicy, RegistryMetadataStore,
+    RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError, RegistryPackageKind,
+    RegistryPackageManifest, RegistryPackageState, RegistryReleaseState, RegistrySnapshotState,
+    RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_TURNS, StageExtensionManifestCommit, SubscriptionCliClient,
+    WebAccessConfig, WebSearchConfig, accept_registry_release, accept_registry_snapshot,
+    active_registry_snapshot, bootstrap_registry_trust_root, default_daemon_config_document,
+    diff_extension_permissions, diff_skill_permissions, fetch_registry_content,
+    fetch_registry_snapshot_envelope, inspect_active_registry_release,
+    inspect_initial_registry_trust_root, inspect_installed_registry_package_policy,
+    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
+    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, ContextManifestId, CorrelationId, EventId,
@@ -51,13 +52,13 @@ use mealy_infrastructure::{
     FileArtifactBlobStore, FileMcpOAuthTokenStore, FileProviderSecretStore,
     HttpsRegistryMirrorTransport, InspectedSkillPackage, LATEST_SCHEMA_VERSION,
     MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
-    McpOAuthTokenError, ProviderSecretStoreError, RegistryExtensionPackageError,
-    RegistryPackageArchiveError, SqliteStore, StoreError, SubscriptionCliProvider,
-    SubscriptionCliSettings, activate_backup, activate_migration_backup, browser_worker_main,
-    discover_mcp_http_server, discover_mcp_oauth_metadata, discover_mcp_stdio_server,
-    exchange_mcp_oauth_authorization_code, inspect_browser_bundle, inspect_existing_schema_version,
-    inspect_mcp_http_endpoint, inspect_registry_package_archive, inspect_skill_package,
-    inspect_subscription_cli_executable, inspected_registry_skill_package,
+    McpOAuthTokenError, OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError,
+    RegistryExtensionPackageError, RegistryPackageArchiveError, SqliteStore, StoreError,
+    SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
+    browser_worker_main, discover_mcp_http_server, discover_mcp_oauth_metadata,
+    discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code, inspect_browser_bundle,
+    inspect_existing_schema_version, inspect_mcp_http_endpoint, inspect_registry_package_archive,
+    inspect_skill_package, inspect_subscription_cli_executable, inspected_registry_skill_package,
     is_trusted_system_executable, mcp_stdio_launcher_main, media_worker_main,
     prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
     publish_registry_extension_package, publish_skill_package, verify_browser_runtime_installation,
@@ -131,13 +132,14 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 10] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 11] = [
     "browser",
     "commandTools",
     "imageGeneration",
     "imageInputEnabled",
     "mcpHttpServers",
     "mcpServers",
+    "memoryEmbedding",
     "providerFallbacks",
     "skills",
     "webAccess",
@@ -218,6 +220,17 @@ struct LifecycleArguments {
     /// Installed-program lifecycle operation to execute.
     #[command(subcommand)]
     command: LifecycleCommand,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed stopped-daemon configuration")]
+struct ConfigArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Configuration namespace.
+    #[command(subcommand)]
+    command: ConfigNamespace,
 }
 
 #[derive(Debug, Parser)]
@@ -310,6 +323,16 @@ enum EvaluationNamespace {
         /// Evaluation operation.
         #[command(subcommand)]
         command: Box<EvaluationCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigNamespace {
+    /// Inspect or change governed daemon configuration while the daemon is stopped.
+    Config {
+        /// Configuration operation.
+        #[command(subcommand)]
+        command: Box<ConfigCommand>,
     },
 }
 
@@ -530,7 +553,7 @@ enum Command {
     Memory {
         /// Memory operation.
         #[command(subcommand)]
-        command: MemoryCommand,
+        command: Box<MemoryCommand>,
     },
     /// Create or inspect cited derived session compactions.
     Compaction {
@@ -651,12 +674,6 @@ enum Command {
         /// Service operation.
         #[command(subcommand)]
         command: ServiceCommand,
-    },
-    /// Inspect or change governed daemon configuration while the daemon is stopped.
-    Config {
-        /// Configuration operation.
-        #[command(subcommand)]
-        command: Box<ConfigCommand>,
     },
 }
 
@@ -1266,6 +1283,48 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
+    /// Configure optional OpenAI-compatible semantic-memory embeddings while stopped.
+    MemoryEmbedding {
+        /// HTTPS API version base; literal-loopback HTTP is also allowed.
+        #[arg(long, default_value = "http://127.0.0.1:8080/v1")]
+        base_url: String,
+        /// Exact embedding model name.
+        #[arg(long)]
+        model: String,
+        /// Exact output dimensions advertised by this model.
+        #[arg(long)]
+        dimensions: u32,
+        /// Owner-declared data residency for embedding memory and search text.
+        #[arg(long, default_value = "owner-host")]
+        residency: String,
+        /// Optional broker identity; required together with `credential-env` for remote endpoints.
+        #[arg(long, requires = "credential_env")]
+        secret_id: Option<String>,
+        /// Optional environment variable imported once into the private broker.
+        #[arg(long, requires = "secret_id")]
+        credential_env: Option<String>,
+        /// Model-specific prefix applied to canonical memory documents.
+        #[arg(long, default_value = "")]
+        document_prefix: String,
+        /// Model-specific prefix applied to retrieval queries.
+        #[arg(long, default_value = "")]
+        query_prefix: String,
+        /// Per-request endpoint timeout in milliseconds.
+        #[arg(long, default_value_t = 30_000)]
+        request_timeout_ms: u64,
+        /// Activate without a bounded one-text embeddings compatibility probe.
+        #[arg(long)]
+        skip_connectivity_test: bool,
+        /// Confirm that memory and queries may be sent to this exact endpoint.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Disable semantic retrieval while retaining canonical memory and broker credentials.
+    MemoryEmbeddingDisable {
+        /// Confirm removal of the embedding/privacy policy.
+        #[arg(long)]
+        approve: bool,
+    },
     /// Grant one canonical host directory to read-only workspace tools while stopped.
     WorkspaceGrant {
         /// Stable logical identity shown to the model instead of the host path.
@@ -1755,7 +1814,7 @@ enum MemoryCommand {
         #[arg(long)]
         include_deleted: bool,
     },
-    /// Lexically search active memories after namespace/sensitivity filtering.
+    /// Search active memories after namespace/sensitivity filtering.
     Search {
         /// Exact logical workspace namespace.
         #[arg(long)]
@@ -1768,6 +1827,9 @@ enum MemoryCommand {
         /// Maximum returned results.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Request hybrid lexical plus optional semantic retrieval with safe lexical fallback.
+        #[arg(long)]
+        hybrid: bool,
     },
     /// Correct active content by creating and activating a new immutable revision.
     Correct {
@@ -1841,8 +1903,12 @@ enum MemoryCommand {
         #[arg(long)]
         expected_revision: u64,
     },
-    /// Rebuild the authenticated owner's FTS5 derived index rows.
-    RebuildIndex,
+    /// Rebuild the authenticated owner's derived index rows.
+    RebuildIndex {
+        /// Also rebuild optional semantic vectors through the configured embedding policy.
+        #[arg(long)]
+        semantic: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2939,8 +3005,10 @@ fn combined_cli_command() -> clap::Command {
             <BrowserNamespace as clap::Subcommand>::augment_subcommands(
                 <MediaNamespace as clap::Subcommand>::augment_subcommands(
                     <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-                        <LifecycleCommand as clap::Subcommand>::augment_subcommands(
-                            Arguments::command(),
+                        <ConfigNamespace as clap::Subcommand>::augment_subcommands(
+                            <LifecycleCommand as clap::Subcommand>::augment_subcommands(
+                                Arguments::command(),
+                            ),
                         ),
                     ),
                 ),
@@ -3015,6 +3083,25 @@ fn lifecycle_invocation(arguments: &[OsString]) -> bool {
                     | "update-transaction"
             )
         });
+    }
+    false
+}
+
+fn config_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "config";
     }
     false
 }
@@ -3114,10 +3201,36 @@ fn evaluation_invocation(arguments: &[OsString]) -> bool {
     false
 }
 
+fn combined_top_level_metadata_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return matches!(
+            argument.to_str(),
+            Some("-h" | "--help" | "-V" | "--version")
+        );
+    }
+    false
+}
+
 fn parse_operational_arguments(arguments: Vec<OsString>) -> Arguments {
-    let mut matches = combined_cli_command().get_matches_from(arguments);
-    <Arguments as clap::FromArgMatches>::from_arg_matches_mut(&mut matches)
-        .unwrap_or_else(|error| error.exit())
+    if combined_top_level_metadata_invocation(&arguments) {
+        match combined_cli_command().try_get_matches_from(arguments) {
+            Err(error) => error.exit(),
+            Ok(_) => unreachable!("top-level help or version must stop before command dispatch"),
+        }
+    }
+    Arguments::parse_from(arguments)
 }
 
 fn resolve_default_operational_subcommand(
@@ -4120,6 +4233,14 @@ async fn run() -> Result<(), CliError> {
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
         return run_lifecycle(arguments).await;
     }
+    if config_invocation(&raw_arguments) {
+        let mut arguments = ConfigArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let ConfigNamespace::Config { command } = arguments.command;
+        return tokio::task::block_in_place(|| {
+            run_config_operation(&arguments.home, command.as_ref())
+        });
+    }
     let mut arguments = parse_operational_arguments(raw_arguments);
     arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
     if let Command::Onboard(options) = &arguments.command {
@@ -4131,9 +4252,6 @@ async fn run() -> Result<(), CliError> {
     if let Command::Service { command } = &arguments.command {
         let _mutation_lock = lock_service_mutations(&arguments.home)?;
         return run_service_installation(&arguments.home, command);
-    }
-    if let Command::Config { command } = &arguments.command {
-        return tokio::task::block_in_place(|| run_config_operation(&arguments.home, command));
     }
     if let Command::Skill { command } = &arguments.command {
         return run_skill_operation(&arguments.home, command);
@@ -4254,7 +4372,7 @@ async fn run() -> Result<(), CliError> {
         }
         Command::Approval { command } => run_approval(&client, &connection, command).await?,
         Command::Effect { command } => run_effect(&client, &connection, command).await?,
-        Command::Memory { command } => run_memory(&client, &connection, command).await?,
+        Command::Memory { command } => run_memory(&client, &connection, *command).await?,
         Command::Compaction { command } => run_compaction(&client, &connection, command).await?,
         Command::Extension { command } => run_extension(&client, &connection, command).await?,
         Command::Skill { .. } => {
@@ -4435,7 +4553,6 @@ async fn run() -> Result<(), CliError> {
             print_json(decode::<ExportResponse>(response).await?)?;
         }
         Command::Service { .. } => unreachable!("service installation returned before API setup"),
-        Command::Config { .. } => unreachable!("configuration operation returned before API setup"),
     }
     Ok(())
 }
@@ -5159,6 +5276,7 @@ async fn run_chat_memory_command(
                         ("query", query.as_str()),
                         ("maximumSensitivity", "private"),
                         ("limit", "20"),
+                        ("retrievalMode", "hybrid"),
                     ]),
                 connection,
             )
@@ -6488,6 +6606,7 @@ async fn run_memory(
             query,
             maximum_sensitivity,
             limit,
+            hybrid,
         } => {
             let response = authorized(
                 client
@@ -6500,6 +6619,10 @@ async fn run_memory(
                             maximum_sensitivity.as_query().to_owned(),
                         ),
                         ("limit", limit.to_string()),
+                        (
+                            "retrievalMode",
+                            if hybrid { "hybrid" } else { "lexical" }.to_owned(),
+                        ),
                     ]),
                 connection,
             )
@@ -6618,13 +6741,14 @@ async fn run_memory(
             .await?;
             print_json(response)?;
         }
-        MemoryCommand::RebuildIndex => {
+        MemoryCommand::RebuildIndex { semantic } => {
             let response = authorized(
                 client.post(format!("{}/v1/memory-index/rebuild", connection.base_url)),
                 connection,
             )
             .json(&RebuildMemoryIndexRequest {
                 api_version: API_VERSION.to_owned(),
+                semantic,
             })
             .send()
             .await?;
@@ -12249,6 +12373,22 @@ struct ProviderImageGenerationConfigurationResponse {
     restart_required: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryEmbeddingConfigurationResponse {
+    enabled: bool,
+    model: Option<String>,
+    dimensions: Option<u32>,
+    residency: Option<String>,
+    local: Option<bool>,
+    secret_id: Option<String>,
+    policy_digest: Option<String>,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    connectivity_tested: bool,
+    restart_required: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ProviderCredentialImport<'a> {
     secret_id: &'a str,
@@ -12917,6 +13057,35 @@ fn run_config_operation(home: &Path, command: &ConfigCommand) -> Result<(), CliE
         } => remove_provider_fallback(home, provider_id, *approve),
         ConfigCommand::ProviderSecretRevoke { secret_id, approve } => {
             revoke_provider_secret(home, secret_id, *approve)
+        }
+        ConfigCommand::MemoryEmbedding {
+            base_url,
+            model,
+            dimensions,
+            residency,
+            secret_id,
+            credential_env,
+            document_prefix,
+            query_prefix,
+            request_timeout_ms,
+            skip_connectivity_test,
+            approve,
+        } => configure_memory_embedding(
+            home,
+            base_url,
+            model,
+            *dimensions,
+            residency,
+            secret_id.as_deref(),
+            credential_env.as_deref(),
+            document_prefix,
+            query_prefix,
+            *request_timeout_ms,
+            *skip_connectivity_test,
+            *approve,
+        ),
+        ConfigCommand::MemoryEmbeddingDisable { approve } => {
+            disable_memory_embedding(home, *approve)
         }
         ConfigCommand::WorkspaceGrant {
             workspace_id,
@@ -16013,6 +16182,179 @@ fn list_provider_chain(home: &Path) -> Result<(), CliError> {
         fallbacks,
         credential_values_resolved: false,
         configuration_path: current.display().to_string(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn configure_memory_embedding(
+    home: &Path,
+    base_url: &str,
+    model: &str,
+    dimensions: u32,
+    residency: &str,
+    secret_id: Option<&str>,
+    credential_environment: Option<&str>,
+    document_prefix: &str,
+    query_prefix: &str,
+    request_timeout_ms: u64,
+    skip_connectivity_test: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve || secret_id.is_some() != credential_environment.is_some() {
+        return Err(if approve {
+            CliError::InvalidProviderConfiguration
+        } else {
+            CliError::ApprovalRequired
+        });
+    }
+    let credential_reference = secret_id.map(|secret_id| {
+        json!({
+            "source": "broker",
+            "secretId": secret_id,
+        })
+    });
+    let configuration = serde_json::from_value::<MemoryEmbeddingConfig>(json!({
+        "baseUrl": base_url,
+        "model": model,
+        "credential": credential_reference,
+        "residency": residency,
+        "dimensions": dimensions,
+        "documentPrefix": document_prefix,
+        "queryPrefix": query_prefix,
+        "requestTimeoutMs": request_timeout_ms,
+    }))?;
+    configuration
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let credential = credential_environment
+        .map(read_provider_credential_environment)
+        .transpose()?;
+    let adapter = OpenAiCompatibleMemoryEmbedder::new(
+        &configuration,
+        credential
+            .as_deref()
+            .map(|value| Zeroizing::new(value.to_owned())),
+    )
+    .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    if !skip_connectivity_test {
+        adapter
+            .embed_query("Mealy semantic memory compatibility probe")
+            .map_err(|_| {
+                CliError::ProviderConnectivity(
+                    "memory embedding compatibility probe failed".to_owned(),
+                )
+            })?;
+    }
+
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if let (Some(secret_id), Some(credential)) = (secret_id, credential.as_ref()) {
+        let store = FileProviderSecretStore::new(home.join("provider-secrets"))?;
+        verify_provider_secret_preflight(&store, secret_id, credential.as_str())?;
+        store.put(secret_id, credential.as_str())?;
+    }
+    object.insert(
+        "memoryEmbedding".to_owned(),
+        serde_json::to_value(&configuration)?,
+    );
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-memory-embedding-{}-{}.json",
+        unix_timestamp_millis()?,
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    print_json(MemoryEmbeddingConfigurationResponse {
+        enabled: true,
+        model: Some(configuration.model().to_owned()),
+        dimensions: Some(configuration.dimensions()),
+        residency: Some(configuration.residency().to_owned()),
+        local: Some(
+            configuration
+                .is_local()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        secret_id: secret_id.map(str::to_owned),
+        policy_digest: Some(
+            configuration
+                .digest()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: !skip_connectivity_test,
+        restart_required: true,
+    })
+}
+
+fn disable_memory_embedding(home: &Path, approve: bool) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let prior = object
+        .remove("memoryEmbedding")
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let prior = serde_json::from_value::<MemoryEmbeddingConfig>(prior)
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    prior
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-memory-embedding-disable-{}-{}.json",
+        unix_timestamp_millis()?,
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    print_json(MemoryEmbeddingConfigurationResponse {
+        enabled: false,
+        model: Some(prior.model().to_owned()),
+        dimensions: Some(prior.dimensions()),
+        residency: Some(prior.residency().to_owned()),
+        local: Some(
+            prior
+                .is_local()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        secret_id: prior
+            .credential()
+            .and_then(provider_credential_broker_secret_id)
+            .map(str::to_owned),
+        policy_digest: Some(
+            prior
+                .digest()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: false,
+        restart_required: true,
     })
 }
 
@@ -21237,10 +21579,11 @@ enum CliError {
 mod tests {
     use super::{
         ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
-        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigCommand, DelegationCommand,
-        DiscordPairMessage, DiscordPairUser, EffectCommand, EvaluationArguments, EvaluationCommand,
-        EvaluationNamespace, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
-        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
+        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigArguments, ConfigCommand,
+        ConfigNamespace, DelegationCommand, DiscordPairMessage, DiscordPairUser, EffectCommand,
+        EvaluationArguments, EvaluationCommand, EvaluationNamespace, ExtensionCommand,
+        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
+        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
         MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction,
         MediaArguments, MediaNamespace, MediaOptions, MemoryCommand,
         OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
@@ -21248,14 +21591,14 @@ mod tests {
         ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
         SessionCommand, SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument,
         SkillCommand, TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
-        configure_provider_image_generation, configure_workspace_grant, decode,
-        evaluation_invocation, generate_discord_pair_challenge, generate_telegram_pair_challenge,
-        initialize_setup_home, inspect_mcp_executable, lifecycle_invocation, load_connection,
-        media_invocation, normalize_openrouter_display_name, observe_discord_pair_messages,
-        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
-        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
-        prepare_local_image_attachment, prepare_local_text_attachment,
+        UpdateRecoveryRoute, browser_invocation, chat_usage_line, config_invocation,
+        configure_memory_embedding, configure_provider_image_generation, configure_workspace_grant,
+        decode, disable_memory_embedding, evaluation_invocation, generate_discord_pair_challenge,
+        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
+        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
+        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
+        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
+        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
         provider_switch_recovery_route, read_evaluation_suite, registry_invocation,
         registry_skill_install_plan, require_registry_snapshot_review_digest,
         resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
@@ -21275,7 +21618,9 @@ mod tests {
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
-    use mealy_application::{AgentLoopLimits, ProviderConfig, default_daemon_config_document};
+    use mealy_application::{
+        AgentLoopLimits, MemoryEmbeddingConfig, ProviderConfig, default_daemon_config_document,
+    };
     use mealy_domain::{
         SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset, SkillManifest, SkillToolRequirement,
     };
@@ -21933,6 +22278,30 @@ mod tests {
     }
 
     #[test]
+    fn config_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("config"),
+            OsString::from("provider-list"),
+        ];
+        assert!(config_invocation(&arguments));
+        assert!(!config_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed = ConfigArguments::try_parse_from(arguments)
+            .expect("separate configuration command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            ConfigNamespace::Config { command }
+                if matches!(command.as_ref(), ConfigCommand::ProviderList)
+        ));
+    }
+
+    #[test]
     fn media_parser_is_selected_without_growing_the_operational_command_graph() {
         let arguments = vec![
             OsString::from("mealyctl"),
@@ -22460,6 +22829,123 @@ mod tests {
         )
         .expect("disabled JSON");
         assert!(disabled.get("imageGeneration").is_none());
+        assert_eq!(
+            fs::read_dir(home.path().join("config-history"))
+                .expect("history")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn semantic_memory_configuration_is_explicit_archived_and_reversible() {
+        let parsed = ConfigArguments::try_parse_from([
+            "mealyctl",
+            "config",
+            "memory-embedding",
+            "--base-url",
+            "http://127.0.0.1:8080/v1",
+            "--model",
+            "nomic-embed-text",
+            "--dimensions",
+            "768",
+            "--residency",
+            "owner-host",
+            "--document-prefix",
+            "search_document: ",
+            "--query-prefix",
+            "search_query: ",
+            "--skip-connectivity-test",
+            "--approve",
+        ])
+        .expect("semantic memory command");
+        assert!(matches!(
+            parsed.command,
+            ConfigNamespace::Config { command }
+                if matches!(
+                    command.as_ref(),
+                    ConfigCommand::MemoryEmbedding {
+                        base_url,
+                        model,
+                        dimensions: 768,
+                        residency,
+                        secret_id: None,
+                        credential_env: None,
+                        document_prefix,
+                        query_prefix,
+                        request_timeout_ms: 30_000,
+                        skip_connectivity_test: true,
+                        approve: true,
+                    } if base_url == "http://127.0.0.1:8080/v1"
+                        && model == "nomic-embed-text"
+                        && residency == "owner-host"
+                        && document_prefix == "search_document: "
+                        && query_prefix == "search_query: "
+                )
+        ));
+
+        let home = tempfile::tempdir().expect("daemon home");
+        fs::create_dir(home.path().join("config-history")).expect("configuration history");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        assert!(matches!(
+            configure_memory_embedding(
+                home.path(),
+                "http://127.0.0.1:8080/v1",
+                "nomic-embed-text",
+                768,
+                "owner-host",
+                None,
+                None,
+                "search_document: ",
+                "search_query: ",
+                30_000,
+                true,
+                false,
+            ),
+            Err(CliError::ApprovalRequired)
+        ));
+        configure_memory_embedding(
+            home.path(),
+            "http://127.0.0.1:8080/v1",
+            "nomic-embed-text",
+            768,
+            "owner-host",
+            None,
+            None,
+            "search_document: ",
+            "search_query: ",
+            30_000,
+            true,
+            true,
+        )
+        .expect("enable semantic memory");
+        let configured: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("configured bytes"),
+        )
+        .expect("configured JSON");
+        let policy = serde_json::from_value::<MemoryEmbeddingConfig>(
+            configured
+                .get("memoryEmbedding")
+                .cloned()
+                .expect("memory embedding policy"),
+        )
+        .expect("typed memory embedding policy");
+        assert_eq!(policy.model(), "nomic-embed-text");
+        assert_eq!(policy.dimensions(), 768);
+        assert!(policy.is_local().expect("local policy"));
+
+        disable_memory_embedding(home.path(), true).expect("disable semantic memory");
+        let disabled: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("disabled bytes"),
+        )
+        .expect("disabled JSON");
+        assert!(disabled.get("memoryEmbedding").is_none());
         assert_eq!(
             fs::read_dir(home.path().join("config-history"))
                 .expect("history")
@@ -23034,7 +23520,7 @@ mod tests {
         assert!(!openrouter_price_is_zero("0.0001"));
         assert!(!openrouter_price_is_zero("0.0000000000000"));
 
-        let discovery = Arguments::try_parse_from([
+        let discovery = ConfigArguments::try_parse_from([
             "mealyctl",
             "config",
             "provider-models-openrouter",
@@ -23044,7 +23530,7 @@ mod tests {
         .expect("OpenRouter discovery preset");
         assert!(matches!(
             discovery.command,
-            Command::Config {
+            ConfigNamespace::Config {
                 command
             } if matches!(
                 command.as_ref(),
@@ -23058,7 +23544,7 @@ mod tests {
                 && contains == "claude"
             )
         ));
-        let activation = Arguments::try_parse_from([
+        let activation = ConfigArguments::try_parse_from([
             "mealyctl",
             "config",
             "provider-openrouter",
@@ -23075,7 +23561,7 @@ mod tests {
         .expect("OpenRouter activation preset");
         assert!(matches!(
             activation.command,
-            Command::Config {
+            ConfigNamespace::Config {
                 command
             } if matches!(
                 command.as_ref(),
@@ -23608,9 +24094,8 @@ mod tests {
         .expect("parse governed memory proposal");
         assert!(matches!(
             memory.command,
-            Command::Memory {
-                command: MemoryCommand::Propose { .. }
-            }
+            Command::Memory { command }
+                if matches!(command.as_ref(), MemoryCommand::Propose { .. })
         ));
 
         let remember = Arguments::try_parse_from([
@@ -23625,9 +24110,11 @@ mod tests {
         .expect("parse direct governed memory activation");
         assert!(matches!(
             remember.command,
-            Command::Memory {
-                command: MemoryCommand::Remember { approve: true, .. }
-            }
+            Command::Memory { command }
+                if matches!(
+                    command.as_ref(),
+                    MemoryCommand::Remember { approve: true, .. }
+                )
         ));
 
         let history = Arguments::try_parse_from([
@@ -23657,12 +24144,14 @@ mod tests {
         .expect("parse governed memory rejection");
         assert!(matches!(
             rejection.command,
-            Command::Memory {
-                command: MemoryCommand::Reject {
-                    expected_revision: 0,
-                    ..
-                }
-            }
+            Command::Memory { command }
+                if matches!(
+                    command.as_ref(),
+                    MemoryCommand::Reject {
+                        expected_revision: 0,
+                        ..
+                    }
+                )
         ));
 
         let compaction = Arguments::try_parse_from([
@@ -24343,7 +24832,7 @@ mod tests {
     #[test]
     fn configuration_rollback_requires_an_exact_digest_and_explicit_approval_shape() {
         let digest = "a".repeat(64);
-        let parsed = Arguments::try_parse_from([
+        let parsed = ConfigArguments::try_parse_from([
             "mealyctl",
             "--home",
             "/tmp/mealy",
@@ -24355,7 +24844,7 @@ mod tests {
         .expect("config rollback command");
         assert!(matches!(
             parsed.command,
-            Command::Config { command }
+            ConfigNamespace::Config { command }
                 if matches!(command.as_ref(), ConfigCommand::Rollback { approve: true, .. })
         ));
     }

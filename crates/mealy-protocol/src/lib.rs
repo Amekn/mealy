@@ -1634,12 +1634,15 @@ pub struct MemoryLifecycleRequest {
     pub expected_revision: u64,
 }
 
-/// Authenticated request to rebuild the caller's derived lexical index rows.
+/// Authenticated request to rebuild lexical and optionally semantic derived index rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RebuildMemoryIndexRequest {
     /// Requested semantic API version.
     pub api_version: String,
+    /// Also rebuild the optional semantic index through its explicit embedding privacy policy.
+    #[serde(default)]
+    pub semantic: bool,
 }
 
 /// One immutable source citation in a memory response.
@@ -1725,27 +1728,92 @@ pub struct MemoriesResponse {
     pub memories: Vec<MemoryResponse>,
 }
 
-/// One lexical retrieval hit.
+/// Requested and actual governed-memory retrieval behavior.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRetrievalMode {
+    /// Deterministic FTS5 or literal fallback only.
+    #[default]
+    Lexical,
+    /// Deterministic reciprocal-rank fusion of lexical and semantic candidates.
+    Hybrid,
+    /// Hybrid was requested but safely degraded to lexical retrieval.
+    LexicalFallback,
+}
+
+/// Safe semantic retrieval/index classification with no downstream error text.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySemanticStatus {
+    /// Complete current semantic index was used.
+    Healthy,
+    /// No embedding policy is configured.
+    Disabled,
+    /// No complete semantic index has been built for this owner.
+    NotBuilt,
+    /// Canonical lifecycle changes require a rebuild.
+    Stale,
+    /// The last explicit rebuild failed.
+    Degraded,
+    /// The embedding endpoint could not serve this request.
+    EmbeddingUnavailable,
+    /// Index configuration or dimensions differ from current policy.
+    Incompatible,
+}
+
+/// Owner-inspectable optional semantic-index provenance and health.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySemanticIndexResponse {
+    /// Digest of the complete non-secret embedding and privacy policy.
+    pub config_digest: String,
+    /// Safe current status.
+    pub status: MemorySemanticStatus,
+    /// Exact vector dimensions.
+    pub dimensions: u32,
+    /// Active revisions represented by derived vectors.
+    pub indexed_revision_count: u64,
+    /// Most recent successful atomic rebuild.
+    pub last_rebuilt_at_ms: Option<i64>,
+    /// Fixed safe failure classification, never downstream response text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+}
+
+/// One lexical, semantic, or fused retrieval hit.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchHitResponse {
     /// Complete cited memory.
     pub memory: MemoryResponse,
     /// FTS5 BM25 rank; lower is more relevant.
-    pub lexical_rank: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lexical_rank: Option<f64>,
+    /// Cosine similarity from the exact derived index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_similarity: Option<f64>,
+    /// Deterministic reciprocal-rank fusion score when hybrid retrieval was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fused_rank_score: Option<f64>,
 }
 
-/// Deterministically filtered lexical search response.
+/// Deterministically filtered governed-memory search response.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchResponse {
     /// Semantic API version.
     pub api_version: String,
+    /// Retrieval behavior actually used.
+    #[serde(default)]
+    pub retrieval_mode: MemoryRetrievalMode,
+    /// Semantic status when hybrid retrieval was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_status: Option<MemorySemanticStatus>,
     /// Ranked results.
     pub hits: Vec<MemorySearchHitResponse>,
 }
 
-/// Derived lexical-index rebuild receipt.
+/// Derived lexical and optional semantic-index rebuild receipt.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryIndexRebuildResponse {
@@ -1755,6 +1823,9 @@ pub struct MemoryIndexRebuildResponse {
     pub indexed_revision_count: u64,
     /// UTC rebuild completion time.
     pub rebuilt_at_ms: i64,
+    /// Optional semantic rebuild status and exact provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_index: Option<MemorySemanticIndexResponse>,
 }
 
 /// Owner request to commit one cited derived compaction artifact.

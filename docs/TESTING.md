@@ -840,6 +840,28 @@ workspace compilation and daemon integration cover policy checks at both registr
 enable and invocation; the existing application policy proof supplies authorized, withdrawn,
 removed, substituted, and evidence-incomplete dispositions.
 
+Schema 28 semantic-memory coverage treats vectors as disposable derived evidence. Configuration
+units accept no policy by default, permit credentialless literal-loopback HTTP, require a
+credential for remote HTTPS, and reject unsafe transport/dimension/prefix values. The adapter runs
+against a real loopback OpenAI-compatible socket and proves stable batch order, exact model and
+document/query prefixes, normalization, dimension drift rejection, safe credential
+classification, and no credential echo. Its blocking HTTP client and credential are constructed
+and destroyed on a dedicated bounded worker; the real daemon process test guards against
+async-runtime lifetime regression.
+
+SQLite tests create multiple active revisions, atomically replace one complete principal set,
+prove scope isolation and deterministic cosine ranking, then correct and delete canonical memory.
+The schema-28 lifecycle trigger removes affected vectors and marks health stale before another
+read; a complete rebuild restores health. The public `phase5_memory_context` process fixture
+configures a local embedding endpoint, creates canonical workspace/memory through authenticated
+APIs, proves semantic-only hybrid recall and fused rank evidence, corrects an active revision,
+observes lexical fallback with `stale`, hard-kills/restarts the daemon, observes the same safe
+state, rebuilds, and recovers the corrected semantic result. Captured endpoint requests prove
+prefix/model/float encoding and absence of an Authorization header for credentialless loopback.
+CLI tests prove approval, parser shape, archived policy activation, typed reload, and reversible
+disable. Package/migration/rollback, full workspace, and supported-distribution qualification
+remain mandatory before a v0.5 release claim.
+
 The v0.5 typed Rust client unit suite runs requests through real loopback sockets. It proves the
 exact bearer, accept, content-type, method, path, query, and typed JSON command boundary; compatible
 success and structured-error decoding; pre-dispatch request-version and path-identity rejection;

@@ -572,7 +572,7 @@ fn registry_cli_refuses_unprotected_existing_schema_migration() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("requires canonical schema 27")
+        error.contains("requires canonical schema 28")
             && error.contains("has schema 23")
             && error.contains("backup-protected migration"),
         "existing schema must be rejected before migration: {error}"

@@ -226,11 +226,16 @@ pub use mcp_oauth::{
     MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError, McpOAuthTokenGrant,
 };
 pub use memory::{
-    CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,
-    MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit, MemorySearchQuery,
-    MemorySource, MemoryStore, MemoryStoreError, MemoryView, PromoteMemoryCommit,
-    ProposeMemoryCommit, RejectMemoryCommit, SetMemoryPinCommit, memory_context_locator,
-    memory_event_cursor, validate_memory_proposal, validate_memory_search, validate_sources,
+    CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MAXIMUM_MEMORY_EMBEDDING_BATCH,
+    MAXIMUM_MEMORY_EMBEDDING_BATCH_BYTES, MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS,
+    MEMORY_EMBEDDING_POLICY_VERSION, MEMORY_POLICY_VERSION, MemoryEmbeddingCandidate,
+    MemoryEmbeddingConfig, MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit,
+    MemorySearchQuery, MemorySemanticIndexHealth, MemorySemanticIndexView, MemorySemanticSearchHit,
+    MemorySemanticSearchQuery, MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError,
+    MemoryView, PromoteMemoryCommit, ProposeMemoryCommit, RejectMemoryCommit,
+    ReplaceMemorySemanticIndexCommit, SetMemoryPinCommit, memory_context_locator,
+    memory_event_cursor, valid_memory_semantic_error_code, validate_memory_embedding_vector,
+    validate_memory_proposal, validate_memory_search, validate_sources,
 };
 
 pub use operations::{

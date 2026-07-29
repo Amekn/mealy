@@ -63,10 +63,11 @@ const MIGRATION_0024: &str = include_str!("../migrations/0024_registry_metadata.
 const MIGRATION_0025: &str = include_str!("../migrations/0025_registry_release_evidence.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_registry_package_evidence.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_extension_registry_provenance.sql");
+const MIGRATION_0028: &str = include_str!("../migrations/0028_memory_semantic_index.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 27;
+pub const LATEST_SCHEMA_VERSION: i64 = 28;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -411,6 +412,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0027)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (27, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 27;
+        }
+        if existing_version == 27 {
+            transaction.execute_batch(MIGRATION_0028)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (28, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -1120,6 +1129,7 @@ mod tests {
     }
 
     fn remove_extension_registry_provenance_schema(connection: &Connection) {
+        remove_semantic_memory_schema(connection);
         connection
             .execute_batch(
                 "DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
@@ -1129,6 +1139,18 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 27;",
             )
             .expect("remove v27 extension registry provenance schema");
+    }
+
+    fn remove_semantic_memory_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER memory_revision_semantic_invalidate;
+                 DROP INDEX memory_semantic_vector_scope_idx;
+                 DROP TABLE memory_semantic_vector;
+                 DROP TABLE memory_semantic_index_state;
+                 DELETE FROM schema_version WHERE version = 28;",
+            )
+            .expect("remove v28 semantic memory schema");
     }
 
     fn remove_media_schema(connection: &Connection) {
@@ -3124,6 +3146,39 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded extension provenance integrity");
+    }
+
+    #[test]
+    fn v27_upgrade_installs_rebuildable_semantic_memory_schema() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_semantic_memory_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v27 semantic memory schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "memory_semantic_index_state",
+            "memory_semantic_vector",
+            "memory_semantic_vector_scope_idx",
+            "memory_revision_semantic_invalidate",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query semantic memory schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded semantic memory integrity");
     }
 
     #[test]

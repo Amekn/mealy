@@ -28,35 +28,37 @@ use mealy_application::{
     ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
     InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit, InstallExtensionCommit,
     MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchQuery, MemorySource,
-    MemoryStore, MemoryStoreError, MemoryView, ModelProvider, OperationalSnapshot,
-    OperationalStore, OperationalStoreError, OwnershipContext, ProviderCapabilities,
-    ProviderFallbackPolicy, ProviderLocality, ProviderPricing, ProviderRouteCandidate,
-    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchHit, MemorySearchQuery,
+    MemorySemanticIndexHealth, MemorySemanticSearchHit, MemorySemanticSearchQuery,
+    MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
+    OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
+    ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
+    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
     ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
     RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
     RegisterWebhookChannelCommit, RegistryInstalledPackageDisposition, RegistryMetadataStore,
-    RegistryPackageKind, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
-    ResolveApprovalCommit, RevokeDiscordChannelCommit, RevokeExtensionCommit,
-    RevokeSlackChannelCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
-    ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
-    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionCheckpointView,
-    SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot, SessionTranscriptStoreError,
-    SessionTranscriptTurn, SessionUseCaseError, SessionWorkbenchStoreError,
-    SessionWorkbenchUseCaseError, SlackChannelBindingView, SlackChannelStatus, SlackChannelStore,
-    SlackChannelStoreError, StageExtensionManifestCommit, TaskControlAction, TaskControlCommit,
-    TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
-    TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
-    TransitionScheduleCommit, UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand,
-    ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM,
-    WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView, WebhookChannelStatus,
-    WebhookChannelStore, WebhookChannelStoreError, admit_input, admit_input_with_images,
-    canonical_arguments_digest, compaction_source_event_digest, create_session,
-    create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
-    inspect_extension_manifest, inspect_installed_registry_package_policy,
-    next_schedule_occurrence_ms, query_session_checkpoints, query_session_provider_selection,
-    query_session_status, query_session_transcript, query_sessions, query_timeline, route_provider,
-    search_sessions, sha256_digest, update_session_provider_selection, update_session_title,
+    RegistryPackageKind, ReplaceMemorySemanticIndexCommit, RequestTaskCancellationCommit,
+    ReserveWebhookDeliveryCommit, ResolveApprovalCommit, RevokeDiscordChannelCommit,
+    RevokeExtensionCommit, RevokeSlackChannelCommit, RevokeTelegramChannelCommit,
+    RevokeWebhookChannelCommit, ScheduleDefinition, ScheduleRunStatus, ScheduleRunView,
+    ScheduleStatus, ScheduleStore, ScheduleStoreError, ScheduleTransition, ScheduleView,
+    SessionCheckpointView, SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot,
+    SessionTranscriptStoreError, SessionTranscriptTurn, SessionUseCaseError,
+    SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, SlackChannelBindingView,
+    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, StageExtensionManifestCommit,
+    TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
+    TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
+    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
+    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
+    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
+    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    admit_input_with_images, canonical_arguments_digest, compaction_source_event_digest,
+    create_session, create_session_checkpoint, create_session_with_selection,
+    extension_grant_digest, fork_session, inspect_extension_manifest,
+    inspect_installed_registry_package_policy, next_schedule_occurrence_ms,
+    query_session_checkpoints, query_session_provider_selection, query_session_status,
+    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
+    sha256_digest, update_session_provider_selection, update_session_title,
     validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
     webhook_input_dedupe_key, webhook_signature_digest,
 };
@@ -73,10 +75,10 @@ use mealy_domain::{
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
     FileProviderSecretStore, InstalledExtensionPackage, LinuxBubblewrapExtensionHost,
-    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError,
-    ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
-    create_backup as create_complete_backup, create_complete_export, inspect_extension_package,
-    publish_export, verify_backup as verify_complete_backup,
+    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError, MemoryEmbeddingError,
+    OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError, SqliteStore, SystemClock,
+    SystemIdGenerator, create_backup as create_complete_backup, create_complete_export,
+    inspect_extension_package, publish_export, verify_backup as verify_complete_backup,
 };
 
 const BUBBLEWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -105,8 +107,9 @@ use mealy_protocol::{
     ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse, InputAdmissionResponse,
     InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand,
     MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
-    MemoryResponse, MemoryRetentionCommand, MemoryRevisionResponse, MemorySearchHitResponse,
-    MemorySearchResponse, MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse,
+    MemoryResponse, MemoryRetentionCommand, MemoryRetrievalMode, MemoryRevisionResponse,
+    MemorySearchHitResponse, MemorySearchResponse, MemorySemanticIndexResponse,
+    MemorySemanticStatus, MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse,
     MissedRunPolicyCommand, OperationalFailureResponse, PendingApprovalsResponse,
     PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse,
     ProviderCatalogRouteResponse, ProviderEndpointStatusResponse, ProviderSelectionCommand,
@@ -156,6 +159,7 @@ pub struct RuntimeBackend {
     store: Arc<RuntimeStore>,
     artifacts: Arc<FileArtifactBlobStore>,
     media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
+    memory_embedder: Option<Arc<OpenAiCompatibleMemoryEmbedder>>,
     channel_secrets: Arc<FileChannelSecretStore>,
     telegram: RuntimeTelegramConfig,
     discord: RuntimeDiscordConfig,
@@ -182,6 +186,8 @@ pub struct RuntimeOperationalConfig {
     pub artifact_gc_minimum_age_hours: u64,
     /// Isolated hostile-image boundary, present only for activated image-capable routes.
     pub media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
+    /// Optional privacy-scoped semantic-memory embedding adapter.
+    pub memory_embedder: Option<Arc<OpenAiCompatibleMemoryEmbedder>>,
     /// Maximum durable pending input records admitted to one session.
     pub maximum_pending_inputs_per_session: u64,
     /// Maximum simultaneous invocations for one extension identity.
@@ -277,6 +283,7 @@ impl RuntimeBackend {
             store,
             artifacts,
             media_normalizer: operations.media_normalizer,
+            memory_embedder: operations.memory_embedder,
             channel_secrets,
             telegram: channels.telegram,
             discord: channels.discord,
@@ -2015,28 +2022,98 @@ impl ApiBackend for RuntimeBackend {
         query: String,
         maximum_sensitivity: MemorySensitivityCommand,
         limit: usize,
+        retrieval_mode: MemoryRetrievalMode,
     ) -> Result<MemorySearchResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
-        let hits = self
+        let hybrid_requested = retrieval_mode == MemoryRetrievalMode::Hybrid;
+        let candidate_limit = if hybrid_requested {
+            limit.saturating_mul(4).min(100)
+        } else {
+            limit
+        };
+        let search = MemorySearchQuery {
+            ownership,
+            workspace_identity,
+            query,
+            maximum_sensitivity: memory_sensitivity(maximum_sensitivity),
+            limit: candidate_limit,
+        };
+        let lexical = self
             .read()?
-            .search_memories(MemorySearchQuery {
-                ownership,
-                workspace_identity,
-                query,
-                maximum_sensitivity: memory_sensitivity(maximum_sensitivity),
+            .search_memories(search.clone())
+            .map_err(map_memory_error)?;
+        if !hybrid_requested {
+            return Ok(lexical_memory_search_response(lexical));
+        }
+        let Some(embedder) = self.memory_embedder.as_ref() else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::Disabled,
                 limit,
-            })
-            .map_err(map_memory_error)?
-            .into_iter()
-            .map(|hit| MemorySearchHitResponse {
-                memory: memory_response(hit.memory),
-                lexical_rank: hit.lexical_rank,
-            })
-            .collect();
-        Ok(MemorySearchResponse {
-            api_version: API_VERSION.to_owned(),
-            hits,
-        })
+            ));
+        };
+        if search.query.trim().is_empty() {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::Incompatible,
+                limit,
+            ));
+        }
+        let semantic_index = self
+            .read()?
+            .memory_semantic_index(ownership)
+            .map_err(map_memory_error)?;
+        let Some(semantic_index) = semantic_index else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::NotBuilt,
+                limit,
+            ));
+        };
+        let unavailable_status = match semantic_index.health {
+            MemorySemanticIndexHealth::Stale => Some(MemorySemanticStatus::Stale),
+            MemorySemanticIndexHealth::Degraded => Some(MemorySemanticStatus::Degraded),
+            MemorySemanticIndexHealth::Healthy
+                if semantic_index.config_digest != embedder.config_digest()
+                    || semantic_index.dimensions != embedder.dimensions() =>
+            {
+                Some(MemorySemanticStatus::Incompatible)
+            }
+            MemorySemanticIndexHealth::Healthy => None,
+        };
+        if let Some(status) = unavailable_status {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical, status, limit,
+            ));
+        }
+        if semantic_index.indexed_revision_count == 0 {
+            return Ok(fused_memory_search_response(lexical, Vec::new(), limit));
+        }
+        let Ok(query_vector) = embedder.embed_query(&search.query) else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::EmbeddingUnavailable,
+                limit,
+            ));
+        };
+        let semantic = match self
+            .read()?
+            .search_memories_semantic(MemorySemanticSearchQuery {
+                search,
+                config_digest: embedder.config_digest().to_owned(),
+                query_vector: query_vector.values().to_vec(),
+            }) {
+            Ok(hits) => hits,
+            Err(MemoryStoreError::SemanticIndexUnavailable(code)) => {
+                return Ok(lexical_fallback_memory_search_response(
+                    lexical,
+                    semantic_status_from_unavailable_code(&code),
+                    limit,
+                ));
+            }
+            Err(error) => return Err(map_memory_error(error)),
+        };
+        Ok(fused_memory_search_response(lexical, semantic, limit))
     }
 
     fn correct_memory(
@@ -2168,17 +2245,72 @@ impl ApiBackend for RuntimeBackend {
     fn rebuild_memory_index(
         &self,
         identity: AuthenticatedIdentity,
-        _request: RebuildMemoryIndexRequest,
+        request: RebuildMemoryIndexRequest,
     ) -> Result<MemoryIndexRebuildResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let receipt = self
             .lock()?
             .rebuild_memory_index(ownership, self.clock.now())
             .map_err(map_memory_error)?;
+        let semantic_index = if request.semantic {
+            let embedder = self.memory_embedder.as_ref().ok_or_else(|| {
+                BackendError::InvalidRequest(
+                    "semantic memory is disabled until memoryEmbedding is configured".to_owned(),
+                )
+            })?;
+            let candidates = self
+                .read()?
+                .memory_embedding_candidates(ownership)
+                .map_err(map_memory_error)?;
+            let mut vectors = Vec::with_capacity(candidates.len());
+            let embedding_result = candidates.chunks(32).try_for_each(|batch| {
+                let content = batch
+                    .iter()
+                    .map(|candidate| candidate.content.clone())
+                    .collect::<Vec<_>>();
+                let batch_vectors = embedder.embed_documents(&content)?;
+                vectors.extend(batch.iter().zip(batch_vectors).map(|(candidate, vector)| {
+                    MemorySemanticVector {
+                        memory_id: candidate.memory_id,
+                        revision_id: candidate.revision_id,
+                        content_digest: candidate.content_digest.clone(),
+                        values: vector.values().to_vec(),
+                    }
+                }));
+                Ok::<(), MemoryEmbeddingError>(())
+            });
+            if let Err(error) = embedding_result {
+                let view = self
+                    .lock()?
+                    .degrade_memory_semantic_index(
+                        ownership,
+                        embedder.config_digest(),
+                        embedder.dimensions(),
+                        memory_embedding_error_code(error),
+                    )
+                    .map_err(map_memory_error)?;
+                Some(memory_semantic_index_response(view))
+            } else {
+                let view = self
+                    .lock()?
+                    .replace_memory_semantic_index(ReplaceMemorySemanticIndexCommit {
+                        ownership,
+                        config_digest: embedder.config_digest().to_owned(),
+                        dimensions: embedder.dimensions(),
+                        vectors,
+                        rebuilt_at: self.clock.now(),
+                    })
+                    .map_err(map_memory_error)?;
+                Some(memory_semantic_index_response(view))
+            }
+        } else {
+            None
+        };
         Ok(MemoryIndexRebuildResponse {
             api_version: API_VERSION.to_owned(),
             indexed_revision_count: receipt.indexed_revision_count,
             rebuilt_at_ms: receipt.rebuilt_at_ms,
+            semantic_index,
         })
     }
 
@@ -5212,6 +5344,150 @@ fn memory_response(view: MemoryView) -> MemoryResponse {
     }
 }
 
+fn lexical_memory_search_response(hits: Vec<MemorySearchHit>) -> MemorySearchResponse {
+    MemorySearchResponse {
+        api_version: API_VERSION.to_owned(),
+        retrieval_mode: MemoryRetrievalMode::Lexical,
+        semantic_status: None,
+        hits: hits
+            .into_iter()
+            .map(|hit| MemorySearchHitResponse {
+                memory: memory_response(hit.memory),
+                lexical_rank: Some(hit.lexical_rank),
+                semantic_similarity: None,
+                fused_rank_score: None,
+            })
+            .collect(),
+    }
+}
+
+fn lexical_fallback_memory_search_response(
+    mut hits: Vec<MemorySearchHit>,
+    status: MemorySemanticStatus,
+    limit: usize,
+) -> MemorySearchResponse {
+    hits.truncate(limit);
+    let mut response = lexical_memory_search_response(hits);
+    response.retrieval_mode = MemoryRetrievalMode::LexicalFallback;
+    response.semantic_status = Some(status);
+    response
+}
+
+struct FusedMemoryHit {
+    memory: MemoryView,
+    lexical_rank: Option<f64>,
+    semantic_similarity: Option<f64>,
+    fused_rank_score: f64,
+}
+
+fn fused_memory_search_response(
+    lexical: Vec<MemorySearchHit>,
+    semantic: Vec<MemorySemanticSearchHit>,
+    limit: usize,
+) -> MemorySearchResponse {
+    let mut fused = BTreeMap::<String, FusedMemoryHit>::new();
+    for (position, hit) in lexical.into_iter().enumerate() {
+        let memory_id = hit.memory.memory_id.to_string();
+        fused.insert(
+            memory_id,
+            FusedMemoryHit {
+                memory: hit.memory,
+                lexical_rank: Some(hit.lexical_rank),
+                semantic_similarity: None,
+                fused_rank_score: reciprocal_rank_score(position),
+            },
+        );
+    }
+    for (position, hit) in semantic.into_iter().enumerate() {
+        let memory_id = hit.memory.memory_id.to_string();
+        let score = reciprocal_rank_score(position);
+        if let Some(existing) = fused.get_mut(&memory_id) {
+            existing.semantic_similarity = Some(hit.semantic_similarity);
+            existing.fused_rank_score += score;
+        } else {
+            fused.insert(
+                memory_id,
+                FusedMemoryHit {
+                    memory: hit.memory,
+                    lexical_rank: None,
+                    semantic_similarity: Some(hit.semantic_similarity),
+                    fused_rank_score: score,
+                },
+            );
+        }
+    }
+    let mut hits = fused.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .fused_rank_score
+            .total_cmp(&left.fused_rank_score)
+            .then_with(|| {
+                left.memory
+                    .memory_id
+                    .to_string()
+                    .cmp(&right.memory.memory_id.to_string())
+            })
+    });
+    hits.truncate(limit);
+    MemorySearchResponse {
+        api_version: API_VERSION.to_owned(),
+        retrieval_mode: MemoryRetrievalMode::Hybrid,
+        semantic_status: Some(MemorySemanticStatus::Healthy),
+        hits: hits
+            .into_iter()
+            .map(|hit| MemorySearchHitResponse {
+                memory: memory_response(hit.memory),
+                lexical_rank: hit.lexical_rank,
+                semantic_similarity: hit.semantic_similarity,
+                fused_rank_score: Some(hit.fused_rank_score),
+            })
+            .collect(),
+    }
+}
+
+fn reciprocal_rank_score(position: usize) -> f64 {
+    const RECIPROCAL_RANK_OFFSET: f64 = 60.0;
+    u32::try_from(position).map_or(0.0, |position| {
+        1.0 / (RECIPROCAL_RANK_OFFSET + f64::from(position) + 1.0)
+    })
+}
+
+const fn semantic_status_from_unavailable_code(code: &str) -> MemorySemanticStatus {
+    match code.as_bytes() {
+        b"not_configured" => MemorySemanticStatus::NotBuilt,
+        b"stale" => MemorySemanticStatus::Stale,
+        b"degraded" => MemorySemanticStatus::Degraded,
+        _ => MemorySemanticStatus::Incompatible,
+    }
+}
+
+const fn memory_embedding_error_code(error: MemoryEmbeddingError) -> &'static str {
+    match error {
+        MemoryEmbeddingError::InvalidConfiguration => "invalid_configuration",
+        MemoryEmbeddingError::Unavailable => "endpoint_unavailable",
+        MemoryEmbeddingError::Unauthorized => "credential_rejected",
+        MemoryEmbeddingError::RateLimited => "rate_limited",
+        MemoryEmbeddingError::InvalidResponse => "invalid_response",
+    }
+}
+
+fn memory_semantic_index_response(
+    view: mealy_application::MemorySemanticIndexView,
+) -> MemorySemanticIndexResponse {
+    MemorySemanticIndexResponse {
+        config_digest: view.config_digest,
+        status: match view.health {
+            MemorySemanticIndexHealth::Healthy => MemorySemanticStatus::Healthy,
+            MemorySemanticIndexHealth::Stale => MemorySemanticStatus::Stale,
+            MemorySemanticIndexHealth::Degraded => MemorySemanticStatus::Degraded,
+        },
+        dimensions: view.dimensions,
+        indexed_revision_count: view.indexed_revision_count,
+        last_rebuilt_at_ms: view.last_rebuilt_at_ms,
+        last_error_code: view.last_error_code,
+    }
+}
+
 fn compaction_response(view: CompactionView) -> Result<CompactionResponse, BackendError> {
     Ok(CompactionResponse {
         api_version: API_VERSION.to_owned(),
@@ -5841,9 +6117,9 @@ fn map_memory_error(error: MemoryStoreError) -> BackendError {
             BackendError::InvalidRequest("memory promotion requires owner authorization".to_owned())
         }
         MemoryStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
-        MemoryStoreError::IndexDegraded(_) | MemoryStoreError::Unavailable(_) => {
-            BackendError::Unavailable
-        }
+        MemoryStoreError::IndexDegraded(_)
+        | MemoryStoreError::SemanticIndexUnavailable(_)
+        | MemoryStoreError::Unavailable(_) => BackendError::Unavailable,
         MemoryStoreError::InvariantViolation(_) => BackendError::Internal,
     }
 }
@@ -6266,8 +6542,8 @@ mod tests {
     use mealy_protocol::{
         ContextItemDisposition, CorrectMemoryRequest, MemoryCategoryCommand,
         MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryRetentionCommand,
-        MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse, PromoteMemoryRequest,
-        ProposeMemoryRequest,
+        MemoryRetrievalMode, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+        PromoteMemoryRequest, ProposeMemoryRequest,
     };
     use rusqlite::params;
     use serde_json::json;
@@ -6650,6 +6926,7 @@ mod tests {
                 "release Wednesday".to_owned(),
                 MemorySensitivityCommand::Private,
                 10,
+                MemoryRetrievalMode::Lexical,
             )
             .expect("search memory through backend");
         assert_eq!(search.hits.len(), 1);
@@ -6879,6 +7156,7 @@ mod tests {
                         home: backend_home,
                         artifact_gc_minimum_age_hours: 24,
                         media_normalizer: None,
+                        memory_embedder: None,
                         maximum_pending_inputs_per_session: 1_024,
                         maximum_extension_invocations: 1,
                         enabled_read_tools: vec!["fixture.read".to_owned()],

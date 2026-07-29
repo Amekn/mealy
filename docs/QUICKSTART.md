@@ -1013,6 +1013,44 @@ explicitly instructed to route credentials, identity numbers, health, financial,
 private content to the advanced categorized review workflow. The model never autonomously
 activates memories; every activation remains an explicit authenticated owner action.
 
+### Opt in to semantic retrieval
+
+The v0.5 semantic-memory foundation can improve recall across different wording, but it is
+deliberately separate from the chat provider and disabled by default. With the daemon stopped, an
+owner approves an exact local or HTTPS OpenAI-compatible embedding endpoint, model, dimensions,
+prefixes, residency, timeout, and optional broker credential. Then restart and build the complete
+derived index:
+
+```sh
+systemctl --user stop mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config memory-embedding \
+  --base-url http://127.0.0.1:8080/v1 \
+  --model nomic-embed-text \
+  --dimensions 768 \
+  --residency owner-host \
+  --document-prefix 'search_document: ' \
+  --query-prefix 'search_query: ' \
+  --approve
+systemctl --user start mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" memory rebuild-index --semantic
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" memory search \
+  --workspace mealy://assistant/no-workspace --hybrid 'preferred answer style'
+```
+
+The configured server must actually implement `POST /v1/embeddings` with the exact advertised
+dimensions; a chat-only model endpoint is not enough. An explicit rebuild sends every active
+memory revision for this owner to that endpoint, and hybrid search sends the query. Use a remote
+service only when that complete disclosure and its stated residency are acceptable. Literal
+loopback may use HTTP without a credential; every other endpoint requires HTTPS and a brokered
+credential.
+
+Correction, expiry, rejection, deletion, or active-revision drift removes affected vectors and
+makes the complete index stale transactionally. Hybrid requests then report
+`lexical_fallback`/`stale` and continue using canonical FTS5 until another rebuild succeeds.
+Endpoint or dimension failure likewise cannot make a partial vector set authoritative. Full setup,
+status, disabling, and recovery guidance is in
+[the semantic-memory guide](SEMANTIC_MEMORY.md).
+
 Inside `mealyctl chat`, use `/status` to refresh the live provider/model, health, locality,
 context/output limits, configured prices, and primary/fallback request pressure. The same concise
 status appears at chat startup. Every terminal turn also prints durable recorded input/output

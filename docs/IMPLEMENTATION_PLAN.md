@@ -433,6 +433,36 @@ contract adversarial units, strict Clippy, and docs/package validation cover the
 slice. Outer-harness crash orchestration, report signing/attestation, distributed comparison
 storage, and optional model judges remain later v0.5 work.
 
+## Productionization slice: privacy-scoped semantic memory
+
+Status: first v0.5 hybrid retrieval boundary implemented. Schema 28 adds a per-principal derived
+semantic-index state and exact active-revision vector rows while keeping canonical governed memory
+authoritative. `memoryEmbedding` is absent by default and pins an OpenAI-compatible endpoint,
+model, residency, dimensions, document/query prefixes, timeout, and optional broker credential.
+Remote endpoints require HTTPS plus that reference; clear-text is restricted to literal loopback.
+The no-proxy/no-redirect adapter bounds text, batch, response, timeout, dimensions, ordering, and
+numeric validity and emits only fixed safe error classes. A bounded dedicated thread owns and
+destroys its blocking HTTP client/credential, leaving asynchronous daemon control with a safe
+channel.
+
+An owner-requested semantic rebuild first maintains FTS5, snapshots at most 10,000 complete active
+revision candidates, embeds batches outside the writer, then atomically replaces the complete
+vector set only after exact revision/content/configuration fences pass. Lifecycle triggers remove
+affected vectors and mark the principal state stale on correction, expiry, rejection, deletion,
+or active-status/content drift. Hybrid search applies principal/channel/workspace/status/
+sensitivity/digest filters, exact cosine rank, and deterministic reciprocal-rank fusion. It reports
+the actual retrieval mode and safe semantic status; disabled, unbuilt, stale, degraded,
+incompatible, or unavailable states fall back to lexical search.
+
+Typed API/CLI commands expose explicit configuration, compatibility probe, enable/disable,
+semantic rebuild, hybrid search, policy digest, dimensions, health, and rank evidence without
+printing credentials. Unit tests cover policy and transport adversaries; SQLite tests cover
+complete replacement, owner isolation, rank, correction, deletion, and rebuild; a real-daemon
+fixture proves local OpenAI-compatible prefix/model calls, atomic rebuild, semantic-only recall,
+stale lexical fallback, hard-restart persistence, and successful recovery. Full v0.5 package,
+upgrade, supported-distribution, and release qualification remain open.
+[ADR 0021](decisions/0021-derived-semantic-memory-index.md) records the boundary.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,
@@ -571,7 +601,6 @@ this profile; Telegram remains the bounded text-document channel.
   task-usage/cost, unknown-effect-reconciliation, schedule-creation/lifecycle, governed-memory, and
   extension-lifecycle subsets;
 - Discord guild/group workflows beyond the completed exact one-human DM profile;
-- semantic/vector memory;
 - plugin marketplace;
 - distributed scheduler;
 - multi-user product UX;

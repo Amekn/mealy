@@ -83,6 +83,8 @@ approvals, memory, governed tools, and `/attach PATH`. Each terminal turn report
 recorded input/output tokens, provider-neutral cost microunits, model/tool calls, and retries. See
 the [quickstart](docs/QUICKSTART.md) for detailed provider setup and capabilities,
 the [CLI reference](docs/CLI.md) for the complete public command map, or the
+[optional semantic-memory guide](docs/SEMANTIC_MEMORY.md) for the v0.5 local/remote embedding
+privacy boundary, rebuild, fallback, and recovery workflow, or the
 [release guide](docs/RELEASE.md) for attested archive and native-package
 install/upgrade/rollback behavior. Treat a build as published only when its exact tag workflow has
 produced the documented assets and attestations; never mistake a local dirty build for an attested

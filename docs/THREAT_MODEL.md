@@ -423,6 +423,34 @@ buckets, or non-exact browser integers. The per-task adapter distinguishes used 
 microunits. Neither view labels configured provider-neutral microunits as an invoice or infers
 unsupported upstream billing axes. Financial reconciliation still requires the provider's records.
 
+### Semantic retrieval leaks memory or revives corrected/deleted content
+
+Controls: semantic memory is absent by default and has no background auto-discovery or auto-rebuild
+path. The owner must stop the daemon and approve an exact endpoint/model/dimension/prefix/residency
+policy before any embedding call. Literal-loopback HTTP is the only clear-text exception; every
+other endpoint requires HTTPS and a broker credential. The adapter disables ambient proxy use,
+refuses redirects, bounds batch/text/response/time dimensions, and maps all downstream failures to
+fixed local codes without returning the endpoint, credential, memory/query text, or response body.
+A dedicated bounded worker owns and destroys the blocking client and zeroizing credential outside
+the asynchronous control thread.
+
+Vectors are derived per-principal rows tied to the exact active memory/revision/content digest,
+workspace, complete non-secret policy digest, and dimensions. Rebuild reads all active candidates,
+embeds outside the writer, and atomically replaces the complete set only after rechecking every
+canonical fence. Partial or mixed-policy sets cannot become healthy. Search first applies owner,
+channel, workspace, active-status, sensitivity, and digest filters, then performs bounded cosine
+rank and deterministic fusion. Semantic-only matches still return the normal cited canonical
+memory; vectors never enter context as evidence.
+
+Lifecycle triggers delete affected vectors and mark the principal index stale when active content
+or status changes, including correction, expiry, rejection, or deletion. Stale, degraded,
+unbuilt, disabled, endpoint-unavailable, wrong-policy, or wrong-dimension states are not searched;
+the API reports a fixed reason and uses lexical retrieval. State and invalidation survive restart.
+Backups, exports, retention, and tombstones continue to derive from canonical memory rather than
+the cache. Operators must still treat a remote embedding service as a disclosure recipient:
+rebuild sends every active owner memory, queries send owner search text, and embeddings may leak
+semantic or membership information even when raw content is not stored locally with the vector.
+
 ### Session metadata, fork, or export is used to smuggle control or inherited authority
 
 Controls: fallback titles are local deterministic projections and never provider output. Owner
