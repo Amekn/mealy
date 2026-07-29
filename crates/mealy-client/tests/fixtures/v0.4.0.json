@@ -21,7 +21,7 @@
       "operation": "sessions",
       "requestLine": "GET /v1/sessions?limit=20 HTTP/1.1",
       "status": 200,
-      "responseBody": "{\"apiVersion\":\"v1\",\"sessions\":[{\"sessionId\":\"019f4ad8-3722-75e2-bc69-8bef5d603f05\",\"title\":\"Governed capability review\",\"titleSource\":\"owner\",\"status\":\"open\",\"revision\":8,\"pendingInputs\":1,\"activeTurnId\":null,\"createdAtMs\":1785230288000,\"updatedAtMs\":1785230388000}]}"
+      "responseBody": "{\"apiVersion\":\"v1\",\"sessions\":[{\"sessionId\":\"019f4ad8-3722-75e2-bc69-8bef5d603f05\",\"title\":\"Governed capability review\",\"titleSource\":\"owner\",\"status\":\"active\",\"revision\":8,\"pendingInputs\":1,\"activeTurnId\":null,\"createdAtMs\":1785230288000,\"updatedAtMs\":1785230388000}]}"
     },
     {
       "operation": "missing_task",

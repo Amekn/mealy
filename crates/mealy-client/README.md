@@ -47,7 +47,7 @@ Every v0.5-or-newer GitHub release publishes reproducible `mealy-domain`, `mealy
 `mealy-client` `.crate` archives with a pinned downstream-consumer lock, checksums, and retained
 Sigstore provenance. The release workflow extracts those archives outside the workspace and
 compiles a clean consumer through the public client surface before publication, then repeats the
-same check from the downloaded public assets. Frozen v0.3.0, v0.4.0, and v0.5.0 daemon fixtures
-prevent a compatible `v1` response or structured error from silently becoming unreadable. These
-GitHub release packages are the supported v0.5 distribution boundary; they are intentionally not
-represented as already published on crates.io.
+same check from the downloaded public assets. Frozen v0.2.1, v0.3.0, v0.4.0, and v0.5.0 daemon
+fixtures prevent a compatible `v1` response or structured error from silently becoming
+unreadable. These GitHub release packages are the supported v0.5 distribution boundary; they are
+intentionally not represented as already published on crates.io.

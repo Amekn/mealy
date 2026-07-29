@@ -908,8 +908,9 @@ success and structured-error decoding; pre-dispatch request-version and path-ide
 response-version and nested-envelope rejection; strict descriptor validation; request/response
 size enforcement; and credential-free builder/client debug output. `mealy-client` also runs under
 the workspace's all-target/all-feature strict Clippy, doc-test, and warning-denied rustdoc gates.
-Frozen daemon fixtures additionally run the current stable client against retained v0.3.0,
-v0.4.0, and v0.5.0 liveness/readiness/session/error shapes, including the v0.3 title defaults.
+Frozen daemon fixtures additionally run the current stable client against retained v0.2.1,
+v0.3.0, v0.4.0, and v0.5.0 liveness/readiness/session/error shapes, including the v0.2.1
+title defaults and the titled v0.3-or-newer contract.
 `scripts/sdk-package-smoke.sh` packages the publishable domain/protocol/client set twice, requires
 byte-identical archives, validates their bounded inventory and checksum manifest, extracts them
 outside the workspace, and compiles a clean downstream consumer under the retained exact lock.

@@ -122,10 +122,11 @@ channel operations. It rejects ambiguous origins and identifiers, disallows remo
 ambient proxies, and redirects, redacts bearer material, bounds request/response bytes, validates
 request/response/error versions, and preserves structured retry evidence. Real loopback unit
 fixtures cover exact headers, paths, queries, bodies, receipts, size/version failures,
-private-descriptor validation, and debug redaction. Frozen v0.3/v0.4/v0.5 daemon exchanges prove
-cross-release decoding, while reproducible publishable crate archives, an exact consumer lock, and
-clean extracted-package compilation are enforced in CI, tagged publication, and downloaded-public
-acceptance. Async/SSE and non-Rust bindings remain outside the v0.5 stable blocking SDK contract.
+private-descriptor validation, and debug redaction. Frozen v0.2.1/v0.3/v0.4/v0.5 daemon exchanges
+prove cross-release decoding, while reproducible publishable crate archives, an exact consumer
+lock, and clean extracted-package compilation are enforced in CI, tagged publication, and
+downloaded-public acceptance. Async/SSE and non-Rust bindings remain outside the v0.5 stable
+blocking SDK contract.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

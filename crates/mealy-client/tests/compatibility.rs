@@ -7,7 +7,8 @@ use std::thread;
 use mealy_client::{ClientError, MealyClient};
 use serde::Deserialize;
 
-const FIXTURES: [&str; 3] = [
+const FIXTURES: [&str; 4] = [
+    include_str!("fixtures/v0.2.1.json"),
     include_str!("fixtures/v0.3.0.json"),
     include_str!("fixtures/v0.4.0.json"),
     include_str!("fixtures/v0.5.0.json"),
@@ -34,7 +35,7 @@ struct Exchange {
 }
 
 #[test]
-fn stable_client_decodes_frozen_v03_v04_and_v05_daemon_contracts() {
+fn stable_client_decodes_frozen_v021_v03_v04_and_v05_daemon_contracts() {
     for source in FIXTURES {
         let fixture: DaemonFixture =
             serde_json::from_str(source).expect("valid frozen daemon fixture");
@@ -42,7 +43,7 @@ fn stable_client_decodes_frozen_v03_v04_and_v05_daemon_contracts() {
         assert_eq!(fixture.api_version, mealy_client::protocol::API_VERSION);
         assert!(matches!(
             fixture.release_version.as_str(),
-            "0.3.0" | "0.4.0" | "0.5.0"
+            "0.2.1" | "0.3.0" | "0.4.0" | "0.5.0"
         ));
         assert_eq!(
             fixture

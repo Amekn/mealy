@@ -373,7 +373,7 @@ owner-private no-follow responsibility.
 
 Unit fixtures exercise transport headers, typed command bodies, structured errors, response
 limits, incompatible versions, ambiguous identifiers, descriptor validation, and secret-free
-debug output against a real loopback socket. Frozen v0.3/v0.4/v0.5 daemon fixtures preserve
+debug output against a real loopback socket. Frozen v0.2.1/v0.3/v0.4/v0.5 daemon fixtures preserve
 compatible response behavior. The domain/protocol/client crates are publishable and packaged
 twice reproducibly; a clean external consumer compiles from the extracted packages and retained
 lock in CI, the tag workflow, and public-release acceptance. GitHub release publication includes
