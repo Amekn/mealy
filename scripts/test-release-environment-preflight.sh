@@ -20,6 +20,16 @@ jq -n '{
   disabled: false
 }' >"$temporary/fixtures/repository.json"
 jq -n '{
+  enabled: true,
+  allowed_actions: "selected",
+  sha_pinning_required: true
+}' >"$temporary/fixtures/actions_permissions.json"
+jq -n '{
+  github_owned_allowed: true,
+  verified_allowed: false,
+  patterns_allowed: ["anchore/sbom-action@*"]
+}' >"$temporary/fixtures/selected_actions.json"
+jq -n '{
   build_type: "workflow",
   public: true,
   https_enforced: true,
@@ -75,6 +85,12 @@ set -euo pipefail
 case "$*" in
   "api repos/Amekn/mealy")
     cat "$MOCK_FIXTURES/repository.json"
+    ;;
+  "api repos/Amekn/mealy/actions/permissions")
+    cat "$MOCK_FIXTURES/actions_permissions.json"
+    ;;
+  "api repos/Amekn/mealy/actions/permissions/selected-actions")
+    cat "$MOCK_FIXTURES/selected_actions.json"
     ;;
   "api repos/Amekn/mealy/pages")
     cat "$MOCK_FIXTURES/pages.json"
@@ -139,6 +155,13 @@ expect_rejection() {
 
 expect_rejection renamed-repository repository '.full_name = "Amekn/project_mealy"'
 expect_rejection private-repository repository '.private = true'
+expect_rejection disabled-actions actions_permissions '.enabled = false'
+expect_rejection unrestricted-actions actions_permissions '.allowed_actions = "all"'
+expect_rejection mutable-action-tags actions_permissions '.sha_pinning_required = false'
+expect_rejection broad-verified-actions selected_actions '.verified_allowed = true'
+expect_rejection missing-github-actions selected_actions '.github_owned_allowed = false'
+expect_rejection extra-third-party-action selected_actions \
+  '.patterns_allowed += ["unreviewed/action@*"]'
 expect_rejection non-workflow-pages pages '.build_type = "legacy"'
 expect_rejection insecure-pages pages '.https_enforced = false'
 expect_rejection missing-signing-review signing_environment \
