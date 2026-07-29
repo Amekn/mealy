@@ -155,7 +155,7 @@ jobs:
         run: scripts/test-release-soak-validator.sh
       - name: Verify exact soak-subject promotion gate
         run: scripts/test-release-soak-subject-fetch.sh
-      - name: Verify exact free-provider acceptance gate
+      - name: Verify exact dual-provider acceptance gate
         run: scripts/test-live-provider-acceptance-selector.sh
       - name: Verify exact protected-main CI gate
         run: scripts/test-protected-ci-run-selector.sh

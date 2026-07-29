@@ -247,9 +247,8 @@ release IDs, and asset names prevent them from qualifying a newer manifest.
 ## Reviewed live-provider acceptance
 
 The exact final commit needs a successful protected `main` push run of `.github/workflows/ci.yml`
-and one successful manual run of `.github/workflows/live-smoke.yml` in the
-protected `live-provider-smoke` environment. For the public release gate, use `openrouter-free`
-without forcing a model:
+and two successful manual runs of `.github/workflows/live-smoke.yml` in the protected
+`live-provider-smoke` environment. First run `openrouter-free` without forcing a model:
 
 ```sh
 gh workflow run live-smoke.yml --ref main \
@@ -257,9 +256,9 @@ gh workflow run live-smoke.yml --ref main \
   -f run_brave_search=false
 ```
 
-For a release that claims the pinned private endpoint, also dispatch its separately reviewed
-acceptance against the same final `main` commit. The model and context below are the most recently
-verified non-secret server identity; recheck them deliberately if the server changes:
+Then dispatch the separately reviewed pinned-private-endpoint acceptance against the same final
+`main` commit. The model and context below are the most recently verified non-secret server
+identity; recheck them deliberately if the server changes:
 
 ```sh
 gh workflow run live-smoke.yml --ref main \
@@ -281,14 +280,14 @@ runtime allowance so a tool call and its post-tool final response can both becom
 catalog-selected model must advertise at least that runtime output capacity. The workflow never
 sends the key to a pull-request job or stores it in Mealy configuration.
 
-After approval and completion, verify that the successful run's `headSha` is exactly the candidate
-commit. The workflow-controlled run name binds the selected provider and SHA. Both the x86 package
-gate and final publication gate use the checked selector to require that exact name, canonical
-workflow path, successful `workflow_dispatch` result, repository run URL, and
-`openrouter-free` provider. A success on an earlier commit does not qualify a later tag, and a
-successful private/direct-provider run cannot substitute for the free-model gate.
-`LOCAL_API_KEY`, direct paid API keys, and the owner-local ChatGPT subscription bridge remain
-separately reviewed additional acceptance and should not be used for frequent CI traffic. Claude Free, Pro,
+After approval and completion, verify that both successful runs' `headSha` values are exactly the
+candidate commit. The workflow-controlled run name binds each selected provider and SHA. Both the
+x86 package gate and final publication gate use the checked selector to require exact canonical
+names, workflow paths, successful `workflow_dispatch` results, and repository run URLs for both
+`openrouter-free` and `private-responses`. A success on an earlier commit does not qualify a later
+tag, and neither provider can substitute for the other. Direct paid API keys and the owner-local
+ChatGPT subscription bridge remain separately reviewed additional acceptance and should not be
+used for frequent CI traffic. Claude Free, Pro,
 and Max subscription credentials are not a supported Mealy route under Anthropic's current
 third-party terms; exercise the direct Anthropic API only with separately approved paid credentials.
 
@@ -311,8 +310,8 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
 
 `.github/workflows/release.yml` then performs these production gates:
 
-- revalidates license, tag ancestry/identity, soak evidence, exact protected-main CI, and
-  exact-commit free-model live acceptance;
+- revalidates license, tag ancestry/identity, soak evidence, exact protected-main CI, and both
+  exact-commit strict-free OpenRouter and pinned private-provider live acceptances;
 - isolates private-draft access in one ephemeral promotion job and rehashes its current-run handoff;
 - repeats strict tests, sandbox/browser/service proofs, RustSec, and auditable binary inspection;
 - builds native Linux x86-64 and ARM64 archives, Debian packages, and RPMs plus an x86-64 Arch

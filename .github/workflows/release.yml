@@ -144,7 +144,7 @@ jobs:
           git show-ref --verify --quiet refs/remotes/origin/main
           git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
           test "$(uname -m)" = "$MEALY_HOST_ARCHITECTURE"
-      - name: Require reviewed live-provider acceptance for the exact commit
+      - name: Require both reviewed live-provider acceptances for the exact commit
         if: ${{ matrix.target == 'linux-x86_64-gnu' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -708,14 +708,16 @@ jobs:
             -F per_page=100)
           runs_file="$RUNNER_TEMP/mealy-live-provider-runs.json"
           printf '%s\n' "$runs" >"$runs_file"
-          live_run_url=$(scripts/select-live-provider-acceptance.sh \
+          live_run_urls=$(scripts/select-live-provider-acceptance.sh \
             "$runs_file" "$GITHUB_SHA" "$GITHUB_REPOSITORY" \
             "$GITHUB_SERVER_URL")
+          mapfile -t live_run_url < <(printf '%s\n' "$live_run_urls")
+          test "${#live_run_url[@]}" -eq 2
           release_run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           scripts/render-release-notes.sh \
             docs/benchmarks/release-soak.json "$GITHUB_REPOSITORY" \
-            "$GITHUB_REF_NAME" "$GITHUB_SHA" "$ci_run_url" "$live_run_url" \
-            "$release_run_url" \
+            "$GITHUB_REF_NAME" "$GITHUB_SHA" "$ci_run_url" \
+            "${live_run_url[0]}" "${live_run_url[1]}" "$release_run_url" \
             "$RUNNER_TEMP/release-notes.md"
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
