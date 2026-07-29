@@ -182,10 +182,11 @@ not a claim that automated text checks replace legal review.
 The tag workflow independently fetches `origin/main`, checks ancestry in each native package job
 and again immediately before publication, and refuses unless the tagged SHA is an ancestor of that
 branch; a tag on an unmerged or subsequently removed commit cannot publish. Its x86-64 job also
-queries the exact `live-smoke.yml` workflow and refuses unless an owner-reviewed manual run for the
-tagged commit completed successfully; evidence from another commit, workflow, event, or incomplete
-run cannot qualify. Immediately before publication, the publish job repeats that exact live-run
-query and renders deterministic release notes from the checked soak JSON. The renderer rejects a
+queries the exact `live-smoke.yml` workflow and refuses unless owner-reviewed strict-free
+OpenRouter and pinned private-provider manual runs for the tagged commit both completed
+successfully; evidence from another commit, workflow, event, or incomplete run cannot qualify.
+Immediately before publication, the publish job repeats that exact dual-provider query and renders
+deterministic release notes from the checked soak JSON. The renderer rejects a
 mismatched tag, foreign workflow URL, short or dirty soak, incomplete workload, invalid latency
 ordering, corrupt SQLite result, or residual work. The notes link the exact release and
 live-provider workflow runs, commit, soak subject and daemon digest, and record the measured
@@ -208,11 +209,11 @@ reserved for a separately reachable local endpoint and is not exposed to public 
 runners. Its optional workflow path hardcodes
 the reviewed Tailnet HTTPS origin, requires explicit model/context inputs, and fixes both prices to
 zero so a dispatch input cannot redirect that credential. Create the tag only after required CI,
-the current durability report, and one reviewed real-account smoke are all complete.
+the current durability report, and both reviewed real-account smokes are complete.
 The workflow-controlled run name records the selected provider and exact commit. The packaging and
-publication jobs call the same checked selector, which rejects private/direct-provider successes,
+publication jobs call the same checked selector, which rejects missing or substituting providers,
 stale commits, unsuccessful or non-manual runs, foreign workflow paths, and noncanonical run URLs;
-only the reviewed `openrouter-free` run qualifies the public release.
+both the reviewed `openrouter-free` and `private-responses` runs qualify the public release.
 Protected CI has a separate workflow-controlled event/SHA identity. Both release stages require a
 successful `push` run on `main` from the canonical CI workflow and repository URL, so ancestry or a
 green pull-request check alone cannot qualify a tag.
@@ -679,10 +680,11 @@ main CI, live-provider acceptance, the stable tag, attestations, and publication
    CI. Follow [Stage the exact soak subject](CI_CD.md#stage-the-exact-soak-subject) to create the
    unique annotated staging tag, private draft release, owner-uploaded asset, and metadata-derived
    promotion manifest; validate a fresh download before opening the evidence PR.
-4. Run the manual `mealy-live-provider-smoke` workflow against the exact protected commit, approve
-   its `live-provider-smoke` environment deployment, and retain the successful run URL. Then create
-   and push the reviewed tag. The release workflow refuses a mismatched version, a tag that does
-   not point at the checked-out commit, or missing/stale live-provider workflow evidence.
+4. Run the manual `mealy-live-provider-smoke` workflow twice against the exact protected commit:
+   once with strict-free OpenRouter selection and once with the pinned private provider. Approve
+   each `live-provider-smoke` environment deployment and retain both successful run URLs. Then
+   create and push the reviewed tag. The release workflow refuses a mismatched version, a tag that
+   does not point at the checked-out commit, or missing/stale/substituted provider evidence.
 5. Wait for the native Linux jobs to pass the full all-feature/doc/RustSec suites, real
    daemon/dashboard smoke, auditable locked build, exact-binary audit, SBOM/license validation,
    archive plus Debian/RPM/Arch reproducibility and lifecycle tests, asset

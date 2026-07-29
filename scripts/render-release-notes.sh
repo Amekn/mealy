@@ -3,10 +3,10 @@ set -euo pipefail
 export LC_ALL=C
 
 usage() {
-  echo "usage: render-release-notes.sh REPORT.json OWNER/REPO TAG COMMIT CI_RUN_URL LIVE_RUN_URL RELEASE_RUN_URL OUTPUT.md" >&2
+  echo "usage: render-release-notes.sh REPORT.json OWNER/REPO TAG COMMIT CI_RUN_URL OPENROUTER_RUN_URL PRIVATE_RUN_URL RELEASE_RUN_URL OUTPUT.md" >&2
 }
 
-if [[ $# -ne 8 ]]; then
+if [[ $# -ne 9 ]]; then
   usage
   exit 64
 fi
@@ -16,9 +16,10 @@ repository=$2
 tag=$3
 commit=$4
 ci_run_url=$5
-live_run_url=$6
-release_run_url=$7
-output=$8
+openrouter_run_url=$6
+private_run_url=$7
+release_run_url=$8
+output=$9
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 lineage_proof=$repository_root/docs/benchmarks/release-soak-lineage.json
 release_summary=$repository_root/docs/releases/$tag.md
@@ -54,7 +55,7 @@ if (( release_summary_bytes < 32 || release_summary_bytes > 64 * 1024 )) \
   exit 65
 fi
 expected_run_prefix="https://github.com/$repository/actions/runs/"
-for run_url in "$ci_run_url" "$live_run_url" "$release_run_url"; do
+for run_url in "$ci_run_url" "$openrouter_run_url" "$private_run_url" "$release_run_url"; do
   run_id=${run_url#"$expected_run_prefix"}
   if [[ $run_url != "$expected_run_prefix$run_id" || ! $run_id =~ ^[1-9][0-9]*$ ]]; then
     echo "release-note workflow URL is not canonical for $repository" >&2
@@ -209,8 +210,10 @@ trap cleanup EXIT
     "$ci_run_url"
   printf -- '- Protected build, package, attestation, and public-install workflow: [release run](%s)\n' \
     "$release_run_url"
-  printf -- '- Owner-reviewed live-provider acceptance for the same commit: [live-provider run](%s)\n' \
-    "$live_run_url"
+  printf -- '- Owner-reviewed strict-free OpenRouter acceptance for the same commit: [OpenRouter run](%s)\n' \
+    "$openrouter_run_url"
+  printf -- '- Owner-reviewed pinned private-provider acceptance for the same commit: [private-provider run](%s)\n' \
+    "$private_run_url"
   printf -- "- Auditable 24-hour soak subject: revision [\`%s\`](https://github.com/%s/commit/%s), \`mealyd\` SHA-256 \`%s\`\n" \
     "$revision" "$repository" "$revision" "$daemon_sha256"
   printf -- "- Soak duration: %s requested seconds; %s observed seconds (%s ms) on retained \`%s\` storage\n" \

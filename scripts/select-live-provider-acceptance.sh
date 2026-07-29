@@ -37,32 +37,40 @@ if (( runs_bytes < 2 || runs_bytes > 8 * 1024 * 1024 )); then
   exit 65
 fi
 
-required_title="Mealy live acceptance: openrouter-free @ $expected_sha"
-if ! selected_url=$(jq -er \
+required_openrouter_title="Mealy live acceptance: openrouter-free @ $expected_sha"
+required_private_title="Mealy live acceptance: private-responses @ $expected_sha"
+# Stable output contract: strict-free OpenRouter first, then the pinned private provider.
+if ! selected_urls=$(jq -er \
   --arg sha "$expected_sha" \
   --arg repository "$repository" \
   --arg server_url "$server_url" \
-  --arg required_title "$required_title" '
-  .workflow_runs
-  | select(type == "array")
-  | [.[] | select(
-      (.id | type == "number" and . > 0 and floor == .)
-      and .head_sha == $sha
-      and .event == "workflow_dispatch"
-      and .status == "completed"
-      and .conclusion == "success"
-      and .path == ".github/workflows/live-smoke.yml"
-      and .name == $required_title
-      and .display_title == $required_title
-      and .html_url == ($server_url + "/" + $repository
-        + "/actions/runs/" + (.id | tostring))
-    )]
-  | sort_by(.id)
-  | last
-  | .html_url
+  --arg required_openrouter_title "$required_openrouter_title" \
+  --arg required_private_title "$required_private_title" '
+  .workflow_runs as $runs
+  | select($runs | type == "array")
+  | def selected($required_title):
+      [$runs[] | select(
+        (.id | type == "number" and . > 0 and floor == .)
+        and .head_sha == $sha
+        and .event == "workflow_dispatch"
+        and .status == "completed"
+        and .conclusion == "success"
+        and .path == ".github/workflows/live-smoke.yml"
+        and .name == $required_title
+        and .display_title == $required_title
+        and .html_url == ($server_url + "/" + $repository
+          + "/actions/runs/" + (.id | tostring))
+      )]
+      | sort_by(.id)
+      | last;
+  (selected($required_openrouter_title)) as $openrouter
+  | (selected($required_private_title)) as $private
+  | select($openrouter != null and $private != null)
+  | [$openrouter.html_url, $private.html_url]
+  | .[]
   ' "$runs"); then
-  echo "no successful reviewed openrouter-free acceptance matches the exact release commit" >&2
+  echo "successful reviewed openrouter-free and private-responses acceptances are both required for the exact release commit" >&2
   exit 65
 fi
 
-printf '%s\n' "$selected_url"
+printf '%s\n' "$selected_urls"
