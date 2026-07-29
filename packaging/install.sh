@@ -121,6 +121,7 @@ release_documents=(
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
   research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md
   research/REFERENCE_SYSTEMS.md
+  research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md
   releases/README.md
   releases/v0.1.0.md
   releases/v0.1.1.md

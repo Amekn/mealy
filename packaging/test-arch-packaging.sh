@@ -114,6 +114,7 @@ fi
 [[ -f $temporary/extracted/usr/share/doc/mealy/GETTING_STARTED.md ]]
 [[ -f $temporary/extracted/usr/share/doc/mealy/research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md ]]
 [[ -f $temporary/extracted/usr/share/doc/mealy/research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md ]]
+[[ -f $temporary/extracted/usr/share/doc/mealy/research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md ]]
 [[ -f $temporary/extracted/usr/share/doc/mealy/benchmarks/release-soak-subject.json ]]
 if [[ -n $(find "$temporary/extracted" \
   ! -type f ! -type d ! -type l -print -quit) ]]; then
