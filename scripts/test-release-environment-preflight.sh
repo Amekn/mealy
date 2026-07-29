@@ -20,6 +20,41 @@ jq -n '{
   disabled: false
 }' >"$temporary/fixtures/repository.json"
 jq -n '{
+  enforce_admins: {enabled: true},
+  required_status_checks: {
+    strict: true,
+    contexts: [
+      "Strict workspace gate",
+      "Linux sandbox conformance",
+      "Linux rendered-browser conformance",
+      "Control plane (ubuntu-24.04-arm)",
+      "Control plane (ubuntu-24.04)",
+      "Linux distribution compatibility"
+    ],
+    checks: [
+      {context: "Strict workspace gate", app_id: 15368},
+      {context: "Linux sandbox conformance", app_id: 15368},
+      {context: "Linux rendered-browser conformance", app_id: 15368},
+      {context: "Control plane (ubuntu-24.04-arm)", app_id: 15368},
+      {context: "Control plane (ubuntu-24.04)", app_id: 15368},
+      {context: "Linux distribution compatibility", app_id: 15368}
+    ]
+  },
+  required_pull_request_reviews: {
+    dismiss_stale_reviews: true,
+    required_approving_review_count: 0
+  },
+  required_linear_history: {enabled: true},
+  required_conversation_resolution: {enabled: true},
+  allow_force_pushes: {enabled: false},
+  allow_deletions: {enabled: false}
+}' >"$temporary/fixtures/main_protection.json"
+touch "$temporary/fixtures/vulnerability_alerts_enabled"
+jq -n '{
+  enabled: true,
+  paused: false
+}' >"$temporary/fixtures/automated_security_fixes.json"
+jq -n '{
   enabled: true,
   enforced_by_owner: false
 }' >"$temporary/fixtures/immutable_releases.json"
@@ -89,6 +124,15 @@ set -euo pipefail
 case "$*" in
   "api repos/Amekn/mealy")
     cat "$MOCK_FIXTURES/repository.json"
+    ;;
+  "api repos/Amekn/mealy/branches/main/protection")
+    cat "$MOCK_FIXTURES/main_protection.json"
+    ;;
+  "api repos/Amekn/mealy/vulnerability-alerts")
+    test -e "$MOCK_FIXTURES/vulnerability_alerts_enabled"
+    ;;
+  "api repos/Amekn/mealy/automated-security-fixes")
+    cat "$MOCK_FIXTURES/automated_security_fixes.json"
     ;;
   "api repos/Amekn/mealy/immutable-releases")
     cat "$MOCK_FIXTURES/immutable_releases.json"
@@ -162,6 +206,30 @@ expect_rejection() {
 
 expect_rejection renamed-repository repository '.full_name = "Amekn/project_mealy"'
 expect_rejection private-repository repository '.private = true'
+expect_rejection missing-required-context main_protection \
+  '.required_status_checks.contexts |= map(select(. != "Strict workspace gate"))'
+expect_rejection extra-required-context main_protection \
+  '.required_status_checks.contexts += ["unreviewed"]'
+expect_rejection non-strict-status-checks main_protection \
+  '.required_status_checks.strict = false'
+expect_rejection spoofable-status-check main_protection \
+  '.required_status_checks.checks[0].app_id = null'
+expect_rejection missing-pull-request-gate main_protection \
+  '.required_pull_request_reviews = null'
+expect_rejection bypassable-administrator main_protection \
+  '.enforce_admins.enabled = false'
+expect_rejection nonlinear-history main_protection \
+  '.required_linear_history.enabled = false'
+expect_rejection unresolved-conversations main_protection \
+  '.required_conversation_resolution.enabled = false'
+expect_rejection force-push-enabled main_protection \
+  '.allow_force_pushes.enabled = true'
+expect_rejection deletion-enabled main_protection \
+  '.allow_deletions.enabled = true'
+expect_rejection disabled-security-updates automated_security_fixes \
+  '.enabled = false'
+expect_rejection paused-security-updates automated_security_fixes \
+  '.paused = true'
 expect_rejection mutable-releases immutable_releases '.enabled = false'
 expect_rejection disabled-actions actions_permissions '.enabled = false'
 expect_rejection unrestricted-actions actions_permissions '.allowed_actions = "all"'
@@ -194,6 +262,15 @@ expect_rejection missing-openrouter-secret live_secrets \
   'map(select(.name != "OPENROUTER_API_KEY"))'
 expect_rejection missing-private-endpoint-secret live_secrets \
   'map(select(.name != "LOCAL_API_KEY"))'
+
+rm -rf -- "$temporary/fixtures"
+cp -a "$temporary/valid" "$temporary/fixtures"
+rm "$temporary/fixtures/vulnerability_alerts_enabled"
+if run_preflight >"$temporary/disabled-vulnerability-alerts.stdout" \
+  2>"$temporary/disabled-vulnerability-alerts.stderr"; then
+  echo "release-environment preflight accepted disabled vulnerability alerts" >&2
+  exit 1
+fi
 
 if "$preflight" invalid >/dev/null 2>&1; then
   echo "release-environment preflight accepted an invalid repository argument" >&2

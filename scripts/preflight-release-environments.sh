@@ -50,6 +50,49 @@ if ! jq -e --arg repository "$repository" '
   exit 65
 fi
 
+capture main_protection gh api "repos/$repository/branches/main/protection"
+if ! jq -e '
+  def required_contexts:
+    [
+      "Control plane (ubuntu-24.04)",
+      "Control plane (ubuntu-24.04-arm)",
+      "Linux distribution compatibility",
+      "Linux rendered-browser conformance",
+      "Linux sandbox conformance",
+      "Strict workspace gate"
+    ];
+  .enforce_admins.enabled == true
+  and .required_status_checks.strict == true
+  and (.required_status_checks.contexts | sort) == required_contexts
+  and (.required_status_checks.checks | type == "array" and length == 6)
+  and ([.required_status_checks.checks[]
+    | select(.app_id == 15368)
+    | .context] | sort) == required_contexts
+  and (.required_pull_request_reviews | type == "object")
+  and .required_linear_history.enabled == true
+  and .required_conversation_resolution.enabled == true
+  and .allow_force_pushes.enabled == false
+  and .allow_deletions.enabled == false
+' "$temporary/main_protection.json" >/dev/null; then
+  echo "main branch protection does not enforce the exact production contract" >&2
+  exit 65
+fi
+
+if ! gh api "repos/$repository/vulnerability-alerts" >/dev/null; then
+  echo "repository vulnerability alerts are not enabled" >&2
+  exit 65
+fi
+
+capture automated_security_fixes gh api \
+  "repos/$repository/automated-security-fixes"
+if ! jq -e '
+  .enabled == true
+  and .paused == false
+' "$temporary/automated_security_fixes.json" >/dev/null; then
+  echo "Dependabot security updates are disabled or paused" >&2
+  exit 65
+fi
+
 capture immutable_releases gh api "repos/$repository/immutable-releases"
 if ! jq -e '
   .enabled == true
