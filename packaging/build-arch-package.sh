@@ -113,6 +113,8 @@ package() {
     "$pkgdir/usr/share/doc/mealy/README.md"
   install -m 0644 "$MEALY_PAYLOAD_ROOT/THIRD-PARTY-LICENSES.html" \
     "$pkgdir/usr/share/doc/mealy/third-party-licenses.html"
+  find "$pkgdir" -type d -exec chmod 0755 {} +
+  find "$pkgdir/usr/share/doc/mealy" -type f -exec chmod 0644 {} +
   find "$pkgdir" -exec touch --no-dereference --date="@${SOURCE_DATE_EPOCH:?}" {} +
 }
 PKGBUILD
