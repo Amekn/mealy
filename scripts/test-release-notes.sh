@@ -71,9 +71,11 @@ render() {
   local output=$2
   local tag=${3:-v0.1.0}
   local live_url=${4:-https://github.com/Amekn/mealy/actions/runs/123}
+  local private_url=${5:-https://github.com/Amekn/mealy/actions/runs/124}
   "$renderer" "$report" Amekn/mealy "$tag" "$commit" \
     https://github.com/Amekn/mealy/actions/runs/321 \
-    "$live_url" https://github.com/Amekn/mealy/actions/runs/456 "$output"
+    "$live_url" "$private_url" \
+    https://github.com/Amekn/mealy/actions/runs/456 "$output"
 }
 
 render "$valid" "$temporary/first.md"
@@ -96,7 +98,9 @@ if grep -Fqi "macOS preview" "$temporary/first.md"; then
 fi
 grep -Fq "CI run](https://github.com/Amekn/mealy/actions/runs/321)" \
   "$temporary/first.md"
-grep -Fq "live-provider run](https://github.com/Amekn/mealy/actions/runs/123)" \
+grep -Fq "OpenRouter run](https://github.com/Amekn/mealy/actions/runs/123)" \
+  "$temporary/first.md"
+grep -Fq "private-provider run](https://github.com/Amekn/mealy/actions/runs/124)" \
   "$temporary/first.md"
 if grep -Fq "docs/benchmarks/release-soak-lineage.json" "$temporary/first.md"; then
   echo "release notes linked an absent optional lineage proof" >&2
@@ -132,9 +136,17 @@ if render "$valid" "$temporary/wrong-run.md" v0.1.0 \
   echo "release-note renderer accepted a foreign workflow URL" >&2
   exit 1
 fi
+if render "$valid" "$temporary/wrong-private-run.md" v0.1.0 \
+  https://github.com/Amekn/mealy/actions/runs/123 \
+  https://github.com/another/project/actions/runs/124 \
+  >"$temporary/wrong-private-run.stdout" 2>"$temporary/wrong-private-run.stderr"; then
+  echo "release-note renderer accepted a foreign private-provider workflow URL" >&2
+  exit 1
+fi
 if "$renderer" "$valid" Amekn/mealy v0.1.0 "$commit" \
   https://github.com/another/project/actions/runs/321 \
   https://github.com/Amekn/mealy/actions/runs/123 \
+  https://github.com/Amekn/mealy/actions/runs/124 \
   https://github.com/Amekn/mealy/actions/runs/456 \
   "$temporary/wrong-ci.md" \
   >"$temporary/wrong-ci.stdout" 2>"$temporary/wrong-ci.stderr"; then

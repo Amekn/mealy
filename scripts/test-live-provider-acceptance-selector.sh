@@ -22,10 +22,12 @@ sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 repository=Amekn/mealy
 server_url=https://github.com
 required_title="Mealy live acceptance: openrouter-free @ $sha"
+required_private_title="Mealy live acceptance: private-responses @ $sha"
 valid=$temporary/valid.json
 jq -n \
   --arg sha "$sha" \
   --arg required_title "$required_title" \
+  --arg required_private_title "$required_private_title" \
   --arg repository "$repository" \
   --arg server_url "$server_url" '
   {
@@ -37,8 +39,8 @@ jq -n \
         status: "completed",
         conclusion: "success",
         path: ".github/workflows/live-smoke.yml",
-        name: ("Mealy live acceptance: private-responses @ " + $sha),
-        display_title: ("Mealy live acceptance: private-responses @ " + $sha),
+        name: $required_private_title,
+        display_title: $required_private_title,
         html_url: ($server_url + "/" + $repository + "/actions/runs/100")
       },
       {
@@ -67,9 +69,9 @@ jq -n \
   }
   ' >"$valid"
 
-expected_url=https://github.com/Amekn/mealy/actions/runs/101
-selected_url=$("$selector" "$valid" "$sha" "$repository" "$server_url")
-test "$selected_url" = "$expected_url"
+expected_urls=$'https://github.com/Amekn/mealy/actions/runs/101\nhttps://github.com/Amekn/mealy/actions/runs/100'
+selected_urls=$("$selector" "$valid" "$sha" "$repository" "$server_url")
+test "$selected_urls" = "$expected_urls"
 
 expect_rejection() {
   local name=$1
@@ -84,14 +86,23 @@ expect_rejection() {
 }
 
 expect_rejection private-provider-only '.workflow_runs |= map(select(.id == 100))'
+expect_rejection openrouter-provider-only '.workflow_runs |= map(select(.id != 100))'
 expect_rejection stale-sha '.workflow_runs |= map(select(.id == 101) | .head_sha = ("b" * 40))'
+expect_rejection stale-private-sha '.workflow_runs |= map(if .id == 100 then .head_sha = ("b" * 40) else . end)'
 expect_rejection failed-run '.workflow_runs |= map(select(.id == 101) | .conclusion = "failure")'
+expect_rejection failed-private-run '.workflow_runs |= map(if .id == 100 then .conclusion = "failure" else . end)'
 expect_rejection incomplete-run '.workflow_runs |= map(select(.id == 101) | .status = "in_progress")'
+expect_rejection incomplete-private-run '.workflow_runs |= map(if .id == 100 then .status = "in_progress" else . end)'
 expect_rejection wrong-event '.workflow_runs |= map(select(.id == 101) | .event = "push")'
+expect_rejection wrong-private-event '.workflow_runs |= map(if .id == 100 then .event = "push" else . end)'
 expect_rejection wrong-workflow '.workflow_runs |= map(select(.id == 101) | .path = ".github/workflows/ci.yml")'
+expect_rejection wrong-private-workflow '.workflow_runs |= map(if .id == 100 then .path = ".github/workflows/ci.yml" else . end)'
 expect_rejection wrong-workflow-name '.workflow_runs |= map(select(.id == 101) | .name = "another-workflow")'
+expect_rejection wrong-private-workflow-name '.workflow_runs |= map(if .id == 100 then .name = "another-workflow" else . end)'
 expect_rejection spoofed-title '.workflow_runs |= map(select(.id == 101) | .display_title = "openrouter-free")'
+expect_rejection spoofed-private-title '.workflow_runs |= map(if .id == 100 then .display_title = "private-responses" else . end)'
 expect_rejection foreign-url '.workflow_runs |= map(select(.id == 101) | .html_url = "https://github.com/another/repository/actions/runs/101")'
+expect_rejection foreign-private-url '.workflow_runs |= map(if .id == 100 then .html_url = "https://github.com/another/repository/actions/runs/100" else . end)'
 expect_rejection malformed-response '.workflow_runs = {}'
 
 if "$selector" "$valid" "$sha" another/repository "$server_url" \
