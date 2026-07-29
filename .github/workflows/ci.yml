@@ -158,6 +158,7 @@ jobs:
             scripts/test-stacked-release-normalization.sh
             scripts/validate-public-license.sh
             scripts/validate-public-release-record.sh
+            scripts/validate-release-soak-candidate.sh
             scripts/validate-release-upgrade-baseline.sh
             scripts/verify-sdk-packages.sh
             scripts/verify-public-linux-repository.sh

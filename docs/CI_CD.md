@@ -256,6 +256,11 @@ tree drift, malformed report identity, an absent commit, an oversized/unrehashab
 or a symlink destination. The validator then rehashes the embedded original commit payload and
 binds the unedited report digest, both Git trees, the mapped main-line commit, and the final
 release ancestry.
+The production workflow calls `scripts/validate-release-soak-candidate.sh` at both promotion and
+packaging boundaries. That entry point supplies the canonical checked lineage file when it exists,
+rejects a malformed or symlinked object at that path, and otherwise permits only a directly
+ancestral observed revision. This keeps the documented GitHub rebase ceremony executable by the
+tag workflow without making lineage optional when it is actually required.
 
 After that validation, stage the observed daemon as a private draft transport asset before opening
 the evidence PR. This is not the public production release. Run from the canonical repository on

@@ -4,6 +4,7 @@ export LC_ALL=C
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 validator=$repository_root/scripts/validate-release-soak.sh
+candidate_validator=$repository_root/scripts/validate-release-soak-candidate.sh
 source_report=$repository_root/docs/benchmarks/2026-07-13-storage-optimized-soak.json
 
 for command in git jq mktemp sha256sum; do
@@ -26,6 +27,16 @@ daemon_sha256=$(sha256sum "$mealyd")
 daemon_sha256=${daemon_sha256%% *}
 revision=$(git -C "$repository_root" rev-parse HEAD)
 valid=$temporary/valid.json
+
+set +e
+"$candidate_validator" >"$temporary/candidate-usage.stdout" \
+  2>"$temporary/candidate-usage.stderr"
+candidate_usage_status=$?
+set -e
+if [[ $candidate_usage_status -ne 64 ]]; then
+  echo "release soak candidate validator returned the wrong usage status" >&2
+  exit 1
+fi
 
 jq \
   --arg revision "$revision" \
@@ -85,6 +96,10 @@ jq \
   ' "$source_report" >"$valid"
 
 (cd "$repository_root" && "$validator" "$valid" "$mealyd" "$revision") >/dev/null
+(cd "$repository_root" \
+  && "$candidate_validator" "$valid" "$mealyd" "$revision" \
+    "$temporary/absent-lineage.json") \
+  >/dev/null
 
 lineage_repository=$temporary/lineage-repository
 mkdir -p "$lineage_repository/apps/mealyd/src" "$lineage_repository/docs"
@@ -139,10 +154,31 @@ jq -n \
   && "$validator" "$lineage_valid" "$mealyd" "$lineage_expected_revision" \
     "$lineage_proof") \
   >/dev/null
+(cd "$lineage_repository" \
+  && "$candidate_validator" "$lineage_valid" "$mealyd" \
+    "$lineage_expected_revision" "$lineage_proof") \
+  >/dev/null
 if (cd "$lineage_repository" \
   && "$validator" "$lineage_valid" "$mealyd" "$lineage_expected_revision") \
   >"$temporary/missing-lineage.stdout" 2>"$temporary/missing-lineage.stderr"; then
   echo "release soak validator accepted a non-ancestor report without lineage proof" >&2
+  exit 1
+fi
+if (cd "$lineage_repository" \
+  && "$candidate_validator" "$lineage_valid" "$mealyd" \
+    "$lineage_expected_revision" "$temporary/absent-lineage.json") \
+  >"$temporary/candidate-missing-lineage.stdout" \
+  2>"$temporary/candidate-missing-lineage.stderr"; then
+  echo "release soak candidate validator omitted a required lineage proof" >&2
+  exit 1
+fi
+ln -s "$lineage_proof" "$temporary/lineage-symlink.json"
+if (cd "$lineage_repository" \
+  && "$candidate_validator" "$lineage_valid" "$mealyd" \
+    "$lineage_expected_revision" "$temporary/lineage-symlink.json") \
+  >"$temporary/candidate-symlink-lineage.stdout" \
+  2>"$temporary/candidate-symlink-lineage.stderr"; then
+  echo "release soak candidate validator accepted a symlinked lineage proof" >&2
   exit 1
 fi
 
