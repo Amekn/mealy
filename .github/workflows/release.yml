@@ -88,8 +88,9 @@ jobs:
             docs/benchmarks/release-soak-subject.json \
             docs/benchmarks/release-soak.json \
             promoted/mealyd "$GITHUB_REPOSITORY"
-          scripts/validate-release-soak.sh \
-            docs/benchmarks/release-soak.json promoted/mealyd "$GITHUB_SHA"
+          scripts/validate-release-soak-candidate.sh \
+            docs/benchmarks/release-soak.json promoted/mealyd "$GITHUB_SHA" \
+            docs/benchmarks/release-soak-lineage.json
       - name: Retain the checked subject for this workflow run only
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -250,9 +251,10 @@ jobs:
       - name: Bind the checked 24-hour soak to the exact release daemon
         if: ${{ matrix.target == 'linux-x86_64-gnu' }}
         run: >-
-          scripts/validate-release-soak.sh
+          scripts/validate-release-soak-candidate.sh
           docs/benchmarks/release-soak.json
           target/release/mealyd "$GITHUB_SHA"
+          docs/benchmarks/release-soak-lineage.json
       - name: Download and verify the public native-upgrade baseline
         env:
           GH_TOKEN: ${{ github.token }}

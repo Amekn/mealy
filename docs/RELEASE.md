@@ -728,7 +728,10 @@ evidence.
    mapping. Do not squash an externally soaked candidate whose observed commit is not already on
    `main`. Investigate any identity, integrity, replay, residue, recovery, or
    identity failure before tagging; the tag workflow repeats this gate and cannot publish without
-   it. The validator also rejects a tag when Cargo manifests, the lockfile/toolchain configuration,
+   it. The tag workflow's candidate entry point passes the checked lineage proof at both promotion
+   and packaging boundaries whenever the canonical evidence file exists, and otherwise requires
+   the observed revision to be a direct ancestor. The validator also rejects a tag when Cargo
+   manifests, the lockfile/toolchain configuration,
    compiled application or library sources/assets/migrations, schemas, or the release-binary build
    entry point changed after the observed revision. Only evidence, packaging, workflow, and
    documentation follow-ups may advance without repeating the soak, and all still require protected
