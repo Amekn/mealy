@@ -137,6 +137,7 @@ jobs:
             scripts/test-public-linux-repository-installer.sh
             scripts/test-public-linux-repository-verifier.sh
             scripts/test-public-license-validator.sh
+            scripts/test-public-release-record-validator.sh
             scripts/test-release-environment-preflight.sh
             scripts/test-release-notes.sh
             scripts/test-release-soak-lineage-generator.sh
@@ -146,6 +147,7 @@ jobs:
             scripts/test-release-upgrade-baseline-validator.sh
             scripts/test-stacked-release-normalization.sh
             scripts/validate-public-license.sh
+            scripts/validate-public-release-record.sh
             scripts/validate-release-upgrade-baseline.sh
             scripts/verify-sdk-packages.sh
             scripts/verify-public-linux-repository.sh
@@ -178,6 +180,8 @@ jobs:
         run: scripts/test-release-upgrade-baseline-fetch.sh
       - name: Verify public-release license gate
         run: scripts/test-public-license-validator.sh
+      - name: Verify immutable public-release record gate
+        run: scripts/test-public-release-record-validator.sh
       - name: Verify checkout-free public repository acceptance
         run: |
           scripts/test-public-linux-repository-verifier.sh
