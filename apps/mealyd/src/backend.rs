@@ -13,15 +13,18 @@ use mealy_api::{
 use mealy_application::{
     AdmitInputCommand, AgentEvidenceStore, AgentExecutionStore, AgentStoreError,
     ApprovalRequestView, ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore,
-    ArtifactEvidenceStoreError, ArtifactMetadata, COMPACTION_PROMPT_VERSION, CancellationProbe,
-    CapabilityRequirement, Clock, CommitCompaction, CompactionStore, CompactionStoreError,
-    CompactionView, CompleteExtensionInvocationCommit, CompleteWebhookDeliveryCommit,
-    ContextDisposition, ContextManifestEvidence, ContextManifestEvidenceStore,
-    ContextManifestEvidenceStoreError, CreateScheduleCommit, CreateSessionCheckpointCommand,
-    DelegationStore, DisableExtensionCommit, DiscordChannelBindingView, DiscordChannelStatus,
-    DiscordChannelStore, DiscordChannelStoreError, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION,
-    EffectAttemptState, EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError,
-    EffectLedgerView, EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
+    ArtifactEvidenceStoreError, ArtifactMetadata, AutomationAction, AutomationRunStatus,
+    AutomationRunView, AutomationStatus, AutomationStore, AutomationStoreError,
+    AutomationTransition, AutomationTrigger, AutomationTriggerView, AutomationView,
+    COMPACTION_PROMPT_VERSION, CancellationProbe, CapabilityRequirement, Clock, CommitCompaction,
+    CompactionStore, CompactionStoreError, CompactionView, CompleteExtensionInvocationCommit,
+    CompleteWebhookDeliveryCommit, ContextDisposition, ContextManifestEvidence,
+    ContextManifestEvidenceStore, ContextManifestEvidenceStoreError, CreateAutomationCommit,
+    CreateScheduleCommit, CreateSessionCheckpointCommand, DelegationStore, DisableExtensionCommit,
+    DiscordChannelBindingView, DiscordChannelStatus, DiscordChannelStore, DiscordChannelStoreError,
+    EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION, EditAutomationCommit, EffectAttemptState,
+    EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError, EffectLedgerView,
+    EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
     ExtensionDispatchRequest, ExtensionGrant, ExtensionHost, ExtensionHostError,
     ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
     ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
@@ -48,24 +51,24 @@ use mealy_application::{
     SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, StageExtensionManifestCommit,
     TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
     TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
-    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
-    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
-    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
-    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
-    admit_input_with_images, canonical_arguments_digest, compaction_source_event_digest,
-    create_session, create_session_checkpoint, create_session_with_selection,
-    extension_grant_digest, fork_session, inspect_extension_manifest,
-    inspect_installed_registry_package_policy, next_schedule_occurrence_ms,
-    query_session_checkpoints, query_session_provider_selection, query_session_status,
-    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
-    sha256_digest, update_session_provider_selection, update_session_title,
+    TimelineUseCaseError, TransitionAutomationCommit, TransitionScheduleCommit,
+    UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand, ValidationStore,
+    WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION,
+    WebhookChannelBindingView, WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError,
+    admit_input, admit_input_with_images, canonical_arguments_digest,
+    compaction_source_event_digest, create_session, create_session_checkpoint,
+    create_session_with_selection, extension_grant_digest, fork_session,
+    inspect_extension_manifest, inspect_installed_registry_package_policy,
+    next_schedule_occurrence_ms, query_session_checkpoints, query_session_provider_selection,
+    query_session_status, query_session_transcript, query_sessions, query_timeline, route_provider,
+    search_sessions, sha256_digest, update_session_provider_selection, update_session_title,
     validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
     webhook_input_dedupe_key, webhook_signature_digest,
 };
 use mealy_domain::{
-    ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, ChannelBindingId,
-    CompactionCarryForward, CompactionId, CompactionRecord, CompactionSourceRange,
-    ContextManifestId, CorrelationId, DelegationId, EffectId, EffectStatus,
+    ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, AutomationId,
+    ChannelBindingId, CompactionCarryForward, CompactionId, CompactionRecord,
+    CompactionSourceRange, ContextManifestId, CorrelationId, DelegationId, EffectId, EffectStatus,
     ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
     ExtensionStatus, MemoryCategory, MemoryConfidence, MemoryId, MemoryMetadata, MemoryNamespace,
     MemoryPromotionAuthorization, MemoryProvenance, MemoryRetention, MemoryRevisionId,
@@ -87,20 +90,24 @@ const SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES: usize = 32 * 1024 * 1024;
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageBucketResponse,
     AdminUsageReportResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt, ApprovalResponse,
-    ApprovalStatusResponse, ApprovalSubjectResponse, ArtifactMetadataResponse, BackupResponse,
-    BackupVerificationResponse, CancelTaskRequest, CompactionResponse, ContextItemDisposition,
-    ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
-    ContextMemoryEvidenceResponse, ContextMemorySourceCitationResponse, ControlTaskRequest,
-    CorrectMemoryRequest, CreateBackupRequest, CreateCompactionRequest,
+    ApprovalStatusResponse, ApprovalSubjectResponse, ArtifactMetadataResponse,
+    AutomationActionCommand, AutomationActionResponse, AutomationLifecycleRequest,
+    AutomationResponse, AutomationRunResponse, AutomationRunStatusResponse, AutomationRunsResponse,
+    AutomationStatusResponse, AutomationTriggerRequest, AutomationTriggerResponse,
+    AutomationsResponse, BackupResponse, BackupVerificationResponse, CancelTaskRequest,
+    CompactionResponse, ContextItemDisposition, ContextManifestEvidenceItemResponse,
+    ContextManifestEvidenceResponse, ContextMemoryEvidenceResponse,
+    ContextMemorySourceCitationResponse, ControlTaskRequest, CorrectMemoryRequest,
+    CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
     CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
     CreateWebhookChannelResponse, DaemonRunStatusResponse, DelegationResponse, DelegationsResponse,
     DiscordChannelResponse, DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse,
-    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
-    EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
-    EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
-    ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
+    DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest, EffectAttemptResponse,
+    EffectAttemptStatusResponse, EffectOutcomeEvidenceResponse, EffectOutcomeResponse,
+    EffectReconciliationReceipt, EffectResponse, EffectStatusResponse, EnableExtensionRequest,
+    ExportKindRequest, ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
     ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
     ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
     ExtensionRegistryProvenanceResponse, ExtensionResponse, ExtensionStatusResponse,
@@ -421,6 +428,30 @@ impl RuntimeBackend {
             .map_err(map_schedule_store_error)?;
         Ok(schedule_response(schedule))
     }
+
+    fn transition_automation_command(
+        &self,
+        identity: &AuthenticatedIdentity,
+        automation_id: &str,
+        request: &AutomationLifecycleRequest,
+        transition: AutomationTransition,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(identity)?;
+        let automation_id = parse_automation(automation_id)?;
+        let automation = self
+            .lock()?
+            .transition_automation(TransitionAutomationCommit {
+                automation_id,
+                manager_ownership: ownership,
+                expected_revision: request.expected_revision,
+                transition,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                transitioned_at_ms: epoch_milliseconds(self.clock.now())?,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
 }
 
 struct KeyedConcurrencyLimiter {
@@ -599,6 +630,10 @@ impl ApiBackend for RuntimeBackend {
             claimed_schedule_runs: snapshot.claimed_schedule_runs,
             failed_schedule_runs: snapshot.failed_schedule_runs,
             skipped_schedule_runs: snapshot.skipped_schedule_runs,
+            active_automations: snapshot.active_automations,
+            paused_automations: snapshot.paused_automations,
+            claimed_automation_runs: snapshot.claimed_automation_runs,
+            failed_automation_runs: snapshot.failed_automation_runs,
             database_bytes,
             artifact_bytes: artifacts.total_bytes,
             artifact_count: artifacts.blob_count,
@@ -711,6 +746,7 @@ impl ApiBackend for RuntimeBackend {
         let status = self.admin_status(identity)?;
         let mut gauges = BTreeMap::from([
             ("active_channels".to_owned(), status.active_channels),
+            ("active_automations".to_owned(), status.active_automations),
             ("degraded_channels".to_owned(), status.degraded_channels),
             ("active_schedules".to_owned(), status.active_schedules),
             ("active_leases".to_owned(), status.active_leases),
@@ -720,6 +756,10 @@ impl ApiBackend for RuntimeBackend {
             ("enabled_extensions".to_owned(), status.enabled_extensions),
             ("failed_extensions".to_owned(), status.failed_extensions),
             ("failed_outbox".to_owned(), status.failed_outbox),
+            (
+                "failed_automation_runs".to_owned(),
+                status.failed_automation_runs,
+            ),
             (
                 "failed_schedule_runs".to_owned(),
                 status.failed_schedule_runs,
@@ -741,6 +781,11 @@ impl ApiBackend for RuntimeBackend {
                 status.reserved_channel_updates,
             ),
             ("paused_schedules".to_owned(), status.paused_schedules),
+            ("paused_automations".to_owned(), status.paused_automations),
+            (
+                "claimed_automation_runs".to_owned(),
+                status.claimed_automation_runs,
+            ),
             (
                 "claimed_schedule_runs".to_owned(),
                 status.claimed_schedule_runs,
@@ -873,6 +918,7 @@ impl ApiBackend for RuntimeBackend {
                 },
             ),
             ("schedules".to_owned(), schedule_doctor_check(&snapshot)),
+            ("automations".to_owned(), automation_doctor_check(&snapshot)),
             (
                 "sqlite".to_owned(),
                 format!(
@@ -1790,6 +1836,170 @@ impl ApiBackend for RuntimeBackend {
         Ok(ScheduleRunsResponse {
             api_version: API_VERSION.to_owned(),
             schedule_id: schedule_id.to_string(),
+            runs,
+        })
+    }
+
+    fn create_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        request: CreateAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automation_id = parse_automation(&request.automation_id)?;
+        if automation_id.to_string() != request.automation_id
+            || automation_id.as_uuid().get_version_num() != 7
+        {
+            return Err(BackendError::InvalidRequest(
+                "automation ID must be a canonical UUIDv7".to_owned(),
+            ));
+        }
+        let created_at_ms = epoch_milliseconds(self.clock.now())?;
+        let trigger = automation_trigger_from_request(request.trigger)?;
+        let action = automation_action_from_command(request.action)?;
+        let automation = self
+            .lock()?
+            .create_automation(CreateAutomationCommit {
+                automation_id,
+                manager_ownership: ownership,
+                name: request.name,
+                trigger,
+                action,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                created_at_ms,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn automations(
+        &self,
+        identity: AuthenticatedIdentity,
+    ) -> Result<AutomationsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automations = self
+            .read()?
+            .automations(ownership)
+            .map_err(map_automation_store_error)?
+            .into_iter()
+            .map(automation_response)
+            .collect();
+        Ok(AutomationsResponse {
+            api_version: API_VERSION.to_owned(),
+            automations,
+        })
+    }
+
+    fn automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+    ) -> Result<AutomationResponse, BackendError> {
+        let automation = self
+            .read()?
+            .automation(
+                parse_ownership(&identity)?,
+                parse_automation(&automation_id)?,
+            )
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn edit_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: EditAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let edited_at_ms = epoch_milliseconds(self.clock.now())?;
+        let trigger = automation_trigger_from_request(request.trigger)?;
+        let action = automation_action_from_command(request.action)?;
+        mealy_application::validate_automation_definition(
+            &request.name,
+            &trigger,
+            &action,
+            edited_at_ms,
+        )
+        .map_err(|error| BackendError::InvalidRequest(error.to_string()))?;
+        let automation = self
+            .lock()?
+            .edit_automation(EditAutomationCommit {
+                automation_id: parse_automation(&automation_id)?,
+                manager_ownership: ownership,
+                expected_revision: request.expected_revision,
+                name: request.name,
+                trigger,
+                action,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                edited_at_ms,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn pause_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Pause,
+        )
+    }
+
+    fn resume_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Resume,
+        )
+    }
+
+    fn cancel_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Cancel,
+        )
+    }
+
+    fn automation_runs(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        limit: usize,
+    ) -> Result<AutomationRunsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automation_id = parse_automation(&automation_id)?;
+        let runs = self
+            .read()?
+            .automation_runs(ownership, automation_id, limit)
+            .map_err(map_automation_store_error)?
+            .into_iter()
+            .map(automation_run_response)
+            .collect();
+        Ok(AutomationRunsResponse {
+            api_version: API_VERSION.to_owned(),
+            automation_id: automation_id.to_string(),
             runs,
         })
     }
@@ -4914,6 +5124,11 @@ fn parse_schedule(value: &str) -> Result<ScheduleId, BackendError> {
         .map_err(|_| BackendError::InvalidRequest("invalid schedule ID".to_owned()))
 }
 
+fn parse_automation(value: &str) -> Result<AutomationId, BackendError> {
+    AutomationId::from_str(value)
+        .map_err(|_| BackendError::InvalidRequest("invalid automation ID".to_owned()))
+}
+
 fn parse_task(value: &str) -> Result<TaskId, BackendError> {
     TaskId::from_str(value).map_err(|_| BackendError::InvalidRequest("invalid task ID".to_owned()))
 }
@@ -5045,6 +5260,122 @@ fn schedule_run_response(view: ScheduleRunView) -> ScheduleRunResponse {
             ScheduleRunStatus::Failed => ScheduleRunStatusResponse::Failed,
         },
         inbox_entry_id: view.inbox_entry_id.map(|id| id.to_string()),
+        reason: view.reason,
+        created_at_ms: view.created_at_ms,
+        completed_at_ms: view.completed_at_ms,
+    }
+}
+
+fn automation_trigger_from_request(
+    trigger: AutomationTriggerRequest,
+) -> Result<AutomationTrigger, BackendError> {
+    match trigger {
+        AutomationTriggerRequest::OneShot { due_at_ms } => {
+            Ok(AutomationTrigger::OneShot { due_at_ms })
+        }
+        AutomationTriggerRequest::SessionEvent {
+            source_session_id,
+            event_type,
+        } => Ok(AutomationTrigger::SessionEvent {
+            source_session_id: parse_session(&source_session_id)?,
+            event_type,
+        }),
+    }
+}
+
+fn automation_action_from_command(
+    action: AutomationActionCommand,
+) -> Result<AutomationAction, BackendError> {
+    match action {
+        AutomationActionCommand::SubmitPrompt {
+            target_session_id,
+            prompt,
+            allow_approval_required_action,
+        } => Ok(AutomationAction::SubmitPrompt {
+            target_session_id: parse_session(&target_session_id)?,
+            prompt,
+            approval_required_actions_allowed: allow_approval_required_action,
+        }),
+        AutomationActionCommand::Notify {
+            target_session_id,
+            message,
+        } => Ok(AutomationAction::Notify {
+            target_session_id: parse_session(&target_session_id)?,
+            message,
+        }),
+    }
+}
+
+fn automation_action_response(action: AutomationAction) -> AutomationActionResponse {
+    match action {
+        AutomationAction::SubmitPrompt {
+            target_session_id,
+            prompt,
+            approval_required_actions_allowed,
+        } => AutomationActionResponse::SubmitPrompt {
+            target_session_id: target_session_id.to_string(),
+            prompt,
+            allow_approval_required_action: approval_required_actions_allowed,
+        },
+        AutomationAction::Notify {
+            target_session_id,
+            message,
+        } => AutomationActionResponse::Notify {
+            target_session_id: target_session_id.to_string(),
+            message,
+        },
+    }
+}
+
+fn automation_response(view: AutomationView) -> AutomationResponse {
+    AutomationResponse {
+        api_version: API_VERSION.to_owned(),
+        automation_id: view.automation_id.to_string(),
+        name: view.name,
+        trigger: match view.trigger {
+            AutomationTriggerView::OneShot { due_at_ms } => {
+                AutomationTriggerResponse::OneShot { due_at_ms }
+            }
+            AutomationTriggerView::SessionEvent {
+                source_session_id,
+                event_type,
+                after_cursor,
+            } => AutomationTriggerResponse::SessionEvent {
+                source_session_id: source_session_id.to_string(),
+                event_type,
+                after_cursor,
+            },
+        },
+        action: automation_action_response(view.action),
+        status: match view.status {
+            AutomationStatus::Active => AutomationStatusResponse::Active,
+            AutomationStatus::Paused => AutomationStatusResponse::Paused,
+            AutomationStatus::Completed => AutomationStatusResponse::Completed,
+            AutomationStatus::Cancelled => AutomationStatusResponse::Cancelled,
+        },
+        revision: view.revision,
+        created_at_ms: view.created_at_ms,
+        updated_at_ms: view.updated_at_ms,
+    }
+}
+
+fn automation_run_response(view: AutomationRunView) -> AutomationRunResponse {
+    AutomationRunResponse {
+        automation_run_id: view.automation_run_id.to_string(),
+        automation_id: view.automation_id.to_string(),
+        trigger_key: view.trigger_key,
+        triggered_at_ms: view.triggered_at_ms,
+        source_event_cursor: view.source_event_cursor,
+        source_event_id: view.source_event_id.map(|id| id.to_string()),
+        source_event_type: view.source_event_type,
+        status: match view.status {
+            AutomationRunStatus::Claimed => AutomationRunStatusResponse::Claimed,
+            AutomationRunStatus::Admitted => AutomationRunStatusResponse::Admitted,
+            AutomationRunStatus::Notified => AutomationRunStatusResponse::Notified,
+            AutomationRunStatus::Failed => AutomationRunStatusResponse::Failed,
+        },
+        inbox_entry_id: view.inbox_entry_id.map(|id| id.to_string()),
+        outbox_id: view.outbox_id.map(|id| id.to_string()),
         reason: view.reason,
         created_at_ms: view.created_at_ms,
         completed_at_ms: view.completed_at_ms,
@@ -6219,6 +6550,18 @@ fn map_schedule_store_error(error: ScheduleStoreError) -> BackendError {
     }
 }
 
+fn map_automation_store_error(error: AutomationStoreError) -> BackendError {
+    match error {
+        AutomationStoreError::NotFound | AutomationStoreError::Unauthorized => {
+            BackendError::NotFound
+        }
+        AutomationStoreError::Conflict => BackendError::Conflict,
+        AutomationStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
+        AutomationStoreError::Unavailable(_) => BackendError::Unavailable,
+        AutomationStoreError::InvariantViolation(_) => BackendError::Internal,
+    }
+}
+
 fn map_channel_secret_error(error: &ChannelSecretStoreError) -> BackendError {
     match error {
         ChannelSecretStoreError::Conflict => BackendError::Conflict,
@@ -6381,6 +6724,16 @@ fn schedule_doctor_check(snapshot: &OperationalSnapshot) -> String {
         snapshot.claimed_schedule_runs,
         snapshot.failed_schedule_runs,
         snapshot.skipped_schedule_runs,
+    )
+}
+
+fn automation_doctor_check(snapshot: &OperationalSnapshot) -> String {
+    format!(
+        "ok: {} active, {} paused, {} claimed, {} failed automation occurrence(s)",
+        snapshot.active_automations,
+        snapshot.paused_automations,
+        snapshot.claimed_automation_runs,
+        snapshot.failed_automation_runs,
     )
 }
 

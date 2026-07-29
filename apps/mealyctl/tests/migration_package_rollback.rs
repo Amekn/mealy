@@ -242,6 +242,9 @@ fn downgrade_fixture_to_v13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
+             DROP TABLE automation_run;
+             DROP TABLE automation_revision;
+             DROP TABLE automation;
              DROP TRIGGER memory_revision_semantic_invalidate;
              DROP INDEX memory_semantic_vector_scope_idx;
              DROP TABLE memory_semantic_vector;
@@ -257,7 +260,7 @@ fn downgrade_fixture_to_v13(database: &Path) {
              DROP TABLE registry_trust_root_head;
              DROP TABLE registry_trust_root;
              DELETE FROM schema_version WHERE version IN (
-                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
              );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )

@@ -1189,6 +1189,27 @@ nonzero `claimedScheduleRuns` that persist beyond a lease interval and any incre
 `failedScheduleRuns`; inspect exact reasons with `schedule runs`. Safe mode deliberately starts no
 schedule driver.
 
+## One-shot and event automation operations
+
+Use `automation list`, `automation status`, and `automation runs` to inspect canonical definitions,
+current revisions, source cursors, and newest-first occurrence history. Creation uses a
+client-proposed UUIDv7 as a durable key: retain the same identity and exact definition after an
+ambiguous response. The store returns the current existing projection even if time, cursor, or
+lifecycle has advanced; any semantic reuse conflicts.
+
+Claims expire after 30 seconds and restart reclaims the same occurrence. Prompt actions use
+`automation:AUTOMATION_ID:TRIGGER_KEY` as the durable inbox key. Notification completion writes the
+terminal occurrence, next status/cursor, journal event, and one outbox record atomically. A
+`notified` run means accepted into the durable delivery outbox; inspect normal channel/outbox
+health for remote delivery failures.
+
+Review `activeAutomations`, `pausedAutomations`, `claimedAutomationRuns`, and
+`failedAutomationRuns` in `status`, and the snake-case equivalents in `metrics`. A claimed count
+that persists beyond one lease interval or a rising failed count needs investigation with
+`automation runs`. Safe mode starts no automation driver and rejects mutation. Do not edit schema
+29 automation tables directly. See [durable automation](AUTOMATION.md) for exact CLI forms,
+supported destinations, edit behavior, and payload-isolation rules.
+
 ## Installed-program lifecycle
 
 Inspect the program separately from daemon health:

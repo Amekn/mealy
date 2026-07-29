@@ -26,23 +26,24 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApiErrorResponse, ApprovalResolutionReceipt,
-    CancelTaskRequest, ControlTaskRequest, CreateDiscordChannelRequest,
+    AutomationLifecycleRequest, AutomationResponse, AutomationRunsResponse, AutomationsResponse,
+    CancelTaskRequest, ControlTaskRequest, CreateAutomationRequest, CreateDiscordChannelRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
     CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
     CreateWebhookChannelResponse, DiscordChannelResponse, DiscordChannelsResponse,
-    EnableExtensionRequest, ExtensionInvocationResponse, ExtensionLifecycleRequest,
-    ExtensionResponse, ExtensionsResponse, ForkSessionRequest, HealthResponse,
-    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo,
-    PendingApprovalsResponse, ProviderCatalogResponse, ReadinessResponse, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
-    RevokeWebhookChannelRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
-    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionTitleResponse, SessionsResponse, SlackChannelResponse,
-    SlackChannelsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
-    SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse,
-    TaskResponse, TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor,
-    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
-    WebhookChannelResponse, WebhookChannelsResponse,
+    EditAutomationRequest, EnableExtensionRequest, ExtensionInvocationResponse,
+    ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
+    HealthResponse, InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest,
+    LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse, ReadinessResponse,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
+    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, SessionCheckpointResponse,
+    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
+    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
+    SubmitImageInputRequest, SubmitInputRequest, TaskCancellationReceipt, TaskControlReceipt,
+    TaskReplayResponse, TaskResponse, TelegramChannelResponse, TelegramChannelsResponse,
+    TimelineCursor, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    UpdateSessionTitleRequest, WebhookChannelResponse, WebhookChannelsResponse,
 };
 use reqwest::Method;
 use reqwest::blocking::{Body, Client as HttpClient, RequestBuilder, Response};
@@ -696,6 +697,136 @@ impl MealyClient {
         )
     }
 
+    /// Lists owner-authorized one-shot and future-event automations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn automations(&self) -> Result<AutomationsResponse, ClientError> {
+        self.get(&["v1", "automations"])
+    }
+
+    /// Creates or reconciles one client-keyed automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn create_automation(
+        &self,
+        request: &CreateAutomationRequest,
+    ) -> Result<AutomationResponse, ClientError> {
+        self.post(&["v1", "automations"], request, ResponseVersion::TopLevel)
+    }
+
+    /// Returns one owner-authorized automation projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn automation(&self, automation_id: &str) -> Result<AutomationResponse, ClientError> {
+        self.get(&["v1", "automations", path_identifier(automation_id)?])
+    }
+
+    /// Replaces one automation definition under its exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn edit_automation(
+        &self,
+        automation_id: &str,
+        request: &EditAutomationRequest,
+    ) -> Result<AutomationResponse, ClientError> {
+        self.patch(
+            &["v1", "automations", path_identifier(automation_id)?],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
+    /// Pauses one active automation under its exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn pause_automation(
+        &self,
+        automation_id: &str,
+        request: &AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, ClientError> {
+        self.post(
+            &[
+                "v1",
+                "automations",
+                path_identifier(automation_id)?,
+                "pause",
+            ],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
+    /// Resumes one paused automation under its exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn resume_automation(
+        &self,
+        automation_id: &str,
+        request: &AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, ClientError> {
+        self.post(
+            &[
+                "v1",
+                "automations",
+                path_identifier(automation_id)?,
+                "resume",
+            ],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
+    /// Terminally cancels one automation under its exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn cancel_automation(
+        &self,
+        automation_id: &str,
+        request: &AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, ClientError> {
+        self.post(
+            &[
+                "v1",
+                "automations",
+                path_identifier(automation_id)?,
+                "cancel",
+            ],
+            request,
+            ResponseVersion::TopLevel,
+        )
+    }
+
+    /// Returns bounded newest-first occurrence history for one automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] when validation, transport, or versioned decoding fails.
+    pub fn automation_runs(
+        &self,
+        automation_id: &str,
+        limit: usize,
+    ) -> Result<AutomationRunsResponse, ClientError> {
+        let mut url =
+            self.endpoint(&["v1", "automations", path_identifier(automation_id)?, "runs"])?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
+        self.get_url(url, ResponseVersion::TopLevel)
+    }
+
     /// Lists installed governed extensions.
     ///
     /// # Errors
@@ -1208,6 +1339,9 @@ versioned_requests!(
     CancelTaskRequest,
     ControlTaskRequest,
     ResolveApprovalRequest,
+    CreateAutomationRequest,
+    EditAutomationRequest,
+    AutomationLifecycleRequest,
     InstallExtensionRequest,
     StageExtensionManifestRequest,
     EnableExtensionRequest,
@@ -1416,8 +1550,9 @@ mod tests {
     use std::thread;
 
     use mealy_protocol::{
-        API_VERSION, CreateSessionRequest, DeliveryMode, LocalConnectionInfo,
-        ProviderSelectionCommand, SubmitInputRequest, UpdateSessionTitleRequest,
+        API_VERSION, AutomationActionCommand, AutomationTriggerRequest, CreateAutomationRequest,
+        CreateSessionRequest, DeliveryMode, LocalConnectionInfo, ProviderSelectionCommand,
+        SubmitInputRequest, UpdateSessionTitleRequest,
     };
 
     use super::{ClientError, MealyClient, ResponseVersion, validate_response_value};
@@ -1650,6 +1785,56 @@ mod tests {
                 "deliveryMode": "queue",
                 "content": "hello"
             })
+        );
+    }
+
+    #[test]
+    fn creates_and_inspects_typed_automation_history() {
+        let (base_url, server) = serve_once(
+            "200 OK",
+            format!(
+                r#"{{"apiVersion":"{API_VERSION}","automationId":"automation-1","name":"reminder","trigger":{{"kind":"one_shot","dueAtMs":20}},"action":{{"kind":"notify","targetSessionId":"session-1","message":"hello"}},"status":"active","revision":0,"createdAtMs":10,"updatedAtMs":10}}"#
+            ),
+        );
+        let client = MealyClient::new(base_url, "owner-token").unwrap();
+        let response = client
+            .create_automation(&CreateAutomationRequest {
+                api_version: API_VERSION.to_owned(),
+                automation_id: "automation-1".to_owned(),
+                name: "reminder".to_owned(),
+                trigger: AutomationTriggerRequest::OneShot { due_at_ms: 20 },
+                action: AutomationActionCommand::Notify {
+                    target_session_id: "session-1".to_owned(),
+                    message: "hello".to_owned(),
+                },
+            })
+            .unwrap();
+        assert_eq!(response.automation_id, "automation-1");
+        let request = server.join().unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .starts_with("post /v1/automations http/1.1\r\n")
+        );
+
+        let (base_url, server) = serve_once(
+            "200 OK",
+            format!(r#"{{"apiVersion":"{API_VERSION}","automationId":"automation-1","runs":[]}}"#),
+        );
+        let client = MealyClient::new(base_url, "owner-token").unwrap();
+        assert!(
+            client
+                .automation_runs("automation-1", 20)
+                .unwrap()
+                .runs
+                .is_empty()
+        );
+        assert!(
+            server
+                .join()
+                .unwrap()
+                .to_ascii_lowercase()
+                .starts_with("get /v1/automations/automation-1/runs?limit=20 http/1.1\r\n")
         );
     }
 

@@ -42,8 +42,9 @@ public command cannot be added or removed without updating this reference.
 | `registry` | Inspect and advance signed inert registry trust metadata while stopped. |
 | `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
+| `automation` | Create, edit, inspect, pause, resume, cancel, or audit one-shot and future-event automations. |
 | `health` | Check daemon liveness. |
-| `status` | Inspect queues, leases, providers, approvals, effects, channels, and storage. |
+| `status` | Inspect queues, leases, providers, approvals, effects, channels, automations, and storage. |
 | `metrics` | Emit stable machine-readable operational gauges. |
 | `usage` | Emit exact settled terminal-run usage for a bounded trailing day range. |
 | `doctor` | Diagnose control-plane, permission, and sandbox conformance. |
@@ -565,6 +566,8 @@ choose a bounded non-interactive path.
   and the first chat.
 - Follow the [quickstart](QUICKSTART.md) for detailed provider activation, first
   conversation, skills, tools, channels, schedules, and delegation.
+- Follow [durable automation](AUTOMATION.md) for one-shot prompts, future-event notifications,
+  revision-fenced edits, crash recovery, and delivery boundaries.
 - Use the [operations guide](OPERATIONS.md) for health, metrics, drain, backup/restore, retention,
   service management, upgrades, and incidents.
 - Use the [local API reference](API.md) when building a direct client rather than invoking

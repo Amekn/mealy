@@ -398,6 +398,7 @@ impl WebhookChannelStore for SqliteStore {
             "session.input_acknowledgement"
                 | "session.turn_completed"
                 | "effect.approval_requested"
+                | "automation.notification"
         ) {
             return Ok(None);
         }

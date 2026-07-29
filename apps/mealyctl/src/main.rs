@@ -10,6 +10,7 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
+use chrono::DateTime;
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
@@ -42,8 +43,8 @@ use mealy_application::{
     validate_provider_chain,
 };
 use mealy_domain::{
-    ArtifactId, AttemptId, ChannelBindingId, ContextManifestId, CorrelationId, EventId,
-    PrincipalId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
+    ArtifactId, AttemptId, AutomationId, ChannelBindingId, ContextManifestId, CorrelationId,
+    EventId, PrincipalId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
 };
 use mealy_evaluation::{EvaluationError, EvaluationSuite, run_suite};
 use mealy_infrastructure::{
@@ -66,16 +67,18 @@ use mealy_infrastructure::{
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
     ApiErrorResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt, ApprovalResponse,
+    AutomationActionCommand, AutomationLifecycleRequest, AutomationResponse,
+    AutomationRunsResponse, AutomationTriggerRequest, AutomationsResponse,
     BackupActivationResponse, BackupResponse, BackupVerificationResponse, CancelTaskRequest,
-    CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
-    CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
+    CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateAutomationRequest,
+    CreateBackupRequest, CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
     CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
     CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
     DelegationsResponse, DeliveryMode, DiscordChannelResponse, DiscordChannelsResponse,
-    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse,
-    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportKindRequest,
-    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
+    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest,
+    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
+    ExportKindRequest, ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
     ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
     GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
     InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
@@ -584,6 +587,12 @@ enum Command {
         /// Schedule operation.
         #[command(subcommand)]
         command: ScheduleCommand,
+    },
+    /// Create, edit, inspect, pause, resume, cancel, or audit durable automations.
+    Automation {
+        /// Automation operation.
+        #[command(subcommand)]
+        command: AutomationCommand,
     },
     /// Check daemon liveness.
     Health,
@@ -2488,6 +2497,165 @@ enum ScheduleCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum AutomationCommand {
+    /// Submit one prompt once at an RFC 3339 instant.
+    CreateOncePrompt {
+        /// Existing durable destination session.
+        session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant, for example `2026-08-01T09:00:00+12:00`.
+        #[arg(long)]
+        at: String,
+        /// Explicitly allow a prompt beginning `/act`, `/edit`, `/manage`, or `/run`.
+        #[arg(long)]
+        allow_approval_required_action: bool,
+        /// Exact prompt admitted once.
+        prompt: String,
+    },
+    /// Send one static notification once at an RFC 3339 instant.
+    CreateOnceNotify {
+        /// Existing destination session; remote Telegram, Discord, or webhook sessions are allowed.
+        session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Static notification body.
+        message: String,
+    },
+    /// Notify after each future direct event of one exact source-session event type.
+    CreateEventNotify {
+        /// Existing source session whose future direct events are observed.
+        source_session_id: String,
+        /// Existing destination session receiving the notification.
+        target_session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Exact journal event type, such as `turn.completed`.
+        #[arg(long)]
+        event_type: String,
+        /// Static notification body. Source payload is never copied.
+        message: String,
+    },
+    /// Replace an active or paused automation with a one-shot prompt.
+    EditOncePrompt {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing durable destination session.
+        #[arg(long)]
+        session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Explicitly allow an approval-required action-mode prefix.
+        #[arg(long)]
+        allow_approval_required_action: bool,
+        /// Replacement prompt.
+        prompt: String,
+    },
+    /// Replace an active or paused automation with a one-shot notification.
+    EditOnceNotify {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing destination session.
+        #[arg(long)]
+        session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Replacement static notification.
+        message: String,
+    },
+    /// Replace an active or paused automation with a future event notification.
+    EditEventNotify {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing source session.
+        #[arg(long)]
+        source_session_id: String,
+        /// Existing destination session.
+        #[arg(long)]
+        target_session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Exact journal event type.
+        #[arg(long)]
+        event_type: String,
+        /// Replacement static notification.
+        message: String,
+    },
+    /// List automations in stable creation order.
+    List,
+    /// Inspect one automation.
+    Status {
+        /// Stable automation ID.
+        automation_id: String,
+    },
+    /// Pause one active automation.
+    Pause {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Resume one paused automation; event rules skip events accumulated while paused.
+    Resume {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Terminally cancel one automation while retaining history.
+    Cancel {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Read newest-first durable occurrence history.
+    Runs {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Maximum rows from 1 through 1000.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum MissedRunPolicyArgument {
     Skip,
@@ -4105,7 +4273,11 @@ fn run_maintenance(
             CliError::MaintenanceUnavailable
         });
     }
-    let _mutation_lock = lock_service_mutations(home)?;
+    let _mutation_lock = if operation == lifecycle::MaintenanceOperation::Repair {
+        lock_archive_installation_mutations(&plan.installation)?
+    } else {
+        lock_service_mutations(home)?
+    };
     eprintln!("{}", terminal_safe_pretty_json(&plan)?);
     match operation {
         lifecycle::MaintenanceOperation::Repair => {
@@ -4128,6 +4300,37 @@ fn run_maintenance(
             .map_err(CliError::from)
         }
     }
+}
+
+fn lock_archive_installation_mutations(
+    installation: &lifecycle::InstallationStatus,
+) -> Result<File, CliError> {
+    if installation.installation_kind != lifecycle::InstallationKind::ManagedArchive {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    let prefix = installation
+        .managed_prefix
+        .as_ref()
+        .ok_or(CliError::MaintenanceUnavailable)?;
+    let prefix_metadata = fs::symlink_metadata(prefix)?;
+    if prefix_metadata.file_type().is_symlink() || !prefix_metadata.is_dir() {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    let path = prefix.join(".mealy-install.lock");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CliError::MaintenanceUnavailable);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(CliError::Io(error)),
+    }
+    let lock = open_private_home_lock(&path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    lock.lock()?;
+    Ok(lock)
 }
 
 #[cfg(target_os = "linux")]
@@ -4380,6 +4583,7 @@ async fn run() -> Result<(), CliError> {
         }
         Command::Channel { command } => run_channel(&client, &connection, command).await?,
         Command::Schedule { command } => run_schedule(&client, &connection, command).await?,
+        Command::Automation { command } => run_automation(&client, &connection, command).await?,
         Command::Health => {
             let response = authorized(
                 client.get(format!("{}/health/live", connection.base_url)),
@@ -8422,6 +8626,347 @@ async fn schedule_lifecycle_request(
     .send()
     .await?;
     decode(response).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_automation(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: AutomationCommand,
+) -> Result<(), CliError> {
+    match command {
+        AutomationCommand::CreateOncePrompt {
+            session_id,
+            automation_id,
+            name,
+            at,
+            allow_approval_required_action,
+            prompt,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::SubmitPrompt {
+                    target_session_id: session_id,
+                    prompt,
+                    allow_approval_required_action,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::CreateOnceNotify {
+            session_id,
+            automation_id,
+            name,
+            at,
+            message,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id: session_id,
+                    message,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::CreateEventNotify {
+            source_session_id,
+            target_session_id,
+            automation_id,
+            name,
+            event_type,
+            message,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::SessionEvent {
+                    source_session_id,
+                    event_type,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id,
+                    message,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditOncePrompt {
+            automation_id,
+            expected_revision,
+            session_id,
+            name,
+            at,
+            allow_approval_required_action,
+            prompt,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::SubmitPrompt {
+                    target_session_id: session_id,
+                    prompt,
+                    allow_approval_required_action,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditOnceNotify {
+            automation_id,
+            expected_revision,
+            session_id,
+            name,
+            at,
+            message,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id: session_id,
+                    message,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditEventNotify {
+            automation_id,
+            expected_revision,
+            source_session_id,
+            target_session_id,
+            name,
+            event_type,
+            message,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::SessionEvent {
+                    source_session_id,
+                    event_type,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id,
+                    message,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::List => {
+            let response = authorized(
+                client.get(format!("{}/v1/automations", connection.base_url)),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationsResponse>(response).await?)?;
+        }
+        AutomationCommand::Status { automation_id } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/automations/{automation_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationResponse>(response).await?)?;
+        }
+        AutomationCommand::Pause {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "pause",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Resume {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "resume",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Cancel {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "cancel",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Runs {
+            automation_id,
+            limit,
+        } => {
+            let response = authorized(
+                client
+                    .get(format!(
+                        "{}/v1/automations/{automation_id}/runs",
+                        connection.base_url
+                    ))
+                    .query(&[("limit", limit)]),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationRunsResponse>(response).await?)?;
+        }
+    }
+    Ok(())
+}
+
+async fn create_automation_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: Option<String>,
+    name: String,
+    trigger: AutomationTriggerRequest,
+    action: AutomationActionCommand,
+) -> Result<(), CliError> {
+    let (automation_id, generated) = resolve_automation_id(automation_id)?;
+    if generated {
+        eprintln!("MEALY_AUTOMATION_ID {automation_id}");
+    }
+    let response = authorized(
+        client.post(format!("{}/v1/automations", connection.base_url)),
+        connection,
+    )
+    .json(&CreateAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        automation_id,
+        name,
+        trigger,
+        action,
+    })
+    .send()
+    .await?;
+    print_json(decode::<AutomationResponse>(response).await?)
+}
+
+async fn edit_automation_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    expected_revision: u64,
+    name: String,
+    trigger: AutomationTriggerRequest,
+    action: AutomationActionCommand,
+) -> Result<(), CliError> {
+    let response = authorized(
+        client.patch(format!(
+            "{}/v1/automations/{automation_id}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .json(&EditAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        expected_revision,
+        name,
+        trigger,
+        action,
+    })
+    .send()
+    .await?;
+    print_json(decode::<AutomationResponse>(response).await?)
+}
+
+async fn automation_lifecycle_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    operation: &str,
+    expected_revision: u64,
+) -> Result<AutomationResponse, CliError> {
+    let response = authorized(
+        client.post(format!(
+            "{}/v1/automations/{automation_id}/{operation}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .json(&AutomationLifecycleRequest {
+        api_version: API_VERSION.to_owned(),
+        expected_revision,
+    })
+    .send()
+    .await?;
+    decode(response).await
+}
+
+fn parse_automation_instant(value: &str) -> Result<i64, CliError> {
+    if value.is_empty() || value.len() > 64 || value.trim() != value {
+        return Err(CliError::InvalidAutomationTime);
+    }
+    DateTime::parse_from_rfc3339(value)
+        .map(|instant| instant.timestamp_millis())
+        .map_err(|_| CliError::InvalidAutomationTime)
+}
+
+fn resolve_automation_id(automation_id: Option<String>) -> Result<(String, bool), CliError> {
+    let Some(automation_id) = automation_id else {
+        return Ok((AutomationId::new().to_string(), true));
+    };
+    let parsed = automation_id
+        .parse::<AutomationId>()
+        .map_err(|_| CliError::InvalidAutomationId)?;
+    if parsed.to_string() != automation_id || parsed.as_uuid().get_version_num() != 7 {
+        return Err(CliError::InvalidAutomationId);
+    }
+    Ok((automation_id, false))
 }
 
 async fn fetch_memories(
@@ -21432,6 +21977,12 @@ enum CliError {
     /// Owner-entered memory namespace, content, confidence, or provenance is invalid.
     #[error("owner-entered governed memory is invalid")]
     InvalidMemoryOwnerEntry,
+    /// One-shot automation instant is not one bounded RFC 3339 timestamp.
+    #[error("automation --at must be one bounded RFC 3339 instant with an explicit UTC offset")]
+    InvalidAutomationTime,
+    /// Caller-proposed automation identity is not one canonical `UUIDv7`.
+    #[error("automation --automation-id must be one canonical UUIDv7")]
+    InvalidAutomationId,
     /// Explicit local text attachment is unsafe, unsupported, oversized, or not valid UTF-8.
     #[error(
         "local text attachment must be a nonempty no-follow regular UTF-8 file with a supported extension and at most 256 KiB"
@@ -21578,12 +22129,12 @@ enum CliError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
-        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigArguments, ConfigCommand,
-        ConfigNamespace, DelegationCommand, DiscordPairMessage, DiscordPairUser, EffectCommand,
-        EvaluationArguments, EvaluationCommand, EvaluationNamespace, ExtensionCommand,
-        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
+        ApprovalCommand, Arguments, AutomationCommand, AutomationId, BrowserArguments,
+        BrowserNamespace, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
+        CompactionCommand, ConfigArguments, ConfigCommand, ConfigNamespace, DelegationCommand,
+        DiscordPairMessage, DiscordPairUser, EffectCommand, EvaluationArguments, EvaluationCommand,
+        EvaluationNamespace, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
+        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
         MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction,
         MediaArguments, MediaNamespace, MediaOptions, MemoryCommand,
         OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
@@ -21598,16 +22149,16 @@ mod tests {
         lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
         observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
         onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_image_attachment, prepare_local_text_attachment,
-        provider_switch_recovery_route, read_evaluation_suite, registry_invocation,
-        registry_skill_install_plan, require_registry_snapshot_review_digest,
-        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
-        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
-        telegram_pair_api_url, update_recovery_route, valid_daemon_config_keys,
-        validate_anthropic_probe_envelope, validate_anthropic_probe_stream, validate_connection,
-        validate_discord_pair_base_url, validate_provider_probe_envelope,
-        validate_provider_probe_stream, validate_session_transcript_html,
-        validate_session_transcript_json, write_private_new_file,
+        parse_automation_instant, parse_chat_line, prepare_local_image_attachment,
+        prepare_local_text_attachment, provider_switch_recovery_route, read_evaluation_suite,
+        registry_invocation, registry_skill_install_plan, require_registry_snapshot_review_digest,
+        resolve_automation_id, resolve_default_operational_subcommand, resolve_setup,
+        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
+        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
+        valid_daemon_config_keys, validate_anthropic_probe_envelope,
+        validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
+        validate_provider_probe_envelope, validate_provider_probe_stream,
+        validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
     };
     #[cfg(target_os = "linux")]
     use super::{
@@ -23148,6 +23699,35 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn archive_repair_lock_is_prefix_scoped_before_a_daemon_home_exists() {
+        let temporary = tempfile::tempdir().expect("temporary managed prefix");
+        let prefix = temporary.path().join("prefix");
+        std::fs::create_dir(&prefix).expect("create managed prefix");
+        let installation = super::lifecycle::InstallationStatus {
+            schema_version: "mealy.install-status.v1".to_owned(),
+            installation_kind: super::lifecycle::InstallationKind::ManagedArchive,
+            integrity: super::lifecycle::IntegrityStatus::Failed,
+            current_version: "0.3.0".to_owned(),
+            current_commit: Some("a".repeat(40)),
+            state_schema_version: Some(18),
+            target: Some("linux-x86_64-gnu".to_owned()),
+            executable: prefix.join("bin/mealyctl"),
+            release_root: Some(prefix.join("share/mealy")),
+            managed_prefix: Some(prefix.clone()),
+            update_mode: super::lifecycle::UpdateMode::AttestedArchive,
+            rollback_available: false,
+            native_update_command: None,
+            issues: Vec::new(),
+        };
+
+        let lock = super::lock_archive_installation_mutations(&installation)
+            .expect("lock archive installation");
+        assert!(lock.metadata().expect("lock metadata").is_file());
+        assert!(prefix.join(".mealy-install.lock").is_file());
+        assert!(!temporary.path().join("home").exists());
     }
 
     #[test]
@@ -24827,6 +25407,99 @@ mod tests {
                 }
             } if schedule_id == "schedule-1"
         ));
+    }
+
+    #[test]
+    fn automation_commands_require_explicit_time_and_revision_shapes() {
+        let create = Arguments::try_parse_from([
+            "mealyctl",
+            "automation",
+            "create-once-prompt",
+            "session-1",
+            "--name",
+            "review build",
+            "--at",
+            "2026-08-01T09:00:00+12:00",
+            "Review the build.",
+        ])
+        .expect("automation create command");
+        assert!(matches!(
+            create.command,
+            Command::Automation {
+                command: AutomationCommand::CreateOncePrompt {
+                    session_id,
+                    name,
+                    at,
+                    ..
+                }
+            } if session_id == "session-1"
+                && name == "review build"
+                && at == "2026-08-01T09:00:00+12:00"
+        ));
+
+        let edit = Arguments::try_parse_from([
+            "mealyctl",
+            "automation",
+            "edit-event-notify",
+            "automation-1",
+            "--expected-revision",
+            "4",
+            "--source-session-id",
+            "session-source",
+            "--target-session-id",
+            "session-target",
+            "--name",
+            "completion",
+            "--event-type",
+            "turn.completed",
+            "Done.",
+        ])
+        .expect("automation edit command");
+        assert!(matches!(
+            edit.command,
+            Command::Automation {
+                command: AutomationCommand::EditEventNotify {
+                    automation_id,
+                    expected_revision: 4,
+                    ..
+                }
+            } if automation_id == "automation-1"
+        ));
+
+        assert_eq!(
+            parse_automation_instant("2026-08-01T09:00:00+12:00").unwrap(),
+            parse_automation_instant("2026-07-31T21:00:00Z").unwrap()
+        );
+        let retry_id = "019f0000-0000-7000-8000-000000000001";
+        assert_eq!(
+            resolve_automation_id(Some(retry_id.to_owned())).unwrap(),
+            (retry_id.to_owned(), false)
+        );
+        assert!(matches!(
+            resolve_automation_id(Some("019f0000-0000-4000-8000-000000000001".to_owned())),
+            Err(CliError::InvalidAutomationId)
+        ));
+        let (generated, was_generated) = resolve_automation_id(None).unwrap();
+        assert!(was_generated);
+        assert_eq!(
+            generated
+                .parse::<AutomationId>()
+                .expect("generated automation ID")
+                .as_uuid()
+                .get_version_num(),
+            7
+        );
+        for invalid in [
+            "2026-08-01T09:00:00",
+            " 2026-08-01T09:00:00+12:00",
+            "2026-08-01",
+            "",
+        ] {
+            assert!(matches!(
+                parse_automation_instant(invalid),
+                Err(CliError::InvalidAutomationTime)
+            ));
+        }
     }
 
     #[test]

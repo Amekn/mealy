@@ -28,23 +28,25 @@ use effect_runtime::{PhaseThreeRuntime, ProcessCommandBinding};
 use futures_util::{SinkExt as _, StreamExt as _};
 use mealy_api::{ApiAuth, ApiConfig, AuthenticatedIdentity, router_with_shutdown};
 use mealy_application::{
-    AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, BeginDaemonRunCommit, ChannelAdapter,
-    ChannelInboundDisposition, ChannelOutboundContent, ClaimScheduleRunCommit,
-    CompleteDaemonRunCommit, CompleteDiscordMessageCommit, CompleteScheduleRunCommit,
-    CompleteSlackEnvelopeCommit, CompleteTelegramUpdateCommit, DaemonRunStatus,
-    DiscordChannelStore, DiscordChannelStoreError, DiscordMessageDisposition,
-    DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore, EffectLedgerStoreError,
-    IdGenerator, InitialTaskProfile, InputAdmissionLimits, McpHttpAuthentication, OperationalStore,
-    OutboundDiscordTarget, OutboundSlackTarget, OutboundTelegramTarget, OutboundWebhookTarget,
-    OutboxClaimOutcome, OutboxDelivery, OutboxUseCaseError, OwnershipContext, PendingSlackEnvelope,
-    PromotionDefaults, ProviderCredentialReference, ProviderSelectionPreference,
-    RecordDiscordPollCommit, RecordSlackSocketCommit, RecordTelegramPollCommit,
-    ReserveDiscordMessageCommit, ReserveSlackEnvelopeCommit, ReserveTelegramUpdateCommit,
-    ResolveApprovalCommit, ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy,
-    ScheduleRunIntent, ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError,
-    SlackAdapter, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
-    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
-    TelegramChannelStore, TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
+    AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, AutomationAction, AutomationClaimOutcome,
+    AutomationRunStatus, AutomationStore, BeginDaemonRunCommit, ChannelAdapter,
+    ChannelInboundDisposition, ChannelOutboundContent, ClaimAutomationRunCommit,
+    ClaimScheduleRunCommit, CompleteAutomationRunCommit, CompleteDaemonRunCommit,
+    CompleteDiscordMessageCommit, CompleteScheduleRunCommit, CompleteSlackEnvelopeCommit,
+    CompleteTelegramUpdateCommit, DaemonRunStatus, DiscordChannelStore, DiscordChannelStoreError,
+    DiscordMessageDisposition, DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore,
+    EffectLedgerStoreError, IdGenerator, InitialTaskProfile, InputAdmissionLimits,
+    McpHttpAuthentication, OperationalStore, OutboundDiscordTarget, OutboundSlackTarget,
+    OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome, OutboxDelivery,
+    OutboxUseCaseError, OwnershipContext, PendingSlackEnvelope, PromotionDefaults,
+    ProviderCredentialReference, ProviderSelectionPreference, RecordDiscordPollCommit,
+    RecordSlackSocketCommit, RecordTelegramPollCommit, ReserveDiscordMessageCommit,
+    ReserveSlackEnvelopeCommit, ReserveTelegramUpdateCommit, ResolveApprovalCommit,
+    ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy, ScheduleRunIntent,
+    ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError, SlackAdapter,
+    SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition, SlackEnvelopeReservation,
+    SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget, TelegramChannelStore,
+    TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
     TelegramUpdateReservation, WebhookChannelStore, WebhookChannelStoreError, admit_input,
     canonical_arguments_digest, claim_next_outbox, complete_outbox, discord_input_dedupe_key,
     exponential_retry_delay, is_sha256_digest, pending_promotion_sessions, plan_due_schedule,
@@ -53,8 +55,8 @@ use mealy_application::{
     validate_discord_snowflake,
 };
 use mealy_domain::{
-    ApprovalDecision, ApprovalId, CapabilityGrant, CorrelationId, DeliveryMode, EffectClass,
-    InboxEntryId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
+    ApprovalDecision, ApprovalId, AutomationRunId, CapabilityGrant, CorrelationId, DeliveryMode,
+    EffectClass, EventId, InboxEntryId, OutboxId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
 };
 use mealy_infrastructure::{
     BrowserReadTool, BrowserTransactionTool, FileArtifactBlobStore, FileChannelSecretStore,
@@ -1201,6 +1203,16 @@ async fn run_daemon(
             shutdown_receiver.clone(),
         ))
     });
+    let automations = (!arguments.safe_mode).then(|| {
+        tokio::spawn(automation_driver(
+            Arc::clone(&store),
+            WorkerId::new(),
+            daemon_config.maximum_pending_inputs_per_session(),
+            arguments.schedule_clock_offset_ms,
+            Duration::from_millis(250),
+            shutdown_receiver.clone(),
+        ))
+    });
     let telegram = telegram_credentials.as_ref().map(|credentials| {
         tokio::spawn(telegram_driver(
             Arc::clone(&store),
@@ -1343,6 +1355,9 @@ async fn run_daemon(
             let _ = worker.await;
         }
         if let Some(worker) = schedules {
+            let _ = worker.await;
+        }
+        if let Some(worker) = automations {
             let _ = worker.await;
         }
         if let Some(worker) = telegram {
@@ -1801,6 +1816,213 @@ enum ScheduleDriverError {
     SessionUnavailable(String),
     #[error(transparent)]
     Store(#[from] mealy_application::ScheduleStoreError),
+}
+
+async fn automation_driver(
+    store: Arc<RuntimeStore>,
+    worker_id: WorkerId,
+    maximum_pending_inputs_per_session: u64,
+    clock_offset_ms: i64,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        let worker_store = Arc::clone(&store);
+        match tokio::task::spawn_blocking(move || {
+            drive_automation_batch(
+                &worker_store,
+                worker_id,
+                maximum_pending_inputs_per_session,
+                clock_offset_ms,
+            )
+        })
+        .await
+        {
+            Ok(Ok(count)) if count != 0 => {
+                tracing::info!(occurrences = count, "durable automation triggers processed");
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::error!(%error, "durable automation scan failed"),
+            Err(error) => tracing::error!(%error, "durable automation task failed"),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            _ = shutdown.changed() => return,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn drive_automation_batch(
+    store: &Arc<RuntimeStore>,
+    worker_id: WorkerId,
+    maximum_pending_inputs_per_session: u64,
+    clock_offset_ms: i64,
+) -> Result<usize, AutomationDriverError> {
+    let now_ms = automation_now_ms(clock_offset_ms)?;
+    let candidates = store
+        .read()
+        .map_err(|_| AutomationDriverError::Lock)?
+        .due_automations(now_ms, 32)?;
+    let mut completed = 0;
+    for candidate in candidates {
+        let mut guard = store.write().map_err(|_| AutomationDriverError::Lock)?;
+        let claim = guard.claim_automation_run(ClaimAutomationRunCommit {
+            automation_id: candidate.automation.automation_id,
+            expected_revision: candidate.automation.revision,
+            trigger_key: candidate.trigger_key.clone(),
+            triggered_at_ms: candidate.triggered_at_ms,
+            source_event_cursor: candidate.source_event_cursor,
+            source_event_id: candidate.source_event_id,
+            source_event_type: candidate.source_event_type.clone(),
+            proposed_automation_run_id: AutomationRunId::new(),
+            owner_id: worker_id,
+            claimed_at_ms: now_ms,
+            claim_expires_at_ms: now_ms + 30_000,
+        })?;
+        let AutomationClaimOutcome::Claimed(run) = claim else {
+            continue;
+        };
+        let completion = match &candidate.automation.action {
+            AutomationAction::Notify { .. } => CompleteAutomationRunCommit {
+                automation_id: candidate.automation.automation_id,
+                automation_run_id: run.automation_run_id,
+                owner_id: worker_id,
+                status: AutomationRunStatus::Notified,
+                inbox_entry_id: None,
+                outbox_id: Some(OutboxId::new()),
+                reason: None,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                completed_at_ms: automation_now_ms(clock_offset_ms)?,
+            },
+            AutomationAction::SubmitPrompt {
+                prompt,
+                target_session_id,
+                ..
+            } => {
+                let admission = admit_input(
+                    &mut *guard,
+                    &SystemClock,
+                    &SystemIdGenerator,
+                    InputAdmissionLimits::new(
+                        256,
+                        mealy_application::MAXIMUM_AUTOMATION_PROMPT_BYTES,
+                        maximum_pending_inputs_per_session,
+                    ),
+                    AdmitInputCommand {
+                        session_id: *target_session_id,
+                        ownership: candidate.automation.target_ownership,
+                        dedupe_key: format!(
+                            "automation:{}:{}",
+                            candidate.automation.automation_id, run.trigger_key
+                        ),
+                        delivery_mode: DeliveryMode::Queue,
+                        content: prompt.clone(),
+                        provider_selection: ProviderSelectionPreference::InheritSession,
+                    },
+                );
+                match admission {
+                    Ok(outcome) => CompleteAutomationRunCommit {
+                        automation_id: candidate.automation.automation_id,
+                        automation_run_id: run.automation_run_id,
+                        owner_id: worker_id,
+                        status: AutomationRunStatus::Admitted,
+                        inbox_entry_id: Some(outcome.receipt().inbox_entry_id),
+                        outbox_id: None,
+                        reason: None,
+                        event_id: EventId::new(),
+                        correlation_id: CorrelationId::new(),
+                        completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                    },
+                    Err(SessionUseCaseError::Store(SessionStoreError::Unavailable(message))) => {
+                        return Err(AutomationDriverError::SessionUnavailable(message));
+                    }
+                    Err(error) => CompleteAutomationRunCommit {
+                        automation_id: candidate.automation.automation_id,
+                        automation_run_id: run.automation_run_id,
+                        owner_id: worker_id,
+                        status: AutomationRunStatus::Failed,
+                        inbox_entry_id: None,
+                        outbox_id: None,
+                        reason: Some(automation_admission_failure(&error).to_owned()),
+                        event_id: EventId::new(),
+                        correlation_id: CorrelationId::new(),
+                        completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                    },
+                }
+            }
+        };
+        match guard.complete_automation_run(completion) {
+            Ok(_) => {}
+            Err(mealy_application::AutomationStoreError::Unauthorized)
+                if matches!(candidate.automation.action, AutomationAction::Notify { .. }) =>
+            {
+                guard.complete_automation_run(CompleteAutomationRunCommit {
+                    automation_id: candidate.automation.automation_id,
+                    automation_run_id: run.automation_run_id,
+                    owner_id: worker_id,
+                    status: AutomationRunStatus::Failed,
+                    inbox_entry_id: None,
+                    outbox_id: None,
+                    reason: Some("notification_target_unauthorized".to_owned()),
+                    event_id: EventId::new(),
+                    correlation_id: CorrelationId::new(),
+                    completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                })?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        completed += 1;
+    }
+    Ok(completed)
+}
+
+fn automation_admission_failure(error: &SessionUseCaseError) -> &'static str {
+    match error {
+        SessionUseCaseError::Store(SessionStoreError::Backpressure) => "session_backpressure",
+        SessionUseCaseError::Store(SessionStoreError::SessionNotFound) => "session_not_found",
+        SessionUseCaseError::Store(SessionStoreError::Unauthorized) => "session_unauthorized",
+        SessionUseCaseError::Store(SessionStoreError::IdempotencyConflict) => {
+            "automation_idempotency_conflict"
+        }
+        SessionUseCaseError::Store(SessionStoreError::Conflict) => "session_admission_conflict",
+        SessionUseCaseError::Store(SessionStoreError::InvariantViolation(_)) => {
+            "session_invariant_violation"
+        }
+        SessionUseCaseError::Store(SessionStoreError::Unavailable(_)) => {
+            "session_store_unavailable"
+        }
+        SessionUseCaseError::EmptyDedupeKey
+        | SessionUseCaseError::DedupeKeyTooLarge { .. }
+        | SessionUseCaseError::EmptyContent
+        | SessionUseCaseError::ContentTooLarge { .. }
+        | SessionUseCaseError::InvalidQueueCapacity
+        | SessionUseCaseError::InvalidProviderSelection
+        | SessionUseCaseError::InvalidImageInput => "automation_input_invalid",
+    }
+}
+
+fn automation_now_ms(clock_offset_ms: i64) -> Result<i64, AutomationDriverError> {
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| AutomationDriverError::Time)?;
+    i64::try_from(duration.as_millis())
+        .map_err(|_| AutomationDriverError::Time)?
+        .checked_add(clock_offset_ms)
+        .ok_or(AutomationDriverError::Time)
+}
+
+#[derive(Debug, ThisError)]
+enum AutomationDriverError {
+    #[error("automation store lock is unavailable")]
+    Lock,
+    #[error("automation time is outside the supported epoch range")]
+    Time,
+    #[error("automated session admission is unavailable: {0}")]
+    SessionUnavailable(String),
+    #[error(transparent)]
+    Store(#[from] mealy_application::AutomationStoreError),
 }
 
 async fn telegram_driver(
@@ -4178,6 +4400,7 @@ fn claim_routed_outbox(
             | "session.turn_completed"
             | "delegation.completed"
             | "effect.approval_requested"
+            | "automation.notification"
     );
     let session_id = payload
         .as_ref()
@@ -4742,6 +4965,28 @@ fn render_slack_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str
     }
 }
 
+fn render_automation_notification(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<String, &'static str> {
+    let message = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| {
+            !message.is_empty()
+                && message.len() <= mealy_application::MAXIMUM_AUTOMATION_MESSAGE_BYTES
+        })
+        .ok_or("automation notification is absent or oversized")?;
+    let source_event_type = payload.get("source_event_type").and_then(Value::as_str);
+    let source_event_cursor = payload.get("source_event_cursor").and_then(Value::as_u64);
+    match (source_event_type, source_event_cursor) {
+        (Some(event_type), Some(cursor)) => Ok(format!(
+            "Mealy automation:\n{message}\n\nTrigger: {event_type} at timeline cursor {cursor}"
+        )),
+        (None, None) => Ok(format!("Mealy automation:\n{message}")),
+        _ => Err("automation notification source evidence is incomplete"),
+    }
+}
+
 fn render_discord_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str> {
     let payload: Value =
         serde_json::from_str(&delivery.payload_json).map_err(|_| "Discord payload is invalid")?;
@@ -4790,6 +5035,7 @@ fn render_discord_outbox(delivery: &OutboxDelivery) -> Result<String, &'static s
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\n\nApprove: /approve {approval_id} {subject_digest}\nDeny: /deny {approval_id} {subject_digest}"
             )
         }
+        "automation.notification" => render_automation_notification(payload)?,
         _ => return Err("Discord topic is unsupported"),
     };
     Ok(truncate_discord_message(&text))
@@ -4855,6 +5101,7 @@ fn render_telegram_outbox(delivery: &OutboxDelivery) -> Result<String, &'static 
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\n\nApprove: /approve {approval_id} {subject_digest}\nDeny: /deny {approval_id} {subject_digest}"
             )
         }
+        "automation.notification" => render_automation_notification(payload)?,
         _ => return Err("Telegram topic is unsupported"),
     };
     Ok(truncate_telegram_message(&text))
@@ -5099,6 +5346,32 @@ mod schedule_driver_tests {
         assert!(rendered.contains("Targets: [\"workspace://notes/today.md\"]"));
         assert!(rendered.contains(&format!("Approve: /approve {approval_id} {digest}")));
         assert!(rendered.contains(&format!("Deny: /deny {approval_id} {digest}")));
+    }
+
+    #[test]
+    fn automation_notification_renders_static_text_and_source_identity_only() {
+        let delivery = OutboxDelivery {
+            outbox_id: OutboxId::new(),
+            topic: "automation.notification".to_owned(),
+            payload_json: serde_json::json!({
+                "session_id": mealy_domain::SessionId::new(),
+                "message": "The watched session completed.",
+                "source_event_type": "turn.completed",
+                "source_event_cursor": 42,
+                "source_payload": "PRIVATE-SOURCE-PAYLOAD-MUST-NOT-RENDER",
+            })
+            .to_string(),
+            attempt: 1,
+        };
+        for rendered in [
+            render_telegram_outbox(&delivery).expect("render Telegram automation"),
+            render_discord_outbox(&delivery).expect("render Discord automation"),
+        ] {
+            assert!(rendered.contains("The watched session completed."));
+            assert!(rendered.contains("turn.completed"));
+            assert!(rendered.contains("timeline cursor 42"));
+            assert!(!rendered.contains("PRIVATE-SOURCE-PAYLOAD-MUST-NOT-RENDER"));
+        }
     }
 
     #[test]

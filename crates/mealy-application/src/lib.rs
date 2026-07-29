@@ -4,6 +4,7 @@ mod agent;
 mod agent_effect;
 mod approval;
 mod artifact;
+mod automation;
 mod browser;
 mod browser_transaction;
 mod channel;
@@ -76,6 +77,16 @@ pub use approval::{
 pub use artifact::{
     ArtifactBlobStore, ArtifactBlobStoreError, ArtifactContentDescriptor, ArtifactEvidenceStore,
     ArtifactEvidenceStoreError, ArtifactMetadata, CommittedArtifactBlob,
+};
+pub use automation::{
+    AutomationAction, AutomationCandidate, AutomationClaimOutcome, AutomationContractError,
+    AutomationRunStatus, AutomationRunView, AutomationStatus, AutomationStore,
+    AutomationStoreError, AutomationTransition, AutomationTrigger, AutomationTriggerView,
+    AutomationView, ClaimAutomationRunCommit, CompleteAutomationRunCommit, CreateAutomationCommit,
+    EditAutomationCommit, MAXIMUM_AUTOMATION_EVENT_TYPE_BYTES, MAXIMUM_AUTOMATION_MESSAGE_BYTES,
+    MAXIMUM_AUTOMATION_NAME_BYTES, MAXIMUM_AUTOMATION_ONE_SHOT_HORIZON_MS,
+    MAXIMUM_AUTOMATION_PROMPT_BYTES, TransitionAutomationCommit, validate_automation_definition,
+    validate_automation_view,
 };
 pub use browser::{
     BROWSER_CDP_PROTOCOL_VERSION, BROWSER_MAXIMUM_BUNDLE_BYTES, BROWSER_MAXIMUM_BUNDLE_FILE_BYTES,

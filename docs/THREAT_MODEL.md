@@ -90,6 +90,27 @@ never reflected. Pressure drops optional spans; timeout, partial rejection, or s
 cannot change canonical state, replay evidence, or drain classification. The Collector is a
 derived operational view and cannot grant authority or replace the durable event ledger.
 
+### Automation replays history, loops on its own output, or widens unattended authority
+
+Controls: automation creation uses one canonical UUIDv7 semantic key and exact owner/source/target
+bindings. A future-event definition records the global high watermark in its creation transaction;
+edit and resume establish a new watermark, so history and paused-time events are skipped. Matching
+requires the exact source session aggregate and exact canonical event type. Event rules are
+notification-only: source payload is never copied, and they cannot admit prompts, preventing
+journal content from becoming model input or an autonomous event-to-agent cycle.
+
+One-shot prompt actions admit through the existing bounded inbox with a deterministic occurrence
+key. Action-mode text needs explicit automation opt-in but retains ordinary capability, exact
+approval, effect, sandbox, and recovery controls. Claims are durable and owner fenced; expiry
+reclaims the same run identity. Notification terminal state, outbox row, cursor/status transition,
+and journal event commit atomically. Static notification destinations are restricted to same-owner
+local, active webhook, Telegram, or Discord routes. Slack is rejected until a specific
+owner-approved thread can be pinned. Revocation never restores authority. Safe mode starts no
+driver and permits no mutation. The exact target binding is revalidated immediately before
+notification outbox publication; a revoked target produces a terminal failed occurrence and no
+outbox row. Bounded status, metrics, doctor, and run history expose stuck or failed work without
+source payloads.
+
 ### Image generation duplicates spend or publishes hostile output
 
 Controls: image generation is absent by default and exposed only as the exact high-risk

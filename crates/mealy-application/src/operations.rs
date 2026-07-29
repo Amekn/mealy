@@ -99,6 +99,14 @@ pub struct OperationalSnapshot {
     pub failed_schedule_runs: u64,
     /// Policy-skipped schedule occurrences retained in history.
     pub skipped_schedule_runs: u64,
+    /// Active one-shot or future-event automation definitions.
+    pub active_automations: u64,
+    /// Paused future-event automation definitions retained for owner inspection.
+    pub paused_automations: u64,
+    /// Automation occurrences currently held by an unexpired daemon claim.
+    pub claimed_automation_runs: u64,
+    /// Terminally failed automation actions retained in history.
+    pub failed_automation_runs: u64,
     /// Ten newest durable failure/unknown event types and aggregate IDs.
     pub recent_failures: Vec<OperationalFailure>,
     /// UTC start time.

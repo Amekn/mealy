@@ -43,6 +43,7 @@ approve=false
 # fixtures deliberately fail closed when any standalone boundary omits or adds a document.
 release_documents=(
   API.md
+  AUTOMATION.md
   CI_CD.md
   CLI.md
   DOMAIN_MODEL.md
@@ -87,6 +88,7 @@ release_documents=(
   benchmarks/2026-07-25-v0.2.0-release-soak-subject.json
   benchmarks/2026-07-25-v0.2.0-release-soak.json
   benchmarks/2026-07-26-v0.2.0-release-workflow-debian-description-failure.md
+  benchmarks/2026-07-29-v0.3-timeline-read-scaling-failure.md
   benchmarks/README.md
   benchmarks/release-soak.json
   benchmarks/release-soak-subject.json
@@ -111,6 +113,7 @@ release_documents=(
   decisions/0019-one-shot-transactional-browser-effects.md
   decisions/0020-threshold-signed-inert-package-registry.md
   decisions/0021-derived-semantic-memory-index.md
+  decisions/0022-revisioned-future-event-automation.md
   decisions/README.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md

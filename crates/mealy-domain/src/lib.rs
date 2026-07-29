@@ -33,11 +33,12 @@ pub use extension::{
     ExtensionState, ExtensionStatus, ExtensionTransition,
 };
 pub use id::{
-    ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-    ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId,
-    EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
-    MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, ScheduleId, ScheduleRunId,
-    SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
+    ApprovalId, ArtifactId, AttemptId, AutomationId, AutomationRunId, ChannelBindingId,
+    CompactionId, ContextEpochId, ContextItemId, ContextManifestId, CorrelationId,
+    DelegationGroupId, DelegationId, EffectId, EventId, ExtensionGrantId, ExtensionId,
+    ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId, MemoryRevisionId, MessageId, OutboxId,
+    PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId, SessionId, TaskId,
+    ToolCallId, TurnId, ValidationId, WorkerId,
 };
 pub use memory::{
     MemoryCategory, MemoryConfidence, MemoryError, MemoryMetadata, MemoryNamespace,

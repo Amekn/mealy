@@ -772,6 +772,14 @@ reclassified without returning daemon bodies or private paths, and the private c
 descriptor is reloaded so an orderly daemon restart does not copy credentials into browser state.
 Closing the command removes the entire adapter boundary.
 
+Schema 29 adds a separate revisioned automation aggregate rather than changing the recurring-cron
+contract. It supports future one-shot prompt/notification actions and future direct-session-event
+notifications. Creation records an exclusive event high-watermark; edit/resume deliberately reset
+that watermark to skip unattended history. A leased occurrence uses a deterministic inbox key for
+prompt admission, while notification completion atomically commits one outbox row, the terminal
+run, and the next cursor/status. Event payloads never become notification or prompt content, event
+rules cannot submit prompts, and safe mode starts no automation driver.
+
 ### 14.2 Command/query split
 
 - Commands mutate state and return the committed revision/event cursor.
@@ -916,6 +924,7 @@ Each directory has a README that states ownership, allowed dependencies, and com
 | DUR-001..002, TASK-010..017, CHAN-013 | application sessions/tasks + SQLite adapter | inbox, atomic transition, and lifecycle scenario tests |
 | AUTH-001, AUTH-010..013, CHAN-010..012, API-001 | identity/policy + API/channel adapters | authorization, revocation, shared-timeline, and outbox tests |
 | SCHED-010..015 | application scheduler + infrastructure lease store | stale-fence and queue-backpressure tests |
+| AUTO-010..018 | automation application port + SQLite aggregate + daemon driver | idempotent creation, cursor, lease/restart, API, process, and migration tests |
 | AGENT-010..016, PROV-010..014 | agent module + provider broker | fake-provider loop and fallback scenarios |
 | TOOL-010..018 | tool/effect module + executor | effect crash matrix and approval-binding tests |
 | SEC-001..017, AUTH-010..013 | policy/identity + API + sandbox adapter | threat-model and boundary tests |

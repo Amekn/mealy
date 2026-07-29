@@ -20,22 +20,24 @@ use mealy_application::{
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
-    ApiErrorResponse, ApprovalResolutionReceipt, ArtifactMetadataResponse, BackupResponse,
-    BackupVerificationResponse, CancelTaskRequest, CompactionResponse,
-    ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
-    CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
-    CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
-    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
-    DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse,
-    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt,
-    EffectResponse, EnableExtensionRequest, ExportResponse, ExtensionInvocationResponse,
-    ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryResponse, MemoryRetrievalMode, MemorySearchResponse, MemorySensitivityCommand,
-    PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse,
-    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
+    ApiErrorResponse, ApprovalResolutionReceipt, ArtifactMetadataResponse,
+    AutomationLifecycleRequest, AutomationResponse, AutomationRunsResponse, AutomationsResponse,
+    BackupResponse, BackupVerificationResponse, CancelTaskRequest, CompactionResponse,
+    ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest,
+    CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
+    CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
+    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
+    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EditAutomationRequest, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+    EnableExtensionRequest, ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
+    ExtensionResponse, ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse,
+    HealthResponse, InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest,
+    MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse,
+    MemoryRetrievalMode, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ReadinessResponse,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
     RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
     ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
@@ -644,6 +646,114 @@ pub trait ApiBackend: Send + Sync + 'static {
         _schedule_id: String,
         _limit: usize,
     ) -> Result<ScheduleRunsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Creates one canonical one-shot or future event automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, or persistence fails.
+    fn create_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _request: CreateAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists owner-authorized automations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization or persistence fails.
+    fn automations(
+        &self,
+        _identity: AuthenticatedIdentity,
+    ) -> Result<AutomationsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads one owner-authorized automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when absent, unauthorized, or corrupt.
+    fn automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Replaces an active or paused automation under an exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, lifecycle, or persistence fails.
+    fn edit_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: EditAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Pauses one active automation under an exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn pause_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Resumes one paused automation without replaying events accumulated while paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn resume_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Terminally cancels one automation while retaining history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn cancel_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads bounded newest-first automation occurrence history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, bounds, or persistence fails.
+    fn automation_runs(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _limit: usize,
+    ) -> Result<AutomationRunsResponse, BackendError> {
         Err(BackendError::Unavailable)
     }
 
@@ -1460,6 +1570,30 @@ fn build_router(
             get(schedule_runs_handler),
         )
         .route(
+            "/v1/automations",
+            get(automations_handler).post(create_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}",
+            get(automation_handler).patch(edit_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/pause",
+            post(pause_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/resume",
+            post(resume_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/cancel",
+            post(cancel_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/runs",
+            get(automation_runs_handler),
+        )
+        .route(
             "/v1/artifacts/{artifact_id}",
             get(artifact_metadata_handler),
         )
@@ -2241,6 +2375,121 @@ async fn schedule_runs_handler(
     let limit = parameters.limit.unwrap_or(100);
     let result = run_backend(state, move |backend| {
         backend.schedule_runs(identity, schedule_id, limit)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn create_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    request: Result<Json<CreateAutomationRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_automation(identity, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn automations_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+) -> Result<Json<AutomationsResponse>, HttpError> {
+    let result = run_backend(state, move |backend| backend.automations(identity)).await?;
+    Ok(Json(result))
+}
+
+async fn automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.automation(identity, automation_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn edit_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<EditAutomationRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.edit_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn pause_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.pause_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn resume_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.resume_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn cancel_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.cancel_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutomationRunParameters {
+    limit: Option<usize>,
+}
+
+async fn automation_runs_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    parameters: Result<Query<AutomationRunParameters>, QueryRejection>,
+) -> Result<Json<AutomationRunsResponse>, HttpError> {
+    let Query(parameters) = parameters.map_err(|rejection| map_query_rejection(&rejection))?;
+    let limit = parameters.limit.unwrap_or(100);
+    let result = run_backend(state, move |backend| {
+        backend.automation_runs(identity, automation_id, limit)
     })
     .await?;
     Ok(Json(result))

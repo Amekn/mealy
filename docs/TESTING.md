@@ -40,6 +40,15 @@ SHA-256 store, links them to SQLite, reopens both evidence layers, verifies the 
 rejected post-publication link leaves only a fresh unreferenced blob retained by age-gated garbage
 collection.
 
+Schema-29 storage tests apply the v28-to-v29 migration in place, verify fresh-schema parity and
+integrity, and exercise canonical automation definitions, immutable revisions, aggregate
+sequences, exact owner/source/target bindings, future event high-watermarks, due selection, claim
+exclusion/expiry/reclaim, terminal completion, atomic notification outbox publication, and bounded
+history. Creation replay is repeated after a one-shot due time and after unrelated timeline
+movement; the same UUID returns the existing projection without another definition. Event cursor
+advancement proves history, pause windows, and processed occurrences do not replay. A revoked
+target fails before outbox publication and can be settled as explicit failed history.
+
 ### Process-boundary tests
 
 Spawn the real executor/extension protocol. Verify framing, malformed messages, size limits, cancellation, timeout, stdout/stderr pressure, secret minimization, worker death, and daemon survival.
@@ -61,6 +70,14 @@ citations are envelope digests rather than payloads, and private prompt/write ca
 from the report. Contract units cover contradictory fields, transient states, digest and timing
 bounds, failures-as-report-data, privacy canaries, and report-digest changes; CLI units cover
 isolated parser selection plus bounded no-follow suite reads.
+
+The `phase7_operations` automation scenario crosses the real authenticated API and daemon driver.
+It rejects an event-to-prompt loop, admits a sub-minute one-shot prompt once, retries the same
+creation after completion, delivers one future event notification, retries event creation after
+cursor movement, skips events accumulated while paused, exports active/paused/claimed/failed
+operator gauges, drains cleanly, hard-restarts the same home, and proves retained history with no
+duplicate action. Safe-mode and migration/package suites cover the disabled driver, schema 29, and
+complete-home backup/rollback inventories.
 
 The `real_provider` process suite includes one exact image-bearing turn through the public daemon
 API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
@@ -494,6 +511,10 @@ online backup, drains cleanly, then uninstalls while proving `mealy.sqlite3` rem
 jobs additionally require enforceable observe and workspace-write sandbox
 profiles from the installed daemon. This catches
 release-payload or installer/runtime integration failures that source-tree smoke cannot.
+The smoke deliberately damages the stable archive manager before creating a daemon home, then
+requires `mealyctl repair --approve` to restore it from the verified active slot. Repair is
+serialized by the archive prefix's no-follow installation lock; it neither requires nor creates
+durable agent state.
 The packaging fixture also modifies an installed threat model and proves slot verification blocks
 an upgrade before either binary changes; `SECURITY.md` and the threat model are mandatory exact
 payload inventory rather than unverified side documentation. A checksum-mismatched installer is
@@ -668,6 +689,16 @@ eight sessions in 602.413 seconds while full Rust, packaging, clean-container, a
 gates overlapped; it reported five hard restarts, 14 interrupted-provider recoveries, two read-tool
 retries, complete replay, SQLite integrity `ok`, clean drain, and zero residual work. This is a
 focused regression result, not a substitute for the fresh 24-hour durability gate.
+
+The first v0.3 exact-binary attempt later exposed an independent presentation-read defect after
+16 hours 11 minutes. Concurrent near-current timeline requests materialized complete historical
+session membership, took 7–14.5 seconds, and crossed the ten-second client deadline while the
+retained 1.18 GiB database remained intact. The
+[retained failure record](benchmarks/2026-07-29-v0.3-timeline-read-scaling-failure.md) documents
+the query plan, resource growth, response-parity proof, and corrected 256-request burst. A focused
+unit regression adds 50,000 historical events and bounds SQLite virtual-machine progress rather
+than relying on a host-speed timing threshold. Protected CI, rebuilt packages, and a fresh
+86,400-second exact-binary soak remain mandatory.
 
 Durable provider-request and validation-context JSON has a focused compatibility/corruption gate.
 Objects below 4 KiB or without a size win stay as historical plain JSON. Larger objects may use the

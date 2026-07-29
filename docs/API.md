@@ -227,7 +227,7 @@ selected route advertises image input. Normalization happens in a fresh no-netwo
 worker before durable admission. TUI, dashboard, and channel image upload/rendering are not part of
 this first surface.
 
-### Schedules and governed memory
+### Schedules, automations, and governed memory
 
 | Method | Path | Request or query | Response |
 | --- | --- | --- | --- |
@@ -238,6 +238,14 @@ this first surface.
 | `POST` | `/v1/schedules/{schedule_id}/resume` | `ScheduleLifecycleRequest` | `ScheduleResponse` |
 | `POST` | `/v1/schedules/{schedule_id}/cancel` | `ScheduleLifecycleRequest` | `ScheduleResponse` |
 | `GET` | `/v1/schedules/{schedule_id}/runs` | optional `limit` (default 100) | `ScheduleRunsResponse` |
+| `GET` | `/v1/automations` | - | `AutomationsResponse` |
+| `POST` | `/v1/automations` | `CreateAutomationRequest` | `AutomationResponse` |
+| `GET` | `/v1/automations/{automation_id}` | - | `AutomationResponse` |
+| `PATCH` | `/v1/automations/{automation_id}` | `EditAutomationRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/pause` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/resume` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/cancel` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `GET` | `/v1/automations/{automation_id}/runs` | optional `limit` (default 100) | `AutomationRunsResponse` |
 | `GET` | `/v1/memories` | `workspaceIdentity`, optional `includeDeleted` | `MemoriesResponse` |
 | `POST` | `/v1/memories` | `ProposeMemoryRequest` | `MemoryResponse` |
 | `GET` | `/v1/memories/search` | `workspaceIdentity`, `query`, optional `maximumSensitivity`, optional `limit`, optional `retrievalMode` | `MemorySearchResponse` |
@@ -249,6 +257,13 @@ this first surface.
 | `POST` | `/v1/memories/{memory_id}/reject` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/delete` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memory-index/rebuild` | `RebuildMemoryIndexRequest` | `MemoryIndexRebuildResponse` |
+
+`CreateAutomationRequest.automationId` is a canonical client-proposed UUIDv7 and durable creation
+key. Exact retries return the current projection even after the due time, event-cursor movement, or
+lifecycle advancement; a semantic mismatch conflicts. One-shot times are UTC epoch milliseconds.
+Event triggers observe one exact future direct-session event type after an exclusive cursor and
+accept only a static notification action. Edit and lifecycle requests carry the exact current
+revision. See [the automation contract](AUTOMATION.md).
 
 `retrievalMode` defaults to `lexical`. `hybrid` requests an explicitly configured semantic path
 and never silently claims it was used: the response returns actual `retrievalMode` as `hybrid` or
@@ -396,10 +411,11 @@ difference between `403` and `404`.
 
 `crates/mealy-client` provides the first stable SDK over these exact DTOs. `MealyClient` is a
 blocking client intended for owner-local integrations and later HTTPS-protected single-owner
-continuation. It covers health/status, providers, session workbench, approvals, extensions, and
-webhook, Telegram, Discord, and Slack administration. Session workbench includes text/image
-admission plus task status, pause, resume, cancellation, and recorded replay. Import DTOs through
-`mealy_client::protocol` so client and wire-contract versions remain coordinated.
+continuation. It covers health/status, providers, session workbench, approvals, complete
+automation lifecycle/history, extensions, and webhook, Telegram, Discord, and Slack
+administration. Session workbench includes text/image admission plus task status, pause, resume,
+cancellation, and recorded replay. Import DTOs through `mealy_client::protocol` so client and
+wire-contract versions remain coordinated.
 
 The SDK accepts clear-text HTTP only for literal `127.0.0.0/8` or `::1` addresses and requires
 HTTPS elsewhere. URL credentials, base paths, queries, and fragments are invalid. Ambient proxies

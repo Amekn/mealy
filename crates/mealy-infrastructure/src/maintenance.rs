@@ -3364,6 +3364,9 @@ mod tests {
                  DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
                  DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
                  DROP TABLE extension_manifest_registry_provenance;
+                 DROP TABLE automation_run;
+                 DROP TABLE automation_revision;
+                 DROP TABLE automation;
                  DROP TRIGGER memory_revision_semantic_invalidate;
                  DROP INDEX memory_semantic_vector_scope_idx;
                  DROP TABLE memory_semantic_vector;
@@ -3376,7 +3379,7 @@ mod tests {
                  DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
                  WHERE version IN (
-                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
+                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
                  );
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
@@ -3591,6 +3594,9 @@ mod tests {
                  DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
                  DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
                  DROP TABLE extension_manifest_registry_provenance;
+                 DROP TABLE automation_run;
+                 DROP TABLE automation_revision;
+                 DROP TABLE automation;
                  DROP TRIGGER memory_revision_semantic_invalidate;
                  DROP INDEX memory_semantic_vector_scope_idx;
                  DROP TABLE memory_semantic_vector;
@@ -3603,7 +3609,7 @@ mod tests {
                  DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
                  WHERE version IN (
-                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
+                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29
                  );
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )

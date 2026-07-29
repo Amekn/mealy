@@ -336,18 +336,29 @@ index stale transactionally. Hybrid search applies canonical scope and sensitivi
 combines FTS5/cosine ranks deterministically, and reports lexical fallback rather than failing or
 claiming semantic success. Adapter, store, CLI/config, and real-daemon hard-restart tests cover
 dimensions, credentials, prefix/order, atomic replacement, ranking, stale fallback, and rebuild
-recovery. Release qualification and the automation half of this section remain open.
+recovery.
+
+The durable-automation foundation is implemented through schema 29 and
+[ADR 0022](decisions/0022-revisioned-future-event-automation.md). It leaves recurring cron
+schedules stable and adds client-keyed one-shot prompts/notifications plus exact future direct-
+session-event notifications. Definitions are whole-revision fenced; creation/edit/resume establish
+exclusive no-replay cursors; leased occurrences recover after restart; prompt admission uses
+deterministic inbox deduplication; and notification completion atomically commits outbox, run,
+cursor/status, and journal evidence. Event actions are static notification-only and never copy
+source payloads. CLI/API, migration, store, observability, safe-mode, clean-drain, and hard-restart
+process evidence cover the slice. Exact Slack-thread pinning remains part of remote continuation,
+and release qualification remains open.
 
 ### SDK, observability, evaluation, and remote continuation
 
 - Publish stable typed clients for the daemon, timeline, approvals, extensions,
   and channels. The first stable Rust SDK is implemented in `mealy-client`: it reuses the
   versioned protocol DTOs and covers health/status, provider discovery, session workbench,
-  text/image admission, task control/replay, approvals, governed extensions, and all four
-  administrative channel lifecycles. It requires HTTPS outside literal loopback, ignores ambient
-  proxies, refuses redirects, redacts bearer credentials, bounds request/response JSON, and
-  rejects incompatible request, response, and structured error versions. Async and non-Rust
-  clients remain later ecosystem work.
+  text/image admission, task control/replay, approvals, complete automation lifecycle/history,
+  governed extensions, and all four administrative channel lifecycles. It requires HTTPS outside
+  literal loopback, ignores ambient proxies, refuses redirects, redacts bearer credentials, bounds
+  request/response JSON, and rejects incompatible request, response, and structured error versions.
+  Async and non-Rust clients remain later ecosystem work.
 - Export bounded OpenTelemetry traces/metrics without prompts, secrets, or
   private content by default. The first typed Rust slice is implemented behind an explicit
   `--otlp-endpoint`: it records claimed agent-run slices with canonical correlation IDs on traces

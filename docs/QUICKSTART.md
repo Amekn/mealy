@@ -2275,6 +2275,46 @@ pass the `sessionId` returned by `telegram-pair`/`telegram-create` or
 `discord-pair`/`discord-create`; the scheduled prompt is admitted to that dedicated session and
 its progress, approval request, and final result use the same durable channel outbox route.
 
+## Create a one-shot or future-event automation
+
+Use an RFC 3339 instant with an explicit offset for a one-time prompt:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation create-once-prompt SESSION_ID \
+  --name "review build" \
+  --at "2026-08-01T09:00:00+12:00" \
+  "Review the latest build evidence."
+```
+
+Or notify one target session after each future exact event from another same-owner session:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation create-event-notify \
+  SOURCE_SESSION_ID TARGET_SESSION_ID \
+  --name "completion notice" \
+  --event-type turn.completed \
+  "The watched session completed."
+```
+
+The client prints `MEALY_AUTOMATION_ID UUID` before each create request. If the response is
+ambiguous, repeat the exact command with `--automation-id UUID`; it returns the existing
+definition rather than creating another automation.
+
+Event rules start after creation and never replay history. Pausing stops claims; resuming skips
+events accumulated while paused. Inspect the current revision before editing or changing lifecycle:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation list
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation status AUTOMATION_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation runs AUTOMATION_ID --limit 20
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation pause AUTOMATION_ID --expected-revision REVISION
+```
+
+One-shot prompts use the ordinary inbox and do not bypass approvals. Event actions are static
+notifications only; source event payload is never copied. See
+[durable automation](AUTOMATION.md) for edits, supported delivery routes, recovery, and safe-mode
+behavior.
+
 ## Delegate one bounded read-only task
 
 Configured external-provider profiles expose `agent.delegate` to the model automatically. Ask for
