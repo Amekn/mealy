@@ -16,6 +16,7 @@ use mealy_protocol::{
     ProviderCatalogResponse, ProviderCatalogRouteResponse, ProviderSelectionCommand,
     SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
     SessionsResponse, SubmitInputRequest, TimelineCursor, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest,
 };
 use rustix::{
     fs::{Mode, OFlags, fcntl_getfl, fcntl_setfl, open},
@@ -48,6 +49,9 @@ struct AdmissionState {
     started: Arc<AtomicBool>,
     completed: Arc<AtomicBool>,
     submitted_content: Arc<Mutex<Option<String>>>,
+    submitted_provider_selections: Arc<Mutex<Vec<Option<ProviderSelectionCommand>>>>,
+    session_provider_selection: Arc<Mutex<Option<ProviderSelectionCommand>>>,
+    provider_selection_reads: Arc<AtomicUsize>,
     latest_session_available: Arc<AtomicBool>,
     created_sessions: Arc<AtomicUsize>,
     picker_sessions: Arc<Mutex<Vec<SessionSummaryResponse>>>,
@@ -299,6 +303,9 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
         1,
         Duration::from_secs(5),
     );
+    let exact_selection =
+        select_tui_exact_provider_for_session_and_next_turn(&state, &mut terminal, &mut rendered)
+            .await;
     terminal
         .write_all(b"hold this request\r")
         .and_then(|()| terminal.flush())
@@ -312,6 +319,15 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
         );
         sleep(Duration::from_millis(10)).await;
     }
+    let submitted_provider_selections = state
+        .submitted_provider_selections
+        .lock()
+        .expect("submitted provider selection lock");
+    assert_eq!(
+        submitted_provider_selections.as_slice(),
+        &[Some(exact_selection)]
+    );
+    drop(submitted_provider_selections);
     terminal
         .write_all(&[0x03])
         .and_then(|()| terminal.flush())
@@ -334,6 +350,64 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
             .any(|window| window == b"\x1b[?1049l")
     );
     server.abort();
+}
+
+async fn select_tui_exact_provider_for_session_and_next_turn(
+    state: &AdmissionState,
+    terminal: &mut File,
+    rendered: &mut Vec<u8>,
+) -> ProviderSelectionCommand {
+    let exact_selection = ProviderSelectionCommand::Exact {
+        provider_id: "fixture".to_owned(),
+        model_id: "fixture".to_owned(),
+    };
+    terminal
+        .write_all(b"\x1b[19~\x1b[B\r")
+        .and_then(|()| terminal.flush())
+        .expect("select exact conversation provider through F8");
+    let selection_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let selected = state
+            .session_provider_selection
+            .lock()
+            .expect("session provider selection lock")
+            .clone();
+        if selected.as_ref() == Some(&exact_selection) {
+            break;
+        }
+        assert!(
+            Instant::now() < selection_deadline,
+            "workbench did not commit F8 conversation provider selection: {}",
+            String::from_utf8_lossy(rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    let refreshed_deadline = Instant::now() + Duration::from_secs(2);
+    while state.provider_selection_reads.load(Ordering::SeqCst) < 3 {
+        assert!(
+            Instant::now() < refreshed_deadline,
+            "workbench did not refresh the committed provider selection: {}",
+            String::from_utf8_lossy(rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    terminal
+        .write_all(b"\x1b[19~")
+        .and_then(|()| terminal.flush())
+        .expect("open exact next-turn provider picker through F8");
+    wait_for_occurrences(
+        terminal,
+        rendered,
+        b"t next turn",
+        1,
+        Duration::from_secs(2),
+    );
+    terminal
+        .write_all(b"t")
+        .and_then(|()| terminal.flush())
+        .expect("select exact next-turn provider");
+    wait_for_occurrences(terminal, rendered, b"next turn:", 1, Duration::from_secs(2));
+    exact_selection
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1094,7 +1168,7 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
         .route("/v1/sessions/{session_id}/status", get(session_status))
         .route(
             "/v1/sessions/{session_id}/provider-selection",
-            get(session_provider_selection),
+            get(session_provider_selection).patch(update_session_provider_selection),
         )
         .route("/v1/sessions/{session_id}/timeline", get(session_timeline))
         .route(
@@ -1277,15 +1351,50 @@ async fn session_status(AxumPath(session_id): AxumPath<String>) -> Json<SessionS
 }
 
 async fn session_provider_selection(
+    State(state): State<AdmissionState>,
     AxumPath(session_id): AxumPath<String>,
 ) -> Json<SessionProviderSelectionResponse> {
+    state
+        .provider_selection_reads
+        .fetch_add(1, Ordering::SeqCst);
+    let provider_selection = state
+        .session_provider_selection
+        .lock()
+        .expect("session provider selection lock")
+        .clone();
     Json(SessionProviderSelectionResponse {
         api_version: API_VERSION.to_owned(),
         session_id,
-        provider_selection: ProviderSelectionCommand::Automatic,
-        revision: 1,
-        event_id: None,
+        provider_selection: provider_selection
+            .clone()
+            .unwrap_or(ProviderSelectionCommand::Automatic),
+        revision: if provider_selection.is_some() { 2 } else { 1 },
+        event_id: provider_selection
+            .is_some()
+            .then(|| "019f0000-0000-7000-8000-000000000010".to_owned()),
         updated_at_ms: 1_800_000_000_000,
+        applies_to: "future_new_turns".to_owned(),
+    })
+}
+
+async fn update_session_provider_selection(
+    State(state): State<AdmissionState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(request): Json<UpdateSessionProviderSelectionRequest>,
+) -> Json<SessionProviderSelectionResponse> {
+    assert_eq!(request.api_version, API_VERSION);
+    assert_eq!(request.expected_revision, 1);
+    *state
+        .session_provider_selection
+        .lock()
+        .expect("session provider selection lock") = Some(request.provider_selection.clone());
+    Json(SessionProviderSelectionResponse {
+        api_version: API_VERSION.to_owned(),
+        session_id,
+        provider_selection: request.provider_selection,
+        revision: 2,
+        event_id: Some("019f0000-0000-7000-8000-000000000010".to_owned()),
+        updated_at_ms: 1_800_000_000_001,
         applies_to: "future_new_turns".to_owned(),
     })
 }
@@ -1361,6 +1470,11 @@ async fn block_admission(
     State(state): State<AdmissionState>,
     Json(request): Json<SubmitInputRequest>,
 ) -> Json<InputAdmissionResponse> {
+    state
+        .submitted_provider_selections
+        .lock()
+        .expect("submitted provider selection lock")
+        .push(request.provider_selection.clone());
     *state
         .submitted_content
         .lock()
