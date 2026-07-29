@@ -66,20 +66,14 @@ jobs:
 
           gh release verify "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" >/dev/null
-          release=$(gh release view "$RELEASE_TAG" \
+          release_record="$RUNNER_TEMP/mealy-public-release.json"
+          gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --json tagName,isDraft,isPrerelease,assets,url)
-          if ! jq -e --arg tag "$RELEASE_TAG" '
-            .tagName == $tag
-            and .isDraft == false
-            and .isPrerelease == false
-            and any(.assets[];
-              .name == "ATTESTATION-linux-repositories.sigstore.json"
-              and (.digest | test("^sha256:[0-9a-f]{64}$")))
-          ' <<<"$release" >/dev/null; then
-            echo "release is missing, preliminary, or lacks the repository attestation" >&2
-            exit 65
-          fi
+            --json tagName,isDraft,isImmutable,isPrerelease,assets,url \
+            >"$release_record"
+          scripts/validate-public-release-record.sh \
+            "$release_record" "$RELEASE_TAG" "$GITHUB_REPOSITORY" \
+            ATTESTATION-linux-repositories.sigstore.json
 
           ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
           object_type=$(jq -er '.object.type' <<<"$ref")

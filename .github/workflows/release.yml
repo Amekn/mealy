@@ -753,6 +753,39 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "Mealy $GITHUB_REF_NAME" \
             --notes-file "$RUNNER_TEMP/release-notes.md"
+          if [[ -n $(find dist -mindepth 1 -maxdepth 1 ! -type f -print -quit) ]]; then
+            echo "release upload inventory contains a non-file entry" >&2
+            exit 65
+          fi
+          mapfile -t release_assets < <(
+            find dist -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort
+          )
+          test "${#release_assets[@]}" -ge 1
+          release_record="$RUNNER_TEMP/mealy-public-release.json"
+          release_verification="$RUNNER_TEMP/mealy-public-release-verification.json"
+          release_error="$RUNNER_TEMP/mealy-public-release-verification.err"
+          immutable=false
+          for _ in {1..60}; do
+            : >"$release_error"
+            if gh release view "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json tagName,isDraft,isImmutable,isPrerelease,assets,url \
+              >"$release_record" 2>>"$release_error" \
+              && scripts/validate-public-release-record.sh \
+                "$release_record" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
+                "${release_assets[@]}" >>"$release_error" 2>&1 \
+              && gh release verify "$GITHUB_REF_NAME" \
+                --repo "$GITHUB_REPOSITORY" --format json \
+                >"$release_verification" 2>>"$release_error"; then
+              immutable=true
+              break
+            fi
+            sleep 10
+          done
+          if [[ $immutable != true ]]; then
+            cat "$release_error" >&2
+            exit 70
+          fi
 
   deploy-linux-repositories:
     name: Publish signed Linux repositories
@@ -936,6 +969,13 @@ jobs:
           if [[ -n $arch ]]; then
             assets+=("$arch")
           fi
+          gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isImmutable,isPrerelease,assets,url \
+            >"$RUNNER_TEMP/mealy-public-release.json"
+          scripts/validate-public-release-record.sh \
+            "$RUNNER_TEMP/mealy-public-release.json" \
+            "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "${assets[@]}"
           download_arguments=()
           for asset in "${assets[@]}"; do
             download_arguments+=(--pattern "$asset")

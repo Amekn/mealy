@@ -218,15 +218,18 @@ Protected CI has a separate workflow-controlled event/SHA identity. Both release
 successful `push` run on `main` from the canonical CI workflow and repository URL, so ancestry or a
 green pull-request check alone cannot qualify a tag.
 
-After publication, the same tag workflow downloads the immutable public assets without build-job
-state and verifies release integrity, asset integrity, provenance, checksums, and exact inventory
-on native Linux x86-64/ARM64 runners. It repeats the tokenless bootstrap plus archive and Debian
-lifecycle smokes on Ubuntu 24.04, then repeats each public native package lifecycle on clean pinned
-Ubuntu 26.04, Debian 13, Fedora 44, and Arch Linux environments. A release workflow is green only
-after every public Linux delivery check passes. It also waits for the Pages deployment, verifies
-the public manifest's OpenPGP signature and exact tagged identity, verifies its retained GitHub
-attestation bundle, and clean-installs the public repository package on Ubuntu, Debian ARM64,
-Fedora x86-64/ARM64, and Arch x86-64.
+After publication, the publisher first waits for the release record to report
+`isImmutable: true`, validates the exact uploaded name/digest/size/URL inventory, and verifies
+GitHub's signed release attestation. Dependent repository deployment and public acceptance remain
+blocked until that proof succeeds. The same tag workflow then downloads the immutable public
+assets without build-job state and verifies release integrity, asset integrity, provenance,
+checksums, and exact inventory on native Linux x86-64/ARM64 runners. It repeats the tokenless
+bootstrap plus archive and Debian lifecycle smokes on Ubuntu 24.04, then repeats each public native
+package lifecycle on clean pinned Ubuntu 26.04, Debian 13, Fedora 44, and Arch Linux environments.
+A release workflow is green only after every public Linux delivery check passes. It also waits for
+the Pages deployment, verifies the public manifest's OpenPGP signature and exact tagged identity,
+verifies its retained GitHub attestation bundle, and clean-installs the public repository package
+on Ubuntu, Debian ARM64, Fedora x86-64/ARM64, and Arch x86-64.
 
 If those dependent repository jobs fail before exercising the public artifacts because of a
 verifier-harness defect, merge the focused correction through protected `main` and dispatch
