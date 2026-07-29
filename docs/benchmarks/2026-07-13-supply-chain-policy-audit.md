@@ -81,6 +81,17 @@ had become stable, but the compiler is deliberately retained at 1.96.0 for this 
 changing it would change the already reproduced and soaking executables; a compiler advance belongs
 to a subsequent candidate with its own complete binary reproduction and durability evidence.
 
+That decision was superseded on 2026-07-30 after the Rust Release Team published Rust 1.97.1.
+The point release fixes an x86 LLVM miscompilation that the upstream minimized reproducer also
+demonstrated under Rust 1.96; the underlying defect had existed since at least Rust 1.87. Because
+the trigger uses an ordinary `Option` around a two-variant enum, Mealy cannot soundly exclude it
+from the optimized application or dependency graph. The 1.96-built v0.3 soak subject was therefore
+retired before publication, the workspace source floor and exact toolchain were advanced to 1.97.1,
+and CI, release, and live-acceptance jobs now assert the exact compiler and execute the upstream
+release-mode regression shape on x86-64. The replacement candidate requires fresh reproducible
+packages, protected CI, and an exact-binary 24-hour soak; prior 1.96 results remain audit evidence
+only and cannot satisfy a release gate.
+
 ## Rust dependency boundary
 
 `cargo-deny` 0.20.2 passed `advisories`, `bans`, `licenses`, and `sources` for the all-feature graph

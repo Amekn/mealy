@@ -138,7 +138,7 @@ fn inspect_add_disable_enable_revoke_is_approved_verified_and_rollback_safe() {
     assert_eq!(enabled["browser"]["enabled"], true);
     let revoked = run_success(home.path(), &["config", "browser-revoke", "--approve"]);
     assert!(revoked["browser"].is_null());
-    assert!(revoked["runtimeRetainedForRollback"].as_bool() == Some(true));
+    assert_eq!(revoked["runtimeRetainedForRollback"].as_bool(), Some(true));
     assert!(home.path().join("browser-runtimes").is_dir());
     assert!(
         fs::read_dir(home.path().join("config-history"))
