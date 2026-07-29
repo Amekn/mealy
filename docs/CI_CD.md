@@ -132,6 +132,14 @@ GitHub-Actions-bound status checks, before tagging. Disabled protection or secur
 mutable action references, or a broadened third-party allowlist therefore block publication even
 if a stale source checkout still looks correct.
 
+`scripts/validate-workflow-action-pins.sh` adds a repository-wide reviewed-version fence on top of
+the syntax, security, allowlist, and immutable-SHA checks. Every external `uses:` entry must be an
+unquoted 40-character commit from the complete checked allowlist, every reviewed action must remain
+present, and every occurrence of one action—including successor-only release jobs—must use the
+same reviewed commit. Hermetic negative fixtures reject a stale mixed pin, an unknown action, a
+missing reviewed action, an abbreviated SHA, quoted syntax, symlinked workflow input, and an empty
+workflow set.
+
 Never merge around a red or missing context. Diagnose the first failing command from the job log,
 add a regression when behavior was wrong, rerun the same command locally when practical, and let
 the protected pull request rerun all contexts. A green PR is merged linearly; direct pushes to

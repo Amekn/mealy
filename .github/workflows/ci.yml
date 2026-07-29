@@ -68,6 +68,10 @@ jobs:
         run: >-
           sed -n '/<script nonce=/,/<\/script>/p' apps/mealyctl/assets/dashboard.html |
           sed '1d;$d' | node --check
+      - name: Verify exact reviewed workflow action pins
+        run: |
+          scripts/validate-workflow-action-pins.sh .github/workflows
+          scripts/test-release-workflow-action-pins.sh
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
       - name: Verify stable SDK packages through a clean downstream consumer
@@ -150,6 +154,7 @@ jobs:
             scripts/test-release-tag-validator.sh
             scripts/test-release-upgrade-baseline-fetch.sh
             scripts/test-release-upgrade-baseline-validator.sh
+            scripts/test-release-workflow-action-pins.sh
             scripts/test-stacked-release-normalization.sh
             scripts/validate-public-license.sh
             scripts/validate-public-release-record.sh
@@ -159,6 +164,7 @@ jobs:
             scripts/validate-release-soak.sh
             scripts/validate-release-tag.sh
             scripts/build-sdk-packages.sh
+            scripts/validate-workflow-action-pins.sh
           )
           bash -n "${scripts[@]}"
           shellcheck "${scripts[@]}"
