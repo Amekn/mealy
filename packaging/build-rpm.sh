@@ -124,6 +124,8 @@ install -m 0644 %{payload_root}/README.md %{buildroot}/usr/share/doc/mealy/READM
 install -m 0644 %{payload_root}/THIRD-PARTY-LICENSES.html \
   %{buildroot}/usr/share/doc/mealy/third-party-licenses.html
 install -m 0644 %{payload_root}/LICENSE %{buildroot}/usr/share/licenses/mealy/LICENSE
+find %{buildroot} -type d -exec chmod 0755 {} +
+find %{buildroot}/usr/share/doc/mealy -type f -exec chmod 0644 {} +
 find %{buildroot} -exec touch --no-dereference --date="@%{source_date_epoch}" {} +
 
 %files
