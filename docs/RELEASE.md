@@ -641,13 +641,20 @@ license, or documentation mismatch remains a hard failure requiring a verified r
 
 ## Maintainer release checklist
 
+An externally soaked candidate uses two protected pull requests. First validate the raw report
+against the candidate branch and merge that runtime candidate. Only after the observed revision is
+an ancestor of protected `main` may the maintainer create the private staging tag/draft release.
+The report and metadata-derived promotion manifest then land through a separate evidence-only pull
+request. The final evidence commit—not the earlier candidate head—is the commit used for protected
+main CI, live-provider acceptance, the stable tag, attestations, and publication.
+
 1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` remains inherited by every
    workspace package and run `scripts/validate-public-license.sh .`. Then make the workspace version
    and intended stable `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
    rejects prerelease/build metadata and leading-zero version components. From the canonical source
    checkout, run `scripts/preflight-release-environments.sh Amekn/mealy`; do not tag until its
    read-only Pages, tag-policy, owner-review, fingerprint, signing-secret-name, and protected
-   free-OpenRouter checks all pass.
+   free-OpenRouter/private-endpoint readiness checks all pass.
 2. Compare the pinned Headless Shell version with the official
    [Chrome for Testing stable metadata](https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json).
    If the reviewed stable patch changed, update its exact archive byte count/SHA-256 and product
@@ -656,10 +663,11 @@ license, or documentation mismatch remains a hard failure requiring a verified r
    upstream releases and security notes as well; an immutable pin is reproducible, not automatically
    current.
    Ensure the branch CI and packaging conformance job are green only after that review.
-3. Run the paced long soak from `docs/benchmarks/README.md` against a clean revision, retain its
-   unedited report as `docs/benchmarks/release-soak.json`, and run
-   `scripts/validate-release-soak.sh docs/benchmarks/release-soak.json MEALYD TAG_COMMIT` against
-   the exact auditable release daemon, adding
+3. Run the paced long soak from `docs/benchmarks/README.md` against a clean revision. Validate its
+   unedited report against the candidate head and exact auditable release daemon before merging the
+   candidate pull request; do not commit a report that has not completed. After merge and green
+   protected-main CI, retain the report as `docs/benchmarks/release-soak.json` and run
+   `scripts/validate-release-soak.sh docs/benchmarks/release-soak.json MEALYD MAIN_COMMIT`, adding
    `docs/benchmarks/release-soak-lineage.json` only when a required rebase changed the observed
    commit ID while retaining its exact Git tree. Investigate any identity, integrity, replay, residue, recovery, or
    identity failure before tagging; the tag workflow repeats this gate and cannot publish without
