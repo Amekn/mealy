@@ -53,7 +53,12 @@ fetch. Immutable mirror content requests derive paths only from signed SHA-256
 descriptors and verify exact type/length/digest. Unit and process tests cover unsafe mirror URLs,
 loopback/private denial, shared special-address policy, digest drift, approval ordering, and no
 state advancement on transport failure. These boundaries still confer no package authority.
-Durable release/package evidence, package fetch/inspection commands, staged activation,
+Schema 25 and `release-fetch`/`release-accept`/`release-status` now retain exact publisher-signed
+release evidence under the active root/snapshot fence. Transactional reverification covers
+publisher threshold, withdrawal, exact dependency closure, descriptors, and host compatibility;
+root rotation requires a newly authorized snapshot. Evidence is immutable and restart-durable,
+exact replay is idempotent, aliasing conflicts, and later withdrawal blocks new acceptance while
+preserving audit history. Manifest/archive retrieval and inspection, staged activation,
 installed-withdrawal handling, and rollback are still open v0.5 work and therefore are not marked
 covered here.
 

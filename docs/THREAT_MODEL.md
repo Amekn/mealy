@@ -634,6 +634,16 @@ same reviewed IANA special-address policy as web, MCP, and browser egress so the
 drift independently. Durable package evidence, permission-diff staging, and withdrawal
 propagation to installed packages remain explicit follow-on boundaries and are not yet claimed.
 
+Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
+Review prints the exact envelope digest, publisher, host range, manifest/archive descriptors, and
+dependency closure without retaining authority. Approved acceptance requires that same digest and
+repeats active-root/current-snapshot, publisher threshold, withdrawal, dependency, compatibility,
+and descriptor verification inside schema 25's immediate transaction. The immutable row binds the
+first admitting root/snapshot, host API, exact envelope/payload, manifest, and archive identities.
+A newer withdrawal blocks acceptance but does not erase historical evidence. Root rotation makes
+the prior snapshot ineligible until a newly authorized snapshot is accepted. These controls still
+do not fetch a manifest/archive, extract a path, stage code, install a skill, or create a grant.
+
 ### A staging asset substitutes a different release daemon
 
 Controls: the x86-64 soak subject is never selected by a mutable URL, display name alone, or a

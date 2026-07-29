@@ -1,10 +1,12 @@
 use super::SqliteStore;
 use mealy_application::{
-    InspectedRegistryTrustRoot, RegistryMetadataStore, RegistryMetadataStoreError,
-    RegistrySnapshotCommit, RegistrySnapshotState, RegistryTrustRootCommit, RegistryTrustRootState,
-    inspect_initial_registry_trust_root, inspect_registry_snapshot,
+    InspectedRegistryRelease, InspectedRegistrySnapshot, InspectedRegistryTrustRoot,
+    RegistryMetadataStore, RegistryMetadataStoreError, RegistryPackageKind, RegistryReleaseCommit,
+    RegistryReleaseState, RegistrySnapshotCommit, RegistrySnapshotState, RegistryTrustRootCommit,
+    RegistryTrustRootState, inspect_initial_registry_trust_root, inspect_registry_release,
+    inspect_registry_snapshot,
 };
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 impl RegistryMetadataStore for SqliteStore {
     fn registry_trust_root(
@@ -19,6 +21,23 @@ impl RegistryMetadataStore for SqliteStore {
         registry_id: &str,
     ) -> Result<Option<RegistrySnapshotState>, RegistryMetadataStoreError> {
         load_snapshot_state(&self.connection, registry_id)
+    }
+
+    fn registry_snapshot(
+        &self,
+        registry_id: &str,
+    ) -> Result<Option<InspectedRegistrySnapshot>, RegistryMetadataStoreError> {
+        load_current_snapshot(&self.connection, registry_id)
+    }
+
+    fn registry_release(
+        &self,
+        registry_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<(InspectedRegistryRelease, RegistryReleaseState)>, RegistryMetadataStoreError>
+    {
+        load_release(&self.connection, registry_id, package_id, version)
     }
 
     fn commit_registry_trust_root(
@@ -216,6 +235,130 @@ impl RegistryMetadataStore for SqliteStore {
         transaction.commit().map_err(map_sqlite)?;
         Ok(target)
     }
+
+    fn commit_registry_release(
+        &mut self,
+        commit: RegistryReleaseCommit,
+    ) -> Result<RegistryReleaseState, RegistryMetadataStoreError> {
+        if commit.accepted_at_ms < 0 || commit.host_api_version == 0 {
+            return Err(invariant("registry release acceptance inputs are invalid"));
+        }
+        let registry_id = commit.inspected.release.registry_id.clone();
+        let package_id = commit.inspected.release.package_id.clone();
+        let version = commit.inspected.release.version.clone();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite)?;
+        let root = load_trust_root(&transaction, &registry_id)?
+            .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+        let actual_snapshot_state = load_snapshot_state(&transaction, &registry_id)?
+            .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+        if actual_snapshot_state != commit.expected_snapshot {
+            return Err(RegistryMetadataStoreError::Conflict);
+        }
+        let stored_snapshot = load_current_snapshot(&transaction, &registry_id)?
+            .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+        let verified_snapshot = inspect_registry_snapshot(
+            &stored_snapshot.envelope_bytes,
+            &root.trust_root,
+            Some(&actual_snapshot_state),
+            commit.accepted_at_ms,
+        )
+        .map_err(|_| invariant("active snapshot cannot admit registry release evidence"))?;
+        if verified_snapshot != stored_snapshot {
+            return Err(invariant(
+                "active snapshot evidence differs from its durable fence",
+            ));
+        }
+        let target = verified_snapshot
+            .snapshot
+            .target(&package_id, &version)
+            .ok_or_else(|| invariant("registry release target is absent from active snapshot"))?;
+        let verified = inspect_registry_release(
+            &commit.inspected.envelope_bytes,
+            &verified_snapshot,
+            target,
+            commit.host_api_version,
+        )
+        .map_err(|_| invariant("application supplied invalid registry release evidence"))?;
+        if verified != commit.inspected {
+            return Err(invariant("registry release inspection evidence drifted"));
+        }
+        if let Some((stored, state)) =
+            load_release(&transaction, &registry_id, &package_id, &version)?
+        {
+            if stored == verified {
+                transaction.commit().map_err(map_sqlite)?;
+                return Ok(state);
+            }
+            return Err(RegistryMetadataStoreError::Conflict);
+        }
+        ensure_release_digest_unaliased(&transaction, &registry_id, &verified.envelope_digest)?;
+        let state = release_state(
+            &verified,
+            &actual_snapshot_state,
+            commit.host_api_version,
+            commit.accepted_at_ms,
+        );
+        transaction
+            .execute(
+                "INSERT INTO registry_release(
+                     registry_id, package_id, package_kind, version, publisher_id,
+                     envelope_digest, payload_digest, envelope_bytes,
+                     manifest_digest, package_digest, accepted_snapshot_version,
+                     accepted_snapshot_root_version, accepted_snapshot_envelope_digest,
+                     accepted_host_api_version, accepted_at_ms
+                 ) VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                 )",
+                params![
+                    state.registry_id,
+                    state.package_id,
+                    package_kind_text(state.kind),
+                    state.version,
+                    state.publisher_id,
+                    state.envelope_digest,
+                    state.payload_digest,
+                    verified.envelope_bytes,
+                    state.manifest_digest,
+                    state.package_digest,
+                    to_i64(state.accepted_snapshot_version, "accepted snapshot version")?,
+                    to_i64(
+                        state.accepted_snapshot_root_version,
+                        "accepted snapshot root version"
+                    )?,
+                    state.accepted_snapshot_envelope_digest,
+                    i64::from(state.accepted_host_api_version),
+                    state.accepted_at_ms,
+                ],
+            )
+            .map_err(map_sqlite)?;
+        transaction.commit().map_err(map_sqlite)?;
+        Ok(state)
+    }
+}
+
+fn ensure_release_digest_unaliased(
+    transaction: &Transaction<'_>,
+    registry_id: &str,
+    envelope_digest: &str,
+) -> Result<(), RegistryMetadataStoreError> {
+    let alias: bool = transaction
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM registry_release
+                 WHERE registry_id = ?1 AND envelope_digest = ?2
+             )",
+            params![registry_id, envelope_digest],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)?;
+    if alias {
+        Err(RegistryMetadataStoreError::Conflict)
+    } else {
+        Ok(())
+    }
 }
 
 fn load_trust_root(
@@ -253,6 +396,44 @@ fn load_trust_root(
         ));
     }
     Ok(Some(inspected))
+}
+
+fn load_trust_root_version(
+    connection: &Connection,
+    registry_id: &str,
+    root_version: u64,
+) -> Result<InspectedRegistryTrustRoot, RegistryMetadataStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT root_json, root_digest, activated_at_ms
+             FROM registry_trust_root
+             WHERE registry_id = ?1 AND root_version = ?2",
+            params![
+                registry_id,
+                to_i64(root_version, "stored trust-root version")?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .ok_or_else(|| invariant("snapshot lost its authorizing trust root"))?;
+    let inspected = inspect_initial_registry_trust_root(&row.0, row.2)
+        .map_err(|_| invariant("stored historical trust-root bytes are invalid"))?;
+    if inspected.trust_root.registry_id != registry_id
+        || inspected.trust_root.root_version != root_version
+        || inspected.root_digest != row.1
+    {
+        return Err(invariant(
+            "stored historical trust-root identity or digest is inconsistent",
+        ));
+    }
+    Ok(inspected)
 }
 
 fn load_root_state(
@@ -303,6 +484,192 @@ fn load_snapshot_state(
         .map_err(map_sqlite)?
         .map(validate_snapshot_state)
         .transpose()
+}
+
+fn load_current_snapshot(
+    connection: &Connection,
+    registry_id: &str,
+) -> Result<Option<InspectedRegistrySnapshot>, RegistryMetadataStoreError> {
+    let state = load_snapshot_state(connection, registry_id)?;
+    state
+        .map(|state| {
+            load_snapshot_evidence(
+                connection,
+                registry_id,
+                state.version,
+                &state.envelope_digest,
+            )
+        })
+        .transpose()
+}
+
+fn load_snapshot_evidence(
+    connection: &Connection,
+    registry_id: &str,
+    snapshot_version: u64,
+    envelope_digest: &str,
+) -> Result<InspectedRegistrySnapshot, RegistryMetadataStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT root_version, payload_digest, envelope_bytes,
+                    expires_at_ms, accepted_at_ms
+             FROM registry_snapshot
+             WHERE registry_id = ?1 AND snapshot_version = ?2 AND envelope_digest = ?3",
+            params![
+                registry_id,
+                to_i64(snapshot_version, "stored snapshot version")?,
+                envelope_digest,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?
+        .ok_or_else(|| invariant("snapshot head lost its immutable evidence"))?;
+    let root_version =
+        u64::try_from(row.0).map_err(|_| invariant("stored snapshot root version is negative"))?;
+    let root = load_trust_root_version(connection, registry_id, root_version)?;
+    let inspected = inspect_registry_snapshot(&row.2, &root.trust_root, None, row.4)
+        .map_err(|_| invariant("stored registry snapshot evidence is invalid"))?;
+    if inspected.state.registry_id != registry_id
+        || inspected.state.root_version != root_version
+        || inspected.state.version != snapshot_version
+        || inspected.state.envelope_digest != envelope_digest
+        || inspected.state.expires_at_ms != row.3
+        || inspected.payload_digest != row.1
+    {
+        return Err(invariant(
+            "stored registry snapshot identity or digest is inconsistent",
+        ));
+    }
+    Ok(inspected)
+}
+
+fn load_release(
+    connection: &Connection,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<Option<(InspectedRegistryRelease, RegistryReleaseState)>, RegistryMetadataStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT package_kind, publisher_id, envelope_digest, payload_digest,
+                    envelope_bytes, manifest_digest, package_digest,
+                    accepted_snapshot_version, accepted_snapshot_root_version,
+                    accepted_snapshot_envelope_digest, accepted_host_api_version,
+                    accepted_at_ms
+             FROM registry_release
+             WHERE registry_id = ?1 AND package_id = ?2 AND version = ?3",
+            params![registry_id, package_id, version],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let kind = parse_package_kind(&row.0)?;
+    let snapshot_version = u64::try_from(row.7)
+        .map_err(|_| invariant("stored release snapshot version is negative"))?;
+    let snapshot_root_version = u64::try_from(row.8)
+        .map_err(|_| invariant("stored release snapshot root version is negative"))?;
+    let host_api_version = u32::try_from(row.10)
+        .map_err(|_| invariant("stored release host API version is invalid"))?;
+    let snapshot = load_snapshot_evidence(connection, registry_id, snapshot_version, &row.9)?;
+    if snapshot.state.root_version != snapshot_root_version {
+        return Err(invariant(
+            "stored release snapshot root identity is inconsistent",
+        ));
+    }
+    let authorizing_root = load_trust_root_version(connection, registry_id, snapshot_root_version)?;
+    if row.11 < 0
+        || row.11 >= snapshot.state.expires_at_ms
+        || row.11 >= authorizing_root.trust_root.expires_at_ms
+    {
+        return Err(invariant(
+            "stored release acceptance time is outside its trust window",
+        ));
+    }
+    let target = snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or_else(|| invariant("stored release target is absent from its accepted snapshot"))?;
+    let inspected = inspect_registry_release(&row.4, &snapshot, target, host_api_version)
+        .map_err(|_| invariant("stored registry release evidence is invalid"))?;
+    let expected = release_state(&inspected, &snapshot.state, host_api_version, row.11);
+    if expected.kind != kind
+        || expected.publisher_id != row.1
+        || expected.envelope_digest != row.2
+        || expected.payload_digest != row.3
+        || expected.manifest_digest != row.5
+        || expected.package_digest != row.6
+    {
+        return Err(invariant(
+            "stored registry release identity or digest is inconsistent",
+        ));
+    }
+    Ok(Some((inspected, expected)))
+}
+
+fn release_state(
+    inspected: &InspectedRegistryRelease,
+    snapshot: &RegistrySnapshotState,
+    host_api_version: u32,
+    accepted_at_ms: i64,
+) -> RegistryReleaseState {
+    RegistryReleaseState {
+        registry_id: inspected.release.registry_id.clone(),
+        package_id: inspected.release.package_id.clone(),
+        kind: inspected.release.kind,
+        version: inspected.release.version.clone(),
+        publisher_id: inspected.release.publisher_id.clone(),
+        envelope_digest: inspected.envelope_digest.clone(),
+        payload_digest: inspected.payload_digest.clone(),
+        manifest_digest: inspected.release.manifest.sha256_digest.clone(),
+        package_digest: inspected.release.package.sha256_digest.clone(),
+        accepted_snapshot_version: snapshot.version,
+        accepted_snapshot_root_version: snapshot.root_version,
+        accepted_snapshot_envelope_digest: snapshot.envelope_digest.clone(),
+        accepted_host_api_version: host_api_version,
+        accepted_at_ms,
+    }
+}
+
+const fn package_kind_text(kind: RegistryPackageKind) -> &'static str {
+    match kind {
+        RegistryPackageKind::Extension => "extension",
+        RegistryPackageKind::Skill => "skill",
+    }
+}
+
+fn parse_package_kind(value: &str) -> Result<RegistryPackageKind, RegistryMetadataStoreError> {
+    match value {
+        "extension" => Ok(RegistryPackageKind::Extension),
+        "skill" => Ok(RegistryPackageKind::Skill),
+        _ => Err(invariant("stored registry package kind is invalid")),
+    }
 }
 
 fn validate_root_state(
@@ -369,15 +736,21 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use ed25519_dalek::{Signer as _, SigningKey};
     use mealy_application::{
-        REGISTRY_ROOT_PAYLOAD_TYPE, REGISTRY_SNAPSHOT_CONTRACT_VERSION,
-        REGISTRY_SNAPSHOT_PAYLOAD_TYPE, RegistryMetadataStore, RegistryPublicKey,
-        RegistryPublisher, RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope,
-        RegistrySnapshot, RegistryTrustRoot, RegistryUseCaseError, accept_registry_snapshot,
-        bootstrap_registry_trust_root, rotate_registry_trust_root, sha256_digest,
+        REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE, REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE,
+        REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+        REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE,
+        REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+        RegistryContentDescriptor, RegistryMetadataStore, RegistryPackageKind, RegistryPublicKey,
+        RegistryPublisher, RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm,
+        RegistrySignedEnvelope, RegistrySnapshot, RegistryTarget, RegistryTrustRoot,
+        RegistryUseCaseError, RegistryWithdrawal, accept_registry_release,
+        accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
+        rotate_registry_trust_root, sha256_digest,
     };
 
     const NOW_MS: i64 = 10_000;
     const ROOT_CONTEXT: &str = "MEALY-REGISTRY-ROOT-V1";
+    const RELEASE_CONTEXT: &str = "MEALY-REGISTRY-RELEASE-V1";
     const SNAPSHOT_CONTEXT: &str = "MEALY-REGISTRY-SNAPSHOT-V1";
 
     #[test]
@@ -476,6 +849,10 @@ mod tests {
                 .expect("exact rotation replay"),
             rotated
         );
+        assert!(
+            active_registry_snapshot(&reopened, &root.registry_id, NOW_MS + 5).is_err(),
+            "a root rotation must require a newly authorized snapshot before release admission"
+        );
 
         let snapshot_three = snapshot(3, &publisher_key);
         let snapshot_three_envelope = signed_envelope(
@@ -525,6 +902,158 @@ mod tests {
             .expect("registry storage integrity");
     }
 
+    #[test]
+    #[allow(clippy::too_many_lines)] // One proof crosses accept, replay, reopen, and withdrawal.
+    fn publisher_release_evidence_is_exact_immutable_restart_durable_and_withdrawal_aware() {
+        let temporary = tempfile::tempdir().expect("temporary registry home");
+        let database = temporary.path().join("state.sqlite3");
+        let root_key = SigningKey::from_bytes(&[31; 32]);
+        let publisher_key = SigningKey::from_bytes(&[37; 32]);
+        let root = RegistryTrustRoot {
+            registry_id: "dev.mealy.registry".to_owned(),
+            root_version: 1,
+            keys: vec![public_key(&root_key)],
+            threshold: 1,
+            expires_at_ms: NOW_MS + 600_000,
+        };
+        let release = RegistryRelease {
+            contract_version: REGISTRY_RELEASE_CONTRACT_VERSION.to_owned(),
+            registry_id: root.registry_id.clone(),
+            package_id: "dev.mealy.extension.clock".to_owned(),
+            kind: RegistryPackageKind::Extension,
+            publisher_id: "dev.mealy".to_owned(),
+            version: "1.0.0".to_owned(),
+            manifest: descriptor(REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE, b"manifest"),
+            package: descriptor(REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE, b"package"),
+            minimum_host_api: 1,
+            maximum_host_api: 1,
+            dependencies: Vec::new(),
+            published_at_ms: NOW_MS,
+        };
+        let release_envelope = signed_envelope(
+            REGISTRY_RELEASE_PAYLOAD_TYPE,
+            RELEASE_CONTEXT,
+            &release,
+            &[&publisher_key],
+        );
+        let target = RegistryTarget {
+            package_id: release.package_id.clone(),
+            kind: release.kind,
+            version: release.version.clone(),
+            publisher_id: release.publisher_id.clone(),
+            release_envelope: descriptor(REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE, &release_envelope),
+            withdrawal: None,
+        };
+        let snapshot = snapshot_with_target(1, &publisher_key, target.clone());
+        let snapshot_envelope = signed_envelope(
+            REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+            SNAPSHOT_CONTEXT,
+            &snapshot,
+            &[&root_key],
+        );
+        let mut store = SqliteStore::open(&database, NOW_MS).expect("registry store");
+        bootstrap_registry_trust_root(
+            &mut store,
+            &serde_json::to_vec(&root).expect("root bytes"),
+            NOW_MS,
+        )
+        .expect("root bootstrap");
+        accept_registry_snapshot(&mut store, &root.registry_id, &snapshot_envelope, NOW_MS)
+            .expect("snapshot");
+        let accepted = accept_registry_release(
+            &mut store,
+            &root.registry_id,
+            &release.package_id,
+            &release.version,
+            &release_envelope,
+            1,
+            NOW_MS + 1,
+        )
+        .expect("release evidence");
+        assert_eq!(accepted.envelope_digest, sha256_digest(&release_envelope));
+        assert_eq!(accepted.accepted_snapshot_version, 1);
+        assert_eq!(
+            accept_registry_release(
+                &mut store,
+                &root.registry_id,
+                &release.package_id,
+                &release.version,
+                &release_envelope,
+                1,
+                NOW_MS + 2,
+            )
+            .expect("exact release replay"),
+            accepted
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE registry_release SET package_digest = ?1
+                     WHERE registry_id = ?2 AND package_id = ?3 AND version = ?4",
+                    rusqlite::params![
+                        "a".repeat(64),
+                        root.registry_id,
+                        release.package_id,
+                        release.version,
+                    ],
+                )
+                .is_err(),
+            "immutable release evidence must reject updates"
+        );
+        drop(store);
+
+        let mut reopened = SqliteStore::open(&database, NOW_MS + 3).expect("reopen registry store");
+        let (_, reopened_state) = reopened
+            .registry_release(&root.registry_id, &release.package_id, &release.version)
+            .expect("load release")
+            .expect("durable release");
+        assert_eq!(reopened_state, accepted);
+
+        let mut withdrawn_target = target;
+        withdrawn_target.withdrawal = Some(RegistryWithdrawal {
+            withdrawn_at_ms: NOW_MS,
+            reason: "publisher key compromise".to_owned(),
+        });
+        let withdrawn_snapshot = snapshot_with_target(2, &publisher_key, withdrawn_target);
+        let withdrawn_envelope = signed_envelope(
+            REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+            SNAPSHOT_CONTEXT,
+            &withdrawn_snapshot,
+            &[&root_key],
+        );
+        accept_registry_snapshot(
+            &mut reopened,
+            &root.registry_id,
+            &withdrawn_envelope,
+            NOW_MS + 4,
+        )
+        .expect("withdrawn snapshot remains auditable");
+        assert!(matches!(
+            accept_registry_release(
+                &mut reopened,
+                &root.registry_id,
+                &release.package_id,
+                &release.version,
+                &release_envelope,
+                1,
+                NOW_MS + 5,
+            ),
+            Err(RegistryUseCaseError::Verification(
+                mealy_application::RegistryError::Withdrawn
+            ))
+        ));
+        assert!(
+            reopened
+                .registry_release(&root.registry_id, &release.package_id, &release.version)
+                .expect("load historical release")
+                .is_some()
+        );
+        reopened
+            .verify_storage_integrity()
+            .expect("release storage integrity");
+    }
+
     fn snapshot(version: u64, publisher_key: &SigningKey) -> RegistrySnapshot {
         RegistrySnapshot {
             contract_version: REGISTRY_SNAPSHOT_CONTRACT_VERSION.to_owned(),
@@ -538,6 +1067,24 @@ mod tests {
                 threshold: 1,
             }],
             targets: Vec::new(),
+        }
+    }
+
+    fn snapshot_with_target(
+        version: u64,
+        publisher_key: &SigningKey,
+        target: RegistryTarget,
+    ) -> RegistrySnapshot {
+        let mut snapshot = snapshot(version, publisher_key);
+        snapshot.targets = vec![target];
+        snapshot
+    }
+
+    fn descriptor(media_type: &str, bytes: &[u8]) -> RegistryContentDescriptor {
+        RegistryContentDescriptor {
+            media_type: media_type.to_owned(),
+            sha256_digest: sha256_digest(bytes),
+            size_bytes: u64::try_from(bytes.len()).expect("fixture length"),
         }
     }
 

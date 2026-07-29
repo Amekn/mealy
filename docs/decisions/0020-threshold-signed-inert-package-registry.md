@@ -89,7 +89,15 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     acceptance. Refresh requires the exact envelope digest printed by the reviewed fetch, so a
     mutable-current change between review and apply fails closed. Content requests additionally
     verify signed exact media type, length, and SHA-256 before parsing.
-12. Download resumption, durable release/package evidence, package publication tooling, staged
+12. Schema 25 retains one exact publisher-signed release as immutable evidence only after the
+    active root and current snapshot are revalidated at the acceptance clock. The immediate
+    transaction repeats publisher threshold, withdrawal, exact dependency closure, host
+    compatibility, and descriptor verification, and binds the first admitting root/snapshot and
+    host API revision. Exact replay is idempotent; registry/package/version aliasing conflicts.
+    Root rotation requires a newly authorized snapshot before admission, and later withdrawal
+    blocks new acceptance without deleting history. `release-fetch` and `release-accept` use an
+    exact review digest; `release-status` is offline.
+13. Download resumption, durable manifest/archive evidence, package publication tooling, staged
     activation, withdrawal propagation to installed revisions, and rollback orchestration remain
     later slices. Mirror retrieval still performs no package execution and grants no runtime
     authority.
@@ -103,10 +111,11 @@ Mealy introduces a versioned registry contract in independent, inert layers.
   accepted freeze/rollback.
 - Registry discovery remains useful offline once exact metadata is available, but an expired
   snapshot cannot authorize a new install.
-- Root and snapshot history are append-only canonical evidence; only small current-head rows may
-  advance, under exact monotonic SQLite triggers and application compare-and-swap fences.
-- The first slices add verification, durable anti-rollback state, bounded mirror retrieval, and
-  review primitives, not a public marketplace or automatic update path.
+- Root, snapshot, and publisher-release history are append-only canonical evidence; only small
+  root/snapshot head rows may advance, under exact monotonic SQLite triggers and application
+  compare-and-swap fences.
+- The first slices add verification, durable anti-rollback/release evidence, bounded mirror
+  retrieval, and review primitives, not a public marketplace or automatic update path.
 - Ed25519 verification adds a small audited cryptographic dependency to the production graph and
   remains subject to the existing advisory, license, duplicate-version, SBOM, and provenance
   gates.

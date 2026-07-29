@@ -15,23 +15,26 @@ use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, ImageGenerationConfig, InspectedRegistrySnapshot,
-    InspectedRegistryTrustRoot, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
-    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
-    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
-    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
-    ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryError,
-    RegistryMetadataStore, RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError,
-    RegistrySnapshotState, RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    BrowserConfig, CancellationProbe, EXTENSION_HOST_API_VERSION, ImageGenerationConfig,
+    InspectedRegistryRelease, InspectedRegistrySnapshot, InspectedRegistryTrustRoot,
+    MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_IMAGE_DIMENSION,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication, McpHttpCatalogDiscovery,
+    McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery, McpPromptGrant,
+    McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect, McpToolGrant,
+    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
+    ProviderRequest, ProviderResponse, RegistryContentDescriptor, RegistryDependencyLock,
+    RegistryError, RegistryMetadataStore, RegistryMetadataStoreError, RegistryMirror,
+    RegistryMirrorError, RegistryPackageKind, RegistryReleaseState, RegistrySnapshotState,
+    RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
     SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
-    accept_registry_snapshot, bootstrap_registry_trust_root, default_daemon_config_document,
-    fetch_registry_snapshot_envelope, inspect_initial_registry_trust_root,
-    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
-    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
-    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
-    validate_provider_chain,
+    accept_registry_release, accept_registry_snapshot, active_registry_snapshot,
+    bootstrap_registry_trust_root, default_daemon_config_document, fetch_registry_content,
+    fetch_registry_snapshot_envelope, inspect_active_registry_release,
+    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
+    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
+    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
+    validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
@@ -272,7 +275,7 @@ enum BrowserNamespace {
 
 #[derive(Debug, Subcommand)]
 enum RegistryNamespace {
-    /// Inspect or advance signed inert registry trust metadata while stopped.
+    /// Inspect or advance signed inert registry trust and release evidence while stopped.
     Registry {
         /// Signed registry metadata operation.
         #[command(subcommand)]
@@ -2066,6 +2069,45 @@ enum RegistryCommand {
         /// Confirm advancement of the durable anti-rollback fence.
         #[arg(long)]
         approve: bool,
+    },
+    /// Fetch and verify one exact publisher release without retaining it.
+    ReleaseFetch {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity selected from the accepted snapshot.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+    },
+    /// Fetch, verify, and retain one exact publisher release as inert evidence.
+    ReleaseAccept {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity selected from the accepted snapshot.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact lowercase SHA-256 printed by the reviewed `release-fetch`.
+        #[arg(long)]
+        expected_envelope_digest: String,
+        /// Confirm the immutable evidence commit.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Inspect previously accepted immutable release evidence without network access.
+    ReleaseStatus {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
     },
 }
 
@@ -13122,6 +13164,44 @@ fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), 
             require_registry_approval(*approve)?;
             run_registry_snapshot_mirror(home, registry_id, mirror, Some(expected_envelope_digest))
         }
+        command @ (RegistryCommand::ReleaseFetch { .. }
+        | RegistryCommand::ReleaseAccept { .. }
+        | RegistryCommand::ReleaseStatus { .. }) => run_registry_release_operation(home, command),
+    }
+}
+
+fn run_registry_release_operation(home: &Path, command: &RegistryCommand) -> Result<(), CliError> {
+    match command {
+        RegistryCommand::ReleaseFetch {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+        } => run_registry_release_mirror(home, registry_id, package_id, version, mirror, None),
+        RegistryCommand::ReleaseAccept {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+            expected_envelope_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_release_mirror(
+                home,
+                registry_id,
+                package_id,
+                version,
+                mirror,
+                Some(expected_envelope_digest),
+            )
+        }
+        RegistryCommand::ReleaseStatus {
+            registry_id,
+            package_id,
+            version,
+        } => run_registry_release_status(home, registry_id, package_id, version),
+        _ => Err(CliError::InvalidRegistryMetadata),
     }
 }
 
@@ -13201,6 +13281,103 @@ fn require_registry_snapshot_review_digest(actual: &str, expected: &str) -> Resu
     } else {
         Err(CliError::RegistrySnapshotDrift)
     }
+}
+
+fn run_registry_release_mirror(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    base_url: &str,
+    expected_envelope_digest: Option<&str>,
+) -> Result<(), CliError> {
+    let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_envelope_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistryReleaseDigest);
+    }
+    let opened_at_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if expected_envelope_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let snapshot = active_registry_snapshot(&store, registry_id, opened_at_ms)?;
+    let target = snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or(RegistryError::InvalidRelease)?;
+    if target.withdrawal.is_some() {
+        return Err(RegistryError::Withdrawn.into());
+    }
+    let envelope = fetch_registry_content(
+        &HttpsRegistryMirrorTransport,
+        &mirror,
+        &target.release_envelope,
+    )?;
+    let now_ms = registry_now_ms()?;
+    let inspected = inspect_active_registry_release(
+        &store,
+        registry_id,
+        package_id,
+        version,
+        &envelope,
+        EXTENSION_HOST_API_VERSION,
+        now_ms,
+    )?;
+    let active_snapshot = active_registry_snapshot(&store, registry_id, now_ms)?;
+    let durable_state = if let Some(expected_envelope_digest) = expected_envelope_digest {
+        if inspected.envelope_digest != expected_envelope_digest {
+            return Err(CliError::RegistryReleaseDrift);
+        }
+        Some(accept_registry_release(
+            &mut store,
+            registry_id,
+            package_id,
+            version,
+            &envelope,
+            EXTENSION_HOST_API_VERSION,
+            now_ms,
+        )?)
+    } else {
+        None
+    };
+    let operation = if durable_state.is_some() {
+        "release_evidence_accepted"
+    } else {
+        "release_fetched_verified"
+    };
+    print_json(registry_release_response(
+        operation,
+        &inspected,
+        Some(&active_snapshot.state),
+        durable_state,
+        true,
+    ))
+}
+
+fn run_registry_release_status(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<(), CliError> {
+    validate_registry_id(registry_id)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let store = open_registry_read_store(&home)?;
+    let (inspected, durable_state) = store
+        .registry_release(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryReleaseNotFound)?;
+    let active_snapshot = store.registry_snapshot_state(registry_id)?;
+    print_json(registry_release_response(
+        "release_evidence_status",
+        &inspected,
+        active_snapshot.as_ref(),
+        Some(durable_state),
+        false,
+    ))
 }
 
 fn require_registry_approval(approve: bool) -> Result<(), CliError> {
@@ -13376,6 +13553,58 @@ fn registry_snapshot_response(
             .iter()
             .filter(|target| target.withdrawal.is_some())
             .count(),
+        network_access,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryReleaseResponse {
+    operation: &'static str,
+    registry_id: String,
+    package_id: String,
+    kind: RegistryPackageKind,
+    version: String,
+    publisher_id: String,
+    envelope_digest: String,
+    payload_digest: String,
+    manifest: RegistryContentDescriptor,
+    package: RegistryContentDescriptor,
+    dependencies: Vec<RegistryDependencyLock>,
+    minimum_host_api: u32,
+    maximum_host_api: u32,
+    published_at_ms: i64,
+    active_snapshot: Option<RegistrySnapshotState>,
+    durable_state: Option<RegistryReleaseState>,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_release_response(
+    operation: &'static str,
+    release: &InspectedRegistryRelease,
+    active_snapshot: Option<&RegistrySnapshotState>,
+    durable_state: Option<RegistryReleaseState>,
+    network_access: bool,
+) -> RegistryReleaseResponse {
+    RegistryReleaseResponse {
+        operation,
+        registry_id: release.release.registry_id.clone(),
+        package_id: release.release.package_id.clone(),
+        kind: release.release.kind,
+        version: release.release.version.clone(),
+        publisher_id: release.release.publisher_id.clone(),
+        envelope_digest: release.envelope_digest.clone(),
+        payload_digest: release.payload_digest.clone(),
+        manifest: release.release.manifest.clone(),
+        package: release.release.package.clone(),
+        dependencies: release.release.dependencies.clone(),
+        minimum_host_api: release.release.minimum_host_api,
+        maximum_host_api: release.release.maximum_host_api,
+        published_at_ms: release.release.published_at_ms,
+        active_snapshot: active_snapshot.cloned(),
+        durable_state,
         network_access,
         package_authority: false,
     }
@@ -19380,8 +19609,8 @@ enum CliError {
     /// High-risk configuration activation omitted explicit owner approval.
     #[error("high-risk configuration activation requires --approve")]
     ApprovalRequired,
-    /// Registry trust or anti-rollback state mutation omitted explicit owner approval.
-    #[error("registry trust metadata activation requires --approve")]
+    /// Registry trust, anti-rollback, or release-evidence mutation omitted explicit approval.
+    #[error("registry durable state activation requires --approve")]
     RegistryApprovalRequired,
     /// Owner-selected registry metadata was absent, redirected, oversized, or malformed.
     #[error("registry metadata must be a nonempty bounded no-follow regular file")]
@@ -19396,6 +19625,11 @@ enum CliError {
         "registry snapshot refresh requires the exact lowercase SHA-256 printed by snapshot-fetch"
     )]
     InvalidRegistrySnapshotDigest,
+    /// Release acceptance did not bind one canonical SHA-256 envelope identity.
+    #[error(
+        "registry release acceptance requires the exact lowercase SHA-256 printed by release-fetch"
+    )]
+    InvalidRegistryReleaseDigest,
     /// Registry metadata commands require an initialized canonical database.
     #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
     RegistryDatabaseNotFound,
@@ -19417,6 +19651,14 @@ enum CliError {
         "registry mirror snapshot changed after review; run snapshot-fetch again and review the new digest"
     )]
     RegistrySnapshotDrift,
+    /// Immutable release bytes differed from the exact reviewed envelope.
+    #[error(
+        "registry release changed after review; run release-fetch again and review the new digest"
+    )]
+    RegistryReleaseDrift,
+    /// No durable release evidence exists for the exact requested identity.
+    #[error("registry release evidence was not found")]
+    RegistryReleaseNotFound,
     /// Cryptographic or semantic registry metadata verification failed.
     #[error(transparent)]
     RegistryVerification(#[from] RegistryError),
@@ -20519,6 +20761,44 @@ mod tests {
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             Err(CliError::RegistrySnapshotDrift)
+        ));
+    }
+
+    #[test]
+    fn registry_release_parser_preserves_exact_review_identity() {
+        let release = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "release-accept",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "--approve",
+        ])
+        .expect("registry release acceptance command");
+        assert!(matches!(
+            release.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::ReleaseAccept {
+                        registry_id,
+                        package_id,
+                        version,
+                        mirror,
+                        expected_envelope_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_envelope_digest
+                            == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                )
         ));
     }
 

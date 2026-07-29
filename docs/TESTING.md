@@ -768,6 +768,14 @@ mirrors cannot advance SQLite state, and file-based trust/rollback/restart behav
 intact. A bounded five-second resolver with an eight-lookup global ceiling closes the pre-request
 DNS timeout gap for every adapter sharing this egress policy.
 
+Schema 25 tests accept one real publisher-signed release through the application and SQLite
+boundaries, reopen it, prove exact replay, reject immutable-row mutation, advance to a withdrawal,
+and prove historical evidence remains readable while new acceptance fails. Root rotation is also
+proved to invalidate release admission until a new snapshot is accepted. Migration tests cover
+both v23-to-current construction and direct v24-to-v25 preservation. CLI parser/process tests cover
+the separate release command graph, approval-before-network ordering, canonical review digests,
+and no release row on rejected input.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

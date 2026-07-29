@@ -216,14 +216,17 @@ and never grant authority. See [`docs/QUICKSTART.md`](../../docs/QUICKSTART.md) 
 copy-paste lifecycle.
 
 The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `status`,
-`snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, and `snapshot-refresh` for the v0.5 signed
-registry trust root and monotonic snapshot fence.
+`snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, `snapshot-refresh`, `release-fetch`,
+`release-accept`, and `release-status` for the v0.5 signed registry trust root, monotonic snapshot
+fence, and inert publisher-release evidence.
 Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
 all canonical-state operations require the daemon to be stopped, and existing databases must
 already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
 The optional snapshot mirror path is fixed-layout, HTTPS-only, proxy/redirect-free, DNS-pinned,
 public-address-only, response-bounded, exact-review-digest-fenced, and rechecked against local
-signature/anti-rollback state.
+signature/anti-rollback state. Release acceptance repeats current root, snapshot, publisher,
+withdrawal, dependency-lock, descriptor, and host-compatibility checks inside schema 25's
+immutable SQLite transaction.
 The namespace still grants no package, extension, skill, or tool authority. See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
 lifecycle and current mirror boundary.

@@ -697,6 +697,40 @@ pub struct InspectedRegistryRelease {
     pub envelope_bytes: Vec<u8>,
 }
 
+/// Durable identity and provenance of one accepted publisher-signed release.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryReleaseState {
+    /// Stable registry identity.
+    pub registry_id: String,
+    /// Stable package identity.
+    pub package_id: String,
+    /// Package class.
+    pub kind: RegistryPackageKind,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Publisher identity selected by the accepted snapshot.
+    pub publisher_id: String,
+    /// SHA-256 of the complete publisher-signed release envelope.
+    pub envelope_digest: String,
+    /// SHA-256 of the exact decoded signed release payload.
+    pub payload_digest: String,
+    /// SHA-256 of the exact package manifest bytes.
+    pub manifest_digest: String,
+    /// SHA-256 of the exact immutable package archive bytes.
+    pub package_digest: String,
+    /// Snapshot version that first admitted this evidence.
+    pub accepted_snapshot_version: u64,
+    /// Trust-root revision that authorized the admitting snapshot.
+    pub accepted_snapshot_root_version: u64,
+    /// Exact snapshot envelope that first admitted this evidence.
+    pub accepted_snapshot_envelope_digest: String,
+    /// Host API revision used for compatibility verification at acceptance.
+    pub accepted_host_api_version: u32,
+    /// UTC time of the first durable acceptance.
+    pub accepted_at_ms: i64,
+}
+
 /// Atomic canonical commit of one initial or dual-threshold-rotated trust root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryTrustRootCommit {
@@ -719,13 +753,29 @@ pub struct RegistrySnapshotCommit {
     pub accepted_at_ms: i64,
 }
 
+/// Atomic canonical commit of one publisher release selected by the current snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryReleaseCommit {
+    /// Fully verified publisher release and exact signed envelope.
+    pub inspected: InspectedRegistryRelease,
+    /// Exact active snapshot fence used to select this release.
+    pub expected_snapshot: RegistrySnapshotState,
+    /// Host API revision used for compatibility verification.
+    pub host_api_version: u32,
+    /// UTC time assigned to canonical acceptance.
+    pub accepted_at_ms: i64,
+}
+
 /// Safe failures from canonical registry metadata persistence.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RegistryMetadataStoreError {
     /// The requested registry has no active trust root.
     #[error("registry trust root was not found")]
     TrustRootNotFound,
-    /// Canonical root or snapshot state changed under the caller.
+    /// The requested registry has no accepted current snapshot.
+    #[error("registry snapshot was not found")]
+    SnapshotNotFound,
+    /// Canonical metadata changed or a release identity already denotes different evidence.
     #[error("registry metadata state conflicts with the expected revision")]
     Conflict,
     /// Persistence dependency failed.
@@ -758,6 +808,27 @@ pub trait RegistryMetadataStore {
         registry_id: &str,
     ) -> Result<Option<RegistrySnapshotState>, RegistryMetadataStoreError>;
 
+    /// Loads the exact current accepted snapshot and its verified evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for corrupt or unavailable state.
+    fn registry_snapshot(
+        &self,
+        registry_id: &str,
+    ) -> Result<Option<InspectedRegistrySnapshot>, RegistryMetadataStoreError>;
+
+    /// Loads previously accepted immutable release evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for corrupt or unavailable state.
+    fn registry_release(
+        &self,
+        registry_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<(InspectedRegistryRelease, RegistryReleaseState)>, RegistryMetadataStoreError>;
     /// Atomically activates one initial or rotated root under an exact prior-state fence.
     ///
     /// # Errors
@@ -777,6 +848,16 @@ pub trait RegistryMetadataStore {
         &mut self,
         commit: RegistrySnapshotCommit,
     ) -> Result<RegistrySnapshotState, RegistryMetadataStoreError>;
+
+    /// Atomically retains exact publisher release evidence under the current snapshot fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for conflicts, corruption, or persistence failure.
+    fn commit_registry_release(
+        &mut self,
+        commit: RegistryReleaseCommit,
+    ) -> Result<RegistryReleaseState, RegistryMetadataStoreError>;
 }
 
 /// Registry verification or canonical persistence failure.
@@ -949,6 +1030,106 @@ pub fn accept_registry_snapshot(
         .commit_registry_snapshot(RegistrySnapshotCommit {
             inspected,
             expected: previous,
+            accepted_at_ms: now_ms,
+        })
+        .map_err(Into::into)
+}
+
+/// Loads and revalidates the exact current snapshot under the active root and current clock.
+///
+/// A root rotation deliberately makes the prior snapshot unusable until a newer snapshot is
+/// accepted under that root. This prevents release admission from silently relying on stale
+/// publisher or withdrawal policy.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when trust metadata is absent, expired, rotated without a
+/// matching snapshot refresh, corrupt, or unavailable.
+pub fn active_registry_snapshot(
+    store: &impl RegistryMetadataStore,
+    registry_id: &str,
+    now_ms: i64,
+) -> Result<InspectedRegistrySnapshot, RegistryUseCaseError> {
+    if !valid_identifier(registry_id) || now_ms < 0 {
+        return Err(RegistryError::InvalidSnapshot.into());
+    }
+    let root = store
+        .registry_trust_root(registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let state = store
+        .registry_snapshot_state(registry_id)?
+        .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+    let stored = store
+        .registry_snapshot(registry_id)?
+        .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+    let verified = inspect_registry_snapshot(
+        &stored.envelope_bytes,
+        &root.trust_root,
+        Some(&state),
+        now_ms,
+    )?;
+    if verified != stored || verified.state != state {
+        return Err(RegistryMetadataStoreError::InvariantViolation(
+            "active snapshot evidence differs from its durable fence".to_owned(),
+        )
+        .into());
+    }
+    Ok(verified)
+}
+
+/// Verifies one exact publisher release selected by the active durable snapshot.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when current trust metadata is unusable, the target is absent,
+/// or the publisher envelope fails exact verification.
+pub fn inspect_active_registry_release(
+    store: &impl RegistryMetadataStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    envelope_bytes: &[u8],
+    host_api_version: u32,
+    now_ms: i64,
+) -> Result<InspectedRegistryRelease, RegistryUseCaseError> {
+    let snapshot = active_registry_snapshot(store, registry_id, now_ms)?;
+    let target = snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or(RegistryError::InvalidRelease)?;
+    inspect_registry_release(envelope_bytes, &snapshot, target, host_api_version)
+        .map_err(Into::into)
+}
+
+/// Verifies and atomically retains one immutable publisher release under the active snapshot.
+///
+/// This stores inert exact-byte evidence only. It does not fetch a manifest/archive, extract
+/// files, stage a revision, install a package, or grant runtime authority.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] when current trust metadata is unusable, publisher verification
+/// fails, or the snapshot/release state changes inside the persistence transaction.
+pub fn accept_registry_release(
+    store: &mut impl RegistryMetadataStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    envelope_bytes: &[u8],
+    host_api_version: u32,
+    now_ms: i64,
+) -> Result<RegistryReleaseState, RegistryUseCaseError> {
+    let snapshot = active_registry_snapshot(store, registry_id, now_ms)?;
+    let target = snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or(RegistryError::InvalidRelease)?;
+    let inspected = inspect_registry_release(envelope_bytes, &snapshot, target, host_api_version)?;
+    store
+        .commit_registry_release(RegistryReleaseCommit {
+            inspected,
+            expected_snapshot: snapshot.state,
+            host_api_version,
             accepted_at_ms: now_ms,
         })
         .map_err(Into::into)

@@ -151,6 +151,45 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         "unexpected invalid refresh digest error: {}",
         String::from_utf8_lossy(&invalid_refresh_digest.stderr)
     );
+    let unapproved_release = registry_command(
+        home.path(),
+        &[
+            "release-accept",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            FIXTURE_DIGEST,
+        ],
+    );
+    assert!(!unapproved_release.status.success());
+    assert!(
+        String::from_utf8_lossy(&unapproved_release.stderr).contains("requires --approve"),
+        "unexpected unapproved release error: {}",
+        String::from_utf8_lossy(&unapproved_release.stderr)
+    );
+    let invalid_release_digest = registry_command(
+        home.path(),
+        &[
+            "release-accept",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://127.0.0.1/",
+            "--expected-envelope-digest",
+            "not-a-digest",
+            "--approve",
+        ],
+    );
+    assert!(!invalid_release_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_release_digest.stderr).contains("exact lowercase SHA-256"),
+        "unexpected invalid release digest error: {}",
+        String::from_utf8_lossy(&invalid_release_digest.stderr)
+    );
     let insecure_mirror = registry_command(
         home.path(),
         &[
@@ -184,6 +223,7 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         String::from_utf8_lossy(&private_mirror.stderr)
     );
     assert_eq!(database_count(home.path(), "registry_snapshot"), 0);
+    assert_eq!(database_count(home.path(), "registry_release"), 0);
 
     let snapshot_one = snapshot(1, now_ms, &publisher_key);
     let snapshot_one_path = metadata.path().join("snapshot-1.json");
@@ -423,7 +463,7 @@ fn registry_cli_refuses_unprotected_existing_schema_migration() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("requires canonical schema 24")
+        error.contains("requires canonical schema 25")
             && error.contains("has schema 23")
             && error.contains("backup-protected migration"),
         "existing schema must be rejected before migration: {error}"
@@ -528,7 +568,10 @@ fn decode(output: &Output) -> Value {
 
 fn database_count(home: &Path, table: &str) -> i64 {
     assert!(
-        matches!(table, "registry_trust_root" | "registry_snapshot"),
+        matches!(
+            table,
+            "registry_trust_root" | "registry_snapshot" | "registry_release"
+        ),
         "fixed test table"
     );
     rusqlite::Connection::open(home.join("mealy.sqlite3"))

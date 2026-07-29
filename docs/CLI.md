@@ -153,13 +153,44 @@ equivocation verification still run against the locally trusted root before outp
 The stopped-home lock remains held across retrieval and any commit, so the daemon cannot race the
 reviewed state.
 
+After accepting a snapshot, inspect one exact publisher release selected by that snapshot:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry release-fetch dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+Review the publisher, host compatibility, exact dependencies, and manifest/archive descriptors,
+then retain the same release as immutable inert evidence:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry release-accept dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-envelope-digest DIGEST_FROM_RELEASE_FETCH \
+  --approve
+
+mealyctl --home "$HOME/.mealy" registry release-status dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0
+```
+
+Release fetch derives the immutable object path solely from the active signed snapshot. Both
+review and acceptance require an unexpired snapshot under the active root; a root rotation
+therefore requires a newly authorized snapshot before any release can be admitted. Acceptance
+repeats snapshot, publisher threshold, withdrawal, dependency closure, host API, and exact
+envelope verification inside an immediate schema 25 SQLite transaction. An exact replay is
+idempotent, while the same registry/package/version can never alias different bytes.
+`release-status` is offline and remains available for historical evidence after a later
+withdrawal; that withdrawal blocks new acceptance.
+
 The application transport also derives immutable release/manifest/archive paths only as
 `objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
-SHA-256 before parsing. That content path is not yet exposed by an install command. Neither
-snapshot command downloads a package, extracts content, installs, stages, activates, discovers a
-mirror, or grants a permission. Accepted metadata remains inert durable evidence. Durable
-release/package evidence, full package inspection, permission-diff staging, and withdrawal-aware
-install/rollback are separate later v0.5 boundaries.
+SHA-256 before parsing. Release commands fetch only the signed release envelope, not its manifest
+or archive. No registry command extracts content, installs, stages, activates, discovers a mirror,
+or grants a permission. Accepted metadata remains inert durable evidence. Manifest/archive
+retrieval, full package inspection, permission-diff staging, and withdrawal-aware install/rollback
+are separate later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

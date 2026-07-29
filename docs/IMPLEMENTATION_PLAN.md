@@ -277,7 +277,8 @@ tests cover the additive schema.
 The third slice exposes this boundary through `mealyctl registry`. Root and snapshot inspection,
 explicit root bootstrap/rotation, status, and explicit snapshot acceptance operate on bounded
 no-follow files. Mutations require `--approve`; every canonical-state command takes the stopped
-daemon home lock; existing stores must already match schema 24 so the CLI cannot bypass the normal
+daemon home lock; existing stores must already match the binary's exact schema so the CLI cannot
+bypass the normal
 backup-protected migration path. Process tests cross real executable and SQLite boundaries,
 restart/replay, rollback, dual-threshold rotation, symlink rejection, live-daemon exclusion, and
 old-schema refusal. The output omits key bodies and metadata payloads and declares that neither
@@ -294,7 +295,16 @@ checks before inspection or an approved commit. Application/infrastructure and C
 cover fixed layout, digest/length/type mismatch, insecure/private origins, approval ordering,
 review-to-apply envelope drift, and the shared IANA special-address corpus.
 
-The next slices must add durable release/package evidence, exact archive download and existing
+The fifth slice adds schema 25 immutable publisher-release evidence and stopped-home
+`release-fetch`, `release-accept`, and `release-status`. Admission revalidates the exact current
+snapshot under the active root and current clock, then repeats publisher threshold, withdrawal,
+dependency-lock, host-compatibility, and descriptor verification inside an immediate transaction.
+The first admitting root/snapshot identity and host API revision remain durable provenance.
+Identical replay is idempotent; a package/version cannot alias different bytes. Later withdrawal
+blocks new acceptance without deleting historical evidence. Migration and restart tests cover
+v23-to-current, v24-to-v25, immutable triggers, replay, withdrawal, and root-rotation refresh.
+
+The next slices must add durable manifest/archive evidence, exact archive download and existing
 package inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade
 and rollback transactions, public registry publication tooling, and package/upgrade/recovery
 qualification.

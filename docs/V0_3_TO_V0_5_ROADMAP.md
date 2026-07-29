@@ -294,9 +294,14 @@ verification remain authoritative. Approved refresh additionally requires the ex
 digest printed by the preceding fetch, closing mutable-current review/apply drift. Immutable
 content requests can only derive
 `objects/sha256/DIGEST` from signed descriptors and require exact type, length, and digest, but no
-package command consumes them yet. Durable release/package evidence, package
-download/inspection, staged activation, installed-withdrawal handling, and rollback remain later
-slices; metadata acceptance grants no runtime authority.
+package command consumes manifest/archive objects yet. Schema 25 and `release-fetch`,
+`release-accept`, and `release-status` now add immutable publisher-release evidence under the exact
+active root/snapshot fence. Acceptance repeats publisher threshold, withdrawal, dependency,
+compatibility, and descriptor checks transactionally; root rotation requires a newly authorized
+snapshot, exact replay is idempotent, and later withdrawal preserves audit history while blocking
+new acceptance. Manifest/archive download and inspection, staged activation,
+installed-withdrawal handling, and rollback remain later slices; metadata acceptance grants no
+runtime authority.
 
 ### Memory and automation
 
