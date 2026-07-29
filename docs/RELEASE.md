@@ -175,6 +175,17 @@ workflow now requests `v1.50.0` from the already commit-pinned SBOM Action. This
 documentation-only refresh does not change the observed Rust binary source boundary. Protected CI
 and the tag workflow still validate the updated workflow and generated SBOM before publication.
 
+The 2026-07-30 pre-tag refresh reconfirmed Headless Shell `151.0.7922.47`, Checkout
+`v7.0.1`, artifact upload `v7.0.1`, artifact download `v8.0.1`, every Pages action, SBOM
+Action `v0.24.0`, Syft `v1.50.0`, Cargo Audit `0.22.2`, Cargo Auditable `0.7.5`, Cargo
+About `0.9.1`, Cargo Deny `0.20.2`, and zizmor `v1.28.0`. It advanced Attest to commit
+`508db95dd578ae2727ebd6217d5ba78e4fbda05d` (`v4.2.1`), whose upstream release updates
+its bundled tar dependency and corrects OCI image-tag handling. Mealy's file-asset attestations
+do not use the corrected OCI path, but retaining an older transitive archive implementation at
+the release boundary is unnecessary. This workflow-and-documentation-only pin refresh does not
+change the soaked Rust binary source boundary; protected CI and the tag workflow must still
+exercise the updated action before publication.
+
 The native tag jobs run
 `scripts/validate-public-license.sh` and refuse publication if restrictive terms,
 redirected/mismatched license metadata, an unsupported/mismatched license text, or a workspace
