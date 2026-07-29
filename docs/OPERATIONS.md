@@ -267,6 +267,43 @@ and timestamps remain available from canonical attempts; historical success is n
 proof of current connectivity. The configured-provider doctor check ends with a concrete repair
 action and never prints credentials or provider response bodies.
 
+### Optional private OTLP export
+
+OpenTelemetry export is disabled by default. For an owner-operated local Collector using the
+standard OTLP/HTTP receiver, start the daemon with its literal loopback origin:
+
+```sh
+mealyd --home "$HOME/.mealy" \
+  --otlp-endpoint http://127.0.0.1:4318 \
+  --otlp-export-interval-ms 30000 \
+  --otlp-request-timeout-ms 3000
+```
+
+The endpoint is a collector origin, not a signal URL; Mealy derives exact `/v1/traces` and
+`/v1/metrics` paths. The export interval accepts 1,000 through 300,000 milliseconds and the
+request timeout accepts 100 through 30,000 milliseconds. Remote collectors require HTTPS.
+Clear-text HTTP accepts only a literal loopback IPv4 or IPv6 address and an explicit port, not
+`localhost`. URL credentials, base paths, query strings, fragments, proxy use, redirects,
+compression, retries, and arbitrary headers are rejected or unavailable. This first slice does
+not support authenticated vendor collectors; terminate authentication at an owner-controlled
+local Collector or leave export disabled. Never place a collector credential in the URL.
+
+Only the fixed `mealyd` service name/version/schema, claimed-run task/run/turn/session/correlation
+IDs, a fixed outcome, and duration can cross this boundary. Metrics group by the three fixed
+outcomes only; IDs occur on traces and are locators, not prompt content. Prompts, responses, tool
+arguments, memory, file paths, search terms, provider bodies, arbitrary errors, general log
+fields, host/user/process attributes, environment variables, and credentials have no recording
+API. The daemon does not read `OTEL_*`, proxy, or exporter-header environment variables for this
+pipeline.
+
+The queue holds at most 1,024 spans, batches at most 128, an encoded request at most 2 MiB, and a
+collector response at most 64 KiB. A full queue drops new telemetry rather than blocking agent
+work. Collector failure or a bounded final-flush failure is logged with a generic local error and
+does not rewrite canonical task state, durable events, or clean-drain evidence. The Collector is
+therefore an optional derived view, never Mealy's audit authority. For a supervised deployment,
+add these exact arguments to an operator-reviewed direct `mealyd` unit; the current generated
+`mealyctl service install` unit intentionally does not acquire optional network-export authority.
+
 External providers configured with `streaming: true` request `text/event-stream`. Text deltas are
 untrusted, non-authoritative progress: each attempt retains no more than 64 KiB across 256 events,
 each event is at most 4 KiB, and correlation IDs keep adjacent turns separate. Responses requires

@@ -97,6 +97,14 @@ producer metadata and blob presence, checkpoints, exact operation payloads, per-
 sequence chains, terminal graph state, and journal-to-timeline links. Every replay assertion also
 checks that no live provider or tool call occurred.
 
+`mealy-observability` adds a wire-level OTLP/HTTP protobuf fixture. It runs the real bounded trace
+and metric exporters against a loopback socket, forces flush and shutdown, decodes both signal
+requests, and requires the exact three resource attributes, six trace attributes, two metric
+names, and fixed metric-label contract. The fixture proves that an arbitrary general-`tracing`
+private canary and authorization header are absent. Adversarial units reject unsafe collector
+origins and malformed/overlong correlation IDs; the ordinary Phase 2 public-process scenario
+continues to prove the instrumented agent boundary with telemetry disabled.
+
 `apps/mealyd/tests/real_provider.rs` crosses the public process boundary with independent mock
 wire servers for `OpenAI` Responses and Anthropic Messages. It verifies protocol-specific headers,
 request/tool normalization, terminal and streaming settlement, durable retry timing, endpoint

@@ -51,6 +51,9 @@ use mealy_infrastructure::{
     SkillResourceReadTool, SubscriptionCliProvider, SubscriptionCliSettings, SystemClock,
     SystemIdGenerator, WebReadTool, WorkspaceReadTool, inspect_skill_package,
 };
+use mealy_observability::{
+    AgentRunContext as TelemetryAgentRunContext, AgentRunOutcome, TelemetryRuntime,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
@@ -2041,6 +2044,7 @@ fn utf8_prefix_length(value: &str, maximum: usize) -> usize {
 ///
 /// The function borrows a snapshot reader or the canonical writer for one storage boundary at a
 /// time. Provider, tool, and artifact I/O all run outside both lanes.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn drive_one_agent_run(
     store: &Arc<RuntimeStore>,
     worker_id: WorkerId,
@@ -2048,6 +2052,7 @@ pub fn drive_one_agent_run(
     tool: &Arc<RuntimeReadTools>,
     effect_runtime: Option<&PhaseThreeRuntime>,
     artifacts: &FileArtifactBlobStore,
+    telemetry: &TelemetryRuntime,
     policy: AgentDriverPolicy,
 ) -> Result<bool, Box<dyn Error + Send + Sync>> {
     resume_ready_effect_runs(store)?;
@@ -2071,6 +2076,29 @@ pub fn drive_one_agent_run(
         .read()
         .map_err(|_| "agent store lock is poisoned")?
         .load_agent_run(fence, SystemClock.now())?;
+    let telemetry_started_at = SystemTime::now();
+    let telemetry_started = Instant::now();
+    let telemetry_context = telemetry.is_enabled().then(|| {
+        TelemetryAgentRunContext::new(
+            trace.task_id.to_string(),
+            trace.run_id.to_string(),
+            trace.turn_id.to_string(),
+            trace.session_id.to_string(),
+            trace.correlation_id.to_string(),
+        )
+        .ok()
+    });
+    let telemetry_context = telemetry_context.flatten();
+    let record_telemetry = |outcome| {
+        if let Some(context) = telemetry_context.as_ref() {
+            telemetry.record_agent_run(
+                context,
+                outcome,
+                telemetry_started_at,
+                telemetry_started.elapsed(),
+            );
+        }
+    };
     let trace_span = tracing::info_span!(
         "agent_run",
         task_id = %trace.task_id,
@@ -2104,27 +2132,31 @@ pub fn drive_one_agent_run(
             } else {
                 RunCompletionStatus::Failed
             };
-            complete_run(
+            if let Err(completion_error) = complete_run(
                 &mut *guard,
                 &SystemClock,
                 &SystemIdGenerator,
                 fence,
                 status,
                 bounded,
-            )
-            .map_err(|completion_error| {
-                std::io::Error::other(format!(
+            ) {
+                record_telemetry(AgentRunOutcome::Failed);
+                return Err(std::io::Error::other(format!(
                     "agent loop error `{error}` could not commit its terminal boundary: \
                      {completion_error}"
                 ))
-            })?;
+                .into());
+            }
             if status == RunCompletionStatus::Cancelled {
+                record_telemetry(AgentRunOutcome::Cancelled);
                 return Ok(true);
             }
         }
+        record_telemetry(AgentRunOutcome::Failed);
         return Err(error);
     }
     tracing::debug!("durable agent run reached a committed boundary");
+    record_telemetry(AgentRunOutcome::CommittedBoundary);
     Ok(true)
 }
 

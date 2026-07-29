@@ -64,6 +64,7 @@ use mealy_infrastructure::{
     create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_tools,
     load_mcp_tools, mcp_stdio_launcher_main, media_worker_main, preserve_forensic_database,
 };
+use mealy_observability::{TelemetryConfig, TelemetryRuntime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -97,6 +98,15 @@ struct Arguments {
     /// Start query-only: reject mutation and do not run dispatch/promotion workers.
     #[arg(long)]
     safe_mode: bool,
+    /// OTLP/HTTP collector origin; disabled unless explicitly configured.
+    #[arg(long)]
+    otlp_endpoint: Option<String>,
+    /// Interval for bounded OTLP trace batches and metric exports.
+    #[arg(long, default_value_t = 30_000)]
+    otlp_export_interval_ms: u64,
+    /// Per-request timeout for the no-proxy, no-redirect OTLP transport.
+    #[arg(long, default_value_t = 3_000)]
+    otlp_request_timeout_ms: u64,
     /// Override the validated configuration's bounded graceful-drain deadline.
     #[arg(long)]
     drain_deadline_ms: Option<u64>,
@@ -186,14 +196,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         std::process::exit(64);
     }
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run_daemon())
-}
-
-#[allow(clippy::too_many_lines)]
-async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -205,6 +207,35 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("{LATEST_SCHEMA_VERSION}");
         return Ok(());
     }
+    let telemetry = Arc::new(if let Some(endpoint) = arguments.otlp_endpoint.as_deref() {
+        let config = TelemetryConfig::new(
+            endpoint,
+            Duration::from_millis(arguments.otlp_export_interval_ms),
+            Duration::from_millis(arguments.otlp_request_timeout_ms),
+        )?;
+        let runtime = TelemetryRuntime::new(&config)?;
+        tracing::info!(
+            telemetry_schema = "mealy.telemetry.v1",
+            "privacy-preserving OTLP trace and metric export enabled"
+        );
+        runtime
+    } else {
+        TelemetryRuntime::disabled()
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run_daemon(arguments, Arc::clone(&telemetry)));
+    drop(runtime);
+    drop(telemetry);
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_daemon(
+    arguments: Arguments,
+    telemetry: Arc<TelemetryRuntime>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     backend::validate_telegram_api_base_url(&arguments.telegram_api_base_url)?;
     backend::validate_discord_api_base_url(&arguments.discord_api_base_url)?;
     backend::validate_slack_api_base_url(&arguments.slack_api_base_url)?;
@@ -1234,6 +1265,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Arc::clone(&read_tool),
                     effect_runtime.clone(),
                     Arc::clone(&artifacts),
+                    Arc::clone(&telemetry),
                     daemon_config.lease_concurrency_limits(),
                     daemon_config.maximum_resource_class_invocations(),
                     Duration::from_millis(arguments.agent_delay_ms),
@@ -1356,6 +1388,12 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         let _ = std::fs::remove_file(&connection_path);
         std::process::exit(2);
     }
+    let telemetry_for_shutdown = Arc::clone(&telemetry);
+    match tokio::task::spawn_blocking(move || telemetry_for_shutdown.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "bounded telemetry shutdown failed"),
+        Err(_) => tracing::warn!("bounded telemetry shutdown worker failed"),
+    }
     let _ = std::fs::remove_file(connection_path);
     Ok(())
 }
@@ -1392,6 +1430,7 @@ async fn agent_driver(
     tool: Arc<RuntimeReadTools>,
     effect_runtime: Option<Arc<PhaseThreeRuntime>>,
     artifacts: Arc<FileArtifactBlobStore>,
+    telemetry: Arc<TelemetryRuntime>,
     lease_concurrency_limits: mealy_application::LeaseConcurrencyLimits,
     maximum_resource_class_invocations: u32,
     initial_delay: Duration,
@@ -1409,6 +1448,7 @@ async fn agent_driver(
         let worker_tool = Arc::clone(&tool);
         let worker_effect_runtime = effect_runtime.clone();
         let worker_artifacts = Arc::clone(&artifacts);
+        let worker_telemetry = Arc::clone(&telemetry);
         match tokio::task::spawn_blocking(move || {
             drive_one_agent_run(
                 &worker_store,
@@ -1417,6 +1457,7 @@ async fn agent_driver(
                 &worker_tool,
                 worker_effect_runtime.as_deref(),
                 &worker_artifacts,
+                &worker_telemetry,
                 AgentDriverPolicy::new(
                     boundary_delay,
                     lease_concurrency_limits,

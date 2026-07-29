@@ -336,7 +336,13 @@ release qualification remain separate slices.
   rejects incompatible request, response, and structured error versions. Async and non-Rust
   clients remain later ecosystem work.
 - Export bounded OpenTelemetry traces/metrics without prompts, secrets, or
-  private content by default.
+  private content by default. The first typed Rust slice is implemented behind an explicit
+  `--otlp-endpoint`: it records claimed agent-run slices with canonical correlation IDs on traces
+  and fixed outcome-only metric labels. It deliberately does not bridge general logs, accepts no
+  arbitrary attributes or exporter credentials, ignores ambient OTLP/proxy configuration, and
+  bounds queue, batch, cardinality, body, interval, timeout, response, and shutdown behavior.
+  Broader typed attempt/effect/scheduler instruments and authenticated collector credentials
+  remain later v0.5 work.
 - Add versioned scenario/evaluation contracts for task success, safety,
   recovery, latency, and cost regression.
 - Add outbound-only, authenticated, revocable, single-owner remote

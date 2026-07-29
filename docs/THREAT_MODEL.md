@@ -35,6 +35,7 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item/effect-class grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
+| OTLP Collector | Optional external derived-view sink; responses untrusted, never an audit authority |
 | Image-generation provider and output | External billable effect; response metadata and binary bytes are untrusted |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
 | Sandbox worker | Disposable, lower-trust process |
@@ -58,6 +59,8 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
     fencing, cost/output reservation, bounded response parsing, isolated media normalization, and
     atomic content-addressed settlement.
 11. SQLite/artifacts to presentation: authorization and redaction.
+12. Typed observability record to OTLP Collector: fixed allowlist, bounded protobuf transport, and
+    no general log bridge, arbitrary attributes, ambient configuration, or collector credentials.
 
 Session IDs, task IDs, continuation tokens, and shared gateway secrets are never principal boundaries by themselves.
 
@@ -70,6 +73,22 @@ Controls: model is untrusted; typed tool schema; default-deny policy; exact appr
 ### Duplicate external effect after crash
 
 Controls: durable intent-before-dispatch; stable idempotency key where supported; effect outcome state; stale-lease fencing; `outcome_unknown` reconciliation; no automatic non-idempotent retry.
+
+### Telemetry exports private content or becomes a new availability dependency
+
+Controls: export is absent unless the owner explicitly configures an OTLP origin.
+`mealy-observability` does not subscribe to the general `tracing` stream because HTTP URIs,
+provider/tool errors, and nested events can contain private material. Its closed API accepts only
+bounded canonical task/run/turn/session/correlation IDs, a fixed outcome, start time, and duration.
+Resource attributes are constructed from an empty detector set and contain only service
+name/version/schema. Metrics use fixed outcome labels only.
+
+The custom OTLP/HTTP protobuf transport reads no `OTEL_*` or proxy environment, accepts no
+arbitrary header or credential, refuses redirects and non-HTTPS remote origins, and caps queues,
+batches, cardinality, encoded bodies, responses, intervals, and timeouts. Collector error text is
+never reflected. Pressure drops optional spans; timeout, partial rejection, or shutdown failure
+cannot change canonical state, replay evidence, or drain classification. The Collector is a
+derived operational view and cannot grant authority or replace the durable event ledger.
 
 ### Image generation duplicates spend or publishes hostile output
 

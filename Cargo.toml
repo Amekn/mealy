@@ -8,6 +8,7 @@ members = [
     "crates/mealy-infrastructure",
     "crates/mealy-protocol",
     "crates/mealy-client",
+    "crates/mealy-observability",
     "crates/mealy-api",
     "crates/mealy-testkit",
 ]
@@ -47,8 +48,13 @@ mealy-domain = { path = "crates/mealy-domain", version = "=0.3.0" }
 mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.3.0" }
 mealy-protocol = { path = "crates/mealy-protocol", version = "=0.3.0" }
 mealy-client = { path = "crates/mealy-client", version = "=0.3.0" }
+mealy-observability = { path = "crates/mealy-observability", version = "=0.3.0" }
 mealy-testkit = { path = "crates/mealy-testkit", version = "=0.3.0" }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics", "trace"] }
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["experimental_trace_batch_span_processor_with_async_runtime", "metrics", "trace"] }
 proptest = "1.7.0"
+prost = "0.14.1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls", "stream"] }
 rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }

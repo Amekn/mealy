@@ -377,6 +377,38 @@ debug output against a real loopback socket. Strict Clippy, unit, doc, and rustd
 crate. Async, additional-language clients, generated compatibility fixtures, and publication
 policy remain later v0.5 slices.
 
+## Productionization slice: privacy-preserving OpenTelemetry export
+
+Status: first v0.5 trace/metric boundary implemented. `mealy-observability` is a separate typed
+crate rather than a `tracing` subscriber. Its public recording surface accepts only five bounded
+canonical agent-run correlation IDs, one fixed outcome enum, and duration. It has no prompt,
+response, tool-argument, path, error-message, arbitrary-attribute, log-event, environment, or
+credential input. `mealyd` keeps the runtime disabled unless an owner explicitly supplies
+`--otlp-endpoint`.
+
+The transport emits OTLP/HTTP protobuf to exact `/v1/traces` and `/v1/metrics` paths. HTTPS is
+required outside a literal loopback IP; clear-text loopback additionally requires an explicit
+port. URL credentials, base paths, queries, fragments, redirects, proxies, ambient OTLP endpoints,
+headers, resources, protocols, compression, retry controls, and host/process/environment resource
+detectors are absent. The only resource attributes are fixed service name, build version, and
+`mealy.telemetry.v1`. The exporter accepts no authentication header in this slice.
+
+Agent work never waits on trace delivery: a 1,024-span queue drops on pressure, batches contain at
+most 128 spans, and requests and responses are hard bounded. Export interval and request timeout
+have narrow programmatic ranges. Metrics use only the three fixed outcome values, preventing
+identifier-driven time-series growth; canonical task/run/turn/session/correlation IDs remain
+bounded trace attributes. Collector status, malformed response, oversized body, and partial
+rejection fail the export without returning attacker-controlled response text. Canonical agent
+state and shutdown classification remain authoritative if the optional collector is unavailable.
+
+Wire-level tests run both exporters against a real loopback socket, decode their protobuf, require
+the exact resource/span/metric inventories, reject authorization leakage, and prove an arbitrary
+general `tracing` canary is absent. Endpoint and identifier adversarial units, strict Clippy, the
+existing public agent-loop process scenario, documentation/package validation, and full workspace
+gates cover the first slice. Typed provider/tool/effect/attempt/scheduler instruments,
+authenticated secret-brokered collector headers, trace sampling policy, evaluation contracts, and
+cross-signal correlation beyond this first claimed-run slice remain later v0.5 work.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,

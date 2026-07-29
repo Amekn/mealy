@@ -27,6 +27,7 @@ mealy-api.workspace = true
 mealy-application.workspace = true
 mealy-domain.workspace = true
 mealy-infrastructure.workspace = true
+mealy-observability.workspace = true
 mealy-protocol.workspace = true
 reqwest.workspace = true
 serde.workspace = true
