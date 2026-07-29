@@ -138,8 +138,12 @@ if ! gpg --batch --homedir "$gnupg_home" --with-colons \
   exit 65
 fi
 
+# Keep the complete public certification and subkey-binding history. RPM 6's
+# Sequoia verifier evaluates the certificate at each signature timestamp;
+# export-minimal can discard an older binding that remains necessary for
+# packages signed before a later key refresh or rotation.
 gpg --batch --homedir "$gnupg_home" --armor \
-  --export-options export-minimal --export "$expected_fingerprint" \
+  --export "$expected_fingerprint" \
   >"$build/repository-signing-key.asc"
 gpg --batch --homedir "$gnupg_home" --armor \
   --export-secret-keys "$expected_fingerprint" >"$secret_export"
