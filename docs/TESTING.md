@@ -692,6 +692,13 @@ files and symlink destinations fail closed instead of being replaced or followed
 sessions, 12 hard restarts, p95 1.285 seconds, SQLite integrity `ok`, and zero residual work. The
 baseline is not clean packaged-release evidence.
 
+Turn lineage is classified from canonical attempt/tool/retry evidence rather than from whether the
+harness intended to interrupt that round. Under real host pressure, an undispatched attempt can
+safely expire and be durably retired without a daemon kill or a charged provider call. Those
+recoveries are counted wherever they occur, every deliberately killed round must still prove at
+least one dispatched provider or read-tool recovery of its own, and any unsupported lineage writes
+the bounded failure report before the harness stops.
+
 The retained-failure path exposed a one-second built-in fixture descriptor expiring after 1.153
 seconds of host contention despite a five-second run limit. The fixture and passive-skill resource
 descriptors now use that five-second ceiling, and storage accepts both historical and current skill

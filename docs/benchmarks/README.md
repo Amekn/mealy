@@ -26,6 +26,10 @@ and artifact growth, duplicate admission, hard restart recovery, recorded-only r
 clean drain, and residual work. Provider-account smoke is a separate opt-in gate.
 An unsuccessful task now writes a sibling `REPORT.json.failure.json` with bounded task, timeline,
 and replay evidence before the test fails.
+Recovery shapes are derived from canonical attempt/tool/retry evidence independently of the
+harness's deliberate restart schedule. A pre-dispatch deadline can expire safely under unrelated
+host pressure without charging a provider call; the report counts that retired-attempt lineage,
+while each deliberate restart round must separately retain at least one dispatched recovery.
 
 For a paced 24-hour durability run, use a large enough filesystem and an explicit interval:
 
@@ -190,3 +194,22 @@ database reproduced 7–14.5-second requests and persistent memory growth. Curso
 lineage checks reduced the same retained-state burst to a 50-millisecond maximum with all 256
 requests successful. That focused result does not waive protected CI, package rebuild, or a fresh
 24-hour exact-binary soak for the corrected v0.3.0 subject.
+
+The corrected subject's next formal run is also retained as negative evidence rather than promoted.
+Exact daemon SHA-256
+`47911dbd31ee9b34f14a6e9d0f5f338e9ea7c265fa09bd2ad216ad234dd90d1a` ran for 12 hours 12
+minutes, reached 10,912 tasks and 28 daemon lifetimes, then the harness rejected a successful task
+because it observed three model-attempt records in a round without a deliberate kill. The
+canonical attempt evidence showed that the first attempt's dispatch deadline elapsed before
+dispatch during unrelated host I/O pressure; it charged no model call and used no retry budget.
+The next two attempts completed, the task validation passed, and a stopped-home clone recovered to
+zero residual work with SQLite integrity `ok` and complete replay using zero live provider/tool
+calls. The runtime therefore preserved its durability and accounting contract, but the run remains
+failed and contributes no elapsed time to a release gate.
+
+The harness no longer infers lineage from its own fault-injection schedule. It classifies the five
+closed canonical attempt/tool/retry shapes wherever they occur, requires each deliberate restart
+round to retain a dispatched recovery of its own, and writes bounded evidence before rejecting an
+unknown shape. The unchanged daemon then completed a 120.748-second rehearsal with 600 turns, 15
+hard restarts, 90 interrupted-provider recoveries, ten undispatched resumes, complete replay,
+integrity, clean drain, and zero residual work. A new formal 86,400-second clock is still required.
