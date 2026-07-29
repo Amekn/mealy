@@ -644,11 +644,16 @@ license, or documentation mismatch remains a hard failure requiring a verified r
 ## Maintainer release checklist
 
 An externally soaked candidate uses two protected pull requests. First validate the raw report
-against the candidate branch and merge that runtime candidate. Only after the observed revision is
-an ancestor of protected `main` may the maintainer create the private staging tag/draft release.
-The report and metadata-derived promotion manifest then land through a separate evidence-only pull
-request. The final evidence commit—not the earlier candidate head—is the commit used for protected
-main CI, live-provider acceptance, the stable tag, attestations, and publication.
+against the candidate branch and merge that runtime candidate. If the report names a candidate-only
+commit, use GitHub rebase merge rather than squash merge: required linear history rewrites commit
+identities, but the rebased sequence retains an identical mapped Git tree that the checked lineage
+generator can bind to the report. A squash would discard that intermediate tree and cannot qualify.
+Only after the observed revision is either a protected-`main` ancestor or has a checked
+identical-tree mapped ancestor may the maintainer create the private staging tag/draft release. The
+report, generated lineage proof when required, and metadata-derived promotion manifest then land
+through a separate evidence-only pull request. The final evidence commit—not the earlier candidate
+head—is the commit used for protected main CI, live-provider acceptance, the stable tag,
+attestations, and publication.
 
 1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` remains inherited by every
    workspace package and run `scripts/validate-public-license.sh .`. Then make the workspace version
@@ -670,8 +675,11 @@ main CI, live-provider acceptance, the stable tag, attestations, and publication
    candidate pull request; do not commit a report that has not completed. After merge and green
    protected-main CI, retain the report as `docs/benchmarks/release-soak.json` and run
    `scripts/validate-release-soak.sh docs/benchmarks/release-soak.json MEALYD MAIN_COMMIT`, adding
-   `docs/benchmarks/release-soak-lineage.json` only when a required rebase changed the observed
-   commit ID while retaining its exact Git tree. Investigate any identity, integrity, replay, residue, recovery, or
+   `docs/benchmarks/release-soak-lineage.json` only when a required GitHub rebase changed the
+   observed commit ID while retaining its exact Git tree. Generate that proof with
+   `scripts/generate-release-soak-lineage.sh`; never hand-author its commit payload, hashes, or
+   mapping. Do not squash an externally soaked candidate whose observed commit is not already on
+   `main`. Investigate any identity, integrity, replay, residue, recovery, or
    identity failure before tagging; the tag workflow repeats this gate and cannot publish without
    it. The validator also rejects a tag when Cargo manifests, the lockfile/toolchain configuration,
    compiled application or library sources/assets/migrations, schemas, or the release-binary build
