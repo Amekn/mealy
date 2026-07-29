@@ -42,12 +42,15 @@ fi
 # Backdate the ephemeral fixture certificate enough to make that ordering
 # deterministic across host/container clock rounding without weakening the
 # production verifier or its key-policy checks.
+# Use RSA only for this disposable cross-implementation fixture: some GnuPG
+# EdDSA binding signatures are nondeterministically rejected by RPM's Sequoia
+# verifier. Stable releases still exercise the owner-controlled Ed25519 key.
 key_epoch=$(($(date --utc +%s) - 300))
 gpg --batch --homedir "$key_home" --passphrase '' \
   --faked-system-time "$key_epoch" \
   --quick-generate-key \
   'Mealy repository acceptance fixture <repository-fixture@mealy.invalid>' \
-  ed25519 cert 2d >/dev/null 2>&1
+  rsa3072 cert 2d >/dev/null 2>&1
 fingerprint=$(
   gpg --batch --homedir "$key_home" --with-colons --list-secret-keys |
     awk -F: '
@@ -61,7 +64,7 @@ if [[ ! $fingerprint =~ ^[0-9A-F]{40}$ ]]; then
 fi
 gpg --batch --homedir "$key_home" --passphrase '' \
   --faked-system-time "$key_epoch" \
-  --quick-add-key "$fingerprint" ed25519 sign 2d >/dev/null 2>&1
+  --quick-add-key "$fingerprint" rsa3072 sign 2d >/dev/null 2>&1
 gpg --batch --homedir "$key_home" --armor \
   --export-secret-subkeys "$fingerprint" >"$private_key"
 
