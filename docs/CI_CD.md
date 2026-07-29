@@ -121,6 +121,14 @@ GitHub vulnerability alerts and Dependabot security updates must remain enabled.
 `.github/dependabot.yml` opens bounded weekly Cargo and GitHub Actions update pull requests; those
 changes receive the same protected checks and are never auto-merged around release policy.
 
+Repository Actions policy is also fail closed: Actions must remain enabled with the `selected`
+allowlist and full-length commit-SHA pinning required. The selected set admits GitHub-owned actions
+and exactly `anchore/sbom-action@*`; verified Marketplace status alone grants no authority. Source
+policy still requires every invocation, including the SBOM action, to name a reviewed 40-hex
+commit. The live release-environment preflight verifies both repository settings so a mutable tag
+or broadened third-party allowlist blocks publication even if a stale source checkout still looks
+correct.
+
 Never merge around a red or missing context. Diagnose the first failing command from the job log,
 add a regression when behavior was wrong, rerun the same command locally when practical, and let
 the protected pull request rerun all contexts. A green PR is merged linearly; direct pushes to
@@ -140,14 +148,15 @@ scripts/preflight-release-environments.sh Amekn/mealy
 ```
 
 Run the preflight from the canonical source checkout before creating any release tag. It reads only
-public repository/Pages/environment policy plus GitHub's variable and secret-name metadata; it
-cannot retrieve secret values. It fails unless the canonical repository is public and enabled,
-Pages is a public HTTPS workflow deployment, both signing and Pages environments admit only stable
-version tags, signing requires owner review, the Pages URL and uppercase primary fingerprint are
-exact, the signing-subkey secret name exists, and the reviewed free-OpenRouter environment remains
-restricted to protected branches with both the strict-free OpenRouter and pinned private-endpoint
-secret names present. This catches an incomplete trust-root or provider-acceptance ceremony before
-an immutable tag exists.
+public repository/Actions/Pages/environment policy plus GitHub's variable and secret-name metadata;
+it cannot retrieve secret values. It fails unless the canonical repository is public and enabled,
+Actions are restricted to the exact allowlist with full-SHA pinning, Pages is a public HTTPS
+workflow deployment, both signing and Pages environments admit only stable version tags, signing
+requires owner review, the Pages URL and uppercase primary fingerprint are exact, the
+signing-subkey secret name exists, and the reviewed free-OpenRouter environment remains restricted
+to protected branches with both the strict-free OpenRouter and pinned private-endpoint secret
+names present. This catches an incomplete trust-root or provider-acceptance ceremony before an
+immutable tag exists.
 
 The release report at `docs/benchmarks/release-soak.json` must pass
 `scripts/validate-release-soak.sh`. For release one it must represent a clean, retained-disk,

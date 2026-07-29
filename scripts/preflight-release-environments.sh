@@ -50,6 +50,27 @@ if ! jq -e --arg repository "$repository" '
   exit 65
 fi
 
+capture actions_permissions gh api "repos/$repository/actions/permissions"
+if ! jq -e '
+  .enabled == true
+  and .allowed_actions == "selected"
+  and .sha_pinning_required == true
+' "$temporary/actions_permissions.json" >/dev/null; then
+  echo "GitHub Actions must be enabled, allowlisted, and full-SHA pinned" >&2
+  exit 65
+fi
+
+capture selected_actions gh api \
+  "repos/$repository/actions/permissions/selected-actions"
+if ! jq -e '
+  .github_owned_allowed == true
+  and .verified_allowed == false
+  and .patterns_allowed == ["anchore/sbom-action@*"]
+' "$temporary/selected_actions.json" >/dev/null; then
+  echo "GitHub Actions allowlist must contain only GitHub-owned actions and the pinned SBOM action" >&2
+  exit 65
+fi
+
 capture pages gh api "repos/$repository/pages"
 if ! jq -e '
   .build_type == "workflow"
