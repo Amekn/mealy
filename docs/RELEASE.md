@@ -654,6 +654,38 @@ through a separate evidence-only pull request. The final evidence commit—not t
 head—is the commit used for protected main CI, live-provider acceptance, the stable tag,
 attestations, and publication.
 
+A stacked successor must be normalized only after its predecessor is an immutable public release.
+Do not replay its commits by timestamp or retarget its merge-heavy development branch directly:
+successor work may have started from an earlier predecessor commit and then absorbed later
+predecessor changes through merges. Record the old predecessor candidate, its mapped public
+lineage commit, the final public predecessor tag commit, and the successor candidate head. Then
+run:
+
+```sh
+normalized=$(
+  scripts/normalize-stacked-release-candidate.sh \
+    "$old_predecessor" \
+    "$public_lineage" \
+    "$public_predecessor" \
+    "$candidate" \
+    "$expected_version"
+)
+```
+
+The helper changes no ref or worktree. It requires the mapped public commit either to preserve the
+old predecessor tree byte-for-byte or to be a protected single-parent normalization that names the
+exact old predecessor through its `Normalized-From` trailer. This recursive rule permits v0.5 to
+follow a previously normalized v0.4 without treating a commit message alone as release authority:
+the named mapping must be in the immutable public predecessor's ancestry. The helper then performs
+an explicit-base three-way merge of the successor delta with later public evidence, and rejects
+conflicts, missing ancestry, ambiguous versions, empty deltas, forged mappings, or an
+already-normalized candidate. Its result is one single-parent commit on the immutable public
+predecessor with audit trailers naming every input. Inspect the result, preserve the original
+candidate SHA, move or replace the successor feature branch intentionally, and run the complete
+protected CI/package suite before starting that release's exact-binary soak. The normalized
+tree—not the earlier stacked branch—inherits no soak, CI, provider, package, or publication
+evidence.
+
 1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` remains inherited by every
    workspace package and run `scripts/validate-public-license.sh .`. Then make the workspace version
    and intended stable `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
