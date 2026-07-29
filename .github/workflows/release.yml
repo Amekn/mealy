@@ -343,7 +343,7 @@ jobs:
           format: cyclonedx-json
           output-file: sbom/mealy.raw.cdx.json
           artifact-name: mealy-${{ github.ref_name }}-${{ matrix.target }}.cdx.json
-          syft-version: v1.49.0
+          syft-version: v1.50.0
           upload-artifact: false
           upload-release-assets: false
       - name: Normalize reproducible release SBOM identity
