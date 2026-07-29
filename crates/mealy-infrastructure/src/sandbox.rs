@@ -25,7 +25,9 @@ const DEFAULT_MAXIMUM_FRAME_BYTES: u64 = 64 * 1024;
 const DEFAULT_MAXIMUM_STDERR_BYTES: u64 = 64 * 1024;
 const DEFAULT_MAXIMUM_FRAMES: usize = 64;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+// This is the shared upper bound for trusted local executables, including subscription clients.
+// Hashing remains streamed, and metadata is rejected before any oversized file is read.
+const MAXIMUM_EXECUTABLE_BYTES: u64 = 384 * 1024 * 1024;
 const MAXIMUM_CONFIGURED_FRAME_BYTES: u64 = 8 * 1024 * 1024;
 const MAXIMUM_CONFIGURED_STDERR_BYTES: u64 = 8 * 1024 * 1024;
 const MAXIMUM_CONFIGURED_FRAMES: usize = 1_024;
@@ -698,6 +700,14 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, ExecutorError> {
 fn digest_file(path: &Path) -> Result<String, ExecutorError> {
     let file = File::open(path)
         .map_err(|error| ExecutorError::Io(format!("could not read worker identity: {error}")))?;
+    if file
+        .metadata()
+        .map_err(|error| ExecutorError::Io(format!("could not inspect worker identity: {error}")))?
+        .len()
+        > MAXIMUM_EXECUTABLE_BYTES
+    {
+        return Err(unsupported("worker executable is oversized".to_owned()));
+    }
     let mut reader = file.take(MAXIMUM_EXECUTABLE_BYTES.saturating_add(1));
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 16 * 1024];
@@ -788,8 +798,9 @@ fn unsupported(message: String) -> ExecutorError {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_frames;
+    use super::{MAXIMUM_EXECUTABLE_BYTES, digest_file, parse_frames};
     use mealy_application::ExecutorError;
+    use std::fs::File;
 
     #[test]
     fn frame_parser_rejects_non_json_and_noncanonical_json() {
@@ -821,5 +832,19 @@ mod tests {
             ),
             Err(ExecutorError::MalformedFrame)
         );
+    }
+
+    #[test]
+    fn executable_digest_rejects_oversized_sparse_file_before_reading() {
+        let directory = tempfile::tempdir().expect("temporary executable directory");
+        let executable = directory.path().join("oversized-worker");
+        File::create(&executable)
+            .and_then(|file| file.set_len(MAXIMUM_EXECUTABLE_BYTES + 1))
+            .expect("oversized sparse executable");
+        assert!(matches!(
+            digest_file(&executable),
+            Err(ExecutorError::UnsupportedHost(message))
+                if message == "worker executable is oversized"
+        ));
     }
 }
