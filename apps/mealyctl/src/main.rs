@@ -3701,7 +3701,11 @@ fn run_maintenance(
             CliError::MaintenanceUnavailable
         });
     }
-    let _mutation_lock = lock_service_mutations(home)?;
+    let _mutation_lock = if operation == lifecycle::MaintenanceOperation::Repair {
+        lock_archive_installation_mutations(&plan.installation)?
+    } else {
+        lock_service_mutations(home)?
+    };
     eprintln!("{}", terminal_safe_pretty_json(&plan)?);
     match operation {
         lifecycle::MaintenanceOperation::Repair => {
@@ -3724,6 +3728,37 @@ fn run_maintenance(
             .map_err(CliError::from)
         }
     }
+}
+
+fn lock_archive_installation_mutations(
+    installation: &lifecycle::InstallationStatus,
+) -> Result<File, CliError> {
+    if installation.installation_kind != lifecycle::InstallationKind::ManagedArchive {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    let prefix = installation
+        .managed_prefix
+        .as_ref()
+        .ok_or(CliError::MaintenanceUnavailable)?;
+    let prefix_metadata = fs::symlink_metadata(prefix)?;
+    if prefix_metadata.file_type().is_symlink() || !prefix_metadata.is_dir() {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    let path = prefix.join(".mealy-install.lock");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(CliError::MaintenanceUnavailable);
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(CliError::Io(error)),
+    }
+    let lock = open_private_home_lock(&path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(CliError::MaintenanceUnavailable);
+    }
+    lock.lock()?;
+    Ok(lock)
 }
 
 #[cfg(target_os = "linux")]
@@ -20204,6 +20239,35 @@ mod tests {
                 & 0o777,
             0o600
         );
+    }
+
+    #[test]
+    fn archive_repair_lock_is_prefix_scoped_before_a_daemon_home_exists() {
+        let temporary = tempfile::tempdir().expect("temporary managed prefix");
+        let prefix = temporary.path().join("prefix");
+        std::fs::create_dir(&prefix).expect("create managed prefix");
+        let installation = super::lifecycle::InstallationStatus {
+            schema_version: "mealy.install-status.v1".to_owned(),
+            installation_kind: super::lifecycle::InstallationKind::ManagedArchive,
+            integrity: super::lifecycle::IntegrityStatus::Failed,
+            current_version: "0.3.0".to_owned(),
+            current_commit: Some("a".repeat(40)),
+            state_schema_version: Some(18),
+            target: Some("linux-x86_64-gnu".to_owned()),
+            executable: prefix.join("bin/mealyctl"),
+            release_root: Some(prefix.join("share/mealy")),
+            managed_prefix: Some(prefix.clone()),
+            update_mode: super::lifecycle::UpdateMode::AttestedArchive,
+            rollback_available: false,
+            native_update_command: None,
+            issues: Vec::new(),
+        };
+
+        let lock = super::lock_archive_installation_mutations(&installation)
+            .expect("lock archive installation");
+        assert!(lock.metadata().expect("lock metadata").is_file());
+        assert!(prefix.join(".mealy-install.lock").is_file());
+        assert!(!temporary.path().join("home").exists());
     }
 
     #[test]

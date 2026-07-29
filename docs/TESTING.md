@@ -475,6 +475,10 @@ online backup, drains cleanly, then uninstalls while proving `mealy.sqlite3` rem
 jobs additionally require enforceable observe and workspace-write sandbox
 profiles from the installed daemon. This catches
 release-payload or installer/runtime integration failures that source-tree smoke cannot.
+The smoke deliberately damages the stable archive manager before creating a daemon home, then
+requires `mealyctl repair --approve` to restore it from the verified active slot. Repair is
+serialized by the archive prefix's no-follow installation lock; it neither requires nor creates
+durable agent state.
 The packaging fixture also modifies an installed threat model and proves slot verification blocks
 an upgrade before either binary changes; `SECURITY.md` and the threat model are mandatory exact
 payload inventory rather than unverified side documentation. A checksum-mismatched installer is
