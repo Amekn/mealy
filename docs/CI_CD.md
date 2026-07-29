@@ -178,10 +178,61 @@ binary because native link environments are not assumed byte-reproducible across
 
 ### Stage the exact soak subject
 
-After the terminal report passes locally, stage the observed daemon as a private draft transport
-asset before opening the evidence PR. This is not the public production release. Run from the
-canonical repository on the Linux soak host, with an authenticated `gh` session that can create a
-draft release:
+After the terminal report passes against the candidate, merge the candidate before staging. This
+repository requires linear history. When the report names a commit that exists only on the
+candidate branch, use an explicit GitHub **rebase merge**, not a squash merge: the rebased sequence
+retains a main-line commit with the observed commit's exact Git tree, while a squash would collapse
+that intermediate tree and make the checked lineage proof impossible. GitHub documents that its
+[rebase merge adds each commit individually while creating new commit
+SHAs](https://docs.github.com/en/pull-requests/reference/pull-request-merges#rebase-and-merge-your-commits).
+Record the protected-main head before merging, then locate the unique rebased commit with the
+observed tree:
+
+```bash
+repository=Amekn/mealy
+pr_number=PR_NUMBER
+report=/absolute/path/to/release-soak.json
+mealyd=/absolute/path/to/the/exact/soaked/mealyd
+candidate=$(gh pr view "$pr_number" --repo "$repository" --json headRefOid --jq .headRefOid)
+scripts/validate-release-soak.sh "$report" "$mealyd" "$candidate"
+git fetch origin main
+pre_merge_main=$(git rev-parse origin/main)
+gh pr ready "$pr_number" --repo "$repository"
+gh pr merge "$pr_number" --repo "$repository" --rebase
+git fetch origin main
+release_head=$(git rev-parse origin/main)
+observed=$(jq -er '.revision | select(test("^[0-9a-f]{40}$"))' "$report")
+observed_tree=$(git rev-parse "${observed}^{tree}")
+mapfile -t lineage_matches < <(
+  git rev-list "$release_head" "^$pre_merge_main" |
+    while read -r candidate; do
+      test "$(git rev-parse "${candidate}^{tree}")" = "$observed_tree" &&
+        printf '%s\n' "$candidate"
+    done
+)
+test "${#lineage_matches[@]}" -eq 1
+release_lineage=${lineage_matches[0]}
+scripts/generate-release-soak-lineage.sh \
+  "$report" "$release_lineage" "$release_head" \
+  docs/benchmarks/release-soak-lineage.json
+scripts/validate-release-soak.sh \
+  "$report" "$mealyd" "$release_head" \
+  docs/benchmarks/release-soak-lineage.json
+```
+
+Require the exact `release_head` protected-main CI run to finish successfully before creating the
+private staging tag or release.
+
+If the observed revision is already an ancestor of `release_head`, do not create a lineage proof;
+validate it directly. The generator rejects an unnecessary proof, a non-ancestor mapped commit,
+tree drift, malformed report identity, an absent commit, an oversized/unrehashable commit payload,
+or a symlink destination. The validator then rehashes the embedded original commit payload and
+binds the unedited report digest, both Git trees, the mapped main-line commit, and the final
+release ancestry.
+
+After that validation, stage the observed daemon as a private draft transport asset before opening
+the evidence PR. This is not the public production release. Run from the canonical repository on
+the Linux soak host, with an authenticated `gh` session that can create a draft release:
 
 ```sh
 repository=Amekn/mealy
@@ -191,7 +242,14 @@ observed=$(jq -er '.revision | select(test("^[0-9a-f]{40}$"))' "$report")
 staging_tag="soak-subject-$observed"
 asset_name="mealy-soak-${observed}-linux-x86_64-gnu-mealyd"
 test "$(git rev-parse --verify "${observed}^{commit}")" = "$observed"
-scripts/validate-release-soak.sh "$report" "$mealyd" "$(git rev-parse origin/main)"
+expected=$(git rev-parse origin/main)
+if git merge-base --is-ancestor "$observed" "$expected"; then
+  scripts/validate-release-soak.sh "$report" "$mealyd" "$expected"
+else
+  scripts/validate-release-soak.sh \
+    "$report" "$mealyd" "$expected" \
+    docs/benchmarks/release-soak-lineage.json
+fi
 
 git tag -a "$staging_tag" "$observed" -m "Mealy release soak subject $observed"
 git push origin "refs/tags/$staging_tag"

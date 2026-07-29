@@ -110,6 +110,7 @@ jobs:
             scripts/fetch-cargo-deny.sh
             scripts/fetch-zizmor.sh
             scripts/generate-third-party-licenses.sh
+            scripts/generate-release-soak-lineage.sh
             scripts/install-public-linux-repository.sh
             scripts/installed-package-smoke.sh
             scripts/installed-provider-switch-smoke.sh
@@ -133,6 +134,7 @@ jobs:
             scripts/test-public-license-validator.sh
             scripts/test-release-environment-preflight.sh
             scripts/test-release-notes.sh
+            scripts/test-release-soak-lineage-generator.sh
             scripts/test-release-soak-validator.sh
             scripts/test-release-tag-validator.sh
             scripts/test-release-upgrade-baseline-validator.sh
@@ -150,7 +152,9 @@ jobs:
       - name: Verify stable production release tag gate
         run: scripts/test-release-tag-validator.sh
       - name: Verify release-soak evidence gate
-        run: scripts/test-release-soak-validator.sh
+        run: |
+          scripts/test-release-soak-lineage-generator.sh
+          scripts/test-release-soak-validator.sh
       - name: Verify exact soak-subject promotion gate
         run: scripts/test-release-soak-subject-fetch.sh
       - name: Verify exact dual-provider acceptance gate
