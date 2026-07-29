@@ -45,8 +45,9 @@ if ! jq -e --arg repository "$repository" '
   and .private == false
   and .archived == false
   and .disabled == false
+  and .allow_rebase_merge == true
 ' "$temporary/repository.json" >/dev/null; then
-  echo "release repository is missing, noncanonical, private, archived, or disabled" >&2
+  echo "release repository is missing, noncanonical, unavailable, or cannot rebase-merge" >&2
   exit 65
 fi
 

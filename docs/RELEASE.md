@@ -729,9 +729,9 @@ evidence.
    `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
    rejects prerelease/build metadata and leading-zero version components. From the canonical source
    checkout, run `scripts/preflight-release-environments.sh Amekn/mealy`; do not tag until its
-   read-only immutable-release, Actions allowlist/full-SHA, Pages, tag-policy, owner-review,
-   fingerprint, signing-secret-name, and protected free-OpenRouter/private-endpoint readiness
-   checks all pass.
+   read-only rebase-merge availability, immutable-release, Actions allowlist/full-SHA, Pages,
+   tag-policy, owner-review, fingerprint, signing-secret-name, and protected
+   free-OpenRouter/private-endpoint readiness checks all pass.
 2. Compare the pinned Headless Shell version with the official
    [Chrome for Testing stable metadata](https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json).
    If the reviewed stable patch changed, update its exact archive byte count/SHA-256 and product
