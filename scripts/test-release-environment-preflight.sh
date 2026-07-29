@@ -17,7 +17,8 @@ jq -n '{
   full_name: "Amekn/mealy",
   private: false,
   archived: false,
-  disabled: false
+  disabled: false,
+  allow_rebase_merge: true
 }' >"$temporary/fixtures/repository.json"
 jq -n '{
   enforce_admins: {enabled: true},
@@ -206,6 +207,7 @@ expect_rejection() {
 
 expect_rejection renamed-repository repository '.full_name = "Amekn/project_mealy"'
 expect_rejection private-repository repository '.private = true'
+expect_rejection rebase-merge-disabled repository '.allow_rebase_merge = false'
 expect_rejection missing-required-context main_protection \
   '.required_status_checks.contexts |= map(select(. != "Strict workspace gate"))'
 expect_rejection extra-required-context main_protection \
