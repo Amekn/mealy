@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "mealy.sdk-daemon-fixture.v1",
+  "releaseVersion": "0.3.0",
+  "apiVersion": "v1",
+  "expectedSessionTitle": "New conversation",
+  "expectedSessionTitleSource": "derived",
+  "exchanges": [
+    {
+      "operation": "liveness",
+      "requestLine": "GET /health/live HTTP/1.1",
+      "status": 200,
+      "responseBody": "{\"apiVersion\":\"v1\",\"live\":true}"
+    },
+    {
+      "operation": "readiness",
+      "requestLine": "GET /health/ready HTTP/1.1",
+      "status": 200,
+      "responseBody": "{\"apiVersion\":\"v1\",\"ready\":true,\"state\":\"ready\"}"
+    },
+    {
+      "operation": "sessions",
+      "requestLine": "GET /v1/sessions?limit=20 HTTP/1.1",
+      "status": 200,
+      "responseBody": "{\"apiVersion\":\"v1\",\"sessions\":[{\"sessionId\":\"019f4ad8-3722-75e2-bc69-8bef5d603f04\",\"status\":\"open\",\"revision\":3,\"pendingInputs\":0,\"activeTurnId\":null,\"createdAtMs\":1785230088000,\"updatedAtMs\":1785230188000}]}"
+    },
+    {
+      "operation": "missing_task",
+      "requestLine": "GET /v1/tasks/task-missing HTTP/1.1",
+      "status": 404,
+      "responseBody": "{\"apiVersion\":\"v1\",\"code\":\"not_found\",\"message\":\"task not found\",\"retryable\":false}"
+    }
+  ]
+}

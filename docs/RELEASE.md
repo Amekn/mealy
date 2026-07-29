@@ -477,6 +477,18 @@ owner identity to survive the schema transition, verifies the automatic migratio
 creates new-version title/checkpoint records, and proves native removal preserves the migrated
 home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats every
 declared old-public-to-new-public proof rather than inheriting a build-runner result.
+
+The v0.5 release additionally publishes `mealy-domain`, `mealy-protocol`, and `mealy-client`
+`.crate` archives, `mealy-sdk-VERSION-Cargo.lock`, `SHA256SUMS-sdk`, and
+`ATTESTATION-sdk.sigstore.json`. `scripts/build-sdk-packages.sh` requires clean tagged source,
+packages the complete dependency set together twice, and rejects byte drift. The verifier checks
+the exact bounded archive/checksum inventory, extracts outside the workspace, and compiles a clean
+consumer against the retained lock. Protected CI and the tag gate run that proof before
+publication; the native x86-64 public-release job downloads every SDK asset, verifies its GitHub
+release digest and dedicated provenance, and repeats the extracted-package consumer build. The
+GitHub assets are the supported v0.5 SDK distribution boundary and do not imply crates.io
+publication.
+
 Before packaging, each native tag runner launches the exact auditable binaries through their
 generated systemd user unit. After constructing the native system packages, clean distribution
 containers install each exact package and repeat the same proof from the root-owned package paths

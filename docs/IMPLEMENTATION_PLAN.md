@@ -352,7 +352,7 @@ qualification.
 
 ## Productionization slice: stable typed Rust owner client
 
-Status: first v0.5 SDK boundary implemented. `mealy-client` is an independently reusable blocking
+Status: v0.5 stable blocking SDK boundary implemented. `mealy-client` is an independently reusable blocking
 Rust client over the canonical `mealy-protocol` DTOs. Its initial stable surface covers daemon
 health/status and provider catalog, session create/list/search/status/title/provider-selection/
 checkpoint/fork/text-or-image-admission/timeline, task status/pause/resume/cancel/recorded replay,
@@ -373,9 +373,13 @@ owner-private no-follow responsibility.
 
 Unit fixtures exercise transport headers, typed command bodies, structured errors, response
 limits, incompatible versions, ambiguous identifiers, descriptor validation, and secret-free
-debug output against a real loopback socket. Strict Clippy, unit, doc, and rustdoc gates cover the
-crate. Async, additional-language clients, generated compatibility fixtures, and publication
-policy remain later v0.5 slices.
+debug output against a real loopback socket. Frozen v0.3/v0.4/v0.5 daemon fixtures preserve
+compatible response behavior. The domain/protocol/client crates are publishable and packaged
+twice reproducibly; a clean external consumer compiles from the extracted packages and retained
+lock in CI, the tag workflow, and public-release acceptance. GitHub release publication includes
+checksums and a dedicated offline Sigstore provenance bundle. Strict Clippy, unit, doc, and
+rustdoc gates cover the crates. Async/SSE and additional-language clients remain later ecosystem
+work rather than being implied by this stable blocking SDK.
 
 ## Productionization slice: privacy-preserving OpenTelemetry export
 

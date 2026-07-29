@@ -440,13 +440,14 @@ not open `connection.json`, so an embedding application must retain Mealy's owne
 no-symlink file boundary when loading that descriptor.
 
 See [`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) and generated Rustdoc for
-the operation and error contracts. Timeline SSE is not yet part of this blocking SDK; use bounded
-timeline pages or the documented SSE contract until the async SDK slice is implemented.
+the operation, packaged-release, and error contracts. Timeline SSE is not part of this blocking
+SDK; use bounded timeline pages or the documented raw SSE contract.
 
 ## Compatibility contract
 
 Clients must send `apiVersion: "v1"` on mutation DTOs and require `apiVersion == "v1"` in JSON
 responses. Additive response fields may appear within `v1`; tolerant readers should ignore fields
 they do not use. Field removal, semantic reinterpretation, or incompatible enum changes require a
-new API version. The authoritative compatibility tests live in `mealy-api`, `mealy-protocol`, and
-the real-daemon public-API scenario suites described in [TESTING.md](TESTING.md).
+new API version. The authoritative compatibility tests live in `mealy-api`, `mealy-protocol`, the
+frozen v0.3/v0.4/v0.5 `mealy-client` daemon fixtures, the clean packaged-consumer proof, and the
+real-daemon public-API scenario suites described in [TESTING.md](TESTING.md).

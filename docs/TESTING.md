@@ -908,8 +908,16 @@ success and structured-error decoding; pre-dispatch request-version and path-ide
 response-version and nested-envelope rejection; strict descriptor validation; request/response
 size enforcement; and credential-free builder/client debug output. `mealy-client` also runs under
 the workspace's all-target/all-feature strict Clippy, doc-test, and warning-denied rustdoc gates.
-Future SDK release qualification must add frozen cross-version daemon fixtures, async/SSE
-resumption, and clean downstream-consumer compilation.
+Frozen daemon fixtures additionally run the current stable client against retained v0.3.0,
+v0.4.0, and v0.5.0 liveness/readiness/session/error shapes, including the v0.3 title defaults.
+`scripts/sdk-package-smoke.sh` packages the publishable domain/protocol/client set twice, requires
+byte-identical archives, validates their bounded inventory and checksum manifest, extracts them
+outside the workspace, and compiles a clean downstream consumer under the retained exact lock.
+The same smoke rejects changed archive bytes, a foreign checksum entry, a package archive carrying
+a symbolic link, and a checksum-valid repacked client whose publishable manifest was removed.
+The tag workflow attests those packages and repeats the same proof from the public release.
+Async/SSE resumption and non-Rust language bindings remain outside the stable v0.5
+blocking-client contract.
 
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS

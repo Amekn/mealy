@@ -378,6 +378,9 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
 - verifies reproducibility, checksums, installed archive/package behavior, upgrade/rollback, and
   state preservation;
 - creates GitHub artifact attestations plus retained offline Sigstore bundles;
+- packages the stable Rust domain/protocol/client SDK reproducibly, compiles a clean external
+  consumer under its exact lock, and publishes the crates, checksums, and dedicated Sigstore
+  provenance as release assets;
 - creates package-manager-native signed APT, DNF, and Pacman repositories with an owner-reviewed
   signing key, attests their complete manifest, and stages the exact Pages artifact;
 - assembles one exact release inventory and publishes deterministic evidence-bound notes;

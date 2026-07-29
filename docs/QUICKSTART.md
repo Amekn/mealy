@@ -2395,8 +2395,8 @@ owner-private regular-file, no-follow, and 64-KiB bounds used by `mealyctl`, the
 descriptor to `MealyClient::from_connection`. Do not copy the token into source, command-line
 arguments, logs, ambient environment, or shared configuration. See
 [`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) for the client and error
-contract. The current SDK is blocking and page-based; timeline SSE and additional languages remain
-v0.5 work.
+contract plus the attested GitHub-release package names. The v0.5 SDK contract is blocking and
+page-based; timeline SSE and additional languages remain later ecosystem work.
 
 ## Install as a user service
 

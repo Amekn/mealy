@@ -34,7 +34,7 @@ path: embedding applications must apply owner/private-mode and no-symlink checks
 `$MEALY_HOME/connection.json`, or receive the descriptor through an equivalently trusted local
 boundary.
 
-The initial stable surface covers health and owner status, provider discovery, session creation,
+The stable surface covers health and owner status, provider discovery, session creation,
 search, titles, provider switching, checkpoints, forks, text/image admission and timelines; task
 status, pause, resume, cancellation and recorded replay; approval resolution; governed extension
 lifecycle and invocation; and webhook, Telegram, Discord, and Slack channel lifecycle. Methods
@@ -42,3 +42,12 @@ return the versioned DTO for successful responses and `ClientError` for local va
 transport, compatibility, bounded-decoding, or structured daemon failures. Match specific
 variants only when behavior needs to differ; the enum is non-exhaustive so compatible SDK releases
 may add more precise failures.
+
+Every v0.5-or-newer GitHub release publishes reproducible `mealy-domain`, `mealy-protocol`, and
+`mealy-client` `.crate` archives with a pinned downstream-consumer lock, checksums, and retained
+Sigstore provenance. The release workflow extracts those archives outside the workspace and
+compiles a clean consumer through the public client surface before publication, then repeats the
+same check from the downloaded public assets. Frozen v0.3.0, v0.4.0, and v0.5.0 daemon fixtures
+prevent a compatible `v1` response or structured error from silently becoming unreadable. These
+GitHub release packages are the supported v0.5 distribution boundary; they are intentionally not
+represented as already published on crates.io.

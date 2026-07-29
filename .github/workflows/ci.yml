@@ -65,6 +65,8 @@ jobs:
           sed '1d;$d' | node --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
+      - name: Verify stable SDK packages through a clean downstream consumer
+        run: scripts/sdk-package-smoke.sh
       - name: Verify interactive dashboard against a real daemon
         run: scripts/dashboard-smoke.sh
       - run: cargo test --locked --workspace --doc --all-features
@@ -123,6 +125,7 @@ jobs:
             scripts/preflight-release-environments.sh
             scripts/render-release-notes.sh
             scripts/run-soak.sh
+            scripts/sdk-package-smoke.sh
             scripts/select-live-provider-acceptance.sh
             scripts/select-protected-ci-run.sh
             scripts/systemd-service-smoke.sh
@@ -142,9 +145,11 @@ jobs:
             scripts/test-release-upgrade-baseline-validator.sh
             scripts/validate-public-license.sh
             scripts/validate-release-upgrade-baseline.sh
+            scripts/verify-sdk-packages.sh
             scripts/verify-public-linux-repository.sh
             scripts/validate-release-soak.sh
             scripts/validate-release-tag.sh
+            scripts/build-sdk-packages.sh
           )
           bash -n "${scripts[@]}"
           shellcheck "${scripts[@]}"
