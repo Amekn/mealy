@@ -24,7 +24,7 @@ jq -e -c \
   --argjson release_schema "$release_schema" '
     def semver_parts:
       split(".") | map(tonumber);
-    if type != "object" then
+    (if type != "object" then
       error("manifest type")
     elif .schemaVersion == "mealy.release-upgrade-baseline.v1" then
       if keys != [
@@ -55,7 +55,7 @@ jq -e -c \
       ] then error("v2 fields") else . end
     else
       error("schema")
-    end as $normalized
+    end) as $normalized
     | if
         $normalized.schemaVersion == "mealy.release-upgrade-baselines.v2"
         and $normalized.releaseVersion == $release_version
