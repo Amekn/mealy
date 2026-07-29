@@ -486,8 +486,9 @@ the exact bounded archive/checksum inventory, extracts outside the workspace, an
 consumer against the retained lock. Protected CI and the tag gate run that proof before
 publication; the native x86-64 public-release job downloads every SDK asset, verifies its GitHub
 release digest and dedicated provenance, and repeats the extracted-package consumer build. The
-GitHub assets are the supported v0.5 SDK distribution boundary and do not imply crates.io
-publication.
+protected non-publishing post-release workflow can repeat the same proof independently for an
+unchanged tag. GitHub assets are the supported v0.5 SDK distribution boundary and do not imply
+crates.io publication.
 
 Before packaging, each native tag runner launches the exact auditable binaries through their
 generated systemd user unit. After constructing the native system packages, clean distribution

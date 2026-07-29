@@ -177,10 +177,79 @@ jobs:
           "$MEALY_REPOSITORY_BASE_URL" "$MEALY_REPOSITORY_FINGERPRINT"
           "$MEALY_RELEASE_VERSION"
 
+  public-sdk-acceptance:
+    name: Verify public stable SDK packages
+    needs: qualify-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read # Download the immutable release packages and retained bundle.
+      attestations: read # Verify the SDK checksum manifest against tag-workflow provenance.
+    env:
+      MEALY_RELEASE_TAG: ${{ inputs.release_tag }}
+      MEALY_RELEASE_SOURCE_COMMIT: ${{ needs.qualify-release.outputs.source_commit }}
+      MEALY_RELEASE_VERSION: ${{ needs.qualify-release.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download, authenticate, and compile the stable SDK package set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=. read -r major minor patch <<<"$MEALY_RELEASE_VERSION"
+          if [[ ! $major =~ ^[0-9]+$ || ! $minor =~ ^[0-9]+$ \
+            || ! $patch =~ ^[0-9]+$ ]]; then
+            echo "post-publication SDK acceptance requires a stable version" >&2
+            exit 65
+          fi
+          if ((major == 0 && minor < 5)); then
+            echo "release predates the stable SDK package contract"
+            exit 0
+          fi
+
+          assets=(
+            "mealy-domain-${MEALY_RELEASE_VERSION}.crate"
+            "mealy-protocol-${MEALY_RELEASE_VERSION}.crate"
+            "mealy-client-${MEALY_RELEASE_VERSION}.crate"
+            "mealy-sdk-${MEALY_RELEASE_VERSION}-Cargo.lock"
+            SHA256SUMS-sdk
+            ATTESTATION-sdk.sigstore.json
+          )
+          mkdir downloaded
+          download_arguments=()
+          for asset in "${assets[@]}"; do
+            download_arguments+=(--pattern "$asset")
+          done
+          gh release download "$MEALY_RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" --dir downloaded \
+            "${download_arguments[@]}"
+          expected=$(printf '%s\n' "${assets[@]}" | sort)
+          actual=$(find downloaded -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | sort)
+          if [[ $actual != "$expected" \
+            || -n $(find downloaded -mindepth 1 -maxdepth 1 ! -type f -print -quit) ]]; then
+            echo "public SDK release download inventory is not exact" >&2
+            exit 65
+          fi
+          for asset in "${assets[@]}"; do
+            gh release verify-asset "$MEALY_RELEASE_TAG" "downloaded/$asset" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null
+          done
+          gh attestation verify downloaded/SHA256SUMS-sdk \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+            --source-ref "refs/tags/$MEALY_RELEASE_TAG" \
+            --source-digest "$MEALY_RELEASE_SOURCE_COMMIT" \
+            --bundle downloaded/ATTESTATION-sdk.sigstore.json \
+            --deny-self-hosted-runners >/dev/null
+          scripts/verify-sdk-packages.sh downloaded "$MEALY_RELEASE_VERSION"
+
   acceptance:
     name: Public repository acceptance
     if: ${{ always() }}
-    needs: [qualify-release, public-repository-acceptance]
+    needs: [qualify-release, public-repository-acceptance, public-sdk-acceptance]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -189,6 +258,8 @@ jobs:
         env:
           QUALIFICATION_RESULT: ${{ needs.qualify-release.result }}
           REPOSITORY_RESULT: ${{ needs.public-repository-acceptance.result }}
+          SDK_RESULT: ${{ needs.public-sdk-acceptance.result }}
         run: >-
           test "$QUALIFICATION_RESULT" = success &&
-          test "$REPOSITORY_RESULT" = success
+          test "$REPOSITORY_RESULT" = success &&
+          test "$SDK_RESULT" = success
