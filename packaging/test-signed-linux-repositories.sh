@@ -10,7 +10,7 @@ ubuntu_image=${MEALY_UBUNTU_IMAGE:-ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b3350
 fedora_image=${MEALY_FEDORA_IMAGE:-fedora:44@sha256:6c75d5bf57cb0fa5aa4b92c6a83c86c791644496d9ac230de7711f5b8ec3b898}
 arch_image=${MEALY_ARCH_IMAGE:-archlinux:base-devel@sha256:412efebb0eeef0ef322ff24ad73f82b1ba2d3b12377db4c5fbe3074c7e7e8678}
 
-for command in cp docker gpg grep jq mkdir mktemp readlink rm sed stat; do
+for command in cp date docker gpg grep jq mkdir mktemp readlink rm sed stat; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "required signed-repository test command is unavailable: $command" >&2
     exit 69
@@ -33,10 +33,16 @@ repository=$temporary/repository
 mkdir -m 0700 "$key_home"
 mkdir -m 0755 "$assets"
 
+# RPM 6 evaluates a signing subkey's binding at the package-signature time.
+# Backdate the ephemeral fixture certificate enough to make that ordering
+# deterministic across host/container clock rounding without weakening the
+# production verifier or its key-policy checks.
+key_epoch=$(($(date --utc +%s) - 300))
 gpg --batch --homedir "$key_home" --passphrase '' \
+  --faked-system-time "$key_epoch" \
   --quick-generate-key \
   'Mealy repository acceptance fixture <repository-fixture@mealy.invalid>' \
-  ed25519 cert 1d >/dev/null 2>&1
+  ed25519 cert 2d >/dev/null 2>&1
 fingerprint=$(
   gpg --batch --homedir "$key_home" --with-colons --list-secret-keys |
     awk -F: '
@@ -49,7 +55,8 @@ if [[ ! $fingerprint =~ ^[0-9A-F]{40}$ ]]; then
   exit 70
 fi
 gpg --batch --homedir "$key_home" --passphrase '' \
-  --quick-add-key "$fingerprint" ed25519 sign 1d >/dev/null 2>&1
+  --faked-system-time "$key_epoch" \
+  --quick-add-key "$fingerprint" ed25519 sign 2d >/dev/null 2>&1
 gpg --batch --homedir "$key_home" --armor \
   --export-secret-subkeys "$fingerprint" >"$private_key"
 
