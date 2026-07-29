@@ -650,6 +650,16 @@ gates overlapped; it reported five hard restarts, 14 interrupted-provider recove
 retries, complete replay, SQLite integrity `ok`, clean drain, and zero residual work. This is a
 focused regression result, not a substitute for the fresh 24-hour durability gate.
 
+The first v0.3 exact-binary attempt later exposed an independent presentation-read defect after
+16 hours 11 minutes. Concurrent near-current timeline requests materialized complete historical
+session membership, took 7–14.5 seconds, and crossed the ten-second client deadline while the
+retained 1.18 GiB database remained intact. The
+[retained failure record](benchmarks/2026-07-29-v0.3-timeline-read-scaling-failure.md) documents
+the query plan, resource growth, response-parity proof, and corrected 256-request burst. A focused
+unit regression adds 50,000 historical events and bounds SQLite virtual-machine progress rather
+than relying on a host-speed timing threshold. Protected CI, rebuilt packages, and a fresh
+86,400-second exact-binary soak remain mandatory.
+
 Durable provider-request and validation-context JSON has a focused compatibility/corruption gate.
 Objects below 4 KiB or without a size win stay as historical plain JSON. Larger objects may use the
 `deflate-zlib-base64url-v1` envelope, but the durable SHA-256 remains the digest of the original

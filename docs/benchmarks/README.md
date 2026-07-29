@@ -177,3 +177,12 @@ runtime's gate. The preserved v0.2.0
 for the integrated onboarding candidate before its pre-publication Debian metadata failure. The
 current v0.2.1 [release soak](release-soak.json) independently repeats that proof for the
 version-distinct correction.
+
+The first v0.3.0 candidate
+[`timeline-read scaling failure`](2026-07-29-v0.3-timeline-read-scaling-failure.md) is retained as
+new negative evidence. Its exact binary failed after 16 hours 11 minutes when concurrent
+near-current timeline reads materialized complete historical membership sets. The intact 1.18 GiB
+database reproduced 7–14.5-second requests and persistent memory growth. Cursor-first indexed
+lineage checks reduced the same retained-state burst to a 50-millisecond maximum with all 256
+requests successful. That focused result does not waive protected CI, package rebuild, or a fresh
+24-hour exact-binary soak for the corrected v0.3.0 subject.
