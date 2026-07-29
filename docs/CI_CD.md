@@ -257,7 +257,9 @@ gh workflow run live-smoke.yml --ref main \
 ```
 
 The environment must require an owner review, admit protected branches only, and expose
-`OPENROUTER_API_KEY` only as an environment secret. The workflow discovers the account-visible
+`OPENROUTER_API_KEY` and `LOCAL_API_KEY` only as environment secrets; the release-environment
+preflight requires both so strict-free and pinned private-endpoint acceptance remain runnable.
+The workflow discovers the account-visible
 catalog, selects an exact `:free` tool-capable model, requires complete zero input/output pricing
 and usable token limits, and then proves setup, credential containment, a real governed read,
 durable usage settlement, recorded-only replay, and clean drain. Activation keeps its no-tools

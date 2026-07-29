@@ -161,6 +161,8 @@ expect_rejection broad-live-policy live_environment \
   }'
 expect_rejection missing-openrouter-secret live_secrets \
   'map(select(.name != "OPENROUTER_API_KEY"))'
+expect_rejection missing-private-endpoint-secret live_secrets \
+  'map(select(.name != "LOCAL_API_KEY"))'
 
 if "$preflight" invalid >/dev/null 2>&1; then
   echo "release-environment preflight accepted an invalid repository argument" >&2
