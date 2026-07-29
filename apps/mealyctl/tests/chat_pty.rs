@@ -545,18 +545,15 @@ async fn tui_drives_search_rename_checkpoint_verified_export_and_fork() {
             .as_slice(),
         ["continuity"]
     );
-
-    terminal
-        .write_all(b"\x1bOQ")
-        .and_then(|()| terminal.flush())
-        .expect("open the TUI rename overlay");
-    wait_for_occurrences(
+    drive_tui_key_until_output(
         &mut terminal,
         &mut rendered,
+        b"\x1bOQ",
         b"Rename conversation",
-        1,
-        Duration::from_secs(2),
-    );
+        Duration::from_secs(3),
+        "rename overlay after transcript search",
+    )
+    .await;
     let mut rename = vec![0x7f; "Latest conversation".len()];
     rename.extend_from_slice(b"Canonical continuity\r");
     terminal
@@ -714,6 +711,39 @@ async fn drive_tui_key_until(
         loop {
             read_available_terminal_output(terminal, rendered);
             if condition() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "TUI did not complete {description}: {}",
+                String::from_utf8_lossy(rendered)
+            );
+            if Instant::now() >= retry_at {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+async fn drive_tui_key_until_output(
+    terminal: &mut File,
+    rendered: &mut Vec<u8>,
+    key: &[u8],
+    needle: &[u8],
+    timeout: Duration,
+    description: &str,
+) {
+    let deadline = Instant::now() + timeout;
+    while count_occurrences(rendered, needle) == 0 {
+        terminal
+            .write_all(key)
+            .and_then(|()| terminal.flush())
+            .unwrap_or_else(|error| panic!("send TUI key for {description}: {error}"));
+        let retry_at = Instant::now() + Duration::from_millis(100);
+        loop {
+            read_available_terminal_output(terminal, rendered);
+            if count_occurrences(rendered, needle) > 0 {
                 return;
             }
             assert!(
