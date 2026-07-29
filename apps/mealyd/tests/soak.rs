@@ -207,6 +207,57 @@ impl Drop for Daemon {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TurnLineage {
+    Ordinary,
+    InterruptedProvider,
+    RetriedReadTool,
+    ResumedUndispatchedModel,
+    ResumedUndispatchedReadTool,
+}
+
+const fn classify_turn_lineage(
+    model_attempts: u64,
+    tool_calls: u64,
+    used_retries: u64,
+) -> Option<TurnLineage> {
+    match (model_attempts, tool_calls, used_retries) {
+        (2, 1, 0) => Some(TurnLineage::Ordinary),
+        (3, 1, 1) => Some(TurnLineage::InterruptedProvider),
+        (2, 2, 1) => Some(TurnLineage::RetriedReadTool),
+        (3, 1, 0) => Some(TurnLineage::ResumedUndispatchedModel),
+        (2, 2, 0) => Some(TurnLineage::ResumedUndispatchedReadTool),
+        _ => None,
+    }
+}
+
+#[test]
+fn turn_lineage_classification_is_injection_agnostic_and_closed() {
+    assert_eq!(classify_turn_lineage(2, 1, 0), Some(TurnLineage::Ordinary));
+    assert_eq!(
+        classify_turn_lineage(3, 1, 1),
+        Some(TurnLineage::InterruptedProvider)
+    );
+    assert_eq!(
+        classify_turn_lineage(2, 2, 1),
+        Some(TurnLineage::RetriedReadTool)
+    );
+    assert_eq!(
+        classify_turn_lineage(3, 1, 0),
+        Some(TurnLineage::ResumedUndispatchedModel)
+    );
+    assert_eq!(
+        classify_turn_lineage(2, 2, 0),
+        Some(TurnLineage::ResumedUndispatchedReadTool)
+    );
+    for unsupported in [(1, 1, 0), (2, 1, 1), (3, 2, 0), (4, 1, 0)] {
+        assert_eq!(
+            classify_turn_lineage(unsupported.0, unsupported.1, unsupported.2),
+            None
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "manual bounded/long soak; run through scripts/run-soak.sh"]
 #[allow(clippy::too_many_lines)]
@@ -314,6 +365,7 @@ async fn bounded_soak_restarts_and_reports_durable_measurements() {
         }
 
         let deadline = Instant::now() + ROUND_TIMEOUT;
+        let mut restart_dispatched_recovery_seen = false;
         for (session_id, cursor, task_id, submitted) in tasks {
             let task = wait_until_terminal(&client, &connection, &task_id, deadline).await;
             if task.status != TaskStatus::Succeeded {
@@ -337,48 +389,69 @@ async fn bounded_soak_restarts_and_reports_durable_measurements() {
                 );
                 panic!("soak task did not succeed: {task:?}");
             }
-            if restart_this_round {
-                match (
-                    task.model_attempts,
-                    task.tool_calls,
-                    task.usage.used_retries,
-                ) {
-                    (3, 1, 1) => {
-                        interrupted_provider_turns = interrupted_provider_turns
-                            .checked_add(1)
-                            .expect("interrupted count overflow");
-                    }
-                    (2, 2, 1) => {
-                        retried_read_tool_turns = retried_read_tool_turns
-                            .checked_add(1)
-                            .expect("read-tool retry count overflow");
-                    }
-                    (2, 2, 0) => {
-                        resumed_undispatched_read_tool_turns = resumed_undispatched_read_tool_turns
-                            .checked_add(1)
-                            .expect("undispatched read-tool resume count overflow");
-                    }
-                    (3, 1, 0) => {
-                        resumed_undispatched_model_turns = resumed_undispatched_model_turns
-                            .checked_add(1)
-                            .expect("undispatched model resume count overflow");
-                    }
-                    (2, 1, 0) => {}
-                    _ => panic!("unexpected restart recovery lineage: {task:?}"),
-                }
-            } else {
-                assert_eq!(task.model_attempts, 2, "ordinary task: {task:?}");
-                assert_eq!(task.tool_calls, 1, "ordinary task: {task:?}");
-                assert_eq!(task.usage.used_retries, 0, "ordinary task: {task:?}");
-            }
             let replay: TaskReplayResponse =
                 authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+            let Some(lineage) = classify_turn_lineage(
+                task.model_attempts,
+                task.tool_calls,
+                task.usage.used_retries,
+            ) else {
+                let timeline: TimelinePageResponse = authorized_get(
+                    &client,
+                    &connection,
+                    &format!("/v1/sessions/{session_id}/timeline?after={cursor}&limit=100"),
+                )
+                .await;
+                write_failure_report(
+                    &configuration,
+                    round,
+                    &session_id,
+                    cursor,
+                    &task,
+                    &timeline,
+                    &replay,
+                );
+                panic!("unexpected durable turn lineage: {task:?}");
+            };
+            restart_dispatched_recovery_seen |= matches!(
+                lineage,
+                TurnLineage::InterruptedProvider | TurnLineage::RetriedReadTool
+            );
+            match lineage {
+                TurnLineage::Ordinary => {}
+                TurnLineage::InterruptedProvider => {
+                    interrupted_provider_turns = interrupted_provider_turns
+                        .checked_add(1)
+                        .expect("interrupted count overflow");
+                }
+                TurnLineage::RetriedReadTool => {
+                    retried_read_tool_turns = retried_read_tool_turns
+                        .checked_add(1)
+                        .expect("read-tool retry count overflow");
+                }
+                TurnLineage::ResumedUndispatchedModel => {
+                    resumed_undispatched_model_turns = resumed_undispatched_model_turns
+                        .checked_add(1)
+                        .expect("undispatched model resume count overflow");
+                }
+                TurnLineage::ResumedUndispatchedReadTool => {
+                    resumed_undispatched_read_tool_turns = resumed_undispatched_read_tool_turns
+                        .checked_add(1)
+                        .expect("undispatched read-tool resume count overflow");
+                }
+            }
             assert!(replay.evidence_complete, "soak replay: {replay:?}");
             assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
             latencies_ms.push(u64::try_from(submitted.elapsed().as_millis()).unwrap_or(u64::MAX));
             completed_turns = completed_turns
                 .checked_add(1)
                 .expect("completed turn count overflow");
+        }
+        if restart_this_round {
+            assert!(
+                restart_dispatched_recovery_seen,
+                "deliberate restart round {round} did not retain a dispatched recovery lineage"
+            );
         }
         peak_rss_kib = peak_rss_kib.max(resident_set_kib(daemon.process_id()).unwrap_or(0));
         if !configuration.round_interval.is_zero() && started.elapsed() < configuration.duration {
