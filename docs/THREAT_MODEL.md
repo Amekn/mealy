@@ -631,8 +631,12 @@ failure cannot advance state, and refresh holds the stopped-home lock across net
 Refresh additionally requires the exact envelope digest printed by the preceding fetch, so the
 mutable current path cannot change between owner review and apply. The implementation shares the
 same reviewed IANA special-address policy as web, MCP, and browser egress so the deny list cannot
-drift independently. Registry extension installation and withdrawal propagation to installed
-packages remain explicit follow-on boundaries and are not yet claimed.
+drift independently. Installed registry skills are reprojected against the newest accepted
+snapshot and their exact accepted/staged provenance. Withdrawal, target removal, identity
+substitution, or missing/mismatched evidence prevents activation and suppresses configured
+instructions at daemon restart. This is deliberately non-destructive: immutable bytes and evidence
+remain available for diagnosis or rollback, and mere snapshot expiry does not disable an offline
+installation. Registry extension installation remains an explicit follow-on boundary.
 
 Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
 Review prints the exact envelope digest, publisher, host range, manifest/archive descriptors, and

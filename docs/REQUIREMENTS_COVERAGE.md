@@ -73,8 +73,12 @@ review digest without mutation. Approved `package-install` covers data-only skil
 and rollback through the existing immutable publisher; changed revisions are disabled and signed
 registry provenance is retained. Exact-plan mismatch, invalid approval/digest ordering,
 extraction-free registry-to-skill conversion, disabled publication, and startup parsing of the
-optional provenance are tested. Registry extension installation and installed-withdrawal handling
-remain open v0.5 work and therefore are not marked covered here.
+optional provenance are tested. Installed-withdrawal handling is now covered: status projects the
+newest accepted snapshot over exact release/staged provenance; explicit withdrawal, removal,
+substitution, or evidence mismatch blocks activation and suppresses instruction authority at
+restart without deleting audit evidence. Snapshot expiry alone does not deactivate an offline
+install. Registry extension installation remains open v0.5 work and therefore is not marked
+covered here.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

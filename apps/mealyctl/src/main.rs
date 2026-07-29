@@ -25,7 +25,8 @@ use mealy_application::{
     McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect, McpToolGrant,
     MessageRole, ModelProvider, NormalizedMessage, OwnershipContext, ProviderConfig,
     ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryContentDescriptor,
-    RegistryDependencyLock, RegistryError, RegistryMetadataStore, RegistryMetadataStoreError,
+    RegistryDependencyLock, RegistryError, RegistryInstalledPackageDisposition,
+    RegistryInstalledPackagePolicy, RegistryMetadataStore, RegistryMetadataStoreError,
     RegistryMirror, RegistryMirrorError, RegistryPackageKind, RegistryPackageManifest,
     RegistryPackageState, RegistryReleaseState, RegistrySnapshotState, RegistryUseCaseError,
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
@@ -33,10 +34,11 @@ use mealy_application::{
     accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
     default_daemon_config_document, diff_extension_permissions, diff_skill_permissions,
     fetch_registry_content, fetch_registry_snapshot_envelope, inspect_active_registry_release,
-    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
-    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    inspect_initial_registry_trust_root, inspect_installed_registry_package_policy,
+    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
+    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, ContextManifestId, PrincipalId, RunId, ScheduleId,
@@ -12220,6 +12222,7 @@ struct SkillPackageResponse {
     manifest_digest: String,
     installed: bool,
     enabled: bool,
+    instruction_authority_active: SkillInstructionAuthorityActive,
     package_path: Option<String>,
     total_asset_bytes: u64,
     instructions: Vec<SkillAsset>,
@@ -12228,10 +12231,16 @@ struct SkillPackageResponse {
     tool_authority: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     registry: Option<InstalledSkillRegistryProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_policy: Option<RegistryInstalledPackagePolicy>,
     configuration_path: Option<String>,
     replaced_configuration_copy: Option<String>,
     restart_required: bool,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+struct SkillInstructionAuthorityActive(bool);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13105,6 +13114,7 @@ fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliErr
                 &package,
                 None,
                 "inspected",
+                None,
                 None,
                 None,
                 false,
@@ -14417,6 +14427,7 @@ fn registry_package_install_response(
             Some(record),
             operation,
             None,
+            None,
             replaced_configuration_copy,
             filesystem_mutation,
         ),
@@ -14623,6 +14634,14 @@ fn set_skill_enabled(
     }
     let package = inspect_installed_skill(&home, &records[index])?;
     if enabled {
+        if records[index].registry.is_some() {
+            let registry_store = open_registry_read_store(&home)?;
+            let policy = installed_skill_registry_policy(Some(&registry_store), &records[index])?
+                .ok_or(CliError::RegistrySkillPolicyUnavailable)?;
+            if policy.disposition != RegistryInstalledPackageDisposition::Authorized {
+                return Err(CliError::RegistrySkillPolicyUnavailable);
+            }
+        }
         validate_enabled_skill_set(&home, &records, skill_id)?;
     }
     records[index].enabled = enabled;
@@ -14677,14 +14696,21 @@ fn validate_enabled_skill_set(
 fn list_skills(home: &Path) -> Result<(), CliError> {
     let home = readable_skill_home(home)?;
     let (current, _current_body, _value, records) = load_skill_configuration(&home)?;
+    let registry_store = records
+        .iter()
+        .any(|record| record.registry.is_some())
+        .then(|| open_registry_read_store(&home))
+        .transpose()?;
     let skills = records
         .iter()
         .map(|record| {
             let package = inspect_installed_skill(&home, record)?;
+            let registry_policy = installed_skill_registry_policy(registry_store.as_ref(), record)?;
             Ok(skill_package_response(
                 &package,
                 Some(record),
                 "status",
+                registry_policy,
                 Some(current.display().to_string()),
                 None,
                 false,
@@ -14702,10 +14728,17 @@ fn skill_status(home: &Path, skill_id: &str) -> Result<(), CliError> {
         .find(|record| record.skill_id == skill_id)
         .ok_or_else(|| CliError::SkillNotFound(skill_id.to_owned()))?;
     let package = inspect_installed_skill(&home, record)?;
+    let registry_store = record
+        .registry
+        .as_ref()
+        .map(|_| open_registry_read_store(&home))
+        .transpose()?;
+    let registry_policy = installed_skill_registry_policy(registry_store.as_ref(), record)?;
     print_json(skill_package_response(
         &package,
         Some(record),
         "status",
+        registry_policy,
         Some(current.display().to_string()),
         None,
         false,
@@ -14807,6 +14840,28 @@ fn inspect_installed_skill(
     Ok(package)
 }
 
+fn installed_skill_registry_policy(
+    store: Option<&SqliteStore>,
+    record: &InstalledSkillConfigRecord,
+) -> Result<Option<RegistryInstalledPackagePolicy>, CliError> {
+    let Some(provenance) = &record.registry else {
+        return Ok(None);
+    };
+    let store = store.ok_or(CliError::RegistrySkillPolicyUnavailable)?;
+    inspect_installed_registry_package_policy(
+        store,
+        &provenance.registry_id,
+        &record.skill_id,
+        RegistryPackageKind::Skill,
+        &record.version,
+        &provenance.release_envelope_digest,
+        &record.manifest_digest,
+        &provenance.archive_digest,
+    )
+    .map(Some)
+    .map_err(Into::into)
+}
+
 fn set_skill_records(
     value: &mut Value,
     records: &[InstalledSkillConfigRecord],
@@ -14842,6 +14897,7 @@ fn publish_skill_configuration(
         package,
         Some(record),
         operation,
+        None,
         Some(current.display().to_string()),
         Some(replaced.display().to_string()),
         true,
@@ -14852,17 +14908,24 @@ fn skill_package_response(
     package: &InspectedSkillPackage,
     record: Option<&InstalledSkillConfigRecord>,
     operation: &str,
+    registry_policy: Option<RegistryInstalledPackagePolicy>,
     configuration_path: Option<String>,
     replaced_configuration_copy: Option<String>,
     restart_required: bool,
 ) -> SkillPackageResponse {
+    let enabled = record.is_some_and(|record| record.enabled);
+    let instruction_authority_active = enabled
+        && registry_policy.as_ref().is_none_or(|policy| {
+            policy.disposition == RegistryInstalledPackageDisposition::Authorized
+        });
     SkillPackageResponse {
         operation: operation.to_owned(),
         skill_id: package.manifest().skill_id.clone(),
         version: package.manifest().version.clone(),
         manifest_digest: package.manifest_digest().to_owned(),
         installed: record.is_some(),
-        enabled: record.is_some_and(|record| record.enabled),
+        enabled,
+        instruction_authority_active: SkillInstructionAuthorityActive(instruction_authority_active),
         package_path: record.map(|record| record.package_path.clone()),
         total_asset_bytes: package.total_asset_bytes(),
         instructions: package.manifest().instructions.clone(),
@@ -14870,6 +14933,7 @@ fn skill_package_response(
         required_tools: package.manifest().required_tools.iter().cloned().collect(),
         tool_authority: "references_only_no_authority_granted",
         registry: record.and_then(|record| record.registry.clone()),
+        registry_policy,
         configuration_path,
         replaced_configuration_copy,
         restart_required,
@@ -20568,6 +20632,11 @@ enum CliError {
         "registry extension installation is not yet available; package-plan remains read-only and grants nothing"
     )]
     RegistryPackageInstallUnsupported,
+    /// Current accepted registry policy no longer authorizes an installed skill revision.
+    #[error(
+        "the installed registry skill is not authorized by current accepted registry policy; inspect `skill status`, keep it disabled, and install an exact reviewed replacement or rollback"
+    )]
+    RegistrySkillPolicyUnavailable,
     /// No durable release evidence exists for the exact requested identity.
     #[error("registry release evidence was not found")]
     RegistryReleaseNotFound,
@@ -23435,6 +23504,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One proof covers publication, provenance, and activation refusal.
     fn registry_skill_apply_publishes_disabled_provenance_bound_package() {
         let home = tempfile::tempdir().expect("temporary registry skill home");
         fs::write(
@@ -23524,6 +23594,23 @@ mod tests {
         assert!(!records[0].enabled);
         super::inspect_installed_skill(home.path(), &records[0])
             .expect("reinspect immutable installed skill");
+        drop(
+            mealy_infrastructure::SqliteStore::open(home.path().join("mealy.sqlite3"), 0)
+                .expect("empty registry store"),
+        );
+        assert!(matches!(
+            super::set_skill_enabled(
+                home.path(),
+                &manifest.skill_id,
+                package.manifest_digest(),
+                true,
+                true,
+            ),
+            Err(super::CliError::RegistrySkillPolicyUnavailable)
+        ));
+        let (_path, _body, _value, records) =
+            super::load_skill_configuration(home.path()).expect("blocked activation state");
+        assert!(!records[0].enabled);
     }
 
     #[test]

@@ -265,8 +265,16 @@ API, so inspection cannot create filesystem paths or race an extraction destinat
 
 No registry command activates an extension or skill, discovers a mirror, or grants a tool or
 requested permission. `package-install` supports data-only skills only and always uses the existing
-disabled-by-default lifecycle for new or changed bytes. Registry extension application,
-installed-withdrawal enforcement, and registry publication tooling remain later v0.5 boundaries.
+disabled-by-default lifecycle for new or changed bytes. `skill status` and `skill list` include
+`registryPolicy` for provenance-bound revisions and distinguish configured `enabled` from actual
+`instructionAuthorityActive`. The projection compares the exact accepted
+release and staged manifest/archive identities with the newest accepted snapshot. Explicit
+withdrawal, target removal, package/version substitution, or missing/mismatched evidence blocks
+`skill enable`; an already configured revision is suppressed from runtime instruction context on
+the next daemon start. Mealy retains immutable installed bytes and registry history so the owner can
+inspect, install a reviewed replacement, or use the same exact-version rollback flow. Snapshot
+expiry still blocks new admission but does not alone deactivate an offline installation. Registry
+extension application and registry publication tooling remain later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

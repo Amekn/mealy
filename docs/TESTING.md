@@ -804,6 +804,13 @@ readable by the normal installed-skill verifier. CLI parser/process tests prove 
 are distinct, approval precedes apply work, and malformed plan digests fail before staged-state
 lookup.
 
+The installed-policy proof projects real schema 26 release/package evidence before and after a
+newer signed withdrawal snapshot. It requires `authorized` before withdrawal and `withdrawn`
+afterward while preserving immutable rows and blob references. Daemon unit coverage proves a
+configured registry skill with unavailable current evidence is omitted from runtime instructions,
+and CLI coverage proves the same policy blocks digest-fenced enablement without changing the
+disabled configuration. Local non-registry skills remain unaffected.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

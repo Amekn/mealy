@@ -128,9 +128,15 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     preserve status. Configuration records exact registry/release/archive provenance, while tool
     requirements remain ungranted references and skill enablement remains a separate digest-fenced
     approval.
-17. Download resumption, registry extension installation, installed-withdrawal enforcement, and
-    package publication tooling remain later slices. Mirror retrieval, durable staging, planning,
-    and skill installation perform no package execution and grant no runtime tool authority.
+17. Installed registry skills are projected against the newest accepted snapshot and the exact
+    accepted release plus staged manifest/archive evidence recorded at installation. An explicit
+    withdrawal, target removal, package/version substitution, or missing/mismatched evidence blocks
+    activation and suppresses configured instruction authority at daemon restart. The response is
+    non-destructive: immutable installed bytes and audit evidence remain for diagnosis, replacement,
+    or rollback. Snapshot expiry stops new admission but does not alone disable an offline install.
+18. Download resumption, registry extension installation, and package publication tooling remain
+    later slices. Mirror retrieval, durable staging, planning, skill installation, and withdrawal
+    projection perform no package execution and grant no runtime tool authority.
 
 ## Consequences
 

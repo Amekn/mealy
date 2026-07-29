@@ -150,6 +150,18 @@ impl SkillConfig {
     pub const fn enabled(&self) -> bool {
         self.enabled
     }
+
+    /// Exact signed-registry provenance for the installed revision, when applicable.
+    #[must_use]
+    pub fn registry_provenance(&self) -> Option<(&str, &str, &str)> {
+        self.registry.as_ref().map(|registry| {
+            (
+                registry.registry_id.as_str(),
+                registry.release_envelope_digest.as_str(),
+                registry.archive_digest.as_str(),
+            )
+        })
+    }
 }
 
 impl CommandToolConfig {

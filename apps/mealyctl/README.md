@@ -236,7 +236,11 @@ through schema 26 and the existing private content-addressed artifact store.
 review digest. Approved `package-install` currently accepts only data-only skills, publishes
 through the existing immutable skill lifecycle, disables changed revisions, and retains signed
 provenance. It never enables instructions or grants required tools. Registry extension install
-remains closed. See
+remains closed. `skill status` and `skill list` project the newest accepted registry policy over
+that exact provenance. A withdrawn, removed, substituted, or evidence-incomplete registry revision
+cannot be enabled and is suppressed on daemon restart without deleting its installed bytes or
+audit history. Snapshot expiry alone blocks new admission but does not disable an offline install.
+See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
 lifecycle and current mirror boundary.
 

@@ -561,7 +561,17 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         );
         tools
     };
-    let skill_context = RuntimeSkillContext::load(&arguments.home, daemon_config.skills())?;
+    let skill_context = RuntimeSkillContext::load(&arguments.home, daemon_config.skills(), &store)?;
+    for suppression in skill_context.registry_suppressions() {
+        tracing::warn!(
+            registry_id = %suppression.registry_id,
+            skill_id = %suppression.package_id,
+            version = %suppression.version,
+            snapshot_version = suppression.snapshot_version,
+            disposition = ?suppression.disposition,
+            "configured registry skill was suppressed by current accepted policy"
+        );
+    }
     if skill_context.enabled_count() != 0 {
         tracing::info!(
             enabled_skill_count = skill_context.enabled_count(),

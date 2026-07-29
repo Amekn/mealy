@@ -781,6 +781,42 @@ pub struct RegistryPackageState {
     pub staged_at_ms: i64,
 }
 
+/// Current registry policy disposition for one exact installed package revision.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryInstalledPackageDisposition {
+    /// The current accepted snapshot still authorizes the exact installed release.
+    Authorized,
+    /// The current accepted snapshot explicitly withdrew the exact installed release.
+    Withdrawn,
+    /// Current accepted metadata no longer contains the installed release identity.
+    Unavailable,
+    /// The package/version identity now denotes different registry evidence.
+    Superseded,
+    /// Durable accepted/staged evidence differs from the installed provenance.
+    EvidenceMismatch,
+}
+
+/// Non-mutating policy projection for one exact installed registry package.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryInstalledPackagePolicy {
+    /// Stable registry identity recorded at installation.
+    pub registry_id: String,
+    /// Stable package identity recorded at installation.
+    pub package_id: String,
+    /// Exact package class.
+    pub kind: RegistryPackageKind,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Current accepted snapshot version, when one remains available.
+    pub snapshot_version: Option<u64>,
+    /// Current authorization disposition.
+    pub disposition: RegistryInstalledPackageDisposition,
+    /// Bounded registry-signed withdrawal detail, only for an explicit withdrawal.
+    pub withdrawal: Option<RegistryWithdrawal>,
+}
+
 /// Atomic canonical commit of one initial or dual-threshold-rotated trust root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryTrustRootCommit {
@@ -1161,6 +1197,122 @@ pub fn inspect_active_registry_release(
         .ok_or(RegistryError::InvalidRelease)?;
     inspect_registry_release(envelope_bytes, &snapshot, target, host_api_version)
         .map_err(Into::into)
+}
+
+/// Projects current accepted registry policy over one exact installed package revision.
+///
+/// This deliberately uses the newest *accepted* snapshot without requiring it to remain within
+/// its discovery expiry window. Snapshot expiry stops new admission, but does not silently disable
+/// an offline installation. A newer accepted withdrawal, target removal, identity substitution, or
+/// loss of the exact accepted/staged evidence suppresses activation while preserving immutable
+/// installed bytes and audit history.
+///
+/// # Errors
+///
+/// Returns [`RegistryUseCaseError`] for malformed installed provenance or corrupt/unavailable
+/// canonical storage. Ordinary withdrawal, removal, substitution, and missing exact evidence are
+/// represented as non-authorized dispositions rather than destructive mutations.
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_installed_registry_package_policy(
+    store: &impl RegistryMetadataStore,
+    registry_id: &str,
+    package_id: &str,
+    kind: RegistryPackageKind,
+    version: &str,
+    release_envelope_digest: &str,
+    manifest_digest: &str,
+    package_digest: &str,
+) -> Result<RegistryInstalledPackagePolicy, RegistryUseCaseError> {
+    if !valid_identifier(registry_id)
+        || !valid_identifier(package_id)
+        || !valid_version(version)
+        || !is_sha256_digest(release_envelope_digest)
+        || !is_sha256_digest(manifest_digest)
+        || !is_sha256_digest(package_digest)
+    {
+        return Err(RegistryError::InvalidRelease.into());
+    }
+    let policy = |snapshot_version, disposition, withdrawal| RegistryInstalledPackagePolicy {
+        registry_id: registry_id.to_owned(),
+        package_id: package_id.to_owned(),
+        kind,
+        version: version.to_owned(),
+        snapshot_version,
+        disposition,
+        withdrawal,
+    };
+    let accepted = store.registry_release(registry_id, package_id, version)?;
+    let staged = store.registry_package(registry_id, package_id, version)?;
+    let (Some((release, release_state)), Some(package_state)) = (accepted, staged) else {
+        return Ok(policy(
+            None,
+            RegistryInstalledPackageDisposition::Unavailable,
+            None,
+        ));
+    };
+    if release.envelope_digest != release_envelope_digest
+        || release.release.kind != kind
+        || release.release.manifest.sha256_digest != manifest_digest
+        || release.release.package.sha256_digest != package_digest
+        || release_state.kind != kind
+        || release_state.envelope_digest != release_envelope_digest
+        || release_state.manifest_digest != manifest_digest
+        || release_state.package_digest != package_digest
+        || package_state.kind != kind
+        || package_state.release_envelope_digest != release_envelope_digest
+        || package_state.manifest_blob.digest != manifest_digest
+        || package_state.package_blob.digest != package_digest
+    {
+        return Ok(policy(
+            None,
+            RegistryInstalledPackageDisposition::EvidenceMismatch,
+            None,
+        ));
+    }
+    let state = store.registry_snapshot_state(registry_id)?;
+    let snapshot = store.registry_snapshot(registry_id)?;
+    let (Some(state), Some(snapshot)) = (state, snapshot) else {
+        return Ok(policy(
+            None,
+            RegistryInstalledPackageDisposition::Unavailable,
+            None,
+        ));
+    };
+    if snapshot.state != state {
+        return Err(RegistryMetadataStoreError::InvariantViolation(
+            "current registry snapshot differs from its durable head".to_owned(),
+        )
+        .into());
+    }
+    let Some(target) = snapshot.snapshot.target(package_id, version) else {
+        return Ok(policy(
+            Some(state.version),
+            RegistryInstalledPackageDisposition::Unavailable,
+            None,
+        ));
+    };
+    if target.kind != kind
+        || target.publisher_id != release_state.publisher_id
+        || target.release_envelope.sha256_digest != release_envelope_digest
+    {
+        return Ok(policy(
+            Some(state.version),
+            RegistryInstalledPackageDisposition::Superseded,
+            None,
+        ));
+    }
+    if let Some(withdrawal) = &target.withdrawal {
+        return Ok(policy(
+            Some(state.version),
+            RegistryInstalledPackageDisposition::Withdrawn,
+            Some(withdrawal.clone()),
+        ));
+    }
+    Ok(policy(
+        Some(state.version),
+        RegistryInstalledPackageDisposition::Authorized,
+        None,
+    ))
 }
 
 /// Verifies and atomically retains one immutable publisher release under the active snapshot.

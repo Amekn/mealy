@@ -295,7 +295,8 @@ pub use registry::{
     REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE, REGISTRY_SKILL_MANIFEST_MEDIA_TYPE,
     REGISTRY_SKILL_PACKAGE_MEDIA_TYPE, REGISTRY_SNAPSHOT_CONTRACT_VERSION,
     REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
-    RegistryContentDescriptor, RegistryDependencyLock, RegistryError, RegistryMetadataStore,
+    RegistryContentDescriptor, RegistryDependencyLock, RegistryError,
+    RegistryInstalledPackageDisposition, RegistryInstalledPackagePolicy, RegistryMetadataStore,
     RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError, RegistryMirrorRequest,
     RegistryMirrorResponse, RegistryMirrorTransport, RegistryMirrorTransportError,
     RegistryPackageKind, RegistryPackageManifest, RegistryPackageState, RegistryPublicKey,
@@ -307,8 +308,9 @@ pub use registry::{
     active_registry_snapshot, bootstrap_registry_trust_root, diff_extension_permissions,
     diff_skill_permissions, fetch_registry_content, fetch_registry_snapshot_envelope,
     inspect_active_registry_release, inspect_initial_registry_trust_root,
-    inspect_registry_package_manifest, inspect_registry_release, inspect_registry_root_rotation,
-    inspect_registry_snapshot, rotate_registry_trust_root,
+    inspect_installed_registry_package_policy, inspect_registry_package_manifest,
+    inspect_registry_release, inspect_registry_root_rotation, inspect_registry_snapshot,
+    rotate_registry_trust_root,
 };
 pub use schedule::{
     ClaimScheduleRunCommit, CompleteScheduleRunCommit, CreateScheduleCommit,

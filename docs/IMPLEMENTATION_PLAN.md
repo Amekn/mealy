@@ -331,8 +331,13 @@ publisher. New or changed revisions are disabled, prior immutable bytes remain a
 same rollback flow, identical-byte evidence adoption may preserve status, and registry provenance
 is retained without granting required tools. Activation remains a separate approval.
 
-The next slices must add registry extension installation, installed-withdrawal policy, public
-registry publication tooling, and package/upgrade/recovery qualification.
+Installed registry skills now carry a non-destructive runtime policy projection. Exact accepted
+release and staged manifest/archive evidence must still match the installed provenance and newest
+accepted snapshot. Withdrawal, removal, identity substitution, or evidence loss blocks activation
+and suppresses configured instruction authority at restart while retaining immutable bytes and
+history. Snapshot expiry alone does not disable an offline install. The next slices must add
+registry extension installation, public registry publication tooling, and
+package/upgrade/recovery qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

@@ -1316,6 +1316,17 @@ updated, or rollback bytes disabled. Run the same separate `skill enable` comman
 after reviewing the installed manifest digest. Registry extension packages can currently be
 planned but not installed.
 
+After accepting a newer registry snapshot, inspect `skill status owner.release-review` before
+activation. Its `registryPolicy.disposition` is `authorized` only when the newest accepted
+snapshot still names the exact signed release and the retained staged manifest/archive evidence
+still matches; `instructionAuthorityActive` reports the effective runtime state separately from
+the retained configured `enabled` intent. `withdrawn`, `unavailable`, `superseded`, or
+`evidence_mismatch` blocks enablement
+and suppresses an already configured revision from instruction context at the next daemon start.
+Mealy does not delete the package or audit evidence; install a reviewed replacement or select an
+exact staged prior version through `package-plan` and `package-install`. Snapshot expiry alone does
+not disable an offline installed revision.
+
 Inspection rejects symlinks, traversal, undeclared files, missing assets, changed size/digest,
 non-UTF-8 or control-bearing instructions, oversized inventories, and executable helper fields.
 Installation copies the already-inspected bytes into an owner-private immutable digest directory

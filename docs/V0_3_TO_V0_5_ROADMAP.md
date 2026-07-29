@@ -305,8 +305,11 @@ store. Offline `package-plan` now compares exact staged skills and extensions wi
 installed state and binds the complete content/permission diff into one review digest. Approved
 `package-install` applies that digest only to data-only skills through the existing immutable
 disabled-by-default lifecycle; it supports install, update, and same-flow rollback without
-granting required tools. Registry extension installation, installed-withdrawal enforcement, and
-activation remain later slices.
+granting required tools. Exact installed provenance is now projected against the newest accepted
+snapshot and staged evidence: withdrawal, removal, substitution, or evidence loss blocks
+activation and suppresses configured instructions at restart without deleting bytes or history.
+Snapshot expiry alone does not disable an offline install. Registry extension installation and
+registry skill activation remain separate slices.
 
 ### Memory and automation
 

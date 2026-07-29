@@ -1034,11 +1034,12 @@ mod tests {
         REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE,
         REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
         REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
-        RegistryContentDescriptor, RegistryMetadataStore, RegistryPackageKind, RegistryPublicKey,
-        RegistryPublisher, RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm,
-        RegistrySignedEnvelope, RegistrySnapshot, RegistryTarget, RegistryTrustRoot,
-        RegistryUseCaseError, RegistryWithdrawal, accept_registry_release,
-        accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
+        RegistryContentDescriptor, RegistryInstalledPackageDisposition, RegistryMetadataStore,
+        RegistryPackageKind, RegistryPublicKey, RegistryPublisher, RegistryRelease,
+        RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope, RegistrySnapshot,
+        RegistryTarget, RegistryTrustRoot, RegistryUseCaseError, RegistryWithdrawal,
+        accept_registry_release, accept_registry_snapshot, active_registry_snapshot,
+        bootstrap_registry_trust_root, inspect_installed_registry_package_policy,
         rotate_registry_trust_root, sha256_digest,
     };
     use mealy_domain::{SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset, SkillManifest};
@@ -1393,6 +1394,23 @@ mod tests {
                 .len(),
             2
         );
+        let authorized = inspect_installed_registry_package_policy(
+            &store,
+            &root.registry_id,
+            &release.package_id,
+            RegistryPackageKind::Skill,
+            &release.version,
+            &accepted.envelope_digest,
+            &release.manifest.sha256_digest,
+            &release.package.sha256_digest,
+        )
+        .expect("installed release policy");
+        assert_eq!(
+            authorized.disposition,
+            RegistryInstalledPackageDisposition::Authorized
+        );
+        assert_eq!(authorized.snapshot_version, Some(1));
+        assert!(authorized.withdrawal.is_none());
         assert!(
             store
                 .connection
@@ -1457,12 +1475,95 @@ mod tests {
             package_bytes
         );
 
+        let evidence_mismatch = inspect_installed_registry_package_policy(
+            &reopened,
+            &root.registry_id,
+            &release.package_id,
+            RegistryPackageKind::Skill,
+            &release.version,
+            &accepted.envelope_digest,
+            &release.manifest.sha256_digest,
+            &"f".repeat(64),
+        )
+        .expect("mismatched installed evidence policy");
+        assert_eq!(
+            evidence_mismatch.disposition,
+            RegistryInstalledPackageDisposition::EvidenceMismatch
+        );
+
+        let missing_snapshot = self::snapshot(2, &publisher_key);
+        let missing_envelope = signed_envelope(
+            REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+            SNAPSHOT_CONTEXT,
+            &missing_snapshot,
+            &[&root_key],
+        );
+        accept_registry_snapshot(
+            &mut reopened,
+            &root.registry_id,
+            &missing_envelope,
+            NOW_MS + 4,
+        )
+        .expect("snapshot may explicitly omit an old target");
+        let unavailable = inspect_installed_registry_package_policy(
+            &reopened,
+            &root.registry_id,
+            &release.package_id,
+            RegistryPackageKind::Skill,
+            &release.version,
+            &accepted.envelope_digest,
+            &release.manifest.sha256_digest,
+            &release.package.sha256_digest,
+        )
+        .expect("unavailable installed release policy");
+        assert_eq!(
+            unavailable.disposition,
+            RegistryInstalledPackageDisposition::Unavailable
+        );
+        assert_eq!(unavailable.snapshot_version, Some(2));
+
+        let mut substituted_target = target.clone();
+        substituted_target.release_envelope = descriptor(
+            REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+            b"substituted release envelope",
+        );
+        let substituted_snapshot = snapshot_with_target(3, &publisher_key, substituted_target);
+        let substituted_envelope = signed_envelope(
+            REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+            SNAPSHOT_CONTEXT,
+            &substituted_snapshot,
+            &[&root_key],
+        );
+        accept_registry_snapshot(
+            &mut reopened,
+            &root.registry_id,
+            &substituted_envelope,
+            NOW_MS + 5,
+        )
+        .expect("substituted snapshot remains auditable");
+        let superseded = inspect_installed_registry_package_policy(
+            &reopened,
+            &root.registry_id,
+            &release.package_id,
+            RegistryPackageKind::Skill,
+            &release.version,
+            &accepted.envelope_digest,
+            &release.manifest.sha256_digest,
+            &release.package.sha256_digest,
+        )
+        .expect("superseded installed release policy");
+        assert_eq!(
+            superseded.disposition,
+            RegistryInstalledPackageDisposition::Superseded
+        );
+        assert_eq!(superseded.snapshot_version, Some(3));
+
         let mut withdrawn_target = target;
         withdrawn_target.withdrawal = Some(RegistryWithdrawal {
             withdrawn_at_ms: NOW_MS,
             reason: "publisher key compromise".to_owned(),
         });
-        let withdrawn_snapshot = snapshot_with_target(2, &publisher_key, withdrawn_target);
+        let withdrawn_snapshot = snapshot_with_target(4, &publisher_key, withdrawn_target);
         let withdrawn_envelope = signed_envelope(
             REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
             SNAPSHOT_CONTEXT,
@@ -1473,9 +1574,32 @@ mod tests {
             &mut reopened,
             &root.registry_id,
             &withdrawn_envelope,
-            NOW_MS + 4,
+            NOW_MS + 6,
         )
         .expect("withdrawn snapshot remains auditable");
+        let withdrawn = inspect_installed_registry_package_policy(
+            &reopened,
+            &root.registry_id,
+            &release.package_id,
+            RegistryPackageKind::Skill,
+            &release.version,
+            &accepted.envelope_digest,
+            &release.manifest.sha256_digest,
+            &release.package.sha256_digest,
+        )
+        .expect("withdrawn installed release policy");
+        assert_eq!(
+            withdrawn.disposition,
+            RegistryInstalledPackageDisposition::Withdrawn
+        );
+        assert_eq!(withdrawn.snapshot_version, Some(4));
+        assert_eq!(
+            withdrawn
+                .withdrawal
+                .as_ref()
+                .map(|withdrawal| withdrawal.reason.as_str()),
+            Some("publisher key compromise")
+        );
         assert!(matches!(
             accept_registry_release(
                 &mut reopened,
@@ -1484,7 +1608,7 @@ mod tests {
                 &release.version,
                 &release_envelope,
                 1,
-                NOW_MS + 5,
+                NOW_MS + 7,
             ),
             Err(RegistryUseCaseError::Verification(
                 mealy_application::RegistryError::Withdrawn
@@ -1500,7 +1624,7 @@ mod tests {
                     .expect("withdrawn snapshot state")
                     .expect("withdrawn snapshot"),
                 1,
-                NOW_MS + 6,
+                NOW_MS + 8,
             ),
             Err(mealy_application::RegistryMetadataStoreError::InvariantViolation(_))
         ));
