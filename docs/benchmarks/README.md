@@ -104,12 +104,6 @@ before signing or publication. Protected CI now runs Lintian and the builder ind
 those lines. The immutable tag is retained; the canonical v0.2.1 report above qualifies its own
 exact versioned binaries. Its protected report promotion, owner-reviewed free-provider gate,
 attested publication, and protected public repository acceptance subsequently passed.
-The failed
-[`v0.3.0` timeline-read attempt](2026-07-29-v0.3-timeline-read-scaling-failure.md)
-is retained separately as negative runtime evidence. Its intact 1.18 GiB database exposed
-complete-history materialization under concurrent near-current reads after 16 hours 11 minutes.
-The corrected cursor-first implementation has response-parity, bounded-work, and retained-history
-burst evidence, but this failed attempt contributes no elapsed time to a release gate.
 The [superseded schema-14 long-soak failure](2026-07-13-schema14-long-soak-failure.md) is retained
 as negative evidence: it cannot satisfy a durability gate and motivated failure-report retention.
 That retained path reproduced a current one-second read-tool timeout under contention. After both
@@ -183,3 +177,12 @@ runtime's gate. The preserved v0.2.0
 for the integrated onboarding candidate before its pre-publication Debian metadata failure. The
 current v0.2.1 [release soak](release-soak.json) independently repeats that proof for the
 version-distinct correction.
+
+The first v0.3.0 candidate
+[`timeline-read scaling failure`](2026-07-29-v0.3-timeline-read-scaling-failure.md) is retained as
+new negative evidence. Its exact binary failed after 16 hours 11 minutes when concurrent
+near-current timeline reads materialized complete historical membership sets. The intact 1.18 GiB
+database reproduced 7–14.5-second requests and persistent memory growth. Cursor-first indexed
+lineage checks reduced the same retained-state burst to a 50-millisecond maximum with all 256
+requests successful. That focused result does not waive protected CI, package rebuild, or a fresh
+24-hour exact-binary soak for the corrected v0.3.0 subject.
