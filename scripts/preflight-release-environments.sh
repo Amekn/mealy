@@ -155,10 +155,10 @@ fi
 capture live_secrets gh secret list --repo "$repository" \
   --env live-provider-smoke --json name
 if ! jq -e '
-  [.[] | select(.name == "OPENROUTER_API_KEY")]
-  | length == 1
+  ([.[] | select(.name == "OPENROUTER_API_KEY")] | length == 1)
+  and ([.[] | select(.name == "LOCAL_API_KEY")] | length == 1)
 ' "$temporary/live_secrets.json" >/dev/null; then
-  echo "free-model OpenRouter Environment secret is not configured" >&2
+  echo "free-model OpenRouter or private-endpoint Environment secret is not configured" >&2
   exit 65
 fi
 

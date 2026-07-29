@@ -170,9 +170,8 @@ Cargo Auditable `0.7.5`, Cargo About `0.9.1`, Cargo Deny `0.20.2`, and zizmor `1
 remain the current reviewed releases. Syft advanced to `v1.50.0`; its upstream release notes
 identify a high-severity gRPC dependency vulnerability remediated by that release, so the release
 workflow now requests `v1.50.0` from the already commit-pinned SBOM Action. This workflow and
-documentation-only refresh does not change a previously soaked Rust binary source boundary.
-Protected CI and the tag workflow still validate the updated workflow and generated SBOM before
-publication.
+documentation-only refresh does not change the observed Rust binary source boundary. Protected CI
+and the tag workflow still validate the updated workflow and generated SBOM before publication.
 
 The native tag jobs run
 `scripts/validate-public-license.sh` and refuse publication if restrictive terms,
