@@ -568,7 +568,9 @@ async fn elapsed_pre_dispatch_deadline_retries_without_phantom_usage() {
 
     let _replacement_daemon = Daemon::spawn_with_delays(home.path(), 0, 0);
     let replacement_connection = wait_until_ready(&client, home.path()).await;
-    assert_successful_undispatched_retry(&client, &replacement_connection, &ids).await;
+    let model_attempts =
+        assert_successful_undispatched_retry(&client, &replacement_connection, home.path(), &ids)
+            .await;
 
     let database = open_database(home.path());
     let (state, dispatched_at_ms, deadline_at_ms, completed_at_ms, error_class, reservation): (
@@ -604,7 +606,13 @@ async fn elapsed_pre_dispatch_deadline_retries_without_phantom_usage() {
     assert_eq!(error_class, "provider_dispatch_deadline_elapsed");
     assert_eq!(reservation, "released");
 
-    assert_complete_undispatched_retry_replay(&client, &replacement_connection, &ids).await;
+    assert_complete_undispatched_retry_replay(
+        &client,
+        &replacement_connection,
+        &ids,
+        model_attempts,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -662,7 +670,9 @@ async fn insufficient_pre_dispatch_execution_window_retries_without_phantom_usag
 
     let _replacement_daemon = Daemon::spawn_with_delays(home.path(), 0, 0);
     let replacement_connection = wait_until_ready(&client, home.path()).await;
-    assert_successful_undispatched_retry(&client, &replacement_connection, &ids).await;
+    let model_attempts =
+        assert_successful_undispatched_retry(&client, &replacement_connection, home.path(), &ids)
+            .await;
 
     let database = open_database(home.path());
     let (state, dispatched_at_ms, deadline_at_ms, completed_at_ms, error_class, reservation): (
@@ -699,29 +709,62 @@ async fn insufficient_pre_dispatch_execution_window_retries_without_phantom_usag
     assert_eq!(error_class, "provider_dispatch_window_exhausted");
     assert_eq!(reservation, "released");
 
-    assert_complete_undispatched_retry_replay(&client, &replacement_connection, &ids).await;
+    assert_complete_undispatched_retry_replay(
+        &client,
+        &replacement_connection,
+        &ids,
+        model_attempts,
+    )
+    .await;
 }
 
 async fn assert_successful_undispatched_retry(
     client: &Client,
     connection: &LocalConnectionInfo,
+    home: &Path,
     ids: &WorkIds,
-) {
+) -> u64 {
     let task = wait_until_succeeded(client, connection, &ids.task_id).await;
     assert_eq!(task.status, TaskStatus::Succeeded);
-    assert_eq!(task.model_attempts, 3);
+    assert!(
+        (3..=4).contains(&task.model_attempts),
+        "one already-retired attempt and at most one preparation racing the hard kill may precede the two successful provider calls: {task:?}"
+    );
     assert_eq!(task.tool_calls, 1);
     assert_eq!(task.usage.used_model_calls, 2);
     assert_eq!(task.usage.used_retries, 0);
     assert_eq!(task.usage.used_tool_calls, 1);
     assert_eq!(task.usage.reserved_model_calls, 0);
     assert_eq!(task.usage.reserved_tool_calls, 0);
+
+    let (attempts, dispatched, unsafe_undispatched_reservations): (i64, i64, i64) =
+        open_database(home)
+            .query_row(
+                "SELECT COUNT(*), \
+                        SUM(CASE WHEN ma.dispatched_at_ms IS NOT NULL THEN 1 ELSE 0 END), \
+                        SUM(CASE WHEN ma.dispatched_at_ms IS NULL AND br.state != 'released' \
+                                 THEN 1 ELSE 0 END) \
+                 FROM model_attempt ma \
+                 JOIN budget_reservation br ON br.attempt_id = ma.attempt_id \
+                 WHERE ma.run_id = ?1",
+                [ids.run_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("all retried attempt reservations should remain queryable");
+    assert_eq!(
+        attempts,
+        i64::try_from(task.model_attempts).expect("bounded attempt count should fit i64")
+    );
+    assert_eq!(dispatched, 2);
+    assert_eq!(unsafe_undispatched_reservations, 0);
+    task.model_attempts
 }
 
 async fn assert_complete_undispatched_retry_replay(
     client: &Client,
     connection: &LocalConnectionInfo,
     ids: &WorkIds,
+    expected_model_attempts: u64,
 ) {
     let replay: TaskReplayResponse = authorized_get(
         client,
@@ -730,7 +773,7 @@ async fn assert_complete_undispatched_retry_replay(
     )
     .await;
     assert!(replay.evidence_complete);
-    assert_eq!(replay.model_attempts, 3);
+    assert_eq!(replay.model_attempts, expected_model_attempts);
     assert_eq!(replay.tool_calls, 1);
     assert_eq!(replay.live_provider_calls, 0);
     assert_eq!(replay.live_tool_calls, 0);
