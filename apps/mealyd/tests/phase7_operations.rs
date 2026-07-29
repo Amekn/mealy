@@ -709,7 +709,14 @@ async fn automation_api_drives_one_shot_and_future_event_actions_without_replay(
         },
     )
     .await;
-    wait_for_automation_run_count(&client, &connection, &event_rule.automation_id, 2).await;
+    wait_for_automation_runs(
+        &client,
+        &connection,
+        &event_rule.automation_id,
+        2,
+        AutomationRunStatusResponse::Notified,
+    )
+    .await;
 
     let advanced: AutomationResponse = authorized_get(
         &client,
@@ -977,11 +984,12 @@ async fn wait_for_automation_run(
     }
 }
 
-async fn wait_for_automation_run_count(
+async fn wait_for_automation_runs(
     client: &Client,
     connection: &LocalConnectionInfo,
     automation_id: &str,
-    expected: usize,
+    expected_count: usize,
+    expected_status: AutomationRunStatusResponse,
 ) {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
@@ -991,12 +999,14 @@ async fn wait_for_automation_run_count(
             &format!("/v1/automations/{automation_id}/runs?limit=10"),
         )
         .await;
-        if runs.runs.len() == expected {
+        if runs.runs.len() == expected_count
+            && runs.runs.iter().all(|run| run.status == expected_status)
+        {
             return;
         }
         assert!(
             Instant::now() < deadline,
-            "automation did not reach {expected} run(s)"
+            "automation did not reach {expected_count} {expected_status:?} run(s)"
         );
         sleep(Duration::from_millis(25)).await;
     }
