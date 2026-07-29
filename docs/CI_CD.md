@@ -199,6 +199,9 @@ count and SHA-256 before installation. It subsequently audits, service-tests, pa
 attests, publishes, and clean-host tests that exact daemon. A
 hosted-runner rebuild is still required as a source/audit check, but it cannot replace the observed
 binary because native link environments are not assumed byte-reproducible across distributions.
+The fetcher rejects an ordinary stable release tag or a `soak-subject-*` tag whose encoded commit
+does not exactly equal the report revision, even when the remote tag happens to resolve to that
+commit.
 
 ### Stage the exact soak subject
 

@@ -25,7 +25,8 @@ for command in chmod dirname gh jq mktemp mv rm sed sha256sum stat; do
 done
 
 if [[ -L $manifest || ! -f $manifest || -L $report || ! -f $report \
-  || $repository != */* || $repository == */*/* || -z ${GH_TOKEN-} ]]; then
+  || ! $repository =~ ^[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}$ \
+  || -z ${GH_TOKEN-} ]]; then
   usage
   exit 64
 fi
@@ -46,8 +47,7 @@ if ! jq -e --arg repository "$repository" '
   and .repository == $repository
   and (.releaseId | type == "number" and floor == . and . > 0)
   and (.releaseTag | type == "string"
-    and (test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")
-      or test("^soak-subject-[0-9a-f]{40}$"))
+    and test("^soak-subject-[0-9a-f]{40}$")
     and length <= 64)
   and (.assetName | type == "string"
     and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$"))
@@ -55,6 +55,7 @@ if ! jq -e --arg repository "$repository" '
   and (.assetBytes | type == "number" and floor == . and . >= 1048576
     and . <= 1073741824)
   and (.revision | type == "string" and test("^[0-9a-f]{40}$"))
+  and .releaseTag == ("soak-subject-" + .revision)
   and (.target | type == "object"
     and (keys | sort) == ["architecture", "os"]
     and .os == "linux"
