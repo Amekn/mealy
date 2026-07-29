@@ -464,9 +464,14 @@ generated owner-service unit, complete and recorded-replay a real daemon task, d
 package, and prove the temporary user database remains.
 The checked `packaging/release-upgrade-baseline.json` separately identifies every prior public
 tag/version/schema required for this candidate. The validator accepts the historical single-entry
-format and normalizes it to the bounded ordered v2 baseline set; v0.5 explicitly names both v0.4
-and v0.3. Each tag runner downloads and cryptographically verifies every declared release's native
-package and checksum manifest before replacing it with the just-built candidate.
+format and normalizes it to the bounded v2 baseline set. It requires older semantic versions and
+schemas in newest-first order; v0.5 explicitly names both v0.4 and v0.3. Each tag runner downloads
+and cryptographically verifies every declared release's native
+package and checksum manifest before replacing it with the just-built candidate. Both the
+pre-publication and public-distribution lanes use
+`scripts/fetch-release-upgrade-baselines.sh`, whose checked fake-release test covers exact
+multi-lineage inventories, target-specific package names, GitHub asset verification, checksum
+rejection, release-identity rejection, and the unsupported Arch-on-ARM boundary.
 `scripts/installed-native-upgrade-smoke.sh` requires each predecessor's durable task, replay, and
 owner identity to survive the schema transition, verifies the automatic migration snapshot,
 creates new-version title/checkpoint records, and proves native removal preserves the migrated

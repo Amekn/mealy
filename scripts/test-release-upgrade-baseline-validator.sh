@@ -68,12 +68,27 @@ jq -e '
   ]
 ' <<<"$normalized" >/dev/null
 
-for mutation in empty duplicate reversed extra-baseline-field future-schema too-many; do
+for mutation in empty duplicate reversed version-order future-version \
+  extra-baseline-field future-schema too-many; do
   invalid="$temporary/v2-$mutation.json"
   case $mutation in
     empty) jq '.baselines = []' "$valid_v2" >"$invalid" ;;
     duplicate) jq '.baselines[1] = .baselines[0]' "$valid_v2" >"$invalid" ;;
     reversed) jq '.baselines |= reverse' "$valid_v2" >"$invalid" ;;
+    version-order)
+      jq '
+        .baselines[0].tag = "v0.3.0"
+        | .baselines[0].version = "0.3.0"
+        | .baselines[1].tag = "v0.4.0"
+        | .baselines[1].version = "0.4.0"
+      ' "$valid_v2" >"$invalid"
+      ;;
+    future-version)
+      jq '
+        .baselines[0].tag = "v0.6.0"
+        | .baselines[0].version = "0.6.0"
+      ' "$valid_v2" >"$invalid"
+      ;;
     extra-baseline-field) jq '.baselines[0].unexpected = true' "$valid_v2" >"$invalid" ;;
     future-schema)
       jq '.baselines[0].stateSchemaVersion = 30' "$valid_v2" >"$invalid"

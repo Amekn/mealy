@@ -22,6 +22,8 @@ fi
 jq -e -c \
   --arg release_version "$release_version" \
   --argjson release_schema "$release_schema" '
+    def semver_parts:
+      split(".") | map(tonumber);
     if type != "object" then
       error("manifest type")
     elif .schemaVersion == "mealy.release-upgrade-baseline.v1" then
@@ -71,6 +73,8 @@ jq -e -c \
             | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
           and .tag == ("v" + .version)
           and .version != $normalized.releaseVersion
+          and (.version | semver_parts)
+            < ($normalized.releaseVersion | semver_parts)
           and (.stateSchemaVersion
             | type == "number" and floor == . and . >= 1 and . <= 9999)
           and .stateSchemaVersion < $normalized.releaseStateSchemaVersion)
@@ -79,6 +83,9 @@ jq -e -c \
         and all(range(1; ($normalized.baselines | length));
           $normalized.baselines[. - 1].stateSchemaVersion
             > $normalized.baselines[.].stateSchemaVersion)
+        and all(range(1; ($normalized.baselines | length));
+          ($normalized.baselines[. - 1].version | semver_parts)
+            > ($normalized.baselines[.].version | semver_parts))
       then $normalized
       else error("candidate mismatch")
       end
