@@ -585,15 +585,15 @@ fn registry_cli_refuses_unprotected_existing_schema_migration() {
             .expect("schema version"),
         23
     );
-    assert!(
+    assert_eq!(
         connection
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'registry_trust_root'",
                 [],
                 |row| row.get::<_, i64>(0)
             )
-            .expect("registry table count")
-            == 0
+            .expect("registry table count"),
+        0
     );
 }
 
