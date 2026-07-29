@@ -33,8 +33,10 @@ Restart the service after changing the setting. Image turns require an exact ima
 The CLI accepts one to four no-follow PNG/JPEG/WebP files outside the Mealy home, bounded to 2 MiB
 each and 4 MiB total. Preserve the generated delivery/artifact IDs until receipt so an ambiguous
 admission can be retried exactly. The daemon normalizes in a fresh no-network worker, stores only
-canonical owner-private artifacts, and exports path-free metadata. Chat/TUI/dashboard/channel
-image upload/rendering remains unavailable. See the
+canonical owner-private artifacts, and exports path-free metadata. The TUI `F9` path picker and
+dashboard browser file picker project this same admission boundary; the dashboard also
+digest-verifies canonical PNG/JPEG artifacts before in-memory preview. Line chat and external
+channel image upload remain unavailable. See the
 [CLI reference](CLI.md) for the complete retry contract.
 
 The separate `media image-generation` transaction enables or disables one exact OpenAI Images or

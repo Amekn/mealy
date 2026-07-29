@@ -209,10 +209,15 @@ effect/artifact/usage settlement; recorded replay verifies the graph and blob wi
 Schema 22 and real-process happy/denied/crash/reconcile/corruption tests cover the boundary.
 [ADR 0018](decisions/0018-governed-image-generation-effect.md) records the contract.
 
-TUI/dashboard/chat/channel image upload and safe rendering, fork-lineage image projection,
-reference/edit workflows, and audio/video remain
-incomplete. [ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines the input
-and rendering boundaries.
+The full-screen TUI now admits up to four no-follow local images through `F9` only after an exact
+route is selected, and renders path-free canonical image/artifact evidence in the transcript. The
+dashboard uses browser-selected bytes with retry-stable UUIDv7 identities, the same admission
+ceilings, and an owner-scoped PNG/JPEG viewer that rechecks immutable metadata, length, media type,
+and SHA-256 before an in-memory preview or download. Public-process tests cover both adapters.
+Line-chat/channel image upload, terminal pixel protocols, fork-lineage image projection,
+reference/edit workflows, and audio/video remain incomplete.
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines the input and rendering
+boundaries.
 
 ### Channels and browser
 

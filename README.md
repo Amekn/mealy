@@ -152,8 +152,10 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > every prompt requires exact local approval and an immutable cost/output reservation, output is
 > isolated-normalized to a private canonical JPEG artifact, and interrupted dispatch is never
 > retried. Guided stopped-home configuration imports or reuses a brokered key without performing a
-> potentially billable generation probe. TUI/dashboard/channel image rendering and edit/reference
-> workflows remain outside this backend slice. Explicit
+> potentially billable generation probe. The full-screen TUI attaches no-follow local images and
+> renders path-free evidence; the temporary dashboard admits browser-selected images and
+> digest-verifies canonical PNG/JPEG artifacts before in-memory preview. Line-chat/channel image
+> UX and edit/reference workflows remain outside this slice. Explicit
 > Linux x86_64 profiles can additionally enable a content-pinned Chrome Headless Shell
 > `browser.snapshot` tool: each call uses a fresh agent-only profile and private network namespace,
 > renders bounded accessibility evidence, can either follow one exact accessible GET link or

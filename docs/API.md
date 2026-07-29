@@ -224,8 +224,10 @@ conflicts.
 The daemon admits this request only when `imageInputEnabled` was explicitly activated while
 stopped, every configured route uses direct OpenAI Responses or Anthropic Messages, and the exact
 selected route advertises image input. Normalization happens in a fresh no-network Bubblewrap
-worker before durable admission. TUI, dashboard, and channel image upload/rendering are not part of
-this first surface.
+worker before durable admission. The TUI and dashboard are bounded adapters over this exact
+endpoint: neither creates alternate media state, and dashboard preview revalidates the canonical
+artifact metadata/content endpoints before rendering. Line chat and channel upload are not part of
+this surface.
 
 ### Schedules and governed memory
 

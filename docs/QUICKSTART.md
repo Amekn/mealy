@@ -1058,9 +1058,10 @@ if reordering would violate the fallback trust-boundary invariant.
 
 ### Optional v0.4 scriptable image input
 
-This first image slice is not available in chat, TUI, dashboard, or channels. It is an explicit
-API/CLI capability for direct OpenAI Responses or Anthropic Messages routes. Stop the service,
-enable the capability against the reviewed route chain, then start the service again:
+The v0.4 image slice is available through the API, scriptable CLI, full-screen TUI, and temporary
+owner-local dashboard for direct OpenAI Responses or Anthropic Messages routes. It is not enabled
+in line chat or external channels. Stop the service, enable the capability against the reviewed
+route chain, then start the service again:
 
 ```sh
 systemctl --user stop mealy.service
@@ -1080,6 +1081,13 @@ requires an exact route rather than automatic fallback. The CLI accepts one to f
 regular PNG/JPEG/WebP files outside the Mealy home, up to 2 MiB each and 4 MiB total. The daemon
 normalizes them in a fresh no-network worker, strips metadata, stores canonical owner-private
 artifacts, and returns their IDs.
+
+For interactive use, open `mealyctl tui`, press `F8` to choose an exact vision-capable route, press
+`F9` once per local image path, type an optional prompt, and press Enter. The TUI validates the
+same no-follow file boundary and shows path-free canonical image evidence in completed turns. In
+the dashboard, choose the exact model for the conversation or turn, use the Images file picker,
+and send. Browser selection exposes bytes and a display-only filename to the page, never a host
+path to Mealy or the model; the same 2 MiB-each, four-image, 4 MiB-total limits apply.
 
 The CLI prints its generated delivery key and artifact UUIDv7 values before dispatch. Retain those
 lines until the admission receipt arrives; after an ambiguous failure, pass the same
@@ -1131,9 +1139,13 @@ successful tool observation contains the private artifact identity; use the auth
 dispatch is never retried automatically. It parks `outcome_unknown`, conservatively charges the
 approved maximum in local accounting, and must be reconciled from external provider evidence.
 
-This backend slice accepts one canonical JPEG only. It does not yet add dashboard/TUI/channel
-previews, edits, masks, reference images, multiple outputs, streaming, or fallback. Disable it
-while stopped with:
+This generation backend accepts one canonical JPEG only. The dashboard Image artifacts panel can
+verify and preview the UUID returned in successful effect evidence; loading the exact effect and
+attempt pre-fills it when present. It retrieves through the temporary capability, requires
+PNG/JPEG metadata, and independently checks byte length and SHA-256 before creating an in-memory
+preview. The TUI shows canonical artifact metadata but deliberately does not emit terminal-specific
+pixel protocols. Channel previews, edits, masks, reference images, multiple outputs, streaming,
+and fallback remain unavailable. Disable generation while stopped with:
 
 ```sh
 "$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
