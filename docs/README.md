@@ -39,8 +39,11 @@ Start with these documents in order:
 26. [`research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md`](research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md)
     — direct evidence for each competitor-grade onboarding outcome and its remaining external
     release gates.
-27. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
-28. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
+27. [`research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md`](research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md)
+    — requirement-by-requirement implementation evidence, scoped exclusions, sequential
+    normalization proof, and remaining public-release gates.
+28. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
+29. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
 
 Requirements are authoritative for product intent. Accepted ADRs are authoritative for cross-cutting implementation decisions. Architecture describes the current synthesis and must be updated when an ADR supersedes it.
 
