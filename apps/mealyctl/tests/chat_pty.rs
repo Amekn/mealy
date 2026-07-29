@@ -51,6 +51,7 @@ struct AdmissionState {
     submitted_content: Arc<Mutex<Option<String>>>,
     submitted_provider_selections: Arc<Mutex<Vec<Option<ProviderSelectionCommand>>>>,
     session_provider_selection: Arc<Mutex<Option<ProviderSelectionCommand>>>,
+    provider_selection_reads: Arc<AtomicUsize>,
     latest_session_available: Arc<AtomicBool>,
     created_sessions: Arc<AtomicUsize>,
     picker_sessions: Arc<Mutex<Vec<SessionSummaryResponse>>>,
@@ -302,35 +303,9 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
         1,
         Duration::from_secs(5),
     );
-    let exact_selection = ProviderSelectionCommand::Exact {
-        provider_id: "fixture".to_owned(),
-        model_id: "fixture".to_owned(),
-    };
-    terminal
-        .write_all(b"\x1b[19~\x1b[B\r")
-        .and_then(|()| terminal.flush())
-        .expect("select exact conversation provider through F8");
-    let selection_deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let selected = state
-            .session_provider_selection
-            .lock()
-            .expect("session provider selection lock")
-            .clone();
-        if selected.as_ref() == Some(&exact_selection) {
-            break;
-        }
-        assert!(
-            Instant::now() < selection_deadline,
-            "workbench did not commit F8 conversation provider selection: {}",
-            String::from_utf8_lossy(&rendered)
-        );
-        sleep(Duration::from_millis(10)).await;
-    }
-    terminal
-        .write_all(b"\x1b[19~t")
-        .and_then(|()| terminal.flush())
-        .expect("select exact next-turn provider through F8");
+    let exact_selection =
+        select_tui_exact_provider_for_session_and_next_turn(&state, &mut terminal, &mut rendered)
+            .await;
     terminal
         .write_all(b"hold this request\r")
         .and_then(|()| terminal.flush())
@@ -375,6 +350,64 @@ async fn tui_ctrl_c_cancels_a_stalled_admission_and_restores_immediately() {
             .any(|window| window == b"\x1b[?1049l")
     );
     server.abort();
+}
+
+async fn select_tui_exact_provider_for_session_and_next_turn(
+    state: &AdmissionState,
+    terminal: &mut File,
+    rendered: &mut Vec<u8>,
+) -> ProviderSelectionCommand {
+    let exact_selection = ProviderSelectionCommand::Exact {
+        provider_id: "fixture".to_owned(),
+        model_id: "fixture".to_owned(),
+    };
+    terminal
+        .write_all(b"\x1b[19~\x1b[B\r")
+        .and_then(|()| terminal.flush())
+        .expect("select exact conversation provider through F8");
+    let selection_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let selected = state
+            .session_provider_selection
+            .lock()
+            .expect("session provider selection lock")
+            .clone();
+        if selected.as_ref() == Some(&exact_selection) {
+            break;
+        }
+        assert!(
+            Instant::now() < selection_deadline,
+            "workbench did not commit F8 conversation provider selection: {}",
+            String::from_utf8_lossy(rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    let refreshed_deadline = Instant::now() + Duration::from_secs(2);
+    while state.provider_selection_reads.load(Ordering::SeqCst) < 3 {
+        assert!(
+            Instant::now() < refreshed_deadline,
+            "workbench did not refresh the committed provider selection: {}",
+            String::from_utf8_lossy(rendered)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    terminal
+        .write_all(b"\x1b[19~")
+        .and_then(|()| terminal.flush())
+        .expect("open exact next-turn provider picker through F8");
+    wait_for_occurrences(
+        terminal,
+        rendered,
+        b"t next turn",
+        1,
+        Duration::from_secs(2),
+    );
+    terminal
+        .write_all(b"t")
+        .and_then(|()| terminal.flush())
+        .expect("select exact next-turn provider");
+    wait_for_occurrences(terminal, rendered, b"next turn:", 1, Duration::from_secs(2));
+    exact_selection
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1321,6 +1354,9 @@ async fn session_provider_selection(
     State(state): State<AdmissionState>,
     AxumPath(session_id): AxumPath<String>,
 ) -> Json<SessionProviderSelectionResponse> {
+    state
+        .provider_selection_reads
+        .fetch_add(1, Ordering::SeqCst);
     let provider_selection = state
         .session_provider_selection
         .lock()
