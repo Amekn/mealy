@@ -208,6 +208,45 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         "unexpected package precondition error: {}",
         String::from_utf8_lossy(&unaccepted_package.stderr)
     );
+    let unapproved_package_stage = registry_command(
+        home.path(),
+        &[
+            "package-stage",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-archive-digest",
+            FIXTURE_DIGEST,
+        ],
+    );
+    assert!(!unapproved_package_stage.status.success());
+    assert!(
+        String::from_utf8_lossy(&unapproved_package_stage.stderr).contains("requires --approve"),
+        "unexpected package-stage approval error: {}",
+        String::from_utf8_lossy(&unapproved_package_stage.stderr)
+    );
+    let invalid_package_digest = registry_command(
+        home.path(),
+        &[
+            "package-stage",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-archive-digest",
+            "not-a-digest",
+            "--approve",
+        ],
+    );
+    assert!(!invalid_package_digest.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_package_digest.stderr).contains("exact lowercase SHA-256"),
+        "unexpected package digest error: {}",
+        String::from_utf8_lossy(&invalid_package_digest.stderr)
+    );
     let insecure_mirror = registry_command(
         home.path(),
         &[
@@ -481,7 +520,7 @@ fn registry_cli_refuses_unprotected_existing_schema_migration() {
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(
-        error.contains("requires canonical schema 25")
+        error.contains("requires canonical schema 26")
             && error.contains("has schema 23")
             && error.contains("backup-protected migration"),
         "existing schema must be rejected before migration: {error}"

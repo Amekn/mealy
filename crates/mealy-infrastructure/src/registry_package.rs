@@ -55,6 +55,7 @@ pub struct InspectedRegistryPackageArchive {
     release: InspectedRegistryRelease,
     manifest: InspectedRegistryPackageManifest,
     archive_digest: String,
+    archive_size_bytes: u64,
     files: BTreeMap<String, InspectedRegistryPackageFile>,
 }
 
@@ -75,6 +76,12 @@ impl InspectedRegistryPackageArchive {
     #[must_use]
     pub fn archive_digest(&self) -> &str {
         &self.archive_digest
+    }
+
+    /// Returns the exact authenticated archive byte length.
+    #[must_use]
+    pub const fn archive_size_bytes(&self) -> u64 {
+        self.archive_size_bytes
     }
 
     /// Returns the complete canonical archive inventory, including `manifest.json`.
@@ -127,6 +134,8 @@ pub fn inspect_registry_package_archive(
         release: release.clone(),
         manifest,
         archive_digest: sha256_digest(archive_bytes),
+        archive_size_bytes: u64::try_from(archive_bytes.len())
+            .map_err(|_| RegistryPackageArchiveError::InvalidArchive)?,
         files,
     })
 }

@@ -196,7 +196,26 @@ mealyctl --home "$HOME/.mealy" registry package-fetch dev.mealy.registry \
 snapshot under the active root. It retrieves only the manifest and archive objects addressed by
 that release's signed SHA-256 descriptors. Output presents the exact manifest/archive digests,
 complete file inventory, executable flags, and requested extension authority or separately
-governed skill/tool references. It writes no package bytes and creates no grant.
+governed skill/tool references. It writes no package bytes and creates no grant. After reviewing
+that output, retain those exact inert bytes with a second digest-fenced decision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-stage dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-archive-digest DIGEST_FROM_PACKAGE_FETCH \
+  --approve
+```
+
+`package-stage` repeats the complete fetch and inspection path, then rechecks the active root,
+current unexpired snapshot, selected publisher release, withdrawal state, host compatibility,
+manifest/archive identities, and exact byte counts inside schema 26's immediate transaction. The
+manifest and archive are published atomically into Mealy's private content-addressed artifact
+store before their immutable evidence row is committed. An exact replay is idempotent. If the
+database commit loses a race or fails, the unreferenced content remains inert and is eligible for
+the existing age-gated artifact garbage collector; it cannot become installed authority.
+Content-addressed package blobs are included in the established backup, restore, migration-copy,
+integrity, and orphan-accounting paths.
 
 The application transport also derives immutable release/manifest/archive paths only as
 `objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
@@ -208,9 +227,10 @@ FIFOs, sparse/PAX/GNU extensions, duplicates, undeclared files, traversal, non-c
 and trailing content. It parses and retains bytes in memory rather than invoking a tar extraction
 API, so inspection cannot create filesystem paths or race an extraction destination.
 
-No registry command installs, stages, activates, discovers a mirror, or grants a permission.
-Accepted metadata remains inert durable evidence. Durable manifest/archive retention,
-permission-diff staging, and withdrawal-aware install/rollback are separate later v0.5 boundaries.
+No registry command installs, activates, discovers a mirror, or grants a permission. A package
+stage retains only exact reviewed inert evidence; it does not unpack an archive, publish an
+extension, enable a skill, add a tool, or authorize requested permissions. Permission-diff
+install staging and withdrawal-aware install/update/rollback are separate later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

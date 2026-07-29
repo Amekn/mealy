@@ -1,5 +1,6 @@
 use crate::{
-    ExtensionManifestInspection, inspect_extension_manifest, is_sha256_digest, sha256_digest,
+    CommittedArtifactBlob, ExtensionManifestInspection, inspect_extension_manifest,
+    is_sha256_digest, sha256_digest,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -758,6 +759,28 @@ pub struct RegistryReleaseState {
     pub accepted_at_ms: i64,
 }
 
+/// Durable identity of exact package content staged without installation or authority.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistryPackageState {
+    /// Stable registry identity.
+    pub registry_id: String,
+    /// Stable package identity.
+    pub package_id: String,
+    /// Package class.
+    pub kind: RegistryPackageKind,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Publisher release envelope authenticating these bytes.
+    pub release_envelope_digest: String,
+    /// Durable content-addressed exact manifest.
+    pub manifest_blob: CommittedArtifactBlob,
+    /// Durable content-addressed exact package archive.
+    pub package_blob: CommittedArtifactBlob,
+    /// UTC time of the first successful inert stage.
+    pub staged_at_ms: i64,
+}
+
 /// Atomic canonical commit of one initial or dual-threshold-rotated trust root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryTrustRootCommit {
@@ -856,6 +879,18 @@ pub trait RegistryMetadataStore {
         package_id: &str,
         version: &str,
     ) -> Result<Option<(InspectedRegistryRelease, RegistryReleaseState)>, RegistryMetadataStoreError>;
+
+    /// Loads canonical inert package content evidence, when staged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for corrupt or unavailable state.
+    fn registry_package(
+        &self,
+        registry_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<RegistryPackageState>, RegistryMetadataStoreError>;
     /// Atomically activates one initial or rotated root under an exact prior-state fence.
     ///
     /// # Errors

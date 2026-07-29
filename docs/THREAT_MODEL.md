@@ -631,8 +631,8 @@ failure cannot advance state, and refresh holds the stopped-home lock across net
 Refresh additionally requires the exact envelope digest printed by the preceding fetch, so the
 mutable current path cannot change between owner review and apply. The implementation shares the
 same reviewed IANA special-address policy as web, MCP, and browser egress so the deny list cannot
-drift independently. Durable package evidence, permission-diff staging, and withdrawal
-propagation to installed packages remain explicit follow-on boundaries and are not yet claimed.
+drift independently. Permission-diff installation and withdrawal propagation to installed
+packages remain explicit follow-on boundaries and are not yet claimed.
 
 Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
 Review prints the exact envelope digest, publisher, host range, manifest/archive descriptors, and
@@ -651,8 +651,17 @@ zero owner/group/time/padding, strict data/executable modes, two exact trailer b
 manifest-declared inventory/digests/sizes are accepted. Links, devices, FIFOs, sparse/PAX/GNU
 extensions, duplicate/traversal/extra paths, malformed checksums, control-bearing instructions,
 and trailing bytes fail closed. No archive extraction helper is called, so no attacker-selected
-path is created and no extraction-destination time-of-check race exists. These controls still do
-not retain package bytes, stage code, install a skill, activate an extension, or create a grant.
+path is created and no extraction-destination time-of-check race exists.
+
+An owner may then run `package-stage` with the exact archive digest printed by that review and
+explicit approval. The command repeats retrieval and inspection, takes a fresh clock after both
+network reads, and revalidates current root/snapshot/release/withdrawal authority before the
+immediate schema 26 transaction repeats those checks. SQLite accepts only the strict inspector's
+opaque result and exact content-addressed blob descriptors, rather than a caller-asserted success
+flag. Private atomic blob publication may precede a database failure, but that leaves only an
+unreferenced, age-gated artifact-store orphan; immutable package evidence is the sole path to a
+durable staged identity. Neither path extracts code, installs a skill, activates an extension, or
+creates a grant.
 
 ### A staging asset substitutes a different release daemon
 

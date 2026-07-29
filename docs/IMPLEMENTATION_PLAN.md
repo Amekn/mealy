@@ -313,9 +313,18 @@ content, while rejecting traversal, links, devices, sparse/extension records, du
 paths, metadata authority, malformed padding/trailers, and instruction control bytes. Output
 reports requested authority and exact file evidence but persists and grants nothing.
 
-The next slices must add durable manifest/archive evidence, permission-diff install/stage commands,
-installed-withdrawal policy, upgrade and rollback transactions, public registry publication
-tooling, and package/upgrade/recovery qualification.
+The seventh slice adds an explicitly approved, exact-archive-digest-fenced `package-stage`
+operation and schema 26 immutable package evidence. It performs a fresh bounded retrieval and
+strict inspection, revalidates current registry and publisher authority after network I/O and
+again inside the immediate database transaction, then binds the exact manifest/archive descriptors
+to the already accepted release. Blobs use the established private content-addressed artifact
+store, so backup, restore, migration-copy, integrity, deduplication, and age-gated orphan cleanup
+remain one mechanism. Exact replay is idempotent; no archive is extracted and no extension, skill,
+tool, or permission is installed or enabled.
+
+The next slices must add permission-diff install/stage commands, installed-withdrawal policy,
+upgrade and rollback transactions, public registry publication tooling, and
+package/upgrade/recovery qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

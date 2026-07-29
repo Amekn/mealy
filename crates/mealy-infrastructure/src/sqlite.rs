@@ -61,10 +61,11 @@ const MIGRATION_0022: &str =
 const MIGRATION_0023: &str = include_str!("../migrations/0023_browser_transaction_origin.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_registry_metadata.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_registry_release_evidence.sql");
+const MIGRATION_0026: &str = include_str!("../migrations/0026_registry_package_evidence.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 25;
+pub const LATEST_SCHEMA_VERSION: i64 = 26;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -393,6 +394,14 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0025)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (25, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 25;
+        }
+        if existing_version == 25 {
+            transaction.execute_batch(MIGRATION_0026)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (26, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -1082,12 +1091,22 @@ mod tests {
     }
 
     fn remove_registry_release_schema(connection: &Connection) {
+        remove_registry_package_schema(connection);
         connection
             .execute_batch(
                 "DROP TABLE registry_release;
                  DELETE FROM schema_version WHERE version = 25;",
             )
             .expect("remove v25 registry release schema");
+    }
+
+    fn remove_registry_package_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TABLE registry_package;
+                 DELETE FROM schema_version WHERE version = 26;",
+            )
+            .expect("remove v26 registry package schema");
     }
 
     fn remove_media_schema(connection: &Connection) {
@@ -2967,6 +2986,63 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded registry release integrity");
+    }
+
+    #[test]
+    fn v25_upgrade_preserves_release_schema_and_adds_package_evidence() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root(
+                     registry_id, root_version, root_digest, root_json,
+                     expires_at_ms, activated_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', 1,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     x'7b7d', 9999999999999, 1
+                 )",
+                [],
+            )
+            .expect("seed v25 root row");
+        remove_registry_package_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v25 registry package evidence schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row("SELECT COUNT(*) FROM registry_trust_root", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("preserved registry root"),
+            1
+        );
+        for object in [
+            "registry_release",
+            "registry_package",
+            "registry_package_insert_guard",
+            "registry_package_immutable_update",
+            "registry_package_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query package evidence schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded registry package integrity");
     }
 
     #[test]

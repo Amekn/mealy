@@ -217,8 +217,9 @@ copy-paste lifecycle.
 
 The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `status`,
 `snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, `snapshot-refresh`, `release-fetch`,
-`release-accept`, and `release-status` for the v0.5 signed registry trust root, monotonic snapshot
-fence, and inert publisher-release evidence.
+`release-accept`, `release-status`, `package-fetch`, and `package-stage` for the v0.5 signed
+registry trust root, monotonic snapshot fence, inert publisher-release evidence, extraction-free
+review, and digest-fenced durable package evidence.
 Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
 all canonical-state operations require the daemon to be stopped, and existing databases must
 already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
@@ -227,7 +228,10 @@ public-address-only, response-bounded, exact-review-digest-fenced, and rechecked
 signature/anti-rollback state. Release acceptance repeats current root, snapshot, publisher,
 withdrawal, dependency-lock, descriptor, and host-compatibility checks inside schema 25's
 immutable SQLite transaction.
-The namespace still grants no package, extension, skill, or tool authority. See
+`package-stage` additionally requires explicit approval and the exact archive digest from
+`package-fetch`; it revalidates current authority and commits exact inert manifest/archive blobs
+through schema 26 and the existing private content-addressed artifact store.
+The namespace still installs or grants no extension, skill, tool, or requested permission. See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
 lifecycle and current mirror boundary.
 

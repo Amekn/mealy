@@ -785,6 +785,15 @@ timestamps, substituted manifests, and control-bearing instruction text. CLI par
 coverage proves the separate `package-fetch` graph and its accepted-release precondition; the
 command cannot create files, state, or authority.
 
+Schema 26 tests commit an inspected real package through the private content-addressed artifact
+store, reopen and read the exact manifest/archive bytes, prove idempotent replay, reject immutable
+row mutation, enumerate both blobs through the established backup interface, and prove a later
+withdrawal blocks a new stage without deleting history. Direct v25-to-v26 migration preserves
+release evidence and adds the guarded package table. CLI parser/process coverage proves
+`package-stage` is separately approval gated and rejects a noncanonical review digest before
+network access. Existing restore, migration-copy, rollback, artifact-integrity, and orphan-GC
+tests continue to exercise the shared artifact store used by staged packages.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

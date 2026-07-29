@@ -292,16 +292,17 @@ rejects proxy/redirect/credential paths, non-public or mixed DNS answers, peer d
 encoding, non-200 status, type drift, and bodies above 4 MiB; signature and durable anti-rollback
 verification remain authoritative. Approved refresh additionally requires the exact envelope
 digest printed by the preceding fetch, closing mutable-current review/apply drift. Immutable
-content requests can only derive
-`objects/sha256/DIGEST` from signed descriptors and require exact type, length, and digest, but no
-package command consumes manifest/archive objects yet. Schema 25 and `release-fetch`,
+content requests can only derive `objects/sha256/DIGEST` from signed descriptors and require exact
+type, length, and digest. Schema 25 and `release-fetch`,
 `release-accept`, and `release-status` now add immutable publisher-release evidence under the exact
 active root/snapshot fence. Acceptance repeats publisher threshold, withdrawal, dependency,
 compatibility, and descriptor checks transactionally; root rotation requires a newly authorized
 snapshot, exact replay is idempotent, and later withdrawal preserves audit history while blocking
-new acceptance. Manifest/archive download and inspection, staged activation,
-installed-withdrawal handling, and rollback remain later slices; metadata acceptance grants no
-runtime authority.
+new acceptance. Exact manifest/archive download and extraction-free inspection are implemented by
+`package-fetch`; explicitly approved, review-digest-fenced `package-stage` repeats those checks and
+retains the exact inert blobs through schema 26 and the established content-addressed artifact
+store. Permission-diff installation, staged activation, installed-withdrawal handling, and
+rollback remain later slices; metadata and byte acceptance grant no runtime authority.
 
 ### Memory and automation
 

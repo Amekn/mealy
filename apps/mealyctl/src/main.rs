@@ -15,26 +15,27 @@ use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, EXTENSION_HOST_API_VERSION, ImageGenerationConfig,
-    InspectedRegistryRelease, InspectedRegistrySnapshot, InspectedRegistryTrustRoot,
-    MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_IMAGE_DIMENSION,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication, McpHttpCatalogDiscovery,
-    McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery, McpPromptGrant,
-    McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect, McpToolGrant,
-    MessageRole, ModelProvider, NormalizedMessage, ProviderConfig, ProviderCredentialReference,
-    ProviderRequest, ProviderResponse, RegistryContentDescriptor, RegistryDependencyLock,
-    RegistryError, RegistryMetadataStore, RegistryMetadataStoreError, RegistryMirror,
-    RegistryMirrorError, RegistryPackageKind, RegistryPackageManifest, RegistryReleaseState,
-    RegistrySnapshotState, RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
-    SESSION_TRANSCRIPT_MAXIMUM_TURNS, SubscriptionCliClient, WebAccessConfig, WebSearchConfig,
-    accept_registry_release, accept_registry_snapshot, active_registry_snapshot,
-    bootstrap_registry_trust_root, default_daemon_config_document, fetch_registry_content,
-    fetch_registry_snapshot_envelope, inspect_active_registry_release,
-    inspect_initial_registry_trust_root, inspect_registry_snapshot, is_sha256_digest,
-    rotate_registry_trust_root, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    ArtifactBlobStore, ArtifactBlobStoreError, BrowserConfig, CancellationProbe,
+    EXTENSION_HOST_API_VERSION, ImageGenerationConfig, InspectedRegistryRelease,
+    InspectedRegistrySnapshot, InspectedRegistryTrustRoot, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
+    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
+    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
+    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
+    ProviderCredentialReference, ProviderRequest, ProviderResponse, RegistryContentDescriptor,
+    RegistryDependencyLock, RegistryError, RegistryMetadataStore, RegistryMetadataStoreError,
+    RegistryMirror, RegistryMirrorError, RegistryPackageKind, RegistryPackageManifest,
+    RegistryPackageState, RegistryReleaseState, RegistrySnapshotState, RegistryUseCaseError,
+    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
+    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, accept_registry_release,
+    accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
+    default_daemon_config_document, fetch_registry_content, fetch_registry_snapshot_envelope,
+    inspect_active_registry_release, inspect_initial_registry_trust_root,
+    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
+    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
@@ -43,18 +44,18 @@ use mealy_domain::{
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileMcpOAuthTokenStore, FileProviderSecretStore, HttpsRegistryMirrorTransport,
-    InspectedSkillPackage, LATEST_SCHEMA_VERSION, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
-    MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, McpOAuthTokenError,
-    ProviderSecretStoreError, RegistryPackageArchiveError, SqliteStore, StoreError,
-    SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
-    browser_worker_main, discover_mcp_http_server, discover_mcp_oauth_metadata,
-    discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code, inspect_browser_bundle,
-    inspect_existing_schema_version, inspect_mcp_http_endpoint, inspect_registry_package_archive,
-    inspect_skill_package, inspect_subscription_cli_executable, is_trusted_system_executable,
-    mcp_stdio_launcher_main, media_worker_main, prepare_mcp_oauth_authorization,
-    probe_browser_bundle_product, publish_browser_bundle, publish_skill_package,
-    verify_browser_runtime_installation,
+    FileArtifactBlobStore, FileMcpOAuthTokenStore, FileProviderSecretStore,
+    HttpsRegistryMirrorTransport, InspectedSkillPackage, LATEST_SCHEMA_VERSION,
+    MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
+    McpOAuthTokenError, ProviderSecretStoreError, RegistryPackageArchiveError, SqliteStore,
+    StoreError, SubscriptionCliProvider, SubscriptionCliSettings, activate_backup,
+    activate_migration_backup, browser_worker_main, discover_mcp_http_server,
+    discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
+    inspect_browser_bundle, inspect_existing_schema_version, inspect_mcp_http_endpoint,
+    inspect_registry_package_archive, inspect_skill_package, inspect_subscription_cli_executable,
+    is_trusted_system_executable, mcp_stdio_launcher_main, media_worker_main,
+    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
+    publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -153,6 +154,7 @@ const MAXIMUM_EXTENSION_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAXIMUM_REGISTRY_ROOT_BYTES: u64 = 128 * 1024;
 const MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES: u64 = 256 * 1024;
 const MAXIMUM_REGISTRY_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
+const MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES: u64 = 512 * 1024 * 1024;
 const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_SERVER_ERROR_CODE_BYTES: usize = 64;
 const MAXIMUM_SERVER_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
@@ -2121,6 +2123,24 @@ enum RegistryCommand {
         /// Canonical HTTPS registry directory ending in `/`.
         #[arg(long)]
         mirror: String,
+    },
+    /// Re-fetch, inspect, and durably retain exact package bytes without installation or grants.
+    PackageStage {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact archive SHA-256 printed by the reviewed `package-fetch`.
+        #[arg(long)]
+        expected_archive_digest: String,
+        /// Confirm inert content-addressed retention.
+        #[arg(long)]
+        approve: bool,
     },
 }
 
@@ -13180,7 +13200,8 @@ fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), 
         command @ (RegistryCommand::ReleaseFetch { .. }
         | RegistryCommand::ReleaseAccept { .. }
         | RegistryCommand::ReleaseStatus { .. }
-        | RegistryCommand::PackageFetch { .. }) => run_registry_release_operation(home, command),
+        | RegistryCommand::PackageFetch { .. }
+        | RegistryCommand::PackageStage { .. }) => run_registry_release_operation(home, command),
     }
 }
 
@@ -13220,7 +13241,25 @@ fn run_registry_release_operation(home: &Path, command: &RegistryCommand) -> Res
             package_id,
             version,
             mirror,
-        } => run_registry_package_mirror(home, registry_id, package_id, version, mirror),
+        } => run_registry_package_mirror(home, registry_id, package_id, version, mirror, None),
+        RegistryCommand::PackageStage {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+            expected_archive_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_package_mirror(
+                home,
+                registry_id,
+                package_id,
+                version,
+                mirror,
+                Some(expected_archive_digest),
+            )
+        }
         _ => Err(CliError::InvalidRegistryMetadata),
     }
 }
@@ -13406,16 +13445,24 @@ fn run_registry_package_mirror(
     package_id: &str,
     version: &str,
     base_url: &str,
+    expected_archive_digest: Option<&str>,
 ) -> Result<(), CliError> {
     let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_archive_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistryPackageDigest);
+    }
     let opened_at_ms = registry_now_ms()?;
     let (home, _instance_lock) = lock_stopped_home(home)?;
     let home = fs::canonicalize(home)?;
-    let store = open_registry_read_store(&home)?;
+    let mut store = if expected_archive_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
     let (accepted, durable_state) = store
         .registry_release(registry_id, package_id, version)?
         .ok_or(CliError::RegistryReleaseNotFound)?;
-    let active = inspect_active_registry_release(
+    let authorized_before_fetch = inspect_active_registry_release(
         &store,
         registry_id,
         package_id,
@@ -13424,24 +13471,66 @@ fn run_registry_package_mirror(
         EXTENSION_HOST_API_VERSION,
         opened_at_ms,
     )?;
-    if active != accepted
-        || durable_state.envelope_digest != active.envelope_digest
-        || durable_state.payload_digest != active.payload_digest
+    if authorized_before_fetch != accepted
+        || durable_state.envelope_digest != authorized_before_fetch.envelope_digest
+        || durable_state.payload_digest != authorized_before_fetch.payload_digest
     {
         return Err(CliError::RegistryStateDrift);
     }
     let manifest_bytes = fetch_registry_content(
         &HttpsRegistryMirrorTransport,
         &mirror,
-        &active.release.manifest,
+        &authorized_before_fetch.release.manifest,
     )?;
     let archive_bytes = fetch_registry_content(
         &HttpsRegistryMirrorTransport,
         &mirror,
-        &active.release.package,
+        &authorized_before_fetch.release.package,
     )?;
+    let verified_at_ms = registry_now_ms()?;
+    let active = inspect_active_registry_release(
+        &store,
+        registry_id,
+        package_id,
+        version,
+        &accepted.envelope_bytes,
+        EXTENSION_HOST_API_VERSION,
+        verified_at_ms,
+    )?;
+    if active != authorized_before_fetch
+        || durable_state.envelope_digest != active.envelope_digest
+        || durable_state.payload_digest != active.payload_digest
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
     let inspected = inspect_registry_package_archive(&active, &manifest_bytes, &archive_bytes)?;
-    print_json(registry_package_response(&inspected, durable_state))
+    let durable_package_state = if let Some(expected_archive_digest) = expected_archive_digest {
+        if inspected.archive_digest() != expected_archive_digest {
+            return Err(CliError::RegistryPackageDrift);
+        }
+        let artifacts = FileArtifactBlobStore::new(
+            home.join("artifacts"),
+            MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES,
+        )?;
+        let manifest_blob = artifacts.commit(&manifest_bytes)?;
+        let package_blob = artifacts.commit(&archive_bytes)?;
+        let active_snapshot = active_registry_snapshot(&store, registry_id, verified_at_ms)?;
+        Some(store.commit_registry_package(
+            &inspected,
+            manifest_blob,
+            package_blob,
+            &active_snapshot.state,
+            EXTENSION_HOST_API_VERSION,
+            verified_at_ms,
+        )?)
+    } else {
+        None
+    };
+    print_json(registry_package_response(
+        &inspected,
+        durable_state,
+        durable_package_state,
+    ))
 }
 
 fn require_registry_approval(approve: bool) -> Result<(), CliError> {
@@ -13698,6 +13787,7 @@ struct RegistryPackageResponse {
     files: Vec<RegistryPackageFileResponse>,
     requested_authority: serde_json::Value,
     durable_release_state: RegistryReleaseState,
+    durable_package_state: Option<RegistryPackageState>,
     network_access: bool,
     filesystem_mutation: bool,
     package_authority: bool,
@@ -13706,7 +13796,13 @@ struct RegistryPackageResponse {
 fn registry_package_response(
     package: &mealy_infrastructure::InspectedRegistryPackageArchive,
     durable_release_state: RegistryReleaseState,
+    durable_package_state: Option<RegistryPackageState>,
 ) -> RegistryPackageResponse {
+    let (operation, filesystem_mutation) = if durable_package_state.is_some() {
+        ("package_staged", true)
+    } else {
+        ("package_fetched_inspected", false)
+    };
     let release = &package.release().release;
     let requested_authority = match &package.manifest().manifest {
         RegistryPackageManifest::Extension(inspection) => serde_json::json!({
@@ -13727,7 +13823,7 @@ fn registry_package_response(
         }),
     };
     RegistryPackageResponse {
-        operation: "package_fetched_inspected",
+        operation,
         registry_id: release.registry_id.clone(),
         package_id: release.package_id.clone(),
         kind: release.kind,
@@ -13748,8 +13844,9 @@ fn registry_package_response(
             .collect(),
         requested_authority,
         durable_release_state,
+        durable_package_state,
         network_access: true,
-        filesystem_mutation: false,
+        filesystem_mutation,
         package_authority: false,
     }
 }
@@ -19774,6 +19871,11 @@ enum CliError {
         "registry release acceptance requires the exact lowercase SHA-256 printed by release-fetch"
     )]
     InvalidRegistryReleaseDigest,
+    /// Package staging did not bind one canonical SHA-256 archive identity.
+    #[error(
+        "registry package staging requires the exact lowercase SHA-256 printed by package-fetch"
+    )]
+    InvalidRegistryPackageDigest,
     /// Registry metadata commands require an initialized canonical database.
     #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
     RegistryDatabaseNotFound,
@@ -19800,6 +19902,11 @@ enum CliError {
         "registry release changed after review; run release-fetch again and review the new digest"
     )]
     RegistryReleaseDrift,
+    /// Immutable package bytes differed from the exact reviewed archive.
+    #[error(
+        "registry package changed after review; run package-fetch again and review the new digest"
+    )]
+    RegistryPackageDrift,
     /// No durable release evidence exists for the exact requested identity.
     #[error("registry release evidence was not found")]
     RegistryReleaseNotFound,
@@ -19812,6 +19919,9 @@ enum CliError {
     /// Authenticated registry package bytes failed strict inert archive inspection.
     #[error(transparent)]
     RegistryPackageInspection(#[from] RegistryPackageArchiveError),
+    /// Content-addressed registry package publication or verification failed.
+    #[error(transparent)]
+    RegistryPackageBlob(#[from] ArtifactBlobStoreError),
     /// Registry use-case verification or atomic persistence failed.
     #[error(transparent)]
     RegistryUseCase(#[from] RegistryUseCaseError),
@@ -20973,6 +21083,41 @@ mod tests {
                         && package_id == "dev.mealy.extension.clock"
                         && version == "1.0.0"
                         && mirror == "https://registry.example.test/mealy/v1/"
+                )
+        ));
+
+        let staged = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-stage",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-archive-digest",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "--approve",
+        ])
+        .expect("registry package stage command");
+        assert!(matches!(
+            staged.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackageStage {
+                        registry_id,
+                        package_id,
+                        version,
+                        mirror,
+                        expected_archive_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_archive_digest
+                            == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
                 )
         ));
     }

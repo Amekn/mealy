@@ -107,10 +107,19 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     two terminal zero blocks. Links, devices, FIFOs, sparse/PAX/GNU extensions, duplicates,
     traversal, undeclared content, and trailing bytes fail closed. Output reports requested
     authority but creates no durable package row, file, stage, install, activation, or grant.
-14. Download resumption, durable manifest/archive evidence, package publication tooling, staged
-    activation, withdrawal propagation to installed revisions, and rollback orchestration remain
-    later slices. Mirror retrieval still performs no package execution and grants no runtime
-    authority.
+14. `package-stage` requires explicit approval and the exact archive digest returned by review. It
+    repeats retrieval and extraction-free inspection, revalidates the active root, snapshot,
+    publisher release, withdrawal state, host compatibility, and both signed blob identities at
+    the post-fetch clock, and commits schema 26 only from the inspector's opaque package result.
+    Exact manifest/archive bytes enter the existing private content-addressed artifact store;
+    immutable package evidence binds both blob rows to the accepted release. Exact replay is
+    idempotent. A failed database transaction can leave only an inert age-gated orphan, never an
+    installed package or permission. Existing artifact backup, restore, migration-copy, integrity,
+    deduplication, and garbage-collection paths apply without a second cache.
+15. Download resumption, package publication tooling, permission-diff install staging, activation,
+    withdrawal propagation to installed revisions, and rollback orchestration remain later slices.
+    Mirror retrieval and durable byte staging still perform no package execution and grant no
+    runtime authority.
 
 ## Consequences
 
@@ -124,9 +133,9 @@ Mealy introduces a versioned registry contract in independent, inert layers.
 - Root, snapshot, and publisher-release history are append-only canonical evidence; only small
   root/snapshot head rows may advance, under exact monotonic SQLite triggers and application
   compare-and-swap fences.
-- The first slices add verification, durable anti-rollback/release evidence, bounded mirror and
-  package retrieval, and extraction-free review primitives, not a public marketplace or automatic
-  update path.
+- The first slices add verification, durable anti-rollback/release/package evidence, bounded
+  mirror and package retrieval, and extraction-free review primitives, not a public marketplace
+  or automatic update path.
 - Ed25519 verification adds a small audited cryptographic dependency to the production graph and
   remains subject to the existing advisory, license, duplicate-version, SBOM, and provenance
   gates.

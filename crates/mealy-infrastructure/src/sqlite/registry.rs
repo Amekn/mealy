@@ -1,10 +1,11 @@
 use super::SqliteStore;
+use crate::InspectedRegistryPackageArchive;
 use mealy_application::{
-    InspectedRegistryRelease, InspectedRegistrySnapshot, InspectedRegistryTrustRoot,
-    RegistryMetadataStore, RegistryMetadataStoreError, RegistryPackageKind, RegistryReleaseCommit,
-    RegistryReleaseState, RegistrySnapshotCommit, RegistrySnapshotState, RegistryTrustRootCommit,
-    RegistryTrustRootState, inspect_initial_registry_trust_root, inspect_registry_release,
-    inspect_registry_snapshot,
+    CommittedArtifactBlob, InspectedRegistryRelease, InspectedRegistrySnapshot,
+    InspectedRegistryTrustRoot, RegistryMetadataStore, RegistryMetadataStoreError,
+    RegistryPackageKind, RegistryPackageState, RegistryReleaseCommit, RegistryReleaseState,
+    RegistrySnapshotCommit, RegistrySnapshotState, RegistryTrustRootCommit, RegistryTrustRootState,
+    inspect_initial_registry_trust_root, inspect_registry_release, inspect_registry_snapshot,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
@@ -38,6 +39,15 @@ impl RegistryMetadataStore for SqliteStore {
     ) -> Result<Option<(InspectedRegistryRelease, RegistryReleaseState)>, RegistryMetadataStoreError>
     {
         load_release(&self.connection, registry_id, package_id, version)
+    }
+
+    fn registry_package(
+        &self,
+        registry_id: &str,
+        package_id: &str,
+        version: &str,
+    ) -> Result<Option<RegistryPackageState>, RegistryMetadataStoreError> {
+        load_package(&self.connection, registry_id, package_id, version)
     }
 
     fn commit_registry_trust_root(
@@ -339,6 +349,197 @@ impl RegistryMetadataStore for SqliteStore {
     }
 }
 
+impl SqliteStore {
+    /// Atomically binds exact inspected manifest/archive blobs to accepted release evidence.
+    ///
+    /// The package token can only be created by the strict extraction-free archive inspector.
+    /// Blob publication occurs first; a failed database transaction therefore leaves at most
+    /// content-addressed orphan files eligible for the normal age-gated garbage collector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryMetadataStoreError`] for stale authorization, evidence drift, blob
+    /// conflicts, corruption, or unavailable persistence.
+    pub fn commit_registry_package(
+        &mut self,
+        inspected: &InspectedRegistryPackageArchive,
+        manifest_blob: CommittedArtifactBlob,
+        package_blob: CommittedArtifactBlob,
+        expected_snapshot: &RegistrySnapshotState,
+        host_api_version: u32,
+        staged_at_ms: i64,
+    ) -> Result<RegistryPackageState, RegistryMetadataStoreError> {
+        if staged_at_ms < 0 || host_api_version == 0 {
+            return Err(invariant("registry package staging inputs are invalid"));
+        }
+        manifest_blob
+            .validate()
+            .map_err(|_| invariant("registry manifest blob descriptor is invalid"))?;
+        package_blob
+            .validate()
+            .map_err(|_| invariant("registry package blob descriptor is invalid"))?;
+        let registry_id = inspected.release().release.registry_id.clone();
+        let package_id = inspected.release().release.package_id.clone();
+        let version = inspected.release().release.version.clone();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite)?;
+        let verified_release = authorize_registry_package_stage(
+            &transaction,
+            inspected,
+            expected_snapshot,
+            host_api_version,
+            staged_at_ms,
+        )?;
+        if inspected.manifest().manifest_digest != manifest_blob.digest
+            || inspected.archive_digest() != package_blob.digest
+            || u64::try_from(inspected.manifest().manifest_bytes.len()).ok()
+                != Some(manifest_blob.size_bytes)
+            || inspected.archive_size_bytes() != package_blob.size_bytes
+        {
+            return Err(invariant(
+                "registry package blobs differ from inspected exact bytes",
+            ));
+        }
+        if let Some(state) = load_package(&transaction, &registry_id, &package_id, &version)? {
+            if state.release_envelope_digest == verified_release.envelope_digest
+                && state.manifest_blob == manifest_blob
+                && state.package_blob == package_blob
+            {
+                transaction.commit().map_err(map_sqlite)?;
+                return Ok(state);
+            }
+            return Err(RegistryMetadataStoreError::Conflict);
+        }
+        insert_artifact_blob(&transaction, &manifest_blob, staged_at_ms)?;
+        insert_artifact_blob(&transaction, &package_blob, staged_at_ms)?;
+        let state = RegistryPackageState {
+            registry_id,
+            package_id,
+            kind: verified_release.release.kind,
+            version,
+            release_envelope_digest: verified_release.envelope_digest,
+            manifest_blob,
+            package_blob,
+            staged_at_ms,
+        };
+        transaction
+            .execute(
+                "INSERT INTO registry_package(
+                     registry_id, package_id, package_kind, version,
+                     release_envelope_digest, manifest_blob_algorithm,
+                     manifest_blob_digest, package_blob_algorithm,
+                     package_blob_digest, staged_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    state.registry_id,
+                    state.package_id,
+                    package_kind_text(state.kind),
+                    state.version,
+                    state.release_envelope_digest,
+                    state.manifest_blob.algorithm,
+                    state.manifest_blob.digest,
+                    state.package_blob.algorithm,
+                    state.package_blob.digest,
+                    state.staged_at_ms,
+                ],
+            )
+            .map_err(map_sqlite)?;
+        transaction.commit().map_err(map_sqlite)?;
+        Ok(state)
+    }
+}
+
+fn authorize_registry_package_stage(
+    transaction: &Transaction<'_>,
+    inspected: &InspectedRegistryPackageArchive,
+    expected_snapshot: &RegistrySnapshotState,
+    host_api_version: u32,
+    staged_at_ms: i64,
+) -> Result<InspectedRegistryRelease, RegistryMetadataStoreError> {
+    let registry_id = &inspected.release().release.registry_id;
+    let package_id = &inspected.release().release.package_id;
+    let version = &inspected.release().release.version;
+    let root = load_trust_root(transaction, registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let snapshot_state = load_snapshot_state(transaction, registry_id)?
+        .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+    if &snapshot_state != expected_snapshot {
+        return Err(RegistryMetadataStoreError::Conflict);
+    }
+    let stored_snapshot = load_current_snapshot(transaction, registry_id)?
+        .ok_or(RegistryMetadataStoreError::SnapshotNotFound)?;
+    let verified_snapshot = inspect_registry_snapshot(
+        &stored_snapshot.envelope_bytes,
+        &root.trust_root,
+        Some(&snapshot_state),
+        staged_at_ms,
+    )
+    .map_err(|_| invariant("active snapshot cannot authorize registry package staging"))?;
+    if verified_snapshot != stored_snapshot {
+        return Err(invariant(
+            "active snapshot evidence differs from its durable fence",
+        ));
+    }
+    let target = verified_snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or_else(|| invariant("registry package target is absent from active snapshot"))?;
+    let verified_release = inspect_registry_release(
+        &inspected.release().envelope_bytes,
+        &verified_snapshot,
+        target,
+        host_api_version,
+    )
+    .map_err(|_| invariant("registry package release is no longer authorized"))?;
+    if &verified_release != inspected.release() {
+        return Err(invariant("registry package release evidence drifted"));
+    }
+    let (accepted_release, _) = load_release(transaction, registry_id, package_id, version)?
+        .ok_or_else(|| invariant("registry package has no accepted release evidence"))?;
+    if accepted_release != verified_release {
+        return Err(invariant(
+            "registry package release differs from accepted evidence",
+        ));
+    }
+    Ok(verified_release)
+}
+
+fn insert_artifact_blob(
+    transaction: &Transaction<'_>,
+    blob: &CommittedArtifactBlob,
+    committed_at_ms: i64,
+) -> Result<(), RegistryMetadataStoreError> {
+    transaction
+        .execute(
+            "INSERT INTO artifact_blob(
+                 algorithm, digest, size_bytes, relative_path, committed_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(algorithm, digest) DO NOTHING",
+            params![
+                blob.algorithm,
+                blob.digest,
+                to_i64(blob.size_bytes, "registry artifact blob size")?,
+                blob.relative_path,
+                committed_at_ms,
+            ],
+        )
+        .map_err(map_sqlite)?;
+    let stored = transaction
+        .query_row(
+            "SELECT size_bytes, relative_path
+             FROM artifact_blob WHERE algorithm = ?1 AND digest = ?2",
+            params![blob.algorithm, blob.digest],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(map_sqlite)?;
+    if u64::try_from(stored.0).ok() != Some(blob.size_bytes) || stored.1 != blob.relative_path {
+        return Err(RegistryMetadataStoreError::Conflict);
+    }
+    Ok(())
+}
+
 fn ensure_release_digest_unaliased(
     transaction: &Transaction<'_>,
     registry_id: &str,
@@ -633,6 +834,99 @@ fn load_release(
     Ok(Some((inspected, expected)))
 }
 
+fn load_package(
+    connection: &Connection,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<Option<RegistryPackageState>, RegistryMetadataStoreError> {
+    let row = connection
+        .query_row(
+            "SELECT package.package_kind, package.release_envelope_digest,
+                    package.staged_at_ms,
+                    manifest.algorithm, manifest.digest, manifest.size_bytes,
+                    manifest.relative_path,
+                    archive.algorithm, archive.digest, archive.size_bytes,
+                    archive.relative_path
+             FROM registry_package package
+             JOIN artifact_blob manifest
+               ON manifest.algorithm = package.manifest_blob_algorithm
+              AND manifest.digest = package.manifest_blob_digest
+             JOIN artifact_blob archive
+               ON archive.algorithm = package.package_blob_algorithm
+              AND archive.digest = package.package_blob_digest
+             WHERE package.registry_id = ?1
+               AND package.package_id = ?2
+               AND package.version = ?3",
+            params![registry_id, package_id, version],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let (_, release_state) = load_release(connection, registry_id, package_id, version)?
+        .ok_or_else(|| invariant("registry package lost accepted release evidence"))?;
+    let manifest_size =
+        u64::try_from(row.5).map_err(|_| invariant("registry manifest blob size is negative"))?;
+    let package_size =
+        u64::try_from(row.9).map_err(|_| invariant("registry package blob size is negative"))?;
+    let manifest_blob = CommittedArtifactBlob {
+        algorithm: row.3,
+        digest: row.4,
+        size_bytes: manifest_size,
+        relative_path: row.6,
+    };
+    let package_blob = CommittedArtifactBlob {
+        algorithm: row.7,
+        digest: row.8,
+        size_bytes: package_size,
+        relative_path: row.10,
+    };
+    manifest_blob
+        .validate()
+        .map_err(|_| invariant("stored registry manifest blob is invalid"))?;
+    package_blob
+        .validate()
+        .map_err(|_| invariant("stored registry package blob is invalid"))?;
+    let kind = parse_package_kind(&row.0)?;
+    if row.2 < 0
+        || kind != release_state.kind
+        || row.1 != release_state.envelope_digest
+        || manifest_blob.digest != release_state.manifest_digest
+        || package_blob.digest != release_state.package_digest
+    {
+        return Err(invariant(
+            "stored registry package identity or blobs are inconsistent",
+        ));
+    }
+    Ok(Some(RegistryPackageState {
+        registry_id: registry_id.to_owned(),
+        package_id: package_id.to_owned(),
+        kind,
+        version: version.to_owned(),
+        release_envelope_digest: row.1,
+        manifest_blob,
+        package_blob,
+        staged_at_ms: row.2,
+    }))
+}
+
 fn release_state(
     inspected: &InspectedRegistryRelease,
     snapshot: &RegistrySnapshotState,
@@ -736,9 +1030,9 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use ed25519_dalek::{Signer as _, SigningKey};
     use mealy_application::{
-        REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE, REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE,
-        REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+        ArtifactBlobStore, REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
         REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE,
+        REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE,
         REGISTRY_SNAPSHOT_CONTRACT_VERSION, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
         RegistryContentDescriptor, RegistryMetadataStore, RegistryPackageKind, RegistryPublicKey,
         RegistryPublisher, RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm,
@@ -747,6 +1041,9 @@ mod tests {
         accept_registry_snapshot, active_registry_snapshot, bootstrap_registry_trust_root,
         rotate_registry_trust_root, sha256_digest,
     };
+    use mealy_domain::{SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset, SkillManifest};
+    use std::{collections::BTreeSet, io::Cursor};
+    use tar::{Builder, EntryType, Header};
 
     const NOW_MS: i64 = 10_000;
     const ROOT_CONTEXT: &str = "MEALY-REGISTRY-ROOT-V1";
@@ -904,9 +1201,12 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)] // One proof crosses accept, replay, reopen, and withdrawal.
-    fn publisher_release_evidence_is_exact_immutable_restart_durable_and_withdrawal_aware() {
+    fn publisher_release_and_package_evidence_are_exact_durable_and_withdrawal_aware() {
         let temporary = tempfile::tempdir().expect("temporary registry home");
         let database = temporary.path().join("state.sqlite3");
+        let artifacts =
+            crate::FileArtifactBlobStore::new(temporary.path().join("artifacts"), 1024 * 1024)
+                .expect("artifact store");
         let root_key = SigningKey::from_bytes(&[31; 32]);
         let publisher_key = SigningKey::from_bytes(&[37; 32]);
         let root = RegistryTrustRoot {
@@ -916,15 +1216,34 @@ mod tests {
             threshold: 1,
             expires_at_ms: NOW_MS + 600_000,
         };
+        let instruction = b"Review the requested change.\n";
+        let manifest = SkillManifest {
+            contract_version: SKILL_MANIFEST_CONTRACT_VERSION.to_owned(),
+            skill_id: "dev.mealy.skill.review".to_owned(),
+            version: "1.0.0".to_owned(),
+            instructions: vec![SkillAsset {
+                relative_path: "instructions/review.md".to_owned(),
+                media_type: "text/markdown".to_owned(),
+                content_digest: sha256_digest(instruction),
+                size_bytes: u64::try_from(instruction.len()).expect("instruction size"),
+            }],
+            resources: Vec::new(),
+            required_tools: BTreeSet::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("skill manifest");
+        let package_bytes = deterministic_archive(&[
+            ("manifest.json", &manifest_bytes, 0o644),
+            ("instructions/review.md", instruction, 0o644),
+        ]);
         let release = RegistryRelease {
             contract_version: REGISTRY_RELEASE_CONTRACT_VERSION.to_owned(),
             registry_id: root.registry_id.clone(),
-            package_id: "dev.mealy.extension.clock".to_owned(),
-            kind: RegistryPackageKind::Extension,
+            package_id: manifest.skill_id.clone(),
+            kind: RegistryPackageKind::Skill,
             publisher_id: "dev.mealy".to_owned(),
-            version: "1.0.0".to_owned(),
-            manifest: descriptor(REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE, b"manifest"),
-            package: descriptor(REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE, b"package"),
+            version: manifest.version.clone(),
+            manifest: descriptor(REGISTRY_SKILL_MANIFEST_MEDIA_TYPE, &manifest_bytes),
+            package: descriptor(REGISTRY_SKILL_PACKAGE_MEDIA_TYPE, &package_bytes),
             minimum_host_api: 1,
             maximum_host_api: 1,
             dependencies: Vec::new(),
@@ -985,6 +1304,81 @@ mod tests {
             .expect("exact release replay"),
             accepted
         );
+        let (inspected_release, _) = store
+            .registry_release(&root.registry_id, &release.package_id, &release.version)
+            .expect("load accepted release")
+            .expect("accepted release");
+        let inspected_package = crate::inspect_registry_package_archive(
+            &inspected_release,
+            &manifest_bytes,
+            &package_bytes,
+        )
+        .expect("inspect exact package");
+        let manifest_blob = artifacts.commit(&manifest_bytes).expect("manifest blob");
+        let package_blob = artifacts.commit(&package_bytes).expect("package blob");
+        let snapshot_state = store
+            .registry_snapshot_state(&root.registry_id)
+            .expect("snapshot state")
+            .expect("active snapshot");
+        let mut mismatched_manifest_blob = manifest_blob.clone();
+        mismatched_manifest_blob.size_bytes += 1;
+        assert!(matches!(
+            store.commit_registry_package(
+                &inspected_package,
+                mismatched_manifest_blob,
+                package_blob.clone(),
+                &snapshot_state,
+                1,
+                NOW_MS + 2,
+            ),
+            Err(mealy_application::RegistryMetadataStoreError::InvariantViolation(_))
+        ));
+        assert!(
+            store
+                .registry_package(&root.registry_id, &release.package_id, &release.version)
+                .expect("load rejected package")
+                .is_none(),
+            "mismatched blob evidence must commit no package row"
+        );
+        assert!(
+            store
+                .artifact_blob_records()
+                .expect("rejected package blob records")
+                .is_empty(),
+            "mismatched blob evidence must commit no database blob rows"
+        );
+        let staged = store
+            .commit_registry_package(
+                &inspected_package,
+                manifest_blob.clone(),
+                package_blob.clone(),
+                &snapshot_state,
+                1,
+                NOW_MS + 2,
+            )
+            .expect("stage package");
+        assert_eq!(staged.manifest_blob, manifest_blob);
+        assert_eq!(staged.package_blob, package_blob);
+        assert_eq!(
+            store
+                .commit_registry_package(
+                    &inspected_package,
+                    staged.manifest_blob.clone(),
+                    staged.package_blob.clone(),
+                    &snapshot_state,
+                    1,
+                    NOW_MS + 3,
+                )
+                .expect("exact package replay"),
+            staged
+        );
+        assert_eq!(
+            store
+                .artifact_blob_records()
+                .expect("backup-visible package blobs")
+                .len(),
+            2
+        );
         assert!(
             store
                 .connection
@@ -1001,6 +1395,28 @@ mod tests {
                 .is_err(),
             "immutable release evidence must reject updates"
         );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE registry_package SET staged_at_ms = staged_at_ms + 1
+                     WHERE registry_id = ?1 AND package_id = ?2 AND version = ?3",
+                    rusqlite::params![root.registry_id, release.package_id, release.version],
+                )
+                .is_err(),
+            "immutable package evidence must reject updates"
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM registry_package
+                     WHERE registry_id = ?1 AND package_id = ?2 AND version = ?3",
+                    rusqlite::params![root.registry_id, release.package_id, release.version],
+                )
+                .is_err(),
+            "immutable package evidence must reject deletes"
+        );
         drop(store);
 
         let mut reopened = SqliteStore::open(&database, NOW_MS + 3).expect("reopen registry store");
@@ -1009,6 +1425,23 @@ mod tests {
             .expect("load release")
             .expect("durable release");
         assert_eq!(reopened_state, accepted);
+        let reopened_package = reopened
+            .registry_package(&root.registry_id, &release.package_id, &release.version)
+            .expect("load package")
+            .expect("durable package");
+        assert_eq!(reopened_package, staged);
+        assert_eq!(
+            artifacts
+                .read(&reopened_package.manifest_blob)
+                .expect("read manifest blob"),
+            manifest_bytes
+        );
+        assert_eq!(
+            artifacts
+                .read(&reopened_package.package_blob)
+                .expect("read package blob"),
+            package_bytes
+        );
 
         let mut withdrawn_target = target;
         withdrawn_target.withdrawal = Some(RegistryWithdrawal {
@@ -1042,6 +1475,20 @@ mod tests {
             Err(RegistryUseCaseError::Verification(
                 mealy_application::RegistryError::Withdrawn
             ))
+        ));
+        assert!(matches!(
+            reopened.commit_registry_package(
+                &inspected_package,
+                reopened_package.manifest_blob,
+                reopened_package.package_blob,
+                &reopened
+                    .registry_snapshot_state(&root.registry_id)
+                    .expect("withdrawn snapshot state")
+                    .expect("withdrawn snapshot"),
+                1,
+                NOW_MS + 6,
+            ),
+            Err(mealy_application::RegistryMetadataStoreError::InvariantViolation(_))
         ));
         assert!(
             reopened
@@ -1086,6 +1533,25 @@ mod tests {
             sha256_digest: sha256_digest(bytes),
             size_bytes: u64::try_from(bytes.len()).expect("fixture length"),
         }
+    }
+
+    fn deterministic_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut builder = Builder::new(Vec::new());
+        for (path, bytes, mode) in entries {
+            let mut header = Header::new_ustar();
+            header.set_path(path).expect("archive path");
+            header.set_size(u64::try_from(bytes.len()).expect("archive entry size"));
+            header.set_mode(*mode);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mtime(0);
+            header.set_entry_type(EntryType::Regular);
+            header.set_cksum();
+            builder
+                .append(&header, Cursor::new(bytes))
+                .expect("archive entry");
+        }
+        builder.into_inner().expect("archive")
     }
 
     fn public_key(signing_key: &SigningKey) -> RegistryPublicKey {
