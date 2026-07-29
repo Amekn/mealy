@@ -304,10 +304,18 @@ Identical replay is idempotent; a package/version cannot alias different bytes. 
 blocks new acceptance without deleting historical evidence. Migration and restart tests cover
 v23-to-current, v24-to-v25, immutable triggers, replay, withdrawal, and root-rotation refresh.
 
-The next slices must add durable manifest/archive evidence, exact archive download and existing
-package inspection, permission-diff install/stage commands, installed-withdrawal policy, upgrade
-and rollback transactions, public registry publication tooling, and package/upgrade/recovery
-qualification.
+The sixth slice binds strict manifest and archive inspection to accepted release evidence.
+`package-fetch` revalidates the accepted publisher envelope under the current root/snapshot, then
+downloads only its exact signed manifest/archive objects. Extension identity, publisher, version,
+and host range or skill identity/version must agree with the release. The extraction-free,
+in-memory deterministic USTAR parser accepts only regular canonical inventory and exact declared
+content, while rejecting traversal, links, devices, sparse/extension records, duplicate/extra
+paths, metadata authority, malformed padding/trailers, and instruction control bytes. Output
+reports requested authority and exact file evidence but persists and grants nothing.
+
+The next slices must add durable manifest/archive evidence, permission-diff install/stage commands,
+installed-withdrawal policy, upgrade and rollback transactions, public registry publication
+tooling, and package/upgrade/recovery qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

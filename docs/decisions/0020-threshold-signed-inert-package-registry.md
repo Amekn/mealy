@@ -61,8 +61,9 @@ Mealy introduces a versioned registry contract in independent, inert layers.
 7. Snapshot and release inspection perform no network access, package extraction, code execution,
    configuration mutation, staging, or grant. Registry text never becomes model instructions.
    Discovery therefore creates no runtime authority.
-8. After separately bounded download, the existing skill/extension inspectors must recheck the
-   manifest descriptor and complete archive inventory. Update review computes a deterministic
+8. After separately bounded download, the package inspector rechecks the manifest descriptor and
+   complete archive inventory before existing skill/extension lifecycle code may see content.
+   Update review computes a deterministic
    permission diff: extension capability contracts, logical filesystem access, exact network
    destinations, opaque secret references, process spawning, and data-only skill tool references.
    Any changed surface requires fresh owner review; installation never inherits an old grant.
@@ -97,7 +98,16 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     Root rotation requires a newly authorized snapshot before admission, and later withdrawal
     blocks new acceptance without deleting history. `release-fetch` and `release-accept` use an
     exact review digest; `release-status` is offline.
-13. Download resumption, durable manifest/archive evidence, package publication tooling, staged
+13. `package-fetch` starts only from accepted release evidence, revalidates that exact envelope
+    against the current unexpired snapshot and active root, and retrieves only its signed manifest
+    and archive descriptors. Manifest identity is bound to package/publisher/version/host range.
+    Archive inspection is in-memory and extraction-free: exact deterministic USTAR framing,
+    regular-file-only type, canonical UTF-8 relative paths, zero ownership/time/padding, strict
+    `0644`/declared-executable `0755` modes, exact manifest/inventory/content digests and sizes, and
+    two terminal zero blocks. Links, devices, FIFOs, sparse/PAX/GNU extensions, duplicates,
+    traversal, undeclared content, and trailing bytes fail closed. Output reports requested
+    authority but creates no durable package row, file, stage, install, activation, or grant.
+14. Download resumption, durable manifest/archive evidence, package publication tooling, staged
     activation, withdrawal propagation to installed revisions, and rollback orchestration remain
     later slices. Mirror retrieval still performs no package execution and grants no runtime
     authority.
@@ -114,11 +124,14 @@ Mealy introduces a versioned registry contract in independent, inert layers.
 - Root, snapshot, and publisher-release history are append-only canonical evidence; only small
   root/snapshot head rows may advance, under exact monotonic SQLite triggers and application
   compare-and-swap fences.
-- The first slices add verification, durable anti-rollback/release evidence, bounded mirror
-  retrieval, and review primitives, not a public marketplace or automatic update path.
+- The first slices add verification, durable anti-rollback/release evidence, bounded mirror and
+  package retrieval, and extraction-free review primitives, not a public marketplace or automatic
+  update path.
 - Ed25519 verification adds a small audited cryptographic dependency to the production graph and
   remains subject to the existing advisory, license, duplicate-version, SBOM, and provenance
   gates.
+- The tar parser is used only for header interpretation and deterministic fixture construction;
+  Mealy does not call its filesystem extraction helpers for registry content.
 
 ## Alternatives considered
 

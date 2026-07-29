@@ -776,6 +776,15 @@ both v23-to-current construction and direct v24-to-v25 preservation. CLI parser/
 the separate release command graph, approval-before-network ordering, canonical review digests,
 and no release row on rejected input.
 
+Application tests additionally bind exact extension and skill manifests to their signed release
+identity and reject byte drift, duplicate JSON keys, and publisher/package/version/compatibility
+substitution. Infrastructure package tests construct deterministic USTAR archives for both package
+classes and verify exact inert inventory. Adversarial cases reject traversal, bad checksum or
+padding, trailing blocks, links, duplicate/extra paths, executable-mode widening, nonzero
+timestamps, substituted manifests, and control-bearing instruction text. CLI parser/process
+coverage proves the separate `package-fetch` graph and its accepted-release precondition; the
+command cannot create files, state, or authority.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

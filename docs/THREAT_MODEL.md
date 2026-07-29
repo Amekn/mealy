@@ -641,8 +641,18 @@ repeats active-root/current-snapshot, publisher threshold, withdrawal, dependenc
 and descriptor verification inside schema 25's immediate transaction. The immutable row binds the
 first admitting root/snapshot, host API, exact envelope/payload, manifest, and archive identities.
 A newer withdrawal blocks acceptance but does not erase historical evidence. Root rotation makes
-the prior snapshot ineligible until a newly authorized snapshot is accepted. These controls still
-do not fetch a manifest/archive, extract a path, stage code, install a skill, or create a grant.
+the prior snapshot ineligible until a newly authorized snapshot is accepted.
+
+An accepted release may then drive `package-fetch`, but only while its exact envelope is still
+authorized by the current unexpired snapshot under the active root. The command retrieves the two
+content-addressed objects, binds the manifest's semantic identity to the signed release, and
+inspects deterministic USTAR entirely in memory. Only regular files with canonical relative paths,
+zero owner/group/time/padding, strict data/executable modes, two exact trailer blocks, and the exact
+manifest-declared inventory/digests/sizes are accepted. Links, devices, FIFOs, sparse/PAX/GNU
+extensions, duplicate/traversal/extra paths, malformed checksums, control-bearing instructions,
+and trailing bytes fail closed. No archive extraction helper is called, so no attacker-selected
+path is created and no extraction-destination time-of-check race exists. These controls still do
+not retain package bytes, stage code, install a skill, activate an extension, or create a grant.
 
 ### A staging asset substitutes a different release daemon
 

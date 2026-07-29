@@ -190,6 +190,24 @@ fn registry_cli_is_approval_gated_monotonic_stopped_and_restart_durable() {
         "unexpected invalid release digest error: {}",
         String::from_utf8_lossy(&invalid_release_digest.stderr)
     );
+    let unaccepted_package = registry_command(
+        home.path(),
+        &[
+            "package-fetch",
+            REGISTRY_ID,
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+        ],
+    );
+    assert!(!unaccepted_package.status.success());
+    assert!(
+        String::from_utf8_lossy(&unaccepted_package.stderr)
+            .contains("release evidence was not found"),
+        "unexpected package precondition error: {}",
+        String::from_utf8_lossy(&unaccepted_package.stderr)
+    );
     let insecure_mirror = registry_command(
         home.path(),
         &[

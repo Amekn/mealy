@@ -1,4 +1,6 @@
-use crate::{is_sha256_digest, sha256_digest};
+use crate::{
+    ExtensionManifestInspection, inspect_extension_manifest, is_sha256_digest, sha256_digest,
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signature, VerifyingKey};
 use mealy_domain::{
@@ -141,7 +143,12 @@ impl RegistryContentDescriptor {
         Ok(())
     }
 
-    fn verify_bytes(&self, bytes: &[u8]) -> Result<(), RegistryError> {
+    /// Verifies exact byte length and SHA-256 against this already authenticated descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegistryError::InvalidDescriptor`] when either identity axis differs.
+    pub fn verify_bytes(&self, bytes: &[u8]) -> Result<(), RegistryError> {
         if u64::try_from(bytes.len()).ok() != Some(self.size_bytes)
             || sha256_digest(bytes) != self.sha256_digest
         {
@@ -695,6 +702,26 @@ pub struct InspectedRegistryRelease {
     pub envelope_digest: String,
     /// Exact verified signed envelope bytes.
     pub envelope_bytes: Vec<u8>,
+}
+
+/// Strict data-only manifest selected by one verified registry release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistryPackageManifest {
+    /// Executable extension metadata; no code has been loaded or run.
+    Extension(Box<ExtensionManifestInspection>),
+    /// Data-only skill metadata.
+    Skill(SkillManifest),
+}
+
+/// Exact verified package manifest bytes and semantic identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectedRegistryPackageManifest {
+    /// Strict parsed manifest matching the release's package class and identity.
+    pub manifest: RegistryPackageManifest,
+    /// Exact original manifest bytes.
+    pub manifest_bytes: Vec<u8>,
+    /// SHA-256 digest of the exact original manifest bytes.
+    pub manifest_digest: String,
 }
 
 /// Durable identity and provenance of one accepted publisher-signed release.
@@ -1255,6 +1282,65 @@ pub fn inspect_registry_release(
         payload_digest: sha256_digest(&payload),
         envelope_digest: sha256_digest(envelope_bytes),
         envelope_bytes: envelope_bytes.to_vec(),
+    })
+}
+
+/// Verifies one package manifest against a publisher-signed release without executing content.
+///
+/// Extension registry identity is the manifest's stable reverse-domain `name`; its publisher,
+/// version, and host range must match the release exactly. Skill registry identity is `skillId`.
+/// Duplicate JSON keys fail before semantic parsing.
+///
+/// # Errors
+///
+/// Returns [`RegistryError::InvalidPackageManifest`] for descriptor drift, duplicate JSON keys,
+/// invalid contracts, identity substitution, publisher/version mismatch, or compatibility drift.
+pub fn inspect_registry_package_manifest(
+    inspected_release: &InspectedRegistryRelease,
+    manifest_bytes: &[u8],
+) -> Result<InspectedRegistryPackageManifest, RegistryError> {
+    let release = &inspected_release.release;
+    release
+        .manifest
+        .validate(release.kind.manifest_media_type(), MAXIMUM_MANIFEST_BYTES)
+        .map_err(|_| RegistryError::InvalidPackageManifest)?;
+    release
+        .manifest
+        .verify_bytes(manifest_bytes)
+        .map_err(|_| RegistryError::InvalidPackageManifest)?;
+    reject_duplicate_json_keys(manifest_bytes)
+        .map_err(|()| RegistryError::InvalidPackageManifest)?;
+    let manifest = match release.kind {
+        RegistryPackageKind::Extension => {
+            let inspection =
+                inspect_extension_manifest(manifest_bytes, &release.manifest.sha256_digest)
+                    .map_err(|_| RegistryError::InvalidPackageManifest)?;
+            if inspection.manifest.name != release.package_id
+                || inspection.manifest.publisher != release.publisher_id
+                || inspection.manifest.version != release.version
+                || inspection.manifest.compatibility.minimum_host_api != release.minimum_host_api
+                || inspection.manifest.compatibility.maximum_host_api != release.maximum_host_api
+            {
+                return Err(RegistryError::InvalidPackageManifest);
+            }
+            RegistryPackageManifest::Extension(Box::new(inspection))
+        }
+        RegistryPackageKind::Skill => {
+            let manifest = serde_json::from_slice::<SkillManifest>(manifest_bytes)
+                .map_err(|_| RegistryError::InvalidPackageManifest)?;
+            manifest
+                .validate()
+                .map_err(|_| RegistryError::InvalidPackageManifest)?;
+            if manifest.skill_id != release.package_id || manifest.version != release.version {
+                return Err(RegistryError::InvalidPackageManifest);
+            }
+            RegistryPackageManifest::Skill(manifest)
+        }
+    };
+    Ok(InspectedRegistryPackageManifest {
+        manifest,
+        manifest_bytes: manifest_bytes.to_vec(),
+        manifest_digest: release.manifest.sha256_digest.clone(),
     })
 }
 
@@ -1954,6 +2040,9 @@ pub enum RegistryError {
     /// This Mealy extension-host API is outside the release compatibility range.
     #[error("registry release is incompatible with this Mealy host")]
     Incompatible,
+    /// Manifest bytes or semantic identity do not match the publisher-signed release.
+    #[error("registry package manifest is invalid or does not match its signed release")]
+    InvalidPackageManifest,
     /// Candidate manifests are invalid, change package identity, or cannot be diffed exactly.
     #[error("registry package permission diff is invalid")]
     InvalidPermissionDiff,
@@ -1970,13 +2059,14 @@ mod tests {
         REGISTRY_SNAPSHOT_PAYLOAD_TYPE, RELEASE_SIGNATURE_CONTEXT, ROOT_SIGNATURE_CONTEXT,
         RegistryContentDescriptor, RegistryError, RegistryMirror, RegistryMirrorError,
         RegistryMirrorRequest, RegistryMirrorResponse, RegistryMirrorTransport,
-        RegistryMirrorTransportError, RegistryPackageKind, RegistryPublicKey, RegistryPublisher,
-        RegistryRelease, RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope,
-        RegistrySnapshot, RegistrySnapshotState, RegistryTarget, RegistryTrustRoot,
-        RegistryWithdrawal, SNAPSHOT_SIGNATURE_CONTEXT, diff_extension_permissions,
-        diff_skill_permissions, fetch_registry_content, fetch_registry_snapshot_envelope,
-        inspect_initial_registry_trust_root, inspect_registry_release,
-        inspect_registry_root_rotation, inspect_registry_snapshot,
+        RegistryMirrorTransportError, RegistryPackageKind, RegistryPackageManifest,
+        RegistryPublicKey, RegistryPublisher, RegistryRelease, RegistrySignature,
+        RegistrySignatureAlgorithm, RegistrySignedEnvelope, RegistrySnapshot,
+        RegistrySnapshotState, RegistryTarget, RegistryTrustRoot, RegistryWithdrawal,
+        SNAPSHOT_SIGNATURE_CONTEXT, diff_extension_permissions, diff_skill_permissions,
+        fetch_registry_content, fetch_registry_snapshot_envelope,
+        inspect_initial_registry_trust_root, inspect_registry_package_manifest,
+        inspect_registry_release, inspect_registry_root_rotation, inspect_registry_snapshot,
     };
     use crate::sha256_digest;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -2687,6 +2777,145 @@ mod tests {
                 input_schema_digest: "b".repeat(64),
             }]),
         }
+    }
+
+    fn release_for_manifest(
+        kind: RegistryPackageKind,
+        package_id: &str,
+        publisher_id: &str,
+        version: &str,
+        manifest_bytes: &[u8],
+    ) -> super::InspectedRegistryRelease {
+        let release = RegistryRelease {
+            contract_version: REGISTRY_RELEASE_CONTRACT_VERSION.to_owned(),
+            registry_id: "dev.mealy.registry".to_owned(),
+            package_id: package_id.to_owned(),
+            kind,
+            publisher_id: publisher_id.to_owned(),
+            version: version.to_owned(),
+            manifest: descriptor(kind.manifest_media_type(), manifest_bytes),
+            package: descriptor(kind.package_media_type(), b"package"),
+            minimum_host_api: 1,
+            maximum_host_api: 1,
+            dependencies: Vec::new(),
+            published_at_ms: NOW_MS,
+        };
+        super::InspectedRegistryRelease {
+            release,
+            payload_digest: "a".repeat(64),
+            envelope_digest: "b".repeat(64),
+            envelope_bytes: b"fixture envelope".to_vec(),
+        }
+    }
+
+    #[test]
+    fn registry_package_manifests_bind_exact_extension_and_skill_identity() {
+        let extension_bytes =
+            serde_json::to_vec(&extension_manifest("1.0.0")).expect("extension manifest");
+        let extension_release = release_for_manifest(
+            RegistryPackageKind::Extension,
+            "dev.mealy.fixture",
+            "dev.mealy",
+            "1.0.0",
+            &extension_bytes,
+        );
+        let inspected = inspect_registry_package_manifest(&extension_release, &extension_bytes)
+            .expect("extension manifest inspection");
+        assert!(matches!(
+            inspected.manifest,
+            RegistryPackageManifest::Extension(_)
+        ));
+        assert_eq!(inspected.manifest_bytes, extension_bytes);
+        assert_eq!(
+            inspected.manifest_digest,
+            extension_release.release.manifest.sha256_digest
+        );
+
+        let skill = skill_manifest("fixture.read");
+        let skill_bytes = serde_json::to_vec(&skill).expect("skill manifest");
+        let skill_release = release_for_manifest(
+            RegistryPackageKind::Skill,
+            &skill.skill_id,
+            "dev.mealy",
+            &skill.version,
+            &skill_bytes,
+        );
+        let inspected = inspect_registry_package_manifest(&skill_release, &skill_bytes)
+            .expect("skill manifest inspection");
+        assert!(matches!(
+            inspected.manifest,
+            RegistryPackageManifest::Skill(_)
+        ));
+        assert_eq!(inspected.manifest_bytes, skill_bytes);
+    }
+
+    #[test]
+    fn registry_package_manifest_rejects_byte_drift_and_semantic_substitution() {
+        let manifest = extension_manifest("1.0.0");
+        let original = serde_json::to_vec(&manifest).expect("manifest");
+        let release = release_for_manifest(
+            RegistryPackageKind::Extension,
+            "dev.mealy.fixture",
+            "dev.mealy",
+            "1.0.0",
+            &original,
+        );
+        let mut drifted = original.clone();
+        drifted.push(b' ');
+        assert_eq!(
+            inspect_registry_package_manifest(&release, &drifted),
+            Err(RegistryError::InvalidPackageManifest)
+        );
+
+        for substituted in [
+            {
+                let mut value = manifest.clone();
+                value.name = "dev.mealy.other".to_owned();
+                value
+            },
+            {
+                let mut value = manifest.clone();
+                value.publisher = "dev.other".to_owned();
+                value
+            },
+            {
+                let mut value = manifest.clone();
+                value.version = "2.0.0".to_owned();
+                value
+            },
+            {
+                let mut value = manifest.clone();
+                value.compatibility.maximum_host_api = 2;
+                value
+            },
+        ] {
+            let bytes = serde_json::to_vec(&substituted).expect("substituted manifest");
+            let substituted_release = release_for_manifest(
+                RegistryPackageKind::Extension,
+                "dev.mealy.fixture",
+                "dev.mealy",
+                "1.0.0",
+                &bytes,
+            );
+            assert_eq!(
+                inspect_registry_package_manifest(&substituted_release, &bytes),
+                Err(RegistryError::InvalidPackageManifest)
+            );
+        }
+
+        let json = String::from_utf8(original).expect("UTF-8 fixture");
+        let duplicate = format!("{{\"schemaVersion\":1,{}", &json[1..]).into_bytes();
+        let duplicate_release = release_for_manifest(
+            RegistryPackageKind::Extension,
+            "dev.mealy.fixture",
+            "dev.mealy",
+            "1.0.0",
+            &duplicate,
+        );
+        assert_eq!(
+            inspect_registry_package_manifest(&duplicate_release, &duplicate),
+            Err(RegistryError::InvalidPackageManifest)
+        );
     }
 
     #[test]

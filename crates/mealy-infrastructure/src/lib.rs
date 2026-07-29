@@ -15,6 +15,7 @@ mod mcp_oauth_token;
 mod media;
 mod provider_secret;
 mod registry_mirror;
+mod registry_package;
 mod sandbox;
 mod skill_package;
 mod sqlite;
@@ -71,6 +72,10 @@ pub use media::{
 };
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use registry_mirror::HttpsRegistryMirrorTransport;
+pub use registry_package::{
+    InspectedRegistryPackageArchive, InspectedRegistryPackageFile, RegistryPackageArchiveError,
+    inspect_registry_package_archive,
+};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};
 pub use skill_package::{
     InspectedSkillAsset, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,

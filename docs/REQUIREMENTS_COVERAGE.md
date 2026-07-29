@@ -58,9 +58,13 @@ release evidence under the active root/snapshot fence. Transactional reverificat
 publisher threshold, withdrawal, exact dependency closure, descriptors, and host compatibility;
 root rotation requires a newly authorized snapshot. Evidence is immutable and restart-durable,
 exact replay is idempotent, aliasing conflicts, and later withdrawal blocks new acceptance while
-preserving audit history. Manifest/archive retrieval and inspection, staged activation,
-installed-withdrawal handling, and rollback are still open v0.5 work and therefore are not marked
-covered here.
+preserving audit history. `package-fetch` now requires that durable evidence and current
+root/snapshot authorization, retrieves only the signed manifest/archive objects, binds manifest
+identity, and performs extraction-free exact USTAR inventory/content inspection. Adversarial tests
+cover traversal, links, duplicates, extra files, metadata, checksums, padding/trailers, manifest
+substitution, and instruction controls. It reports authority but persists and grants nothing.
+Durable package staging, installed-withdrawal handling, activation, and rollback are still open
+v0.5 work and therefore are not marked covered here.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

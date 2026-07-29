@@ -184,13 +184,33 @@ idempotent, while the same registry/package/version can never alias different by
 `release-status` is offline and remains available for historical evidence after a later
 withdrawal; that withdrawal blocks new acceptance.
 
+Once release evidence is accepted, fetch and strictly inspect its exact manifest and package:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-fetch dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+`package-fetch` requires the release to remain selected and unwithdrawn by the current unexpired
+snapshot under the active root. It retrieves only the manifest and archive objects addressed by
+that release's signed SHA-256 descriptors. Output presents the exact manifest/archive digests,
+complete file inventory, executable flags, and requested extension authority or separately
+governed skill/tool references. It writes no package bytes and creates no grant.
+
 The application transport also derives immutable release/manifest/archive paths only as
 `objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
-SHA-256 before parsing. Release commands fetch only the signed release envelope, not its manifest
-or archive. No registry command extracts content, installs, stages, activates, discovers a mirror,
-or grants a permission. Accepted metadata remains inert durable evidence. Manifest/archive
-retrieval, full package inspection, permission-diff staging, and withdrawal-aware install/rollback
-are separate later v0.5 boundaries.
+SHA-256 before parsing. The package inspector accepts only uncompressed deterministic USTAR with
+two exact zero trailer blocks, regular files, canonical UTF-8 relative paths, zero owner/group/time,
+mode `0644` for data and `0755` only for the declared extension executable, zero padding, and an
+inventory exactly equal to `manifest.json` plus declared content. It rejects links, devices,
+FIFOs, sparse/PAX/GNU extensions, duplicates, undeclared files, traversal, non-canonical metadata,
+and trailing content. It parses and retains bytes in memory rather than invoking a tar extraction
+API, so inspection cannot create filesystem paths or race an extraction destination.
+
+No registry command installs, stages, activates, discovers a mirror, or grants a permission.
+Accepted metadata remains inert durable evidence. Durable manifest/archive retention,
+permission-diff staging, and withdrawal-aware install/rollback are separate later v0.5 boundaries.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`
