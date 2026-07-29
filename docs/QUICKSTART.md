@@ -346,6 +346,13 @@ most 32 KiB, and confirm the exact effect, attempt, revision, tool, targets, and
 Evidence is durable, so include only secret-free receipts/observations and never credentials.
 Ambiguous reconciliation retries reuse the same key; the operation is never redispatched.
 
+The Delegated work panel loads at most 20 recent children from the same exact owner binding. Each
+card shows canonical parent/child lineage and current state; `Inspect exact` renders the child’s
+effective read authority, separately enforced budget, and structured terminal result without
+copying them into browser-owned state. The panel is observational: ask the agent to delegate in an
+ordinary turn, cancel through the parent task when necessary, and use the scriptable
+`delegation list/status` commands for automation.
+
 The 30-day settled usage panel includes terminal root, delegated, and validation runs for the exact
 authenticated binding. It groups by UTC completion day, omits empty days, and shows complete
 settled run/call/retry/token/configured-cost totals; an unsettled terminal reservation makes the

@@ -86,7 +86,8 @@ Plain `tui` selects the newest exact-binding session and creates one only when n
 `--new` and `--session-id` are mutually exclusive. The workbench is a bounded thin client: the
 daemon remains authoritative for sessions, transcripts, timelines, approvals, checkpoints, forks,
 and admission. It shows the verified canonical transcript, provider/model/context/price status,
-queued and active work, structured recent event/tool evidence, and exact pending approvals.
+queued and active work, structured recent event/tool evidence, up to 20 recent canonical
+delegated-child state/lineage cards, and exact pending approvals.
 
 Use `Tab`/`Shift-Tab` to move among panes, arrow keys or `j`/`k` to navigate, `/` from the session
 pane to search canonical user/final-assistant text, and `Enter` to admit the composer content.

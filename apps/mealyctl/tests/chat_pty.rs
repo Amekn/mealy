@@ -1546,6 +1546,7 @@ async fn spawn_control_plane(state: AdmissionState) -> (String, JoinHandle<()>) 
         .route("/v1/admin/status", get(admin_status))
         .route("/v1/providers/catalog", get(provider_catalog))
         .route("/v1/approvals", get(pending_approvals))
+        .route("/v1/delegations", get(recent_delegations))
         .route("/v1/sessions", get(list_sessions).post(create_session))
         .route("/v1/sessions/search", get(search_sessions))
         .route("/v1/sessions/{session_id}", patch(update_session_title))
@@ -1654,6 +1655,13 @@ async fn pending_approvals() -> Json<serde_json::Value> {
     Json(json!({
         "apiVersion": API_VERSION,
         "approvals": []
+    }))
+}
+
+async fn recent_delegations() -> Json<serde_json::Value> {
+    Json(json!({
+        "apiVersion": API_VERSION,
+        "delegations": []
     }))
 }
 

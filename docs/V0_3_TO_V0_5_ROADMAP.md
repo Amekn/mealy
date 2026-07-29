@@ -88,9 +88,11 @@ architecture/distribution before the gate is complete.
 - [x] Include a session rail, searchable titles, verified conversation timeline, composer,
   provider/context/cost status, active/queued work, exact approvals, structured recent tool/event
   results, and bounded evidence previews.
-- [ ] Add richer dedicated subagent cards and media/artifact/diff viewers as the corresponding v0.4
-  delegation and multimodal projections mature; current canonical delegation/tool facts remain
-  visible in the structured activity preview.
+- [x] Add bounded dedicated delegated-child cards plus path-free media/artifact evidence as the
+  corresponding v0.4 delegation and image projections mature. The TUI shows recent canonical child
+  state/lineage, while the dashboard permits exact budget/authority/result inspection.
+- [ ] Add a dedicated diff viewer after a canonical bounded diff-artifact projection exists; raw
+  tool payloads are not promoted into an alternate client-owned diff format.
 - [x] Restore terminal state after normal exit, cancellation, panic, daemon loss,
   resize, and unsupported-terminal detection.
 - [x] Keep terminal input and rendered remote text bounded and control-character
@@ -143,6 +145,17 @@ Publication requires:
   steering.
 - Preserve isolated contexts and authority intersection. Shared task state is
   typed canonical evidence, not a writable prompt scratchpad.
+
+The v0.4 candidate implements atomic ordered `agent.delegate_parallel` groups in addition to the
+serial operation. One model call may propose one to four self-contained children, but the complete
+group is rejected before publication unless parent delegated-run/tool reservations, fan-out,
+depth, authority intersections, resource claims, and each separate child budget fit together.
+Children claim through ordinary fenced scheduling, parent cancellation propagates to queued and
+running children, and the parent resumes only after deterministic ordinal settlement. Abrupt
+restart, partial completion, budget rollback, cancellation, individual child replay, and
+zero-provider group replay are public-process tested. The owner-scoped CLI remains scriptable;
+the TUI now renders recent child state/lineage cards, and the dashboard adds a separately bounded
+read-only projection for exact child authority, budget, state, and structured result.
 
 ### MCP
 
