@@ -4,6 +4,10 @@ Reports in this directory are bounded observations, not portable guarantees. Rea
 revision, source state, build profile, target, fixture delay, pacing, duration, and host resources
 before comparing it with another run. A report from a dirty worktree or Cargo integration binary
 is development evidence and cannot satisfy the clean packaged-release gate.
+The harness refuses an existing or symlinked report destination and durably publishes both
+terminal success and failure reports with a same-directory atomic operation. A pathname watcher
+therefore cannot observe a partially written report, and a later run cannot overwrite retained
+evidence.
 
 Run the optimized public-process harness with:
 
