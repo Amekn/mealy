@@ -81,6 +81,17 @@ removal, substitution, or evidence mismatch blocks skill instruction activation 
 enable/invocation without deleting audit evidence. Snapshot expiry alone does not deactivate an
 offline install.
 
+The first v0.5 stable SDK slice extends API/AUTH/NFR-REL/NFR-QUAL evidence without adding a second
+state authority. `mealy-client` reuses `mealy-protocol` DTOs and exposes typed health/status,
+provider, session-workbench/input, task-control/replay, approval, extension, and channel
+operations. It rejects ambiguous origins and identifiers, disallows remote clear-text transport,
+ambient proxies, and redirects, redacts bearer material, bounds request/response bytes, validates
+request/response/error versions, and preserves structured retry evidence. Real loopback unit
+fixtures cover exact headers, paths, queries, bodies, receipts, size/version failures,
+private-descriptor validation, and debug redaction. Async/SSE, non-Rust bindings, and frozen
+downstream compatibility qualification remain explicit v0.5 work rather than current release-one
+claims.
+
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context
 manifests use one bounded, compressed, digest-verified item bundle with sparse foreign-key

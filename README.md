@@ -419,6 +419,7 @@ verifiable.
 - `crates/mealy-application`: use cases, recovery planning, and ports.
 - `crates/mealy-infrastructure`: SQLite, artifacts, processes, providers, and OS adapters.
 - `crates/mealy-protocol`: versioned transport DTOs.
+- `crates/mealy-client`: secure typed Rust SDK for the authenticated owner API.
 - `crates/mealy-api`: authenticated HTTP/SSE adapter.
 - `crates/mealy-testkit`: deterministic scenario support.
 - `docs`: design, decisions, research, and verification strategy.

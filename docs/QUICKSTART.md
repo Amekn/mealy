@@ -2271,6 +2271,22 @@ Successful, failed, and cancelled child results return through the recorded
 waits propagates to a queued or running child, settles both reservations, and terminally cancels
 the parent. Delegation is unavailable in the built-in offline fixture profile and in safe mode.
 
+## Integrate from Rust
+
+Workspace users can depend on `mealy-client` and construct `MealyClient` from an already trusted
+`LocalConnectionInfo`. The SDK exposes the exact versioned DTOs through
+`mealy_client::protocol` and has typed methods for status/provider discovery, session workbench,
+text/image admission, task control and replay, approvals, extensions, and channel administration.
+
+Do not open `$MEALY_HOME/connection.json` through an ordinary path lookup in a reusable service.
+It contains the bearer credential. Apply the same canonical owner-private directory,
+owner-private regular-file, no-follow, and 64-KiB bounds used by `mealyctl`, then pass the parsed
+descriptor to `MealyClient::from_connection`. Do not copy the token into source, command-line
+arguments, logs, ambient environment, or shared configuration. See
+[`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) for the client and error
+contract. The current SDK is blocking and page-based; timeline SSE and additional languages remain
+v0.5 work.
+
 ## Install as a user service
 
 With `mealyd` and `mealyctl` installed beside each other in `$HOME/.local/bin`:

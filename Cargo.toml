@@ -7,6 +7,7 @@ members = [
     "crates/mealy-application",
     "crates/mealy-infrastructure",
     "crates/mealy-protocol",
+    "crates/mealy-client",
     "crates/mealy-api",
     "crates/mealy-testkit",
 ]
@@ -45,6 +46,7 @@ mealy-application = { path = "crates/mealy-application", version = "=0.3.0" }
 mealy-domain = { path = "crates/mealy-domain", version = "=0.3.0" }
 mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.3.0" }
 mealy-protocol = { path = "crates/mealy-protocol", version = "=0.3.0" }
+mealy-client = { path = "crates/mealy-client", version = "=0.3.0" }
 mealy-testkit = { path = "crates/mealy-testkit", version = "=0.3.0" }
 proptest = "1.7.0"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }

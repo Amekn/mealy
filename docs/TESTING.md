@@ -821,6 +821,15 @@ workspace compilation and daemon integration cover policy checks at both registr
 enable and invocation; the existing application policy proof supplies authorized, withdrawn,
 removed, substituted, and evidence-incomplete dispositions.
 
+The v0.5 typed Rust client unit suite runs requests through real loopback sockets. It proves the
+exact bearer, accept, content-type, method, path, query, and typed JSON command boundary; compatible
+success and structured-error decoding; pre-dispatch request-version and path-identity rejection;
+response-version and nested-envelope rejection; strict descriptor validation; request/response
+size enforcement; and credential-free builder/client debug output. `mealy-client` also runs under
+the workspace's all-target/all-feature strict Clippy, doc-test, and warning-denied rustdoc gates.
+Future SDK release qualification must add frozen cross-version daemon fixtures, async/SSE
+resumption, and clean downstream-consumer compilation.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

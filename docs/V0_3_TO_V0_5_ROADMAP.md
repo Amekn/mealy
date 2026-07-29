@@ -328,7 +328,13 @@ release qualification remain separate slices.
 ### SDK, observability, evaluation, and remote continuation
 
 - Publish stable typed clients for the daemon, timeline, approvals, extensions,
-  and channels.
+  and channels. The first stable Rust SDK is implemented in `mealy-client`: it reuses the
+  versioned protocol DTOs and covers health/status, provider discovery, session workbench,
+  text/image admission, task control/replay, approvals, governed extensions, and all four
+  administrative channel lifecycles. It requires HTTPS outside literal loopback, ignores ambient
+  proxies, refuses redirects, redacts bearer credentials, bounds request/response JSON, and
+  rejects incompatible request, response, and structured error versions. Async and non-Rust
+  clients remain later ecosystem work.
 - Export bounded OpenTelemetry traces/metrics without prompts, secrets, or
   private content by default.
 - Add versioned scenario/evaluation contracts for task success, safety,

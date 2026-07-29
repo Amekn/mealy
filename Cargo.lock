@@ -1804,6 +1804,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mealy-client"
+version = "0.3.0"
+dependencies = [
+ "base64",
+ "mealy-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "mealy-domain"
 version = "0.3.0"
 dependencies = [

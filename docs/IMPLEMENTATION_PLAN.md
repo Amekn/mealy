@@ -350,6 +350,33 @@ next slices must add public registry publication tooling and package/upgrade/rec
 qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
+## Productionization slice: stable typed Rust owner client
+
+Status: first v0.5 SDK boundary implemented. `mealy-client` is an independently reusable blocking
+Rust client over the canonical `mealy-protocol` DTOs. Its initial stable surface covers daemon
+health/status and provider catalog, session create/list/search/status/title/provider-selection/
+checkpoint/fork/text-or-image-admission/timeline, task status/pause/resume/cancel/recorded replay,
+exact approval resolution, governed extension install/stage/lifecycle/invoke, and webhook,
+Telegram, Discord, and Slack administration.
+
+Construction rejects URL credentials, base paths, queries, fragments, unsupported schemes, and
+non-loopback clear-text origins. The client disables ambient proxies and redirects, applies
+positive connect/request deadlines, marks bearer headers sensitive, redacts debug output, caps
+JSON responses at 8 MiB by default and 64 MiB absolutely, validates typed request versions before
+network dispatch, caps serialized commands at 8 MiB, retains their source bytes in zeroizing
+readers, and requires compatible versions in both successful and structured error responses. The
+one-time webhook creation envelope validates its nested channel version. Opaque
+path identities cannot contain separators or control characters. The local connection-descriptor
+constructor additionally requires the exact v1, literal-loopback HTTP origin with explicit port,
+and 32-byte base64url bearer contract; filesystem loading remains the embedding application's
+owner-private no-follow responsibility.
+
+Unit fixtures exercise transport headers, typed command bodies, structured errors, response
+limits, incompatible versions, ambiguous identifiers, descriptor validation, and secret-free
+debug output against a real loopback socket. Strict Clippy, unit, doc, and rustdoc gates cover the
+crate. Async, additional-language clients, generated compatibility fixtures, and publication
+policy remain later v0.5 slices.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,

@@ -375,6 +375,29 @@ Use the response's `retryable` value, bounded exponential backoff, and a retry c
 blindly retry a mutation with a new idempotency key. Do not infer authorization state from the
 difference between `403` and `404`.
 
+## Typed Rust client
+
+`crates/mealy-client` provides the first stable SDK over these exact DTOs. `MealyClient` is a
+blocking client intended for owner-local integrations and later HTTPS-protected single-owner
+continuation. It covers health/status, providers, session workbench, approvals, extensions, and
+webhook, Telegram, Discord, and Slack administration. Session workbench includes text/image
+admission plus task status, pause, resume, cancellation, and recorded replay. Import DTOs through
+`mealy_client::protocol` so client and wire-contract versions remain coordinated.
+
+The SDK accepts clear-text HTTP only for literal `127.0.0.0/8` or `::1` addresses and requires
+HTTPS elsewhere. URL credentials, base paths, queries, and fragments are invalid. Ambient proxies
+and redirects are disabled, bearer headers and debug output are redacted, request and response
+versions are checked, typed JSON commands have a fixed 8 MiB pre-dispatch ceiling and zeroizing
+source buffer, and JSON responses are streamed into an 8 MiB default ceiling rather than trusted
+from `Content-Length`. The response ceiling can be lowered or raised to at most 64 MiB through the
+builder. `MealyClient::from_connection` accepts an already trusted `LocalConnectionInfo`; it does
+not open `connection.json`, so an embedding application must retain Mealy's owner-private,
+no-symlink file boundary when loading that descriptor.
+
+See [`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) and generated Rustdoc for
+the operation and error contracts. Timeline SSE is not yet part of this blocking SDK; use bounded
+timeline pages or the documented SSE contract until the async SDK slice is implemented.
+
 ## Compatibility contract
 
 Clients must send `apiVersion: "v1"` on mutation DTOs and require `apiVersion == "v1"` in JSON

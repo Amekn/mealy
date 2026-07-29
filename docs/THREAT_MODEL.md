@@ -531,6 +531,15 @@ descriptor itself with no-follow semantics, validates the metadata on that exact
 caps it at 64 KiB, and accepts only a 32-byte bearer plus a literal loopback HTTP origin. This
 prevents a permissive or redirected parent directory from turning an otherwise private descriptor
 check into bearer disclosure.
+The reusable Rust SDK accepts a parsed descriptor only after rechecking its v1 version, exact
+32-byte base64url bearer shape, and literal-loopback HTTP origin with an explicit port. It does not
+claim to load the file safely on behalf of an embedding application. Its general constructor
+allows HTTPS for future owner-controlled remote continuation, but non-loopback clear-text origins,
+URL credentials, base paths, queries, and fragments are rejected. Ambient proxies and redirects
+are disabled, authorization headers are marked sensitive, debug output is redacted, responses are
+bounded independently of `Content-Length`, typed command serialization is bounded before dispatch
+and held in a zeroizing source buffer, and incompatible or terminal-unsafe structured errors are
+rejected before an application can display them.
 Dashboard memory explicitly warns that credential-category content is a reference only. The
 adapter never accepts arbitrary source locators, but it cannot determine whether owner-entered
 content is itself a secret; typed review, sensitivity/category metadata, owner-local exposure, and
