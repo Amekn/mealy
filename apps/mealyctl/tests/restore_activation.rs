@@ -278,6 +278,10 @@ fn downgrade_to_schema_13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
+             DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+             DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+             DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+             DROP TABLE extension_manifest_registry_provenance;
              DROP TABLE registry_package;
              DROP TABLE registry_release;
              DROP TABLE registry_snapshot_head;
@@ -285,7 +289,7 @@ fn downgrade_to_schema_13(database: &Path) {
              DROP TABLE registry_trust_root_head;
              DROP TABLE registry_trust_root;
              DELETE FROM schema_version WHERE version IN (
-                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27
              );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )

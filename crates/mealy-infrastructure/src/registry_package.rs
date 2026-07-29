@@ -1,11 +1,21 @@
+use crate::{InstalledExtensionPackage, inspect_extension_package};
 use mealy_application::{
-    InspectedRegistryPackageManifest, InspectedRegistryRelease,
+    ExtensionHostError, InspectedRegistryPackageManifest, InspectedRegistryRelease,
     REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE, REGISTRY_SKILL_PACKAGE_MEDIA_TYPE, RegistryError,
     RegistryPackageKind, RegistryPackageManifest, inspect_registry_package_manifest, sha256_digest,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions},
+    io::Write as _,
+    path::{Component, Path},
+    sync::atomic::{AtomicU64, Ordering},
+};
 use tar::{EntryType, Header};
 use thiserror::Error;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
 const TAR_BLOCK_BYTES: usize = 512;
 const TAR_TRAILER_BYTES: usize = TAR_BLOCK_BYTES * 2;
@@ -13,6 +23,7 @@ const MANIFEST_PATH: &str = "manifest.json";
 const MAXIMUM_ARCHIVE_ENTRIES: usize = 512;
 const MAXIMUM_ARCHIVE_PATH_BYTES: usize = 256;
 const MAXIMUM_EXTENSION_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
+static EXTENSION_INSTALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// One exact regular file retained from a strictly inspected registry package archive.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +68,23 @@ pub struct InspectedRegistryPackageArchive {
     archive_digest: String,
     archive_size_bytes: u64,
     files: BTreeMap<String, InspectedRegistryPackageFile>,
+}
+
+/// Failure to publish authenticated registry extension bytes as one immutable inert revision.
+#[derive(Debug, Error)]
+pub enum RegistryExtensionPackageError {
+    /// Filesystem publication failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// Authenticated package shape or destination safety invariant failed.
+    #[error("registry extension package is invalid")]
+    InvalidPackage,
+    /// An existing content-addressed destination does not reproduce the exact package.
+    #[error("registry extension package installation conflicts with existing bytes")]
+    InstallationConflict,
+    /// Published bytes or declared runtime dependencies fail the established extension host check.
+    #[error(transparent)]
+    ExtensionHost(#[from] ExtensionHostError),
 }
 
 impl InspectedRegistryPackageArchive {
@@ -138,6 +166,181 @@ pub fn inspect_registry_package_archive(
             .map_err(|_| RegistryPackageArchiveError::InvalidArchive)?,
         files,
     })
+}
+
+/// Publishes one strictly inspected registry extension below `installation_root/MANIFEST_DIGEST`.
+///
+/// Publication copies only the exact in-memory authenticated manifest and executable. The
+/// destination is private, content-addressed, synchronized, and re-inspected through the existing
+/// extension host boundary without executing code.
+///
+/// # Errors
+///
+/// Returns [`RegistryExtensionPackageError`] for non-extension input, redirected destinations,
+/// conflicting existing bytes, filesystem failure, or executable/runtime identity failure.
+pub fn publish_registry_extension_package(
+    package: &InspectedRegistryPackageArchive,
+    installation_root: &Path,
+) -> Result<InstalledExtensionPackage, RegistryExtensionPackageError> {
+    let RegistryPackageManifest::Extension(inspection) = &package.manifest().manifest else {
+        return Err(RegistryExtensionPackageError::InvalidPackage);
+    };
+    create_private_directory(installation_root)?;
+    if fs::canonicalize(installation_root)? != installation_root {
+        return Err(RegistryExtensionPackageError::InvalidPackage);
+    }
+    let destination = installation_root.join(&package.manifest().manifest_digest);
+    if destination.exists() {
+        verify_published_extension(package, &destination)?;
+        return inspect_extension_package((**inspection).clone(), destination).map_err(Into::into);
+    }
+    let temporary = installation_root.join(format!(
+        ".{}.tmp-{}-{}",
+        package.manifest().manifest_digest,
+        std::process::id(),
+        EXTENSION_INSTALL_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    ));
+    if temporary.exists() {
+        return Err(RegistryExtensionPackageError::InstallationConflict);
+    }
+    create_private_directory(&temporary)?;
+    let executable = &inspection.manifest.entry_point.executable;
+    let executable_file = package
+        .files()
+        .get(executable)
+        .filter(|file| file.executable())
+        .ok_or(RegistryExtensionPackageError::InvalidPackage)?;
+    let publication: Result<(), RegistryExtensionPackageError> = (|| {
+        write_private_file(
+            &temporary.join(MANIFEST_PATH),
+            &package.manifest().manifest_bytes,
+            false,
+        )?;
+        let executable_path = temporary.join(executable);
+        let executable_parent = executable_path
+            .parent()
+            .ok_or(RegistryExtensionPackageError::InvalidPackage)?;
+        create_private_directory(executable_parent)?;
+        write_private_file(&executable_path, executable_file.bytes(), true)?;
+        sync_tree(&temporary)?;
+        fs::rename(&temporary, &destination)?;
+        File::open(installation_root)?.sync_all()?;
+        Ok(())
+    })();
+    if publication.is_err() {
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    publication?;
+    verify_published_extension(package, &destination)?;
+    inspect_extension_package((**inspection).clone(), destination).map_err(Into::into)
+}
+
+fn verify_published_extension(
+    package: &InspectedRegistryPackageArchive,
+    destination: &Path,
+) -> Result<(), RegistryExtensionPackageError> {
+    if fs::canonicalize(destination)? != destination {
+        return Err(RegistryExtensionPackageError::InvalidPackage);
+    }
+    let RegistryPackageManifest::Extension(inspection) = &package.manifest().manifest else {
+        return Err(RegistryExtensionPackageError::InvalidPackage);
+    };
+    let expected = BTreeSet::from([
+        MANIFEST_PATH.to_owned(),
+        inspection.manifest.entry_point.executable.clone(),
+    ]);
+    let mut actual = BTreeSet::new();
+    collect_published_files(destination, destination, &mut actual)?;
+    if actual != expected
+        || fs::read(destination.join(MANIFEST_PATH))? != package.manifest().manifest_bytes
+        || fs::read(destination.join(&inspection.manifest.entry_point.executable))?
+            != package
+                .files()
+                .get(&inspection.manifest.entry_point.executable)
+                .ok_or(RegistryExtensionPackageError::InvalidPackage)?
+                .bytes()
+    {
+        return Err(RegistryExtensionPackageError::InstallationConflict);
+    }
+    Ok(())
+}
+
+fn collect_published_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut BTreeSet<String>,
+) -> Result<(), RegistryExtensionPackageError> {
+    if files.len() > 2 {
+        return Err(RegistryExtensionPackageError::InstallationConflict);
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(RegistryExtensionPackageError::InstallationConflict);
+        }
+        if metadata.is_dir() {
+            collect_published_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| RegistryExtensionPackageError::InvalidPackage)?;
+            if !relative
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+            {
+                return Err(RegistryExtensionPackageError::InvalidPackage);
+            }
+            let relative = relative
+                .to_str()
+                .ok_or(RegistryExtensionPackageError::InvalidPackage)?
+                .to_owned();
+            if !files.insert(relative) {
+                return Err(RegistryExtensionPackageError::InstallationConflict);
+            }
+        } else {
+            return Err(RegistryExtensionPackageError::InstallationConflict);
+        }
+    }
+    Ok(())
+}
+
+fn create_private_directory(path: &Path) -> Result<(), RegistryExtensionPackageError> {
+    fs::create_dir_all(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(RegistryExtensionPackageError::InvalidPackage);
+    }
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn write_private_file(
+    path: &Path,
+    bytes: &[u8],
+    executable: bool,
+) -> Result<(), RegistryExtensionPackageError> {
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    options.mode(if executable { 0o700 } else { 0o600 });
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn sync_tree(directory: &Path) -> Result<(), RegistryExtensionPackageError> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            sync_tree(&entry.path())?;
+        }
+    }
+    File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -435,7 +638,9 @@ fn invalid_instruction(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RegistryPackageArchiveError, inspect_registry_package_archive, parse_canonical_ustar,
+        RegistryExtensionPackageError, RegistryPackageArchiveError,
+        inspect_registry_package_archive, parse_canonical_ustar,
+        publish_registry_extension_package,
     };
     use mealy_application::{
         InspectedRegistryRelease, REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE,
@@ -521,6 +726,26 @@ mod tests {
         assert!(installed_worker.executable());
         assert_eq!(installed_worker.bytes(), worker);
         assert_eq!(installed_worker.digest(), sha256_digest(worker));
+
+        let temporary = tempfile::tempdir().expect("temporary extension publication");
+        let installation_root = temporary.path().join("extensions");
+        let installed = publish_registry_extension_package(&inspected, &installation_root)
+            .expect("publish exact inert extension");
+        assert_eq!(installed.inspection().manifest, extension);
+        assert_eq!(
+            std::fs::read(installed.executable_path()).expect("published worker"),
+            worker
+        );
+        let repeated = publish_registry_extension_package(&inspected, &installation_root)
+            .expect("idempotent exact publication");
+        assert_eq!(repeated, installed);
+
+        std::fs::write(installed.executable_path(), b"substituted worker")
+            .expect("substitute published worker");
+        assert!(matches!(
+            publish_registry_extension_package(&inspected, &installation_root),
+            Err(RegistryExtensionPackageError::InstallationConflict)
+        ));
     }
 
     #[test]

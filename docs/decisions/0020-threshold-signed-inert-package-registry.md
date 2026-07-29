@@ -120,11 +120,11 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     and compares them with the existing skill or extension revision. Its digest binds publisher
     evidence, candidate bytes, current digest/status/revision, complete permission/tool-reference
     diff, content/executable changes, widening, and authority-reset intent. It mutates nothing.
-16. Approved `package-install` currently accepts only data-only skills and only the exact reviewed
-    plan digest. It repeats plan construction under the stopped-home lock, converts the opaque
-    extraction-free package into the existing inert skill package type, and publishes through the
+16. Approved `package-install` accepts only the exact reviewed plan digest and repeats plan
+    construction under the stopped-home lock. Data-only skills are converted from the opaque
+    extraction-free package into the existing inert skill package type and published through the
     established immutable skill store. New, updated, and rollback candidates are disabled; an
-    update removes prior instruction authority. Identical-byte registry evidence adoption may
+    update removes prior instruction authority. Identical-byte skill evidence adoption may
     preserve status. Configuration records exact registry/release/archive provenance, while tool
     requirements remain ungranted references and skill enablement remains a separate digest-fenced
     approval.
@@ -134,9 +134,17 @@ Mealy introduces a versioned registry contract in independent, inert layers.
     activation and suppresses configured instruction authority at daemon restart. The response is
     non-destructive: immutable installed bytes and audit evidence remain for diagnosis, replacement,
     or rollback. Snapshot expiry stops new admission but does not alone disable an offline install.
-18. Download resumption, registry extension installation, and package publication tooling remain
-    later slices. Mirror retrieval, durable staging, planning, skill installation, and withdrawal
-    projection perform no package execution and grant no runtime tool authority.
+18. Registry extension installation publishes only the authenticated manifest and executable into
+    a private manifest-digest-addressed root using synchronized temporary files and atomic rename,
+    then re-inspects the published identity without execution. Schema 27 binds one immutable
+    extension revision to the exact registry/package/version, signed release, manifest, and archive
+    evidence. New installs have no grant. Update, rollback, and identical-byte evidence adoption
+    create a new disabled revision and terminally supersede old grants. Accepted registry policy is
+    checked before enable and every invocation, so withdrawn, removed, substituted, or incomplete
+    evidence cannot resume authority after restart.
+19. Download resumption and package publication tooling remain later slices. Mirror retrieval,
+    durable staging, planning, skill/extension installation, and withdrawal projection perform no
+    package execution and grant no runtime tool authority.
 
 ## Consequences
 

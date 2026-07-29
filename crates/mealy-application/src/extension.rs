@@ -35,6 +35,22 @@ pub struct ExtensionManifestInspection {
     pub manifest_digest: String,
 }
 
+/// Exact signed-registry evidence associated with one immutable extension manifest revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExtensionRegistryProvenance {
+    /// Registry namespace whose accepted snapshot authorized the package.
+    pub registry_id: String,
+    /// Stable registry package identity, equal to the extension manifest name.
+    pub package_id: String,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Digest of the complete publisher-signed release envelope.
+    pub release_envelope_digest: String,
+    /// Digest of the exact authenticated package archive.
+    pub archive_digest: String,
+}
+
 /// Parses and validates a digest-pinned extension manifest without loading or executing its code.
 ///
 /// # Errors
@@ -431,6 +447,8 @@ pub struct ExtensionManifestRevisionView {
     pub manifest_json: String,
     /// Internal canonical installation root; never included in owner transport projections.
     pub installation_root: String,
+    /// Signed-registry evidence for this revision, when installed through a registry.
+    pub registry_provenance: Option<ExtensionRegistryProvenance>,
     /// UTC install/staging time.
     pub installed_at_ms: i64,
 }
@@ -471,6 +489,8 @@ pub struct InstallExtensionCommit {
     pub inspection: ExtensionManifestInspection,
     /// Canonical internal package root verified by infrastructure.
     pub installation_root: String,
+    /// Signed-registry evidence, absent only for an owner-local package.
+    pub registry_provenance: Option<ExtensionRegistryProvenance>,
     /// `extension.installed` journal fact.
     pub event_id: EventId,
     /// End-to-end correlation identity.
@@ -492,12 +512,35 @@ pub struct StageExtensionManifestCommit {
     pub inspection: ExtensionManifestInspection,
     /// Canonical internal package root.
     pub installation_root: String,
+    /// Signed-registry evidence, absent only for an owner-local package.
+    pub registry_provenance: Option<ExtensionRegistryProvenance>,
     /// `extension.manifest_staged` journal fact.
     pub event_id: EventId,
     /// End-to-end correlation identity.
     pub correlation_id: CorrelationId,
     /// Staging time.
     pub staged_at: SystemTime,
+}
+
+/// Atomically attaches signed-registry evidence to an identical existing manifest revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdoptExtensionRegistryProvenanceCommit {
+    /// Authenticated owner and verified channel.
+    pub ownership: OwnershipContext,
+    /// Stable extension identity.
+    pub extension_id: ExtensionId,
+    /// Optimistic-concurrency revision.
+    pub expected_revision: u64,
+    /// Exact current manifest digest receiving provenance.
+    pub manifest_digest: String,
+    /// Signed registry/release/archive identity.
+    pub registry_provenance: ExtensionRegistryProvenance,
+    /// `extension.registry_evidence_adopted` journal fact.
+    pub event_id: EventId,
+    /// End-to-end correlation identity.
+    pub correlation_id: CorrelationId,
+    /// Evidence adoption time.
+    pub adopted_at: SystemTime,
 }
 
 /// Activates an exact staged manifest under a fresh immutable owner grant.
@@ -713,6 +756,18 @@ pub trait ExtensionStore {
     fn stage_extension_manifest(
         &mut self,
         commit: StageExtensionManifestCommit,
+    ) -> Result<ExtensionView, ExtensionStoreError>;
+
+    /// Attaches signed-registry provenance to an identical current revision without changing its
+    /// runtime grant or package bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExtensionStoreError`] when ownership, revision, manifest identity, existing
+    /// provenance, or staged registry evidence conflicts.
+    fn adopt_extension_registry_provenance(
+        &mut self,
+        commit: AdoptExtensionRegistryProvenanceCommit,
     ) -> Result<ExtensionView, ExtensionStoreError>;
 
     /// Enables an exact staged manifest using a fresh immutable owner grant.

@@ -811,6 +811,16 @@ configured registry skill with unavailable current evidence is omitted from runt
 and CLI coverage proves the same policy blocks digest-fenced enablement without changing the
 disabled configuration. Local non-registry skills remain unaffected.
 
+Schema 27 migration coverage proves v26 package evidence survives while the guarded immutable
+extension-provenance table and triggers are added. A real relational fixture proves substituted
+archive provenance rolls back the extension installation and journal event atomically, then
+accepts the exact evidence and rejects later update or deletion. Package publication tests copy
+only the authenticated manifest and executable, re-inspect the inert result, accept idempotent
+republication, and reject a substituted executable at the content-addressed destination. Strict
+workspace compilation and daemon integration cover policy checks at both registry extension
+enable and invocation; the existing application policy proof supplies authorized, withdrawn,
+removed, substituted, and evidence-incomplete dispositions.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:

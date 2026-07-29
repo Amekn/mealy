@@ -636,7 +636,8 @@ snapshot and their exact accepted/staged provenance. Withdrawal, target removal,
 substitution, or missing/mismatched evidence prevents activation and suppresses configured
 instructions at daemon restart. This is deliberately non-destructive: immutable bytes and evidence
 remain available for diagnosis or rollback, and mere snapshot expiry does not disable an offline
-installation. Registry extension installation remains an explicit follow-on boundary.
+installation. Registry extensions receive the same policy projection before enable and every
+invocation, so a prior grant cannot resume after restart under withdrawn or substituted evidence.
 
 Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
 Review prints the exact envelope digest, publisher, host range, manifest/archive descriptors, and
@@ -671,13 +672,21 @@ creates a grant.
 comparing the candidate with canonical installed state. The plan digest binds exact publisher,
 release, manifest, archive, prior revision/status, permission or governed-tool reference diff,
 content changes, widening, and authority-reset intent. `package-install` checks approval before
-work, rebuilds that plan under the stopped-home lock, and refuses any digest drift. It accepts only
-data-only skills, converts only the opaque extraction-free inspected package, and publishes it
-through the existing immutable skill lifecycle. New, updated, or rollback bytes are configured
-disabled; prior instructions therefore cannot remain active across a changed manifest. Identical
-installed bytes may adopt signed provenance without changing their status. Required tools remain
-ungranted references, and a separate exact-manifest-digest approval is still required to enable
-instructions. Extension application remains closed.
+work, rebuilds that plan under the stopped-home lock, and refuses any digest drift. Skills pass
+only through the opaque extraction-free inspected package and existing immutable skill lifecycle.
+New, updated, or rollback skill bytes are configured disabled; prior instructions therefore
+cannot remain active across a changed manifest. Identical skill bytes may adopt signed provenance
+without changing their status. Required tools remain ungranted references, and a separate
+exact-manifest-digest approval is still required to enable instructions.
+
+For extensions, installation copies only the authenticated manifest and executable to a private
+content-addressed temporary root, synchronizes and atomically renames it, rejects redirected or
+conflicting destinations, and re-inspects exact executable identity without executing it. Schema
+27 binds that exact signed evidence to the immutable extension revision. Install creates no grant;
+update, rollback, and identical-byte evidence adoption create a new disabled revision at the
+registry-published root and terminally supersede any old grant. A separate health-probed explicit
+grant remains required for enablement, and current accepted registry policy is checked again
+before enable and each invocation.
 
 ### A staging asset substitutes a different release daemon
 

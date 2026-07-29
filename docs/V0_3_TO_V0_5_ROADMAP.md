@@ -302,14 +302,19 @@ new acceptance. Exact manifest/archive download and extraction-free inspection a
 `package-fetch`; explicitly approved, review-digest-fenced `package-stage` repeats those checks and
 retains the exact inert blobs through schema 26 and the established content-addressed artifact
 store. Offline `package-plan` now compares exact staged skills and extensions with canonical
-installed state and binds the complete content/permission diff into one review digest. Approved
-`package-install` applies that digest only to data-only skills through the existing immutable
-disabled-by-default lifecycle; it supports install, update, and same-flow rollback without
-granting required tools. Exact installed provenance is now projected against the newest accepted
+installed state and binds the complete content/permission diff into one review digest. For
+data-only skills, approved `package-install` uses the existing immutable disabled-by-default
+lifecycle and supports install, update, and same-flow rollback without granting required tools.
+Exact installed provenance is now projected against the newest accepted
 snapshot and staged evidence: withdrawal, removal, substitution, or evidence loss blocks
 activation and suppresses configured instructions at restart without deleting bytes or history.
-Snapshot expiry alone does not disable an offline install. Registry extension installation and
-registry skill activation remain separate slices.
+The extension lifecycle bridge is also implemented: authenticated manifest/executable bytes are
+published inertly to a private content-addressed root, schema 27 binds their exact signed evidence
+to retained extension revisions, and install/update/rollback leave no runtime grant. Identical-byte
+provenance adoption also creates a new disabled revision instead of preserving execution
+authority. The daemon rechecks current registry policy before enable and every invocation.
+Snapshot expiry alone does not disable an offline install. Registry publication tooling and
+release qualification remain separate slices.
 
 ### Memory and automation
 

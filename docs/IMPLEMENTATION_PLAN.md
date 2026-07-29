@@ -252,8 +252,9 @@ contracts.
 
 ## Productionization slice: threshold-signed inert package registry
 
-Status: first v0.5 verification and review foundation implemented; lifecycle integration remains
-in progress. The owner-configured trust root and exact-byte envelope verifier enforce distinct
+Status: v0.5 verification, review, skill lifecycle, and extension lifecycle foundations
+implemented; publication and release qualification remain in progress. The owner-configured trust
+root and exact-byte envelope verifier enforce distinct
 registry and publisher Ed25519 thresholds. Expiring monotonic snapshots reject rollback,
 same-version equivocation, unknown publishers, malformed ordering, and descriptor drift. Registry
 withdrawals remain auditable but cannot install. Publisher releases bind exact package identity,
@@ -335,9 +336,18 @@ Installed registry skills now carry a non-destructive runtime policy projection.
 release and staged manifest/archive evidence must still match the installed provenance and newest
 accepted snapshot. Withdrawal, removal, identity substitution, or evidence loss blocks activation
 and suppresses configured instruction authority at restart while retaining immutable bytes and
-history. Snapshot expiry alone does not disable an offline install. The next slices must add
-registry extension installation, public registry publication tooling, and
-package/upgrade/recovery qualification.
+history.
+
+The ninth slice extends approved `package-install` to extensions. Only the authenticated manifest
+and executable are atomically published to a private manifest-digest-addressed root, synchronized,
+re-inspected, and retained without execution. Schema 27 binds each immutable extension revision to
+the exact registry/package/version, publisher-release envelope, manifest, and archive evidence.
+New packages have no grant; update, rollback, and identical-byte provenance adoption create a new
+disabled revision and supersede any old grant. The daemon reprojects current registry policy
+before both enable and invoke, so withdrawal, removal, substitution, or evidence loss cannot
+resume authority after restart. Snapshot expiry alone does not disable an offline install. The
+next slices must add public registry publication tooling and package/upgrade/recovery
+qualification.
 [ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
 
 ## Productionization slice: interactive operations dashboard

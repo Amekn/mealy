@@ -69,16 +69,17 @@ manifest/archive bytes through the existing content-addressed artifact store, an
 Restart, exact replay, mutation rejection, backup enumeration, and v25-to-v26 migration are
 covered. Offline `package-plan` covers complete extension permission and skill governed-tool
 reference diffs, content/executable changes, current status, widening, authority reset, and one
-review digest without mutation. Approved `package-install` covers data-only skill install, update,
-and rollback through the existing immutable publisher; changed revisions are disabled and signed
-registry provenance is retained. Exact-plan mismatch, invalid approval/digest ordering,
-extraction-free registry-to-skill conversion, disabled publication, and startup parsing of the
-optional provenance are tested. Installed-withdrawal handling is now covered: status projects the
-newest accepted snapshot over exact release/staged provenance; explicit withdrawal, removal,
-substitution, or evidence mismatch blocks activation and suppresses instruction authority at
-restart without deleting audit evidence. Snapshot expiry alone does not deactivate an offline
-install. Registry extension installation remains open v0.5 work and therefore is not marked
-covered here.
+review digest without mutation. Approved `package-install` covers skill and extension install,
+update, rollback, and exact-evidence adoption. Skill changes use the existing immutable publisher
+and remain disabled. Extension changes publish only authenticated manifest/executable bytes,
+execute nothing, create a retained schema 27 provenance-bound revision, and remove old grants.
+Exact-plan mismatch, invalid approval/digest ordering, extraction-free conversion, inert
+publication, substituted destination bytes, migration, atomic evidence failure, and provenance
+projection are tested. Installed-withdrawal handling is now covered: status and runtime boundaries
+project the newest accepted snapshot over exact release/staged provenance; explicit withdrawal,
+removal, substitution, or evidence mismatch blocks skill instruction activation and extension
+enable/invocation without deleting audit evidence. Snapshot expiry alone does not deactivate an
+offline install.
 
 Schema 16 extends the REC/DATA/OBS/NFR-REL evidence above: one canonical writer is separated from
 bounded query-only WAL snapshots; wait metrics make both lanes observable; and new context

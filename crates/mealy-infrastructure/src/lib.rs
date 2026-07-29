@@ -73,8 +73,9 @@ pub use media::{
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
 pub use registry_mirror::HttpsRegistryMirrorTransport;
 pub use registry_package::{
-    InspectedRegistryPackageArchive, InspectedRegistryPackageFile, RegistryPackageArchiveError,
-    inspect_registry_package_archive,
+    InspectedRegistryPackageArchive, InspectedRegistryPackageFile, RegistryExtensionPackageError,
+    RegistryPackageArchiveError, inspect_registry_package_archive,
+    publish_registry_extension_package,
 };
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};
 pub use skill_package::{

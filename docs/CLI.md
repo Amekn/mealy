@@ -217,8 +217,8 @@ the existing age-gated artifact garbage collector; it cannot become installed au
 Content-addressed package blobs are included in the established backup, restore, migration-copy,
 integrity, and orphan-accounting paths.
 
-For a staged skill, compare its exact content and governed-tool references with the currently
-installed revision:
+For a staged skill or extension, compare its exact content and requested authority with the
+currently installed revision:
 
 ```sh
 mealyctl --home "$HOME/.mealy" registry package-plan dev.mealy.registry \
@@ -228,10 +228,10 @@ mealyctl --home "$HOME/.mealy" registry package-plan dev.mealy.registry \
 The offline plan rereads and verifies both staged blobs, requires the release to remain authorized
 and unwithdrawn, and reports install/update/evidence-adoption intent, prior status and digest,
 instruction/resource changes, exact added/removed governed-tool references, whether authority
-widens, and whether applying an update will disable active instructions. Extension packages
-receive the analogous capability, filesystem, network, secret, process, executable, and runtime
-file diff, but extension apply remains unsupported. The canonical plan material is returned as
-`planDigest`; it binds the staged publisher evidence and the exact current installation.
+widens, and whether applying an update will remove active authority. Extension plans include the
+analogous capability, filesystem, network, secret, process, executable, and runtime-file diff.
+The canonical plan material is returned as `planDigest`; it binds the staged publisher evidence
+and the exact current installation.
 
 Apply one unchanged reviewed skill plan:
 
@@ -253,6 +253,16 @@ non-secret skill configuration. Skill enablement remains the separate existing
 `skill enable --expected-manifest-digest ... --approve` decision, and required tools remain
 references rather than grants.
 
+Extensions use the same command with the extension package ID and version. Mealy atomically
+publishes only the authenticated manifest and executable beneath the private
+`extensions/registry/MANIFEST_DIGEST` directory, re-inspects the result through the established
+extension-host boundary, and executes nothing. Schema 27 binds the exact registry, release,
+manifest, archive, and extension-revision identities. A new extension is installed without a
+grant. An update, rollback, or identical-byte evidence adoption creates a retained revision,
+switches to the registry-published root, removes any prior grant, and leaves the extension
+disabled. Start the daemon, inspect the resulting extension, and use the existing digest/revision
+fenced `extension enable` command with an explicit least-authority grant when ready.
+
 The application transport also derives immutable release/manifest/archive paths only as
 `objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
 SHA-256 before parsing. The package inspector accepts only uncompressed deterministic USTAR with
@@ -263,18 +273,20 @@ FIFOs, sparse/PAX/GNU extensions, duplicates, undeclared files, traversal, non-c
 and trailing content. It parses and retains bytes in memory rather than invoking a tar extraction
 API, so inspection cannot create filesystem paths or race an extraction destination.
 
-No registry command activates an extension or skill, discovers a mirror, or grants a tool or
-requested permission. `package-install` supports data-only skills only and always uses the existing
-disabled-by-default lifecycle for new or changed bytes. `skill status` and `skill list` include
+No registry command activates an extension or skill, automatically discovers a mirror, or grants
+a tool or requested permission. `package-install` supports both package classes and always uses
+the existing disabled-by-default lifecycle for new or changed bytes. `skill status` and `skill list` include
 `registryPolicy` for provenance-bound revisions and distinguish configured `enabled` from actual
 `instructionAuthorityActive`. The projection compares the exact accepted
 release and staged manifest/archive identities with the newest accepted snapshot. Explicit
 withdrawal, target removal, package/version substitution, or missing/mismatched evidence blocks
 `skill enable`; an already configured revision is suppressed from runtime instruction context on
-the next daemon start. Mealy retains immutable installed bytes and registry history so the owner can
-inspect, install a reviewed replacement, or use the same exact-version rollback flow. Snapshot
-expiry still blocks new admission but does not alone deactivate an offline installation. Registry
-extension application and registry publication tooling remain later v0.5 boundaries.
+the next daemon start. The same projection runs before every registry extension enable and
+invocation, so an enabled extension cannot resume after restart under a withdrawn, removed,
+substituted, or evidence-incomplete revision. Mealy retains immutable installed bytes and registry
+history so the owner can inspect, install a reviewed replacement, or use the same exact-version
+rollback flow. Snapshot expiry still blocks new admission but does not alone deactivate an offline
+installation. Registry publication tooling remains a later v0.5 boundary.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`

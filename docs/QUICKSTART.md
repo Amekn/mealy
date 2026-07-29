@@ -1313,8 +1313,15 @@ The plan is offline and shows content plus governed-tool-reference changes again
 revision. Install repeats current withdrawal/trust checks and the exact plan under the stopped-home
 lock, publishes through the same immutable skill store, records signed provenance, and leaves new,
 updated, or rollback bytes disabled. Run the same separate `skill enable` command shown above only
-after reviewing the installed manifest digest. Registry extension packages can currently be
-planned but not installed.
+after reviewing the installed manifest digest.
+
+Use the same registry chain for an extension package ID. Install copies only the authenticated
+manifest and executable into Mealy's private content-addressed extension area, records schema 27
+signed provenance, and runs no package code. New installs have no grant. Updates, rollbacks, and
+identical-byte evidence adoption retain history, revoke any old grant, and leave the selected
+revision disabled. Start Mealy, inspect the extension, then use the normal `extension enable`
+command with its exact revision and an explicit least-authority capability/mount/network/secret
+grant. Current registry policy is checked again before enable and every invocation.
 
 After accepting a newer registry snapshot, inspect `skill status owner.release-review` before
 activation. Its `registryPolicy.disposition` is `authorized` only when the newest accepted

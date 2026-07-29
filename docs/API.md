@@ -268,6 +268,12 @@ this first surface.
 | `POST` | `/v1/extensions/{extension_id}/revoke` | `ExtensionLifecycleRequest` | `ExtensionResponse` |
 | `POST` | `/v1/extensions/{extension_id}/invoke` | `InvokeExtensionRequest` | `ExtensionInvocationResponse` |
 
+Each `ExtensionManifestRevisionResponse` may include a `registry` object containing the exact
+`registryId`, `packageId`, `version`, `releaseEnvelopeDigest`, and `archiveDigest` retained for a
+signed-registry installation. Internal package paths remain omitted. Registry policy is enforced
+server-side before enablement and invocation; non-authorized evidence returns the normal conflict
+boundary without executing extension code.
+
 ### Channel administration
 
 | Method | Path | Request or query | Response |

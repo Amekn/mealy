@@ -3360,6 +3360,10 @@ mod tests {
                                = json(intent.normalized_arguments_json)
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+                 DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+                 DROP TABLE extension_manifest_registry_provenance;
                  DROP TABLE registry_package;
                  DROP TABLE registry_release;
                  DROP TABLE registry_snapshot_head;
@@ -3367,7 +3371,7 @@ mod tests {
                  DROP TABLE registry_trust_root_head;
                  DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26);
+                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
@@ -3577,6 +3581,10 @@ mod tests {
                                = json(intent.normalized_arguments_json)
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+                 DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+                 DROP TABLE extension_manifest_registry_provenance;
                  DROP TABLE registry_package;
                  DROP TABLE registry_release;
                  DROP TABLE registry_snapshot_head;
@@ -3584,7 +3592,7 @@ mod tests {
                  DROP TABLE registry_trust_root_head;
                  DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26);
+                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27);
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");

@@ -35,7 +35,8 @@ use mealy_application::{
     ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
     ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
     RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
-    RegisterWebhookChannelCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
+    RegisterWebhookChannelCommit, RegistryInstalledPackageDisposition, RegistryMetadataStore,
+    RegistryPackageKind, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
     ResolveApprovalCommit, RevokeDiscordChannelCommit, RevokeExtensionCommit,
     RevokeSlackChannelCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
     ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
@@ -52,12 +53,12 @@ use mealy_application::{
     WebhookChannelStore, WebhookChannelStoreError, admit_input, admit_input_with_images,
     canonical_arguments_digest, compaction_source_event_digest, create_session,
     create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
-    inspect_extension_manifest, next_schedule_occurrence_ms, query_session_checkpoints,
-    query_session_provider_selection, query_session_status, query_session_transcript,
-    query_sessions, query_timeline, route_provider, search_sessions, sha256_digest,
-    update_session_provider_selection, update_session_title, validate_webhook_binding_fields,
-    validate_webhook_timestamp, verify_webhook_signature, webhook_input_dedupe_key,
-    webhook_signature_digest,
+    inspect_extension_manifest, inspect_installed_registry_package_policy,
+    next_schedule_occurrence_ms, query_session_checkpoints, query_session_provider_selection,
+    query_session_status, query_session_transcript, query_sessions, query_timeline, route_provider,
+    search_sessions, sha256_digest, update_session_provider_selection, update_session_title,
+    validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
+    webhook_input_dedupe_key, webhook_signature_digest,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, ChannelBindingId,
@@ -99,34 +100,34 @@ use mealy_protocol::{
     EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
     ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
     ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
-    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand, ExtensionResponse,
-    ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse,
-    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
-    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
-    MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse, MissedRunPolicyCommand,
-    OperationalFailureResponse, PendingApprovalsResponse, PromoteMemoryRequest,
-    ProposeMemoryRequest, ProviderCatalogResponse, ProviderCatalogRouteResponse,
-    ProviderEndpointStatusResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
-    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, SandboxProfileResponse,
-    SandboxProfileStatusResponse, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
-    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
-    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
-    SessionSearchHitResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
-    SessionTitleResponse, SessionTranscriptAssistantMessageResponse,
-    SessionTranscriptBoundsResponse, SessionTranscriptCitationResponse, SessionTranscriptExport,
-    SessionTranscriptImageResponse, SessionTranscriptLineageResponse,
-    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
-    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
-    SignedWebhookInputRequest, SlackChannelResponse, SlackChannelStatusResponse,
-    SlackChannelsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
-    SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
-    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
-    TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
+    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
+    ExtensionRegistryProvenanceResponse, ExtensionResponse, ExtensionStatusResponse,
+    ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
+    MemoryResponse, MemoryRetentionCommand, MemoryRevisionResponse, MemorySearchHitResponse,
+    MemorySearchResponse, MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse,
+    MissedRunPolicyCommand, OperationalFailureResponse, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse,
+    ProviderCatalogRouteResponse, ProviderEndpointStatusResponse, ProviderSelectionCommand,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
+    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
+    SandboxProfileResponse, SandboxProfileStatusResponse, ScheduleLifecycleRequest,
+    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse,
+    ScheduleRunStatusResponse, ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse,
+    SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    SessionProviderSelectionResponse, SessionSearchHitResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionSummaryResponse, SessionTitleResponse,
+    SessionTranscriptAssistantMessageResponse, SessionTranscriptBoundsResponse,
+    SessionTranscriptCitationResponse, SessionTranscriptExport, SessionTranscriptImageResponse,
+    SessionTranscriptLineageResponse, SessionTranscriptRedactionResponse,
+    SessionTranscriptTurnResponse, SessionTranscriptUserMessageResponse, SessionsResponse,
+    SetMemoryPinRequest, SignedWebhookInputRequest, SlackChannelResponse,
+    SlackChannelStatusResponse, SlackChannelsResponse, StageExtensionManifestRequest,
+    SubmitImageInputRequest, SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass,
+    TaskStatus, TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
     TelegramChannelStatusResponse, TelegramChannelsResponse, TimelineCursor, TimelineEvent,
     TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
     ValidationMethodResponse, ValidationOutcomeResponse, VerifyBackupRequest,
@@ -2254,6 +2255,7 @@ impl ApiBackend for RuntimeBackend {
                 ownership,
                 inspection,
                 installation_root,
+                registry_provenance: None,
                 event_id: self.ids.generate_event_id(),
                 correlation_id: self.ids.generate_correlation_id(),
                 installed_at: self.clock.now(),
@@ -2324,6 +2326,7 @@ impl ApiBackend for RuntimeBackend {
                 expected_revision: request.expected_revision,
                 inspection,
                 installation_root,
+                registry_provenance: None,
                 event_id: self.ids.generate_event_id(),
                 correlation_id: self.ids.generate_correlation_id(),
                 staged_at: self.clock.now(),
@@ -2340,13 +2343,15 @@ impl ApiBackend for RuntimeBackend {
     ) -> Result<ExtensionResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let extension_id = parse_extension(&extension_id)?;
-        let view = self
-            .read()?
+        let reader = self.read()?;
+        let view = reader
             .extension(ownership, extension_id)
             .map_err(map_extension_store_error)?;
         if view.revision != request.expected_revision {
             return Err(BackendError::Conflict);
         }
+        ensure_registry_extension_authorized(&*reader, &view)?;
+        drop(reader);
         validate_extension_mount_roots(
             &self.home,
             request.mounts.iter().map(|mount| mount.host_path.as_str()),
@@ -2463,13 +2468,15 @@ impl ApiBackend for RuntimeBackend {
     ) -> Result<ExtensionInvocationResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let extension_id = parse_extension(&extension_id)?;
-        let view = self
-            .read()?
+        let reader = self.read()?;
+        let view = reader
             .extension(ownership, extension_id)
             .map_err(map_extension_store_error)?;
         if view.status != ExtensionStatus::Enabled {
             return Err(BackendError::Conflict);
         }
+        ensure_registry_extension_authorized(&*reader, &view)?;
+        drop(reader);
         let grant = view.active_grant.clone().ok_or(BackendError::Internal)?;
         validate_extension_mount_roots(
             &self.home,
@@ -4468,6 +4475,36 @@ fn inspect_current_extension_package(
     .map_err(map_extension_package_error)
 }
 
+fn ensure_registry_extension_authorized(
+    store: &impl RegistryMetadataStore,
+    view: &ExtensionView,
+) -> Result<(), BackendError> {
+    let revision = view
+        .manifest_history
+        .iter()
+        .rev()
+        .find(|revision| revision.manifest_digest == view.current_manifest_digest)
+        .ok_or(BackendError::Internal)?;
+    let Some(provenance) = &revision.registry_provenance else {
+        return Ok(());
+    };
+    let policy = inspect_installed_registry_package_policy(
+        store,
+        &provenance.registry_id,
+        &provenance.package_id,
+        RegistryPackageKind::Extension,
+        &provenance.version,
+        &provenance.release_envelope_digest,
+        &revision.manifest_digest,
+        &provenance.archive_digest,
+    )
+    .map_err(|_| BackendError::Internal)?;
+    if policy.disposition != RegistryInstalledPackageDisposition::Authorized {
+        return Err(BackendError::Conflict);
+    }
+    Ok(())
+}
+
 fn build_extension_grant(
     ownership: OwnershipContext,
     extension_id: ExtensionId,
@@ -4590,6 +4627,15 @@ fn extension_response(view: ExtensionView) -> Result<ExtensionResponse, BackendE
             .map(|revision| ExtensionManifestRevisionResponse {
                 manifest_digest: revision.manifest_digest,
                 version: revision.manifest.version,
+                registry: revision.registry_provenance.map(|provenance| {
+                    ExtensionRegistryProvenanceResponse {
+                        registry_id: provenance.registry_id,
+                        package_id: provenance.package_id,
+                        version: provenance.version,
+                        release_envelope_digest: provenance.release_envelope_digest,
+                        archive_digest: provenance.archive_digest,
+                    }
+                }),
                 installed_at_ms: revision.installed_at_ms,
             })
             .collect(),

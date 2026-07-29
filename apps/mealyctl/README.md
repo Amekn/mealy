@@ -220,7 +220,7 @@ The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `st
 `release-accept`, `release-status`, `package-fetch`, `package-stage`, `package-plan`, and
 `package-install` for the v0.5 signed registry trust root, monotonic snapshot fence, inert
 publisher-release evidence, extraction-free review, digest-fenced durable package evidence, and
-disabled-by-default data-only skill installation.
+disabled-by-default skill and extension installation.
 Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
 all canonical-state operations require the daemon to be stopped, and existing databases must
 already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
@@ -233,13 +233,16 @@ immutable SQLite transaction.
 `package-fetch`; it revalidates current authority and commits exact inert manifest/archive blobs
 through schema 26 and the existing private content-addressed artifact store.
 `package-plan` is offline and binds complete current/candidate content and permission diffs into one
-review digest. Approved `package-install` currently accepts only data-only skills, publishes
-through the existing immutable skill lifecycle, disables changed revisions, and retains signed
-provenance. It never enables instructions or grants required tools. Registry extension install
-remains closed. `skill status` and `skill list` project the newest accepted registry policy over
-that exact provenance. A withdrawn, removed, substituted, or evidence-incomplete registry revision
-cannot be enabled and is suppressed on daemon restart without deleting its installed bytes or
-audit history. Snapshot expiry alone blocks new admission but does not disable an offline install.
+review digest. Approved `package-install` publishes skills through the immutable skill lifecycle
+and extensions through a private content-addressed, re-inspected executable root. Schema 27 binds
+an extension revision to its exact signed registry/release/archive evidence. New and changed
+packages remain disabled; extension update, rollback, and evidence adoption revoke any old grant.
+No package content executes during installation, no required tool or extension permission is
+granted, and activation remains a separate explicit decision. `skill status`/`skill list` and the
+extension enable/invoke boundaries project the newest accepted registry policy over exact
+provenance. A withdrawn, removed, substituted, or evidence-incomplete registry revision cannot
+become or remain active after restart, without deleting its installed bytes or audit history.
+Snapshot expiry alone blocks new admission but does not disable an offline install.
 See
 [`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
 lifecycle and current mirror boundary.

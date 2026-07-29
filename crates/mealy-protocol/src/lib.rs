@@ -1921,8 +1921,27 @@ pub struct ExtensionManifestRevisionResponse {
     pub manifest_digest: String,
     /// Package version declared by that manifest.
     pub version: String,
+    /// Signed-registry identity for this revision, when registry-installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry: Option<ExtensionRegistryProvenanceResponse>,
     /// UTC installation/staging time.
     pub installed_at_ms: i64,
+}
+
+/// Owner-safe signed-registry provenance for one extension revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionRegistryProvenanceResponse {
+    /// Registry namespace.
+    pub registry_id: String,
+    /// Stable package identity.
+    pub package_id: String,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Publisher-signed release envelope digest.
+    pub release_envelope_digest: String,
+    /// Exact authenticated archive digest.
+    pub archive_digest: String,
 }
 
 /// Owner-safe summary of the active immutable extension grant.
