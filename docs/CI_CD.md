@@ -125,9 +125,11 @@ Repository Actions policy is also fail closed: Actions must remain enabled with 
 allowlist and full-length commit-SHA pinning required. The selected set admits GitHub-owned actions
 and exactly `anchore/sbom-action@*`; verified Marketplace status alone grants no authority. Source
 policy still requires every invocation, including the SBOM action, to name a reviewed 40-hex
-commit. Repository-level immutable releases must also remain enabled. The live
-release-environment preflight verifies all three repository settings so disabled immutable
-releases, mutable action references, or a broadened third-party allowlist block publication even
+commit. Repository-level immutable releases, vulnerability alerts, and unpaused Dependabot
+security updates must also remain enabled. The authenticated release-environment preflight
+revalidates those settings and the exact protected-`main` contract, including all six
+GitHub-Actions-bound status checks, before tagging. Disabled protection or security features,
+mutable action references, or a broadened third-party allowlist therefore block publication even
 if a stale source checkout still looks correct.
 
 Never merge around a red or missing context. Diagnose the first failing command from the job log,
@@ -149,15 +151,19 @@ scripts/preflight-release-environments.sh Amekn/mealy
 ```
 
 Run the preflight from the canonical source checkout before creating any release tag. It reads only
-public repository/Actions/Pages/environment policy plus GitHub's variable and secret-name metadata;
-it cannot retrieve secret values. It fails unless the canonical repository is public and enabled,
-repository-level immutable releases are enabled, Actions are restricted to the exact allowlist
-with full-SHA pinning, Pages is a public HTTPS workflow deployment, both signing and Pages
-environments admit only stable version tags, signing requires owner review, the Pages URL and
-uppercase primary fingerprint are exact, the signing-subkey secret name exists, and the reviewed
-free-OpenRouter environment remains restricted to protected branches with both the strict-free
-OpenRouter and pinned private-endpoint secret names present. This catches an incomplete
-trust-root or provider-acceptance ceremony before an immutable tag exists.
+public repository/branch-protection/Actions/Pages/environment policy plus GitHub's variable and
+secret-name metadata; it cannot retrieve secret values. The authenticated caller needs repository
+administration read access. The check fails unless the canonical repository is public and enabled;
+`main` is administrator-enforced, pull-request-only, strictly current, linear, conversation-clean,
+non-force-pushable, non-deletable, and protected by the exact six GitHub Actions contexts;
+vulnerability alerts, unpaused Dependabot security updates, and repository-level immutable
+releases are enabled; Actions are restricted to the exact allowlist with full-SHA pinning; Pages
+is a public HTTPS workflow deployment; both signing and Pages environments admit only stable
+version tags; signing requires owner review; the Pages URL and uppercase primary fingerprint are
+exact; the signing-subkey secret name exists; and the reviewed free-OpenRouter environment remains
+restricted to protected branches with both the strict-free OpenRouter and pinned private-endpoint
+secret names present. This catches a weakened source, trust-root, or provider-acceptance ceremony
+before an immutable tag exists.
 
 The release report at `docs/benchmarks/release-soak.json` must pass
 `scripts/validate-release-soak.sh`. For release one it must represent a clean, retained-disk,
