@@ -881,6 +881,12 @@ or duplicate assets, missing required assets, and unexpected assets in publisher
 mode. Architecture-specific and repository-only consumers retain an explicit subset mode while
 still requiring every published asset record to carry a canonical SHA-256 digest, size, state, and
 repository/tag-derived URL.
+The public-repository verifier fixtures also bind the signing key and APT/DNF/Pacman configuration
+bytes to unique signed-manifest entries and reject a post-manifest configuration substitution.
+Installer fixtures require the same read-only verified-control mount, reject a changed local file,
+and prove no container program re-downloads configuration. Real immutable-v0.2.1 acceptance passes
+with that handoff on Ubuntu 24.04, Fedora 44, and Arch Linux; DNF's key URL is explicitly overridden
+with the manifest-verified local key.
 `scripts/test-public-license-validator.sh` separately accepts synthetic Apache-2.0, MIT, and dual
 MIT/Apache workspaces with either matching SPDX metadata or the existing exact `LICENSE`-file
 inheritance, while rejecting restrictive terms, redirected/mismatched metadata, an unsupported
