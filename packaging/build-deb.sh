@@ -96,6 +96,13 @@ release_documents=(
   decisions/0010-disconnect-resistant-update-transaction.md
   decisions/0011-session-lineage-and-thin-workbench-clients.md
   decisions/0012-transactional-provider-primary-switch.md
+  decisions/0013-atomic-parallel-delegation-groups.md
+  decisions/0014-governed-streamable-http-mcp.md
+  decisions/0015-crash-safe-slack-channel-boundary.md
+  decisions/0016-owner-classified-effectful-mcp.md
+  decisions/0017-content-addressed-bounded-image-input.md
+  decisions/0018-governed-image-generation-effect.md
+  decisions/0019-one-shot-transactional-browser-effects.md
   decisions/README.md
   research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md
   research/GAP_MATRIX.md
@@ -108,6 +115,7 @@ release_documents=(
   releases/v0.2.0.md
   releases/v0.2.1.md
   releases/v0.3.0.md
+  releases/v0.4.0.md
 )
 
 for command in ar awk chmod cp date dirname find gzip install jq ln md5sum mkdir mktemp mv od \
@@ -163,7 +171,7 @@ listing=$(tar --numeric-owner -tvzf "$archive")
 if [[ -z $entries ]] || ! printf '%s\n' "$listing" | awk '
   $1 !~ /^[-d]/ || $3 !~ /^[0-9]+$/ {exit 1}
   {count += 1; total += $3}
-  count > 96 || $3 > 268435456 || total > 536870912 {exit 1}
+  count > 128 || $3 > 268435456 || total > 536870912 {exit 1}
   END {if (count == 0) exit 1}
 '; then
   echo "release archive type, count, or expanded size is invalid" >&2

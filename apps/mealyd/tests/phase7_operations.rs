@@ -1,5 +1,6 @@
 //! Public-process proofs for safe mode, operational maintenance, drain, and forensic recovery.
 
+use mealy_infrastructure::LATEST_SCHEMA_VERSION;
 #[cfg(target_os = "linux")]
 use mealy_protocol::SandboxProfileStatusResponse;
 use mealy_protocol::{
@@ -110,6 +111,8 @@ async fn dynamic_runtime_discovery_does_not_resolve_helpers_from_ambient_path() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]
 async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
+    let latest_schema_version =
+        u64::try_from(LATEST_SCHEMA_VERSION).expect("latest schema version is nonnegative");
     let home = TempDir::new().expect("temporary daemon home");
     let client = http_client();
     let mut daemon = Daemon::spawn(
@@ -130,7 +133,7 @@ async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert!(status.safe_mode);
     assert!(status.admission_open);
-    assert_eq!(status.schema_version, 18);
+    assert_eq!(status.schema_version, latest_schema_version);
     assert_eq!(status.provider_health, "healthy");
     assert_eq!(status.provider_context_tokens, 32_768);
     assert_eq!(status.provider_maximum_output_tokens, 512);
@@ -166,7 +169,7 @@ async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
         },
     )
     .await;
-    assert_eq!(backup.schema_version, 18);
+    assert_eq!(backup.schema_version, latest_schema_version);
     assert!(backup.secrets_included);
     assert!(Path::new(&backup.path).join("manifest.json").is_file());
 
@@ -182,7 +185,7 @@ async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
     )
     .await;
     assert_eq!(verification.manifest_digest, backup.manifest_digest);
-    assert_eq!(verification.schema_version, 18);
+    assert_eq!(verification.schema_version, latest_schema_version);
     assert!(verification.identity_verified);
 
     let export: ExportResponse = authorized_post(

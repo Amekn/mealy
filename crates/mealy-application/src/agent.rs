@@ -1,7 +1,7 @@
 use crate::{
     ContextEpoch, ContextManifest, ContextMemoryEvidence, ModelUsage, NormalizedMessage,
     OwnershipContext, ProviderCapabilities, ProviderErrorClass, ProviderOutput, ProviderRequest,
-    ProviderSelection, ReadToolDescriptor,
+    ProviderSelection, ReadToolDescriptor, is_sha256_digest,
 };
 use mealy_domain::{
     ArtifactId, AttemptId, ChannelBindingId, CompactionId, CorrelationId, EventId, LeaseFence,
@@ -169,6 +169,40 @@ pub struct AgentBudgetUsage {
     pub reserved_output_bytes: u64,
 }
 
+/// One path-free canonical image reference loaded from durable state before trusted hydration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentContextImage {
+    /// Owner-scoped logical artifact identity.
+    pub artifact_id: ArtifactId,
+    /// Exact canonical image media type.
+    pub media_type: String,
+    /// SHA-256 digest of the canonical image bytes.
+    pub sha256_digest: String,
+    /// Exact canonical byte count.
+    pub size_bytes: u64,
+    /// Canonical decoded width.
+    pub width: u32,
+    /// Canonical decoded height.
+    pub height: u32,
+}
+
+impl AgentContextImage {
+    /// Returns whether this path-free image evidence fits the normalized provider boundary.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        matches!(self.media_type.as_str(), "image/png" | "image/jpeg")
+            && is_sha256_digest(&self.sha256_digest)
+            && self.size_bytes > 0
+            && self.size_bytes
+                <= u64::try_from(crate::MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+            && self.width > 0
+            && self.height > 0
+            && self.width <= crate::MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            && self.height <= crate::MAXIMUM_PROVIDER_IMAGE_DIMENSION
+    }
+}
+
 /// Provider-neutral material from durable canonical state.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,6 +219,9 @@ pub struct AgentContextSource {
     pub sensitivity: String,
     /// Original artifact backing this source, when applicable.
     pub content_artifact_id: Option<ArtifactId>,
+    /// Ordered path-free canonical image evidence awaiting trusted blob hydration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_artifacts: Vec<AgentContextImage>,
     /// Exact active memory revision and immutable citations for untrusted retrieved evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_evidence: Option<ContextMemoryEvidence>,

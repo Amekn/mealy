@@ -38,7 +38,7 @@ public command cannot be added or removed without updating this reference.
 | `compaction` | Create or inspect cited derived session compactions. |
 | `extension` | Install, grant, invoke, upgrade, disable, or revoke isolated extensions. |
 | `skill` | Inspect and manage stopped-home data-only skill bundles. |
-| `channel` | Configure and inspect webhook, Telegram, and Discord channel bindings. |
+| `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
 | `health` | Check daemon liveness. |
 | `status` | Inspect queues, leases, providers, approvals, effects, channels, and storage. |
@@ -61,6 +61,9 @@ public command cannot be added or removed without updating this reference.
 | `export` | Publish an immutable owner-scoped evidence bundle. |
 | `service` | Render/install or plan/remove an owner-level systemd user unit on Linux. |
 | `config` | Inspect or change governed stopped-home configuration. |
+| `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
+| `browser` | Explicitly activate or disable separately governed one-shot browser transactions. |
+| `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`
@@ -83,7 +86,8 @@ Plain `tui` selects the newest exact-binding session and creates one only when n
 `--new` and `--session-id` are mutually exclusive. The workbench is a bounded thin client: the
 daemon remains authoritative for sessions, transcripts, timelines, approvals, checkpoints, forks,
 and admission. It shows the verified canonical transcript, provider/model/context/price status,
-queued and active work, structured recent event/tool evidence, and exact pending approvals.
+queued and active work, structured recent event/tool evidence, up to 20 recent canonical
+delegated-child state/lineage cards, and exact pending approvals.
 
 Use `Tab`/`Shift-Tab` to move among panes, arrow keys or `j`/`k` to navigate, `/` from the session
 pane to search canonical user/final-assistant text, and `Enter` to admit the composer content.
@@ -166,6 +170,100 @@ that turn. Admission durably pins the resolved identity before queue acknowledge
 selection disables implicit fallback for that turn, although a classified retry may reuse that
 same exact endpoint. Selection changes affect only future new turns and never rewrite queued,
 active, or completed work.
+
+The initial v0.4 image-input surface is scriptable API/CLI only. Stop the daemon, review that every
+primary/fallback route is a direct OpenAI Responses or Anthropic Messages route, and activate it
+explicitly:
+
+```sh
+mealyctl --home "$HOME/.mealy" media image-input --enable --approve
+
+# Restart the daemon, then submit one to four exact local images.
+mealyctl --home "$HOME/.mealy" session send-image SESSION_ID ./screen.png ./detail.webp \
+  --prompt "Compare these screenshots." \
+  --provider-id local.responses --model-id local-vision-model
+
+# Disable while the daemon is stopped.
+mealyctl --home "$HOME/.mealy" media image-input --disable --approve
+```
+
+`session send-image` requires an exact activated provider/model route. It opens only no-follow
+regular `.png`, `.jpg`, `.jpeg`, or `.webp` files outside the Mealy home, rejects empty or
+unsupported input, caps each source at 2 MiB and the ordered source set at 4 MiB, and sends bytes
+only to the daemon's isolated normalizer. It does not send a filename or host path to the model.
+One to four source images are normalized to canonical owner-private artifacts and returned in
+`imageArtifactIds`.
+
+When the command generates its delivery key and UUIDv7 artifact IDs, it prints
+`MEALY_IDEMPOTENCY_KEY` and one `MEALY_IMAGE_ARTIFACT_ID` line per image before the request. After
+an ambiguous client failure, retry with the exact printed values using `--idempotency-key` and one
+`--artifact-id` per path in the original order. Reusing a key or artifact ID with different
+evidence fails closed. The full-screen TUI exposes the same bounded admission through `F9`: choose
+an exact vision-capable route with `F8`, attach one path at a time, and submit the composer. The
+dashboard accepts one to four browser-selected files and never receives a host path. Chat-native
+and channel image attachment remain unavailable.
+
+Image generation is a separate high-risk capability. While the daemon is stopped, enable one exact
+adapter and optionally import its credential from a one-shot environment variable into the private
+broker:
+
+```sh
+export OPENROUTER_API_KEY='replace-with-your-key'
+mealyctl --home "$HOME/.mealy" media image-generation --enable \
+  --protocol open-router-images \
+  --provider-id openrouter.images \
+  --base-url https://openrouter.ai/api/v1 \
+  --model 'OWNER_VERIFIED_IMAGE_MODEL:free' \
+  --residency openrouter \
+  --secret-id openrouter-images \
+  --credential-env OPENROUTER_API_KEY \
+  --size 1024x1024 \
+  --quality low \
+  --maximum-cost-microunits 50000 \
+  --maximum-output-bytes 2097152 \
+  --timeout-ms 120000 \
+  --approve
+unset OPENROUTER_API_KEY
+
+# Disable while stopped; the brokered key remains until explicitly unreferenced and revoked.
+mealyctl --home "$HOME/.mealy" media image-generation --disable --approve
+```
+
+Use `open-ai-images` with an OpenAI-compatible `/v1` base, including a credential-free literal
+loopback server. Reuse an existing broker entry by supplying `--secret-id` without
+`--credential-env`. The command validates and archives the complete prior configuration but
+deliberately performs no generation probe: probing is itself potentially billable and
+non-idempotent. For OpenRouter under a free-only policy, independently verify that the exact
+image-output model ends in `:free` and still reports zero prices immediately before activation;
+do not substitute a moving paid alias.
+
+The agent sees only `image.generate` with one prompt. Every invocation parks for exact local owner
+approval after reserving the configured cost/output ceilings. Denial makes no provider request.
+An interrupted dispatch is never retried and becomes `outcome_unknown`; inspect it with
+`effect status` and reconcile only from external evidence. A confirmed output is normalized to a
+private canonical JPEG and identified by an artifact ID in the tool observation. Retrieve it
+through the authenticated artifact metadata/content API. The TUI renders path-free canonical image
+and artifact metadata in its verified transcript. The dashboard's Image artifacts panel accepts
+the returned UUID, rechecks owner-scoped metadata, byte length, media type, and SHA-256, then
+previews or downloads only canonical PNG/JPEG bytes. Loading exact image-generation attempt
+evidence pre-fills the discovered artifact UUID. Chat/channel previews, reference images, masks,
+and image edits are not enabled.
+
+Transactional browser authority is separate from installing or enabling the default read-only
+browser. With the daemon stopped, activate or remove it explicitly:
+
+```sh
+mealyctl --home "$HOME/.mealy" browser --enable-transactions --approve
+mealyctl --home "$HOME/.mealy" browser --disable-transactions --approve
+```
+
+Exactly one of `--enable-transactions` or `--disable-transactions` is required, and `--approve` is
+mandatory. Enabling fails unless the content-pinned read browser and its governed web authority are
+already valid. It publishes no broad origin approval: every `browser.transact` proposal still
+parks for exact authenticated owner review. Disable retains the installed read browser and its
+immutable bundle. Read-browser disable is rejected until the separate transaction switch is
+disabled; terminal browser revoke removes both authorities. Read-browser re-enable does not
+silently restore transactions.
 
 `provider switch` is different from scoped selection: it changes which compatible configured
 route automatic routing prefers. Without `--approve`, it emits a non-mutating

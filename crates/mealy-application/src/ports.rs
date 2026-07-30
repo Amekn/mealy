@@ -1,7 +1,7 @@
 use mealy_domain::{
     ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-    ContextItemId, ContextManifestId, CorrelationId, DelegationId, EffectId, EventId,
-    ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
+    ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId, EffectId,
+    EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId, MemoryId,
     MemoryRevisionId, MessageId, OutboxId, RunId, SessionCheckpointId, SessionId, TaskId,
     ToolCallId, TurnId, ValidationId, WorkerId,
 };
@@ -83,6 +83,9 @@ pub trait IdGenerator {
 
     /// Generates a parent-to-child delegation contract ID.
     fn generate_delegation_id(&self) -> DelegationId;
+
+    /// Generates an atomically admitted delegation-group ID.
+    fn generate_delegation_group_id(&self) -> DelegationGroupId;
 
     /// Generates a governed memory identity.
     fn generate_memory_id(&self) -> MemoryId;

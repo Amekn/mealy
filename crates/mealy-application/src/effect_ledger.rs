@@ -1,6 +1,6 @@
 use crate::{
-    ApprovalSubject, OwnershipContext, PolicyEvaluation, PolicyRequest, PolicyRequestError,
-    canonical_arguments_digest, is_sha256_digest, sha256_digest,
+    AgentArtifactCommit, ApprovalSubject, OwnershipContext, PolicyEvaluation, PolicyRequest,
+    PolicyRequestError, canonical_arguments_digest, is_sha256_digest, sha256_digest,
 };
 use mealy_domain::{
     ApprovalDecision, ApprovalId, ApprovalStatus, AttemptId, CorrelationId, EffectId, EffectStatus,
@@ -376,6 +376,22 @@ pub struct RecordEffectAttemptOutcomeCommit {
     pub evidence_details: Value,
     /// Required for failed/unknown outcomes and forbidden for success.
     pub error_class: Option<String>,
+    /// Content-addressed output committed by a successful external effect.
+    ///
+    /// The blob already exists in the configured artifact store. Its metadata becomes visible
+    /// atomically with the successful effect result.
+    pub output_artifact: Option<AgentArtifactCommit>,
+    /// Journal event for `artifact.committed`, present exactly when `output_artifact` is present.
+    pub artifact_event_id: Option<EventId>,
+    /// Provider charge settled against a durable external-effect reservation.
+    ///
+    /// This is zero for effects without a budget reservation. An ambiguous non-idempotent image
+    /// dispatch settles the complete approved ceiling.
+    pub settled_cost_microunits: u64,
+    /// Canonical artifact bytes settled against a durable external-effect reservation.
+    ///
+    /// This is zero unless a successful output artifact commits in the same transaction.
+    pub settled_output_bytes: u64,
     /// Journal event for the exact result.
     pub event_id: EventId,
     /// Correlates the result with preparation and dispatch.

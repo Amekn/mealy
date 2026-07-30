@@ -88,9 +88,11 @@ architecture/distribution before the gate is complete.
 - [x] Include a session rail, searchable titles, verified conversation timeline, composer,
   provider/context/cost status, active/queued work, exact approvals, structured recent tool/event
   results, and bounded evidence previews.
-- [ ] Add richer dedicated subagent cards and media/artifact/diff viewers as the corresponding v0.4
-  delegation and multimodal projections mature; current canonical delegation/tool facts remain
-  visible in the structured activity preview.
+- [x] Add bounded dedicated delegated-child cards plus path-free media/artifact evidence as the
+  corresponding v0.4 delegation and image projections mature. The TUI shows recent canonical child
+  state/lineage, while the dashboard permits exact budget/authority/result inspection.
+- [ ] Add a dedicated diff viewer after a canonical bounded diff-artifact projection exists; raw
+  tool payloads are not promoted into an alternate client-owned diff format.
 - [x] Restore terminal state after normal exit, cancellation, panic, daemon loss,
   resize, and unsupported-terminal detection.
 - [x] Keep terminal input and rendered remote text bounded and control-character
@@ -144,6 +146,17 @@ Publication requires:
 - Preserve isolated contexts and authority intersection. Shared task state is
   typed canonical evidence, not a writable prompt scratchpad.
 
+The v0.4 candidate implements atomic ordered `agent.delegate_parallel` groups in addition to the
+serial operation. One model call may propose one to four self-contained children, but the complete
+group is rejected before publication unless parent delegated-run/tool reservations, fan-out,
+depth, authority intersections, resource claims, and each separate child budget fit together.
+Children claim through ordinary fenced scheduling, parent cancellation propagates to queued and
+running children, and the parent resumes only after deterministic ordinal settlement. Abrupt
+restart, partial completion, budget rollback, cancellation, individual child replay, and
+zero-provider group replay are public-process tested. The owner-scoped CLI remains scriptable;
+the TUI now renders recent child state/lineage cards, and the dashboard adds a separately bounded
+read-only projection for exact child authority, budget, state, and structured result.
+
 ### MCP
 
 - Add Streamable HTTP transport, resources, prompts, bounded OAuth/credential
@@ -151,6 +164,28 @@ Publication requires:
 - Route every effectful MCP invocation through the existing approval, effect,
   attempt, reconciliation, and replay contracts.
 - Keep server discovery metadata separate from granted authority.
+
+The first two MCP slices and the public-client OAuth runtime slice are implemented on the
+v0.4 branch: owner-facing inspect/add/list/
+enable/disable/revoke; exact endpoint and bearer-reference authority; redirect-free DNS-pinned
+connections; fresh sessions; JSON/SSE bounds; complete tool/resource/resource-template/prompt
+catalog revalidation before every selected read; exact static-resource reads; prompts with
+advertised string arguments normalized as untrusted evidence; execution-free replay; and
+non-mutating protected-resource plus OAuth/OIDC metadata inspection with exact resource binding,
+explicit multi-issuer selection, authorization-code validation, and PKCE S256 enforcement. A
+separately approved stopped-daemon login supports pre-registered public clients, fresh state and
+PKCE, an exact loopback callback, bounded token exchange, narrowed scopes, and a private
+generation-one token-family record without changing configuration or exposing model authority.
+A distinct `oauth-add` transaction revalidates metadata/catalog evidence before activation.
+Runtime resolution supports proactive refresh, cross-process serialized refresh-token rotation,
+exact-scope enforcement, atomic generation fencing, and one `401`-triggered refresh/retry.
+Reference-safe local revocation, encrypted-backup restore, and migration rollback are covered.
+Owner-classified effectful invocation is also implemented for both transports: mutually exclusive
+read-only/idempotent/non-idempotent grants, exact approval and immutable-ceiling binding, fresh
+pre-dispatch inventory validation, fenced attempts, retry-only idempotent crash recovery,
+reconcile-only non-idempotent ambiguity, and execution-free replay are process-tested. Dynamic
+client registration/CIMD, issuer-side revocation, resource-template expansion/subscriptions,
+resumable GET, and long-lived health remain explicit later slices.
 
 ### Media
 
@@ -161,6 +196,42 @@ Publication requires:
   generation.
 - Reject unsupported media before provider reservation or dispatch.
 
+The provider-neutral image envelope, both direct adapter translations, and the first public
+API/scriptable-CLI ingress are implemented. The envelope accepts only digest-bound PNG/JPEG/WebP
+bytes, limits one request to four images and 4 MiB total, permits images only on authenticated user
+messages, reserves 8,192 input tokens per included image, and fails unsupported text-only routes
+before reservation or HTTP dispatch. OpenAI-compatible requests use low detail for a portable
+accounting ceiling; Anthropic requests use image-first base64 blocks.
+
+Strict isolated decode/re-encode metadata stripping and schema-21 content-addressed inbox linkage
+bind exact ordered owner-private image evidence to inbox/journal/acknowledgement state after blob
+publication. Context-manifest v3 adds sparse artifact provenance, trusted hydration rechecks bytes,
+transcript v2 exports path-free metadata, and recorded-only replay reconstructs the exact request
+without redispatch. Stopped-daemon activation is explicit and limited to all-direct
+OpenAI/Anthropic route chains; individual admissions require an exact image-capable route. The API
+has a 6 MiB transport boundary and `session send-image` uses no-follow local files plus
+retry-stable delivery/artifact IDs.
+
+The separately permissioned image-generation backend is also implemented. One exact stopped-home
+OpenAI Images or OpenRouter Images adapter pins provider/model, origin, credential reference,
+JPEG/size/quality, maximum cost/output bytes, and deadline. `image.generate` is a high-risk
+non-idempotent effect: the model supplies only the prompt, the owner approves the complete injected
+authority, cost/output are reserved before parking, denial makes no provider call, and a dispatch
+crash never retries. Confirmed output passes through the isolated normalizer before one atomic
+effect/artifact/usage settlement; recorded replay verifies the graph and blob without live calls.
+Schema 22 and real-process happy/denied/crash/reconcile/corruption tests cover the boundary.
+[ADR 0018](decisions/0018-governed-image-generation-effect.md) records the contract.
+
+The full-screen TUI now admits up to four no-follow local images through `F9` only after an exact
+route is selected, and renders path-free canonical image/artifact evidence in the transcript. The
+dashboard uses browser-selected bytes with retry-stable UUIDv7 identities, the same admission
+ceilings, and an owner-scoped PNG/JPEG viewer that rechecks immutable metadata, length, media type,
+and SHA-256 before an in-memory preview or download. Public-process tests cover both adapters.
+Line-chat/channel image upload, terminal pixel protocols, fork-lineage image projection,
+reference/edit workflows, and audio/video remain incomplete.
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md) defines the input and rendering
+boundaries.
+
 ### Channels and browser
 
 - Define a reusable channel adapter contract and ship Slack as the next
@@ -168,6 +239,39 @@ Publication requires:
 - Add an explicitly approved transactional browser profile for bounded POST
   forms, uploads, and downloads. Keep the current research profile as the safe
   default; persistent/personal profiles remain a separate higher-trust choice.
+
+The reusable channel contract and first Slack production slice are implemented on the v0.4
+branch. The pure adapter enforces exact workspace/member/conversation/bot/mention bounds and
+bounded control-safe output. Setup live-verifies both Slack token roles and the app/workspace/bot/
+human/conversation identities, while the Socket Mode hello independently binds the app token to
+the bot app. Routes with identical installation pins share one connection. A complete normalized
+admit/ignore disposition is persisted before acknowledgement, acknowledged-but-unfinished input
+recovers after restart, duplicates are body-bound, and output resolves the exact originating
+thread with stable `client_msg_id` plus per-channel rate control. Both tokens remain broker-only;
+final-route revocation removes them. Slack chat deliberately cannot grant effect approval.
+Migration/storage tests and a real HTTP/WebSocket public-process proof cover crash-after-ack
+recovery, exact allowlists, duplicate acknowledgement, thread routing, 429 retry, stable
+downstream identity, secret exclusion/deletion, and revocation. Package/upgrade matrices and the
+complete v0.4 release gate remain pending.
+
+The first transactional-browser effect is also implemented. A stopped-home flag, separate from
+the safer read browser, exposes `browser.transact` only when the pinned runtime and web authority
+remain valid. `browser.snapshot` emits bounded inert POST-form catalogs with hidden-value digests.
+Each transaction proposal binds one canonical URL/origin/form digest, exact fields/submitter,
+ordered digest-verified private upload artifacts, runtime identity, ceilings, and deadline; policy
+always parks for exact authenticated owner approval. After approval a fresh worker revalidates the
+source form, closes the hostile target, reconstructs only approved controls in a clean target, and
+permits one same-origin POST plus at most one bounded response download. The effect is
+non-idempotent and `NeverRetry`.
+
+Schema 23 preserves the bounded raw-model-to-normalized-intent proof and denies noncanonical URLs,
+unknown fields, or form/value drift. Low-level real Chrome tests exercise controlled submission and
+denial boundaries. A daemon process test proves approval, exactly one POST, crash after durable
+dispatch, restart without resubmission, authenticated reconciliation, terminal continuation, and
+complete recorded-only replay after the browser bundle is removed. Persistent/personal profiles,
+ambient login, arbitrary clicking/JavaScript, payments, cross-origin transactions, and unattended
+batches remain separate future contracts. [ADR 0019](decisions/0019-one-shot-transactional-browser-effects.md)
+records the boundary.
 
 ### v0.4 release gate
 

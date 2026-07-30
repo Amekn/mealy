@@ -3,14 +3,15 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use mealy_application::ProviderSelection;
 use mealy_application::{
-    AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
-    AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
-    AgentStoreError, AgentTaskView, ContextDisposition, ContextEpoch, ContextManifestItem,
-    ContextMemoryEvidence, ContextMemorySourceCitation, ForkContextBoundary, MessageRole,
-    ModelDispatchReceipt, NormalizedMessage, OwnershipContext, PrepareModelAttemptCommit,
-    ProviderCapabilities, ProviderRequest, ProviderResponse, ReadToolDescriptor, estimate_tokens,
-    is_sha256_digest, sha256_digest, validate_context_manifest, validate_fixture_read_arguments,
-    web_url_authorized_by_capabilities,
+    AgentArtifactCommit, AgentBudgetUsage, AgentContextImage, AgentContextSource,
+    AgentEvidenceStore, AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport,
+    AgentRunSnapshot, AgentStoreError, AgentTaskView, ContextDisposition, ContextEpoch,
+    ContextManifestItem, ContextMemoryEvidence, ContextMemorySourceCitation, ForkContextBoundary,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole, ModelDispatchReceipt, NormalizedMessage,
+    OwnershipContext, PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, PrepareModelAttemptCommit,
+    ProviderCapabilities, ProviderRequest, ProviderResponse, ReadToolDescriptor, SHA256_ALGORITHM,
+    estimate_tokens, is_sha256_digest, sha256_digest, validate_context_manifest,
+    validate_fixture_read_arguments, web_url_authorized_by_capabilities,
 };
 use mealy_domain::{
     CapabilityGrant, ChannelBindingId, CompactionId, ContextItemId, CorrelationId, EffectClass,
@@ -20,7 +21,7 @@ use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, p
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::{Read as _, Write as _},
     str::FromStr,
     time::{Duration, SystemTime},
@@ -29,7 +30,9 @@ use std::{
 pub(super) const MAXIMUM_CONVERSATION_HISTORY_TURNS: i64 = 32;
 pub(super) const MAXIMUM_CONVERSATION_HISTORY_BYTES: i64 = 512 * 1_024;
 const MAXIMUM_RECORDED_READ_TOOL_DESCRIPTOR_BYTES: usize = 512 * 1_024;
-pub(super) const MAXIMUM_MODEL_REQUEST_JSON_BYTES: usize = 256 * 1_024;
+// Includes at most 4 MiB of normalized image bytes after base64 expansion plus the existing
+// bounded text/tool envelope. The same ceiling is enforced while decoding compressed evidence.
+pub(super) const MAXIMUM_MODEL_REQUEST_JSON_BYTES: usize = 8 * 1_024 * 1_024;
 const MAXIMUM_CONTEXT_MANIFEST_BUNDLE_JSON_BYTES: usize = 2 * 1_024 * 1_024;
 const DURABLE_JSON_COMPRESSION_THRESHOLD_BYTES: usize = 4 * 1_024;
 const DURABLE_JSON_ENCODING: &str = "deflate-zlib-base64url-v1";
@@ -1155,6 +1158,12 @@ fn load_context_sources(
             |result| Ok((result.get::<_, String>(0)?, result.get::<_, String>(1)?)),
         )
         .map_err(map_sqlite_error)?;
+    let current_images = load_input_context_images(
+        connection,
+        &inbox_entry_id,
+        &row.session_id,
+        &row.principal_id,
+    )?;
     let current_user = AgentContextSource {
         source_type: "user".to_owned(),
         source_locator: format!("inbox://{inbox_entry_id}"),
@@ -1162,10 +1171,12 @@ fn load_context_sources(
         message: NormalizedMessage {
             role: MessageRole::User,
             content: content.clone(),
+            images: Vec::new(),
             tool_call_id: None,
         },
         sensitivity: "private".to_owned(),
         content_artifact_id: None,
+        image_artifacts: current_images.clone(),
         memory_evidence: None,
         compaction_id: None,
     };
@@ -1186,6 +1197,7 @@ fn load_context_sources(
         &row.session_id,
         &row.principal_id,
         compaction_cutoff,
+        MAXIMUM_PROVIDER_IMAGE_INPUTS.saturating_sub(current_images.len()),
     )?;
     sources.push(current_user);
     if let Some(compaction) = compaction {
@@ -1196,6 +1208,145 @@ fn load_context_sources(
     sources.extend(load_read_tool_context_sources(connection, &run_id)?);
     sources.extend(load_effect_context_sources(connection, &run_id)?);
     Ok(sources)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn load_input_context_images(
+    connection: &rusqlite::Connection,
+    inbox_entry_id: &str,
+    session_id: &str,
+    principal_id: &str,
+) -> Result<Vec<AgentContextImage>, AgentStoreError> {
+    let stored_media_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM session_inbox_media WHERE inbox_entry_id = ?1",
+            [inbox_entry_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let expected_access_policy =
+        json!({"principalId": principal_id, "sessionId": session_id}).to_string();
+    let expected_access_policy_digest = sha256_digest(expected_access_policy.as_bytes());
+    let mut statement = connection
+        .prepare(
+            "SELECT media.ordinal, media.artifact_id, media.media_type, media.width, media.height, \
+                    image.blob_algorithm, image.blob_digest, image.principal_id, image.session_id, \
+                    image.media_type, image.origin_kind, image.origin_id, image.producer_kind, \
+                    image.producer_id, image.sensitivity, image.retention_class, \
+                    image.access_policy_json, image.access_policy_digest, blob.size_bytes, \
+                    blob.relative_path \
+             FROM session_inbox_media media \
+             JOIN session_inbox inbox ON inbox.inbox_entry_id = media.inbox_entry_id \
+             JOIN session owner_session ON owner_session.id = inbox.session_id \
+             JOIN artifact image ON image.id = media.artifact_id \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = image.blob_algorithm AND blob.digest = image.blob_digest \
+             WHERE media.inbox_entry_id = ?1 AND inbox.session_id = ?2 \
+               AND owner_session.principal_id = ?3 \
+             ORDER BY media.ordinal",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map(params![inbox_entry_id, session_id, principal_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, String>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?,
+                row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
+                row.get::<_, String>(15)?,
+                row.get::<_, String>(16)?,
+                row.get::<_, String>(17)?,
+                row.get::<_, i64>(18)?,
+                row.get::<_, String>(19)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    if usize::try_from(stored_media_count).ok() != Some(rows.len()) {
+        return Err(invariant(
+            "stored input image context references are incomplete",
+        ));
+    }
+    if rows.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+        return Err(invariant(
+            "stored input image count exceeds the context bound",
+        ));
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(
+            |(
+                expected_ordinal,
+                (
+                    ordinal,
+                    artifact_id,
+                    media_type,
+                    width,
+                    height,
+                    algorithm,
+                    digest,
+                    image_principal_id,
+                    image_session_id,
+                    artifact_media_type,
+                    origin_kind,
+                    origin_id,
+                    producer_kind,
+                    producer_id,
+                    sensitivity,
+                    retention_class,
+                    access_policy,
+                    access_policy_digest,
+                    size_bytes,
+                    relative_path,
+                ),
+            )| {
+                let image = AgentContextImage {
+                    artifact_id: parse_id(&artifact_id, "input image artifact ID")?,
+                    media_type: media_type.clone(),
+                    sha256_digest: digest.clone(),
+                    size_bytes: u64::try_from(size_bytes)
+                        .map_err(|_| invariant("stored input image size is negative"))?,
+                    width: u32::try_from(width)
+                        .map_err(|_| invariant("stored input image width is invalid"))?,
+                    height: u32::try_from(height)
+                        .map_err(|_| invariant("stored input image height is invalid"))?,
+                };
+                if usize::try_from(ordinal).ok() != Some(expected_ordinal)
+                    || !image.is_valid()
+                    || algorithm != SHA256_ALGORITHM
+                    || relative_path != format!("{SHA256_ALGORITHM}/{digest}")
+                    || image_principal_id != principal_id
+                    || image_session_id != session_id
+                    || artifact_media_type != media_type
+                    || origin_kind != "session_input"
+                    || origin_id != inbox_entry_id
+                    || producer_kind != "builtin"
+                    || producer_id != "mealyd.media-normalizer.v1"
+                    || sensitivity != "private"
+                    || retention_class != "session_history"
+                    || access_policy != expected_access_policy
+                    || access_policy_digest != expected_access_policy_digest
+                {
+                    return Err(invariant(
+                        "stored input image context evidence is inconsistent",
+                    ));
+                }
+                Ok(image)
+            },
+        )
+        .collect()
 }
 
 fn load_fork_context_boundary(
@@ -1350,10 +1501,12 @@ fn load_compaction_context_source(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: Some(compaction_id),
         },
@@ -1368,6 +1521,7 @@ fn load_conversation_context_sources(
     session_id: &str,
     principal_id: &str,
     compaction_cutoff: i64,
+    maximum_image_count: usize,
 ) -> Result<Vec<AgentContextSource>, AgentStoreError> {
     if compaction_cutoff < 0 {
         return Err(invariant("conversation compaction cutoff is negative"));
@@ -1473,6 +1627,21 @@ fn load_conversation_context_sources(
     let remaining_turns = MAXIMUM_CONVERSATION_HISTORY_TURNS
         .saturating_sub(i64::try_from(rows.len()).unwrap_or(i64::MAX));
     let remaining_bytes = MAXIMUM_CONVERSATION_HISTORY_BYTES.saturating_sub(own_history_bytes);
+    let mut remaining_image_count = maximum_image_count.min(MAXIMUM_PROVIDER_IMAGE_INPUTS);
+    let mut history_images = HashMap::<String, Vec<AgentContextImage>>::new();
+    let mut history_start_index = 0_usize;
+    for (index, row) in rows.iter().enumerate().rev() {
+        let images = load_input_context_images(connection, &row.0, session_id, principal_id)?;
+        if images.len() > remaining_image_count {
+            // Preserve a chronological suffix. Keeping this turn's text without its images would
+            // change its meaning, while skipping it and then including older turns would create a
+            // non-contiguous conversation projection.
+            history_start_index = index.saturating_add(1);
+            break;
+        }
+        remaining_image_count = remaining_image_count.saturating_sub(images.len());
+        history_images.insert(row.0.clone(), images);
+    }
     let mut sources = load_fork_context_sources(
         connection,
         current_turn_id,
@@ -1483,7 +1652,9 @@ fn load_conversation_context_sources(
         remaining_bytes,
     )?;
     sources.reserve(rows.len().saturating_mul(2));
-    for (inbox_entry_id, user_content, message_id, assistant_content, digest, byte_length) in rows {
+    for (inbox_entry_id, user_content, message_id, assistant_content, digest, byte_length) in
+        rows.into_iter().skip(history_start_index)
+    {
         if byte_length <= 0
             || usize::try_from(byte_length).ok() != Some(assistant_content.len())
             || sha256_digest(assistant_content.as_bytes()) != digest
@@ -1499,10 +1670,12 @@ fn load_conversation_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content: user_content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: history_images.remove(&inbox_entry_id).unwrap_or_default(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1513,10 +1686,12 @@ fn load_conversation_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Assistant,
                 content: assistant_content,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1640,10 +1815,12 @@ fn load_fork_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::User,
                 content: user,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1654,10 +1831,12 @@ fn load_fork_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Assistant,
                 content: assistant,
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1728,10 +1907,12 @@ fn load_memory_context_sources(
                             &cited_digests,
                             &content,
                         ),
+                        images: Vec::new(),
                         tool_call_id: None,
                     },
                     sensitivity,
                     content_artifact_id: None,
+                    image_artifacts: Vec::new(),
                     memory_evidence: Some(ContextMemoryEvidence {
                         memory_id,
                         revision_id,
@@ -1922,10 +2103,12 @@ fn load_read_tool_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Tool,
                 content,
+                images: Vec::new(),
                 tool_call_id: Some(tool_call_id),
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -1971,10 +2154,12 @@ fn load_effect_context_sources(
             message: NormalizedMessage {
                 role: MessageRole::Tool,
                 content,
+                images: Vec::new(),
                 tool_call_id: Some(tool_call_id),
             },
             sensitivity: "internal".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
         });
@@ -3525,12 +3710,15 @@ fn valid_recorded_read_tool_descriptor(descriptor: &ReadToolDescriptor) -> bool 
         && descriptor.conflict_key_template == "skill-resource:{skillId}:{path}";
     let delegation = descriptor.version == "1"
         && descriptor.risk_class == "low"
-        && descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID
         && descriptor.required_capability == "agent:delegate"
         && descriptor.timeout == Duration::from_mins(5)
-        && descriptor.maximum_output_bytes == 64 * 1024
-        && descriptor.conflict_key_template == "agent-delegate:{objective}";
-    let browser = matches!(descriptor.version.as_str(), "1" | "2" | "3" | "4")
+        && ((descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID
+            && descriptor.maximum_output_bytes == 64 * 1024
+            && descriptor.conflict_key_template == "agent-delegate:{objective}")
+            || (descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+                && descriptor.maximum_output_bytes == 64 * 1024
+                && descriptor.conflict_key_template == "agent-delegate-parallel"));
+    let browser = matches!(descriptor.version.as_str(), "1" | "2" | "3" | "4" | "5")
         && descriptor.risk_class == "medium"
         && descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
         && descriptor.required_capability == "network:browser"
@@ -3555,13 +3743,29 @@ fn valid_mcp_descriptor(descriptor: &ReadToolDescriptor) -> bool {
         return false;
     };
     let capability_prefix = format!("mcp.invoke:{server_id}:{remote_name}:sha256:");
-    let Some(identity_digest) = descriptor
+    let http_capability_prefix = format!("mcp.http.invoke:{server_id}:{remote_name}:sha256:");
+    let (identity_digest, valid_authority) = if let Some(identity_digest) = descriptor
         .required_capability
         .strip_prefix(&capability_prefix)
-    else {
+    {
+        (identity_digest, true)
+    } else if let Some(material) = descriptor
+        .required_capability
+        .strip_prefix(&http_capability_prefix)
+    {
+        let Some((identity_digest, authority_digest)) = material.split_once(":authority-sha256:")
+        else {
+            return false;
+        };
+        (
+            identity_digest,
+            mealy_application::is_sha256_digest(authority_digest),
+        )
+    } else {
         return false;
     };
     descriptor.risk_class == "medium"
+        && valid_authority
         && mealy_application::is_sha256_digest(identity_digest)
         && descriptor.version
             == format!(
@@ -3591,6 +3795,10 @@ fn read_tool_policy(descriptor: &ReadToolDescriptor) -> Option<(&'static str, &'
         ))
     } else if descriptor.tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID {
         Some(match descriptor.version.as_str() {
+            "5" => (
+                "mealy.browser-tools.v5",
+                "allow: isolated fresh-profile rendered browser snapshot, governed read-only interaction, bounded same-origin attachment capture, and inert POST form catalog evidence",
+            ),
             "4" => (
                 "mealy.browser-tools.v4",
                 "allow: isolated fresh-profile rendered browser snapshot, governed read-only interaction, and bounded same-origin attachment capture",
@@ -3613,7 +3821,11 @@ fn read_tool_policy(descriptor: &ReadToolDescriptor) -> Option<(&'static str, &'
             "mealy.read-tools.v1",
             "allow: enabled passive skill resource",
         ))
-    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
+    } else if matches!(
+        descriptor.tool_id.as_str(),
+        mealy_application::AGENT_DELEGATE_TOOL_ID
+            | mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+    ) {
         Some((
             "mealy.read-tools.v1",
             "allow: bounded isolated internal child run",
@@ -3639,6 +3851,10 @@ fn validated_read_tool_source_locator(
         mealy_application::AgentDelegationRequest::from_arguments(arguments)
             .ok()
             .map(|_| mealy_application::AGENT_DELEGATE_RESULT_LOCATOR.to_owned())
+    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        mealy_application::ParallelAgentDelegationRequest::from_arguments(arguments)
+            .ok()
+            .map(|_| mealy_application::AGENT_DELEGATE_GROUP_RESULT_LOCATOR.to_owned())
     } else if descriptor.tool_id.starts_with("mcp.") {
         jsonschema::validator_for(&descriptor.input_schema)
             .ok()
@@ -3693,18 +3909,60 @@ fn read_tool_within_capability_ceiling(
             .iter()
             .any(|destination| destination.starts_with("search:"))
             && !capability.secret_references.is_empty()
-    } else if descriptor.tool_id == "skill.read_resource" || descriptor.tool_id.starts_with("mcp.")
-    {
+    } else if descriptor.tool_id == "skill.read_resource" {
         true
+    } else if descriptor.tool_id.starts_with("mcp.") {
+        mcp_descriptor_authority_within_capability_ceiling(descriptor, capability)
     } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
         capability.maximum_delegated_runs > 0
+            && capability.maximum_delegation_depth > 0
             && mealy_application::AgentDelegationRequest::from_arguments(arguments).is_ok()
+    } else if descriptor.tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+        capability.maximum_delegation_depth > 0
+            && mealy_application::ParallelAgentDelegationRequest::from_arguments(arguments)
+                .is_ok_and(|request| {
+                    u64::try_from(request.delegations.len())
+                        .is_ok_and(|fanout| fanout <= capability.maximum_delegated_runs)
+                })
     } else {
         descriptor.tool_id == "fixture.read"
             && capability.workspace_roots.is_empty()
             && capability.network_destinations.is_empty()
             && capability.secret_references.is_empty()
     }
+}
+
+fn mcp_descriptor_authority_within_capability_ceiling(
+    descriptor: &ReadToolDescriptor,
+    capability: &CapabilityGrant,
+) -> bool {
+    let Some(identity) = descriptor.tool_id.strip_prefix("mcp.") else {
+        return false;
+    };
+    let Some((server_id, remote_name)) = identity.split_once('.') else {
+        return false;
+    };
+    let http_prefix = format!("mcp.http.invoke:{server_id}:{remote_name}:sha256:");
+    let Some(remainder) = descriptor.required_capability.strip_prefix(&http_prefix) else {
+        let stdio_prefix = format!("mcp.invoke:{server_id}:{remote_name}:sha256:");
+        return descriptor
+            .required_capability
+            .strip_prefix(&stdio_prefix)
+            .is_some_and(mealy_application::is_sha256_digest);
+    };
+    let Some((transport_digest, authority_digest)) = remainder.split_once(":authority-sha256:")
+    else {
+        return false;
+    };
+    mealy_application::is_sha256_digest(transport_digest)
+        && mealy_application::is_sha256_digest(authority_digest)
+        && capability.network_destinations.iter().any(|destination| {
+            mealy_application::mcp_http_authority_digest(destination, None) == authority_digest
+                || capability.secret_references.iter().any(|reference| {
+                    mealy_application::mcp_http_authority_digest(destination, Some(reference))
+                        == authority_digest
+                })
+        })
 }
 
 fn parse_recorded_read_tool_descriptor(
@@ -4360,37 +4618,29 @@ fn request_task_cancellation(
         return Err(AgentStoreError::Conflict);
     }
     let correlation_id = parse_id(&row.2, "correlation ID")?;
-    let active_delegations = transaction
-        .query_row(
-            "SELECT COUNT(*), MIN(delegation.id), MIN(delegation.child_run_id), \
-                    MIN(delegation.child_task_id) \
-             FROM delegation \
-             WHERE delegation.parent_run_id = ?1 \
-               AND delegation.state IN ('queued', 'running')",
-            [row.0.as_str()],
-            |result| {
+    let active_delegations = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT delegation.id, delegation.child_run_id, delegation.child_task_id \
+                 FROM delegation \
+                 WHERE delegation.parent_run_id = ?1 \
+                   AND delegation.state IN ('queued', 'running') \
+                 ORDER BY delegation.group_id, delegation.group_ordinal, delegation.id",
+            )
+            .map_err(map_sqlite_error)?;
+        statement
+            .query_map([row.0.as_str()], |result| {
                 Ok((
-                    result.get::<_, i64>(0)?,
-                    result.get::<_, Option<String>>(1)?,
-                    result.get::<_, Option<String>>(2)?,
-                    result.get::<_, Option<String>>(3)?,
+                    result.get::<_, String>(0)?,
+                    result.get::<_, String>(1)?,
+                    result.get::<_, String>(2)?,
                 ))
-            },
-        )
-        .map_err(map_sqlite_error)?;
-    if active_delegations.0 > 1 {
-        return Err(invariant(
-            "one waiting parent owns multiple active delegated children",
-        ));
-    }
-    let active_delegation = match active_delegations {
-        (0, None, None, None) => None,
-        (1, Some(delegation_id), Some(child_run_id), Some(child_task_id)) => {
-            Some((delegation_id, child_run_id, child_task_id))
-        }
-        _ => return Err(invariant("active delegation linkage is incomplete")),
+            })
+            .map_err(map_sqlite_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_sqlite_error)?
     };
-    if let Some((delegation_id, child_run_id, child_task_id)) = &active_delegation {
+    for (_, child_run_id, child_task_id) in &active_delegations {
         let child_run_changed = transaction
             .execute(
                 "UPDATE run SET cancellation_requested_at_ms = COALESCE(\
@@ -4422,17 +4672,31 @@ fn request_task_cancellation(
         if child_run_changed != 1 || child_task_changed != 1 {
             return Err(AgentStoreError::Conflict);
         }
+    }
+    if !active_delegations.is_empty() {
+        let delegation_ids = active_delegations
+            .iter()
+            .map(|value| value.0.as_str())
+            .collect::<Vec<_>>();
+        let child_run_ids = active_delegations
+            .iter()
+            .map(|value| value.1.as_str())
+            .collect::<Vec<_>>();
+        let child_task_ids = active_delegations
+            .iter()
+            .map(|value| value.2.as_str())
+            .collect::<Vec<_>>();
         append_agent_event(
             &transaction,
             commit.approval_event_id,
             "run",
-            child_run_id,
-            "run.cancellation_requested_by_parent",
+            &row.0,
+            "run.child_cancellations_requested",
             requested_at_ms,
             correlation_id,
             json!({
-                "delegation_id": delegation_id,
-                "parent_run_id": row.0,
+                "delegation_ids": delegation_ids,
+                "child_run_ids": child_run_ids,
                 "reason": commit.reason,
             }),
         )?;
@@ -4440,13 +4704,13 @@ fn request_task_cancellation(
             &transaction,
             commit.effect_event_id,
             "task",
-            child_task_id,
-            "task.cancellation_requested_by_parent",
+            &commit.task_id.to_string(),
+            "task.child_cancellations_requested",
             requested_at_ms,
             correlation_id,
             json!({
-                "delegation_id": delegation_id,
-                "parent_task_id": commit.task_id,
+                "delegation_ids": delegation_ids,
+                "child_task_ids": child_task_ids,
                 "reason": commit.reason,
             }),
         )?;
@@ -4462,7 +4726,7 @@ fn request_task_cancellation(
     )
     .map_err(super::agent_effect::map_effect_error)?;
     if row.1 == "waiting" {
-        let waiting_for_delegation = active_delegation.is_some();
+        let waiting_for_delegation = !active_delegations.is_empty();
         if !waiting_for_delegation {
             let requeued = transaction
                 .execute(
@@ -4494,7 +4758,8 @@ fn request_task_cancellation(
             correlation_id,
             json!({
                 "effect_id": cancelled_effect,
-                "delegation_id": active_delegation.as_ref().map(|value| value.0.as_str()),
+                "delegation_ids": active_delegations.iter()
+                    .map(|value| value.0.as_str()).collect::<Vec<_>>(),
                 "reason": "task_cancellation_requested",
             }),
         )?;
@@ -4958,15 +5223,16 @@ fn verify_recorded_replay(
     let Some(effects) = agent_effect::load_replay_agent_effects(connection, task.run_id)? else {
         return Ok(false);
     };
+    let manifest_count = count_for_run(connection, "context_manifest", task.run_id)?;
+    let unique_manifests = attempts
+        .iter()
+        .map(|attempt| attempt.context_manifest_id.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     if u64::try_from(attempts.len()).ok() != Some(task.model_attempts)
         || u64::try_from(tools.len().saturating_add(effects.len())).ok() != Some(task.tool_calls)
-        || count_for_run(connection, "context_manifest", task.run_id)? != task.model_attempts
-        || attempts
-            .iter()
-            .map(|attempt| attempt.context_manifest_id.as_str())
-            .collect::<HashSet<_>>()
-            .len()
-            != attempts.len()
+        || manifest_count != task.model_attempts
+        || unique_manifests != attempts.len()
     {
         return Ok(false);
     }
@@ -5050,7 +5316,15 @@ fn verify_recorded_replay(
         .iter()
         .filter(|attempt| matches!(attempt.response, Some(ProviderResponse::Final { .. })))
         .count();
-    let final_boundary = verify_final_boundary(connection, task_id, task, final_attempt, &tools)?;
+    let final_boundary = verify_final_boundary(
+        connection,
+        task_id,
+        task,
+        final_attempt,
+        &attempts,
+        &tools,
+        &effects,
+    )?;
     let terminal =
         verify_terminal_graph_and_events(connection, task_id, task, final_attempt, &effects)?;
     let checkpoints = verify_checkpoint_chain(
@@ -5711,7 +5985,7 @@ fn verify_run_capability_authority(
         return Ok(false);
     };
     if capability.validate().is_err()
-        || serde_json::to_string(&capability).ok().as_deref() != Some(capability_json.as_str())
+        || !canonical_capability_json_matches(&capability, &capability_json)
     {
         return Ok(false);
     }
@@ -5726,6 +6000,40 @@ fn verify_run_capability_authority(
         .iter()
         .all(|effect| recorded_effect_within_capability(effect, &capability));
     Ok(declared_tools_valid && recorded_tools_valid && recorded_effects_valid)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyCapabilityGrant<'a> {
+    tools: &'a BTreeSet<String>,
+    effect_classes: &'a BTreeSet<EffectClass>,
+    workspace_roots: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    writable_workspace_roots: &'a BTreeSet<String>,
+    network_destinations: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    executable_identity_digests: &'a BTreeSet<String>,
+    secret_references: &'a BTreeSet<String>,
+    profiles: &'a BTreeSet<PolicyProfile>,
+    maximum_delegated_runs: u64,
+}
+
+fn canonical_capability_json_matches(capability: &CapabilityGrant, durable_json: &str) -> bool {
+    if serde_json::to_string(capability).ok().as_deref() == Some(durable_json) {
+        return true;
+    }
+    let legacy = LegacyCapabilityGrant {
+        tools: &capability.tools,
+        effect_classes: &capability.effect_classes,
+        workspace_roots: &capability.workspace_roots,
+        writable_workspace_roots: &capability.writable_workspace_roots,
+        network_destinations: &capability.network_destinations,
+        executable_identity_digests: &capability.executable_identity_digests,
+        secret_references: &capability.secret_references,
+        profiles: &capability.profiles,
+        maximum_delegated_runs: capability.maximum_delegated_runs,
+    };
+    serde_json::to_string(&legacy).ok().as_deref() == Some(durable_json)
 }
 
 fn declared_tool_within_capability(tool_id: &str, capability: &CapabilityGrant) -> bool {
@@ -5757,6 +6065,19 @@ fn declared_tool_within_capability(tool_id: &str, capability: &CapabilityGrant) 
                 && capability.profiles.contains(&PolicyProfile::WorkspaceWrite)
                 && !capability.writable_workspace_roots.is_empty()
                 && !capability.executable_identity_digests.is_empty()
+        } else if matches!(
+            tool_id,
+            mealy_application::IMAGE_GENERATION_TOOL_ID
+                | mealy_application::BROWSER_TRANSACTION_TOOL_ID
+        ) {
+            capability
+                .effect_classes
+                .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && !capability.network_destinations.is_empty()
+                && !capability.executable_identity_digests.is_empty()
         } else {
             declared_read_tool_within_capability(tool_id, capability)
         }
@@ -5780,8 +6101,18 @@ fn declared_read_tool_within_capability(tool_id: &str, capability: &CapabilityGr
                 && !capability.secret_references.is_empty()
         } else if tool_id == "skill.read_resource" || tool_id.starts_with("mcp.") {
             true
-        } else if tool_id == mealy_application::AGENT_DELEGATE_TOOL_ID {
-            capability.maximum_delegated_runs > 0
+        } else if matches!(
+            tool_id,
+            mealy_application::AGENT_DELEGATE_TOOL_ID
+                | mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID
+        ) {
+            capability.maximum_delegation_depth > 0
+                && capability.maximum_delegated_runs
+                    >= if tool_id == mealy_application::AGENT_DELEGATE_PARALLEL_TOOL_ID {
+                        2
+                    } else {
+                        1
+                    }
         } else {
             tool_id == "fixture.read"
         }
@@ -5806,6 +6137,67 @@ fn recorded_effect_within_capability(
         } else if effect.tool_id == mealy_application::PROCESS_RUN_TOOL_ID {
             effect_workspace_authorized(effect, capability)
                 && effect_command_authorized(effect, capability)
+        } else if effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            effect.effect_class == EffectClass::NonIdempotent
+                && capability
+                    .effect_classes
+                    .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect.target_resources.len() == 1
+                && effect.target_resources[0].starts_with("image-provider://")
+                && effect.network_destinations.len() == 1
+                && capability
+                    .network_destinations
+                    .contains(&effect.network_destinations[0])
+                && effect.secret_references.len() <= 1
+                && effect
+                    .secret_references
+                    .iter()
+                    .all(|reference| capability.secret_references.contains(reference))
+        } else if effect.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+            effect.effect_class == EffectClass::NonIdempotent
+                && capability
+                    .effect_classes
+                    .contains(&EffectClass::NonIdempotent)
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect.target_resources.len() == 1
+                && effect.target_resources[0].starts_with("browser-transaction:http")
+                && effect.network_destinations.len() == 1
+                && capability
+                    .network_destinations
+                    .contains(&effect.network_destinations[0])
+                && effect.secret_references.is_empty()
+        } else if effect.tool_id.starts_with("mcp.") {
+            capability.effect_classes.contains(&effect.effect_class)
+                && effect.effect_class != EffectClass::ReadOnly
+                && capability
+                    .profiles
+                    .contains(&PolicyProfile::ServiceOperator)
+                && capability
+                    .executable_identity_digests
+                    .contains(&effect.executable_identity_digest)
+                && effect
+                    .target_resources
+                    .iter()
+                    .all(|target| target.starts_with("mcp://"))
+                && effect
+                    .network_destinations
+                    .iter()
+                    .all(|destination| capability.network_destinations.contains(destination))
+                && effect
+                    .secret_references
+                    .iter()
+                    .all(|reference| capability.secret_references.contains(reference))
         } else {
             false
         }
@@ -5872,15 +6264,16 @@ fn verify_model_tool_linkage(
         let Some(declared) = declared else {
             return false;
         };
-        if tool_id != &tool.tool_id
-            || arguments != &tool.arguments
-            || declared.schema_digest != tool.schema_digest
-            || declared.input_schema != tool.descriptor.input_schema
-            || !read_tool_policy_within_manifest(
-                &tool.tool_id,
-                &tool.policy_version,
-                &parent.manifest_policy_version,
-            )
+        let read_identity = tool_id == &tool.tool_id;
+        let read_arguments = arguments == &tool.arguments;
+        let read_schema_digest = declared.schema_digest == tool.schema_digest;
+        let read_schema = declared.input_schema == tool.descriptor.input_schema;
+        let read_policy = read_tool_policy_within_manifest(
+            &tool.tool_id,
+            &tool.policy_version,
+            &parent.manifest_policy_version,
+        );
+        if !read_identity || !read_arguments || !read_schema_digest || !read_schema || !read_policy
         {
             return false;
         }
@@ -5909,8 +6302,18 @@ fn verify_model_tool_linkage(
         let Some(ProviderResponse::ToolCall { tool_id, arguments }) = &parent.response else {
             return false;
         };
+        let arguments_match = if effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+            arguments.as_object().is_some_and(|arguments| {
+                arguments.len() == 1 && arguments.get("prompt") == effect.arguments.get("prompt")
+            })
+        } else if effect.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+            mealy_application::normalize_browser_transaction_arguments(arguments)
+                .is_ok_and(|canonical| canonical == effect.arguments)
+        } else {
+            arguments == &effect.arguments
+        };
         if tool_id != &effect.tool_id
-            || arguments != &effect.arguments
+            || !arguments_match
             || !parent
                 .request
                 .tools
@@ -5946,10 +6349,15 @@ fn read_tool_policy_within_manifest(
     tool_policy_version: &str,
     manifest_policy_version: &str,
 ) -> bool {
+    let manifest_includes_read_tools = matches!(
+        manifest_policy_version,
+        "mealy.read-tools.v1" | "mealy.read-and-governed-effect-tools.v2"
+    );
     tool_policy_version == manifest_policy_version
+        || tool_policy_version == "mealy.read-tools.v1" && manifest_includes_read_tools
         || tool_id.starts_with("mcp.")
             && tool_policy_version == "mealy.mcp-stdio-tools.v1"
-            && manifest_policy_version == "mealy.read-tools.v1"
+            && manifest_includes_read_tools
         || tool_id == mealy_application::BROWSER_SNAPSHOT_TOOL_ID
             && matches!(
                 tool_policy_version,
@@ -5957,8 +6365,9 @@ fn read_tool_policy_within_manifest(
                     | "mealy.browser-tools.v2"
                     | "mealy.browser-tools.v3"
                     | "mealy.browser-tools.v4"
+                    | "mealy.browser-tools.v5"
             )
-            && manifest_policy_version == "mealy.read-tools.v1"
+            && manifest_includes_read_tools
 }
 
 fn verify_tool_parent_timeline_order(
@@ -6025,6 +6434,10 @@ fn verify_budget_usage(
     }) else {
         return Ok(false);
     };
+    let Some(image_charge) = verify_image_effect_budget_charges(connection, run_id, effects)?
+    else {
+        return Ok(false);
+    };
     let retries = connection
         .query_row(
             "SELECT COUNT(*) FROM loop_checkpoint \
@@ -6043,6 +6456,13 @@ fn verify_budget_usage(
         .output_bytes
         .checked_add(tool_output_bytes)
         .and_then(|total| total.checked_add(effect_output_bytes))
+        .and_then(|total| total.checked_add(image_charge.output_bytes))
+    else {
+        return Ok(false);
+    };
+    let Some(expected_cost_microunits) = model
+        .cost_microunits
+        .checked_add(image_charge.cost_microunits)
     else {
         return Ok(false);
     };
@@ -6051,8 +6471,334 @@ fn verify_budget_usage(
         && task.usage.used_retries == u64::try_from(retries).unwrap_or(u64::MAX)
         && task.usage.used_input_tokens == model.input_tokens
         && task.usage.used_output_tokens == model.output_tokens
-        && task.usage.used_cost_microunits == model.cost_microunits
+        && task.usage.used_cost_microunits == expected_cost_microunits
         && task.usage.used_output_bytes == expected_output_bytes)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ReplayImageCharge {
+    cost_microunits: u64,
+    output_bytes: u64,
+}
+
+#[allow(clippy::too_many_lines)] // Keep reservation, outcome, and artifact replay checks together.
+fn verify_image_effect_budget_charges(
+    connection: &rusqlite::Connection,
+    run_id: RunId,
+    effects: &[agent_effect::ReplayAgentEffect],
+) -> Result<Option<ReplayImageCharge>, AgentStoreError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT effect_id, maximum_cost_microunits, maximum_output_bytes, state, \
+                    charged_cost_microunits, charged_output_bytes, created_at_ms, settled_at_ms \
+             FROM agent_effect_budget_reservation WHERE run_id = ?1 ORDER BY effect_id",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([run_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+            ))
+        })
+        .map_err(map_sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_sqlite_error)?;
+    let image_effects = effects
+        .iter()
+        .filter(|effect| effect.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID)
+        .map(|effect| (effect.effect_id.as_str(), effect))
+        .collect::<HashMap<_, _>>();
+    if rows.len() != image_effects.len() {
+        return Ok(None);
+    }
+    let mut total = ReplayImageCharge::default();
+    for (
+        effect_id,
+        maximum_cost,
+        maximum_output,
+        state,
+        charged_cost,
+        charged_output,
+        created_at_ms,
+        settled_at_ms,
+    ) in rows
+    {
+        let Some(effect) = image_effects.get(effect_id.as_str()).copied() else {
+            return Ok(None);
+        };
+        let (Some(maximum_cost), Some(maximum_output), Some(charged_cost), Some(charged_output)) = (
+            u64::try_from(maximum_cost).ok(),
+            u64::try_from(maximum_output).ok(),
+            u64::try_from(charged_cost).ok(),
+            u64::try_from(charged_output).ok(),
+        ) else {
+            return Ok(None);
+        };
+        if state != "settled"
+            || settled_at_ms.is_none_or(|settled| settled < created_at_ms)
+            || effect
+                .arguments
+                .get("maximumCostMicrounits")
+                .and_then(Value::as_u64)
+                != Some(maximum_cost)
+            || effect.maximum_output_bytes != maximum_output
+        {
+            return Ok(None);
+        }
+        let Ok(observation) = serde_json::from_str::<Value>(&effect.content) else {
+            return Ok(None);
+        };
+        let details = &observation["outcome"]["evidence"]["evidence"];
+        let (expected_cost, expected_output) = match effect.status {
+            mealy_domain::EffectStatus::Succeeded => {
+                let expected_cost = details
+                    .get("reportedCostMicrounits")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(maximum_cost);
+                let Some(expected_output) = details.get("sizeBytes").and_then(Value::as_u64) else {
+                    return Ok(None);
+                };
+                if details.get("artifactId").and_then(Value::as_str).is_none()
+                    || details
+                        .get("digest")
+                        .and_then(Value::as_str)
+                        .is_none_or(|digest| !valid_sha256_digest(digest))
+                    || details.get("mediaType").and_then(Value::as_str) != Some("image/jpeg")
+                    || !verify_image_effect_output_artifact(
+                        connection,
+                        run_id,
+                        effect,
+                        details,
+                        observation["outcome"]["attemptId"]
+                            .as_str()
+                            .unwrap_or_default(),
+                    )?
+                {
+                    return Ok(None);
+                }
+                (expected_cost, expected_output)
+            }
+            mealy_domain::EffectStatus::Failed => {
+                let definitely_uncharged = details
+                    .get("classification")
+                    .and_then(Value::as_str)
+                    .is_some_and(|classification| {
+                        matches!(
+                            classification,
+                            "provider_confirmed_rejection"
+                                | "cancelled_before_http_dispatch"
+                                | "adapter_configuration_drift"
+                                | "durable_arguments_failed_dispatch_revalidation"
+                        )
+                    });
+                (
+                    if definitely_uncharged {
+                        0
+                    } else {
+                        maximum_cost
+                    },
+                    0,
+                )
+            }
+            mealy_domain::EffectStatus::Denied => (0, 0),
+            _ => return Ok(None),
+        };
+        if charged_cost != expected_cost
+            || charged_output != expected_output
+            || charged_cost > maximum_cost
+            || charged_output > maximum_output
+        {
+            return Ok(None);
+        }
+        total.cost_microunits = match total.cost_microunits.checked_add(charged_cost) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+        total.output_bytes = match total.output_bytes.checked_add(charged_output) {
+            Some(value) => value,
+            None => return Ok(None),
+        };
+    }
+    Ok(Some(total))
+}
+
+#[allow(clippy::too_many_lines)]
+fn verify_image_effect_output_artifact(
+    connection: &rusqlite::Connection,
+    run_id: RunId,
+    effect: &agent_effect::ReplayAgentEffect,
+    details: &Value,
+    attempt_id: &str,
+) -> Result<bool, AgentStoreError> {
+    let (Some(artifact_id), Some(expected_digest), Some(expected_size)) = (
+        details.get("artifactId").and_then(Value::as_str),
+        details.get("digest").and_then(Value::as_str),
+        details.get("sizeBytes").and_then(Value::as_u64),
+    ) else {
+        return Ok(false);
+    };
+    if attempt_id.is_empty() {
+        return Ok(false);
+    }
+    let row = connection
+        .query_row(
+            "SELECT artifact.blob_algorithm, artifact.blob_digest, blob.size_bytes, \
+                    blob.relative_path, artifact.media_type, artifact.origin_kind, \
+                    artifact.origin_id, artifact.producer_kind, artifact.producer_id, \
+                    artifact.sensitivity, artifact.retention_class, \
+                    artifact.access_policy_json, artifact.access_policy_digest, \
+                    artifact.principal_id, artifact.session_id, artifact.created_at_ms, \
+                    blob.committed_at_ms, reference.created_at_ms, event.payload_json, \
+                    event.occurred_at_ms, event.policy_version, event.correlation_id, \
+                    event.event_version, timeline.cursor, outcome_timeline.cursor, \
+                    outcome_event.correlation_id, \
+                    (SELECT COUNT(*) FROM artifact_reference all_reference \
+                     WHERE all_reference.artifact_id = artifact.id) \
+             FROM artifact \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = artifact.blob_algorithm \
+              AND blob.digest = artifact.blob_digest \
+             JOIN artifact_reference reference \
+               ON reference.artifact_id = artifact.id \
+              AND reference.owner_kind = 'effect' \
+              AND reference.owner_id = ?2 \
+              AND reference.relation = 'output' \
+             JOIN agent_effect_invocation invocation \
+               ON invocation.effect_id = reference.owner_id AND invocation.run_id = ?3 \
+             JOIN effect_attempt attempt \
+               ON attempt.attempt_id = artifact.origin_id \
+              AND attempt.effect_id = invocation.effect_id \
+             JOIN journal_event event \
+               ON event.aggregate_kind = 'artifact' \
+              AND event.aggregate_id = artifact.id \
+              AND event.event_type = 'artifact.committed' \
+             JOIN timeline_event timeline ON timeline.event_id = event.event_id \
+             JOIN journal_event outcome_event ON outcome_event.event_id = attempt.terminal_event_id \
+             JOIN timeline_event outcome_timeline \
+               ON outcome_timeline.event_id = outcome_event.event_id \
+             WHERE artifact.id = ?1",
+            params![artifact_id, effect.effect_id.as_str(), run_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, String>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
+                    row.get::<_, String>(18)?,
+                    row.get::<_, i64>(19)?,
+                    row.get::<_, Option<String>>(20)?,
+                    row.get::<_, String>(21)?,
+                    row.get::<_, i64>(22)?,
+                    row.get::<_, i64>(23)?,
+                    row.get::<_, i64>(24)?,
+                    row.get::<_, String>(25)?,
+                    row.get::<_, i64>(26)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((
+        algorithm,
+        digest,
+        size,
+        relative_path,
+        media_type,
+        origin_kind,
+        origin_id,
+        producer_kind,
+        producer_id,
+        sensitivity,
+        retention_class,
+        access_policy_json,
+        access_policy_digest,
+        principal_id,
+        session_id,
+        created_at_ms,
+        blob_committed_at_ms,
+        reference_created_at_ms,
+        event_payload_json,
+        event_occurred_at_ms,
+        event_policy_version,
+        event_correlation_id,
+        event_version,
+        artifact_cursor,
+        outcome_cursor,
+        outcome_correlation_id,
+        reference_count,
+    )) = row
+    else {
+        return Ok(false);
+    };
+    let Some(size) = u64::try_from(size).ok() else {
+        return Ok(false);
+    };
+    let expected_access_policy = json!({
+        "principalId": principal_id,
+        "sessionId": session_id,
+    })
+    .to_string();
+    let Ok(event_payload) = serde_json::from_str::<Value>(&event_payload_json) else {
+        return Ok(false);
+    };
+    Ok(algorithm == "sha256"
+        && digest == expected_digest
+        && valid_sha256_digest(&digest)
+        && size == expected_size
+        && relative_path == format!("sha256/{digest}")
+        && media_type == "image/jpeg"
+        && origin_kind == "effect_attempt"
+        && origin_id == attempt_id
+        && producer_kind == "builtin"
+        && producer_id == "mealyd.image-generation.v1"
+        && sensitivity == "private"
+        && retention_class == "task_history"
+        && access_policy_json == expected_access_policy
+        && valid_sha256_digest(&access_policy_digest)
+        && sha256_digest(access_policy_json.as_bytes()) == access_policy_digest
+        && created_at_ms == blob_committed_at_ms
+        && created_at_ms == reference_created_at_ms
+        && event_occurred_at_ms == created_at_ms
+        && event_policy_version.as_deref()
+            == Some(mealy_application::IMAGE_GENERATION_POLICY_VERSION)
+        && event_correlation_id == outcome_correlation_id
+        && event_version == 1
+        && artifact_cursor > outcome_cursor
+        && reference_count == 1
+        && event_payload
+            == json!({
+                "algorithm": "sha256",
+                "attempt_id": attempt_id,
+                "digest": digest,
+                "effect_id": effect.effect_id,
+                "media_type": "image/jpeg",
+                "owner_id": effect.effect_id,
+                "owner_kind": "effect",
+                "size_bytes": size,
+            })
+        && count_aggregate_events(connection, "artifact", artifact_id)? == 1
+        && verify_aggregate_sequence_chain(connection, "artifact", artifact_id)?)
 }
 
 fn valid_sha256_digest(value: &str) -> bool {
@@ -6072,6 +6818,7 @@ struct ExpectedContextSource {
     artifact_id: Option<String>,
     size_bytes: u64,
     tool_call_id: Option<String>,
+    images: Vec<AgentContextImage>,
 }
 
 #[derive(Debug)]
@@ -6166,7 +6913,7 @@ fn verify_context_manifest(
         };
     if !matches!(
         compiler_version.as_str(),
-        "mealy.context.v1" | "mealy.context.v2"
+        "mealy.context.v1" | "mealy.context.v2" | "mealy.context.v3"
     ) || iteration <= 0
         || u64::try_from(iteration).ok() != Some(attempt.ordinal)
         || provider_residency != attempt.provider_residency
@@ -6277,6 +7024,17 @@ fn verify_context_manifest(
             return Ok(false);
         }
     }
+    let principal_id = connection
+        .query_row(
+            "SELECT principal_id FROM session WHERE id = ?1",
+            [session_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some(principal_id) = principal_id else {
+        return Ok(false);
+    };
 
     let mut expected = vec![ExpectedContextSource {
         source_type: "baseline".to_owned(),
@@ -6287,19 +7045,19 @@ fn verify_context_manifest(
         inline_content: Some(baseline_text),
         artifact_id: None,
         tool_call_id: None,
+        images: Vec::new(),
     }];
-    if compiler_version == "mealy.context.v2" && turn_kind == "canonical" {
-        let principal_id = connection
-            .query_row(
-                "SELECT principal_id FROM session WHERE id = ?1",
-                [session_id.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(map_sqlite_error)?;
-        let Some(principal_id) = principal_id else {
-            return Ok(false);
+    let current_images =
+        match load_input_context_images(connection, &inbox_entry_id, &session_id, &principal_id) {
+            Ok(images) => images,
+            Err(AgentStoreError::InvariantViolation(_)) => return Ok(false),
+            Err(error) => return Err(error),
         };
+    if matches!(
+        compiler_version.as_str(),
+        "mealy.context.v2" | "mealy.context.v3"
+    ) && turn_kind == "canonical"
+    {
         let Some(compaction_cutoff) = replay_compaction_cutoff(
             connection,
             &attempt.context_manifest_id,
@@ -6316,6 +7074,7 @@ fn verify_context_manifest(
             &session_id,
             &principal_id,
             compaction_cutoff,
+            MAXIMUM_PROVIDER_IMAGE_INPUTS.saturating_sub(current_images.len()),
         ) {
             Ok(sources) => sources,
             Err(AgentStoreError::InvariantViolation(_)) => return Ok(false),
@@ -6332,6 +7091,7 @@ fn verify_context_manifest(
         inline_content: Some(user_content),
         artifact_id: None,
         tool_call_id: None,
+        images: current_images,
     });
     let Some(phase_five_sources) = load_replay_phase_five_sources(
         connection,
@@ -6365,6 +7125,7 @@ fn verify_context_manifest(
             artifact_id: tool.output_artifact_id.clone(),
             size_bytes,
             tool_call_id: Some(tool.tool_call_id.clone()),
+            images: Vec::new(),
         });
     }
     for effect in effects.iter().filter(|effect| {
@@ -6381,6 +7142,7 @@ fn verify_context_manifest(
             artifact_id: None,
             size_bytes: u64::try_from(effect.content.len()).unwrap_or(u64::MAX),
             tool_call_id: Some(effect.tool_call_id.clone()),
+            images: Vec::new(),
         });
     }
 
@@ -6443,136 +7205,152 @@ fn verify_context_manifest(
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(map_sqlite_error)?
     };
-    if items.len() != expected.len() {
-        return Ok(false);
-    }
-
     let token_budget = u64::try_from(token_budget).unwrap_or(0);
-    let mut mandatory_tokens_remaining = if compiler_version == "mealy.context.v2" {
-        expected
-            .iter()
-            .filter(|source| source.source_type == "user")
-            .try_fold(0_u64, |total, source| {
-                total.checked_add(
-                    source
-                        .inline_content
-                        .as_deref()
-                        .map_or(u64::MAX, estimate_tokens),
-                )
-            })
-            .unwrap_or(u64::MAX)
+    if compiler_version == "mealy.context.v3" {
+        let Some((included_total, message_count)) = verify_v3_manifest_projection(
+            &items,
+            &expected,
+            &attempt.request.messages,
+            token_budget,
+        ) else {
+            return Ok(false);
+        };
+        if message_count != attempt.request.messages.len()
+            || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
+        {
+            return Ok(false);
+        }
     } else {
-        0
-    };
-    if compiler_version == "mealy.context.v2"
-        && estimate_tokens(
+        if items.len() != expected.len() {
+            return Ok(false);
+        }
+        let mut mandatory_tokens_remaining = if compiler_version == "mealy.context.v2" {
             expected
-                .first()
-                .and_then(|source| source.inline_content.as_deref())
-                .unwrap_or_default(),
-        )
-        .checked_add(mandatory_tokens_remaining)
-        .is_none_or(|required| required > token_budget)
-    {
-        return Ok(false);
-    }
-    let mut included_total = 0_u64;
-    let mut message_index = 0_usize;
-    let mut item_ids = HashSet::new();
-    for (index, (item, source)) in items.iter().zip(&expected).enumerate() {
-        let Some(token_estimate) = u64::try_from(item.token_estimate).ok() else {
-            return Ok(false);
-        };
-        let inline_rendered = source.inline_content.as_ref();
-        if item.ordinal != i64::try_from(index).unwrap_or(i64::MAX)
-            || ContextItemId::from_str(&item.item_id).is_err()
-            || !item_ids.insert(item.item_id.as_str())
-            || item.source_type != source.source_type
-            || item.sensitivity != source.sensitivity
-            || item.source_locator != source.source_locator
-            || item.source_content_digest != source.source_digest
-            || !valid_sha256_digest(&item.source_content_digest)
-            || !valid_sha256_digest(&item.rendered_content_digest)
-            || inline_rendered.is_some_and(|rendered| {
-                sha256_digest(rendered.as_bytes()) != item.rendered_content_digest
-                    || estimate_tokens(rendered) != token_estimate
-            })
-            || item.transformation != "identity"
-        {
-            return Ok(false);
-        }
-        let mandatory = compiler_version == "mealy.context.v2" && source.source_type == "user";
-        let should_include = if compiler_version == "mealy.context.v2" && !mandatory {
-            included_total
-                .checked_add(token_estimate)
-                .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
-                .is_some_and(|candidate| candidate <= token_budget)
+                .iter()
+                .filter(|source| source.source_type == "user")
+                .try_fold(0_u64, |total, source| {
+                    total.checked_add(
+                        source
+                            .inline_content
+                            .as_deref()
+                            .map_or(u64::MAX, estimate_tokens),
+                    )
+                })
+                .unwrap_or(u64::MAX)
         } else {
-            included_total
-                .checked_add(token_estimate)
-                .is_some_and(|candidate| candidate <= token_budget)
+            0
         };
-        let included = item.disposition == "included";
-        if included != should_include
-            || !matches!(item.disposition.as_str(), "included" | "excluded")
-            || item.inclusion_reason
-                != if index == 0 {
-                    "mandatory versioned turn baseline"
-                } else if mandatory {
-                    "mandatory latest authenticated user input"
-                } else if included {
-                    "authorized canonical source within token budget"
-                } else {
-                    "excluded by deterministic token budget"
-                }
-            || item.policy_decision
-                != if index == 0 {
-                    "allow: mandatory baseline"
-                } else if mandatory {
-                    "allow: mandatory owner input"
-                } else if included {
-                    "allow: owner session context"
-                } else {
-                    "exclude: context budget"
-                }
+        if compiler_version == "mealy.context.v2"
+            && estimate_tokens(
+                expected
+                    .first()
+                    .and_then(|source| source.inline_content.as_deref())
+                    .unwrap_or_default(),
+            )
+            .checked_add(mandatory_tokens_remaining)
+            .is_none_or(|required| required > token_budget)
         {
             return Ok(false);
         }
-        if mandatory {
-            mandatory_tokens_remaining = mandatory_tokens_remaining.saturating_sub(token_estimate);
-        }
-        if included {
-            included_total = match included_total.checked_add(token_estimate) {
-                Some(total) => total,
-                None => return Ok(false),
-            };
-            let Some(message) = attempt.request.messages.get(message_index) else {
+        let mut included_total = 0_u64;
+        let mut message_index = 0_usize;
+        let mut item_ids = HashSet::new();
+        for (index, (item, source)) in items.iter().zip(&expected).enumerate() {
+            let Some(token_estimate) = u64::try_from(item.token_estimate).ok() else {
                 return Ok(false);
             };
-            message_index += 1;
-            if !message_role_matches(message, &source.source_type)
-                || message.tool_call_id != source.tool_call_id
-                || sha256_digest(message.content.as_bytes()) != item.rendered_content_digest
-                || estimate_tokens(&message.content) != token_estimate
-                || !verify_manifest_content(item, source, &message.content)
+            let inline_rendered = source.inline_content.as_ref();
+            if item.ordinal != i64::try_from(index).unwrap_or(i64::MAX)
+                || ContextItemId::from_str(&item.item_id).is_err()
+                || !item_ids.insert(item.item_id.as_str())
+                || item.source_type != source.source_type
+                || item.sensitivity != source.sensitivity
+                || item.source_locator != source.source_locator
+                || item.source_content_digest != source.source_digest
+                || !valid_sha256_digest(&item.source_content_digest)
+                || !valid_sha256_digest(&item.rendered_content_digest)
+                || inline_rendered.is_some_and(|rendered| {
+                    sha256_digest(rendered.as_bytes()) != item.rendered_content_digest
+                        || estimate_tokens(rendered) != token_estimate
+                })
+                || item.transformation != "identity"
             {
                 return Ok(false);
             }
-        } else if source.inline_content.is_none()
-            || item.content_text.is_some()
-            || item.content_artifact_id.is_some()
+            let mandatory = compiler_version == "mealy.context.v2" && source.source_type == "user";
+            let should_include = if compiler_version == "mealy.context.v2" && !mandatory {
+                included_total
+                    .checked_add(token_estimate)
+                    .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
+                    .is_some_and(|candidate| candidate <= token_budget)
+            } else {
+                included_total
+                    .checked_add(token_estimate)
+                    .is_some_and(|candidate| candidate <= token_budget)
+            };
+            let included = item.disposition == "included";
+            if included != should_include
+                || !matches!(item.disposition.as_str(), "included" | "excluded")
+                || item.inclusion_reason
+                    != if index == 0 {
+                        "mandatory versioned turn baseline"
+                    } else if mandatory {
+                        "mandatory latest authenticated user input"
+                    } else if included {
+                        "authorized canonical source within token budget"
+                    } else {
+                        "excluded by deterministic token budget"
+                    }
+                || item.policy_decision
+                    != if index == 0 {
+                        "allow: mandatory baseline"
+                    } else if mandatory {
+                        "allow: mandatory owner input"
+                    } else if included {
+                        "allow: owner session context"
+                    } else {
+                        "exclude: context budget"
+                    }
+            {
+                return Ok(false);
+            }
+            if mandatory {
+                mandatory_tokens_remaining =
+                    mandatory_tokens_remaining.saturating_sub(token_estimate);
+            }
+            if included {
+                included_total = match included_total.checked_add(token_estimate) {
+                    Some(total) => total,
+                    None => return Ok(false),
+                };
+                let Some(message) = attempt.request.messages.get(message_index) else {
+                    return Ok(false);
+                };
+                message_index += 1;
+                if !message_role_matches(message, &source.source_type)
+                    || message.tool_call_id != source.tool_call_id
+                    || sha256_digest(message.content.as_bytes()) != item.rendered_content_digest
+                    || estimate_tokens(&message.content) != token_estimate
+                    || !verify_manifest_content(item, source, &message.content)
+                {
+                    return Ok(false);
+                }
+            } else if source.inline_content.is_none()
+                || item.content_text.is_some()
+                || item.content_artifact_id.is_some()
+            {
+                // Excluded artifact content is deliberately absent from SQLite. The blob adapter
+                // verifies its bytes, but this database-only replay cannot recompute the compiler's
+                // rendered digest or token estimate from those bytes, so it must not claim complete
+                // deterministic evidence.
+                return Ok(false);
+            }
+        }
+        if message_index != attempt.request.messages.len()
+            || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
         {
-            // Excluded artifact content is deliberately absent from SQLite. The blob adapter
-            // verifies its bytes, but this database-only replay cannot recompute the compiler's
-            // rendered digest or token estimate from those bytes, so it must not claim complete
-            // deterministic evidence.
             return Ok(false);
         }
-    }
-    if message_index != attempt.request.messages.len()
-        || included_total != u64::try_from(total_token_estimate).unwrap_or(u64::MAX)
-    {
-        return Ok(false);
     }
     let projection = json!({
         "epochId": epoch_id,
@@ -6695,6 +7473,231 @@ fn message_role_matches(message: &NormalizedMessage, source_type: &str) -> bool 
     )
 }
 
+#[allow(clippy::too_many_lines)]
+fn verify_v3_manifest_projection(
+    items: &[ReplayManifestItem],
+    expected: &[ExpectedContextSource],
+    messages: &[NormalizedMessage],
+    token_budget: u64,
+) -> Option<(u64, usize)> {
+    let expected_item_count = expected.iter().try_fold(0_usize, |total, source| {
+        total.checked_add(1)?.checked_add(source.images.len())
+    })?;
+    if expected.is_empty() || items.len() != expected_item_count {
+        return None;
+    }
+
+    let mut item_cursor = 0_usize;
+    let mut group_tokens = Vec::with_capacity(expected.len());
+    for source in expected {
+        let text_item = items.get(item_cursor)?;
+        let text_tokens = u64::try_from(text_item.token_estimate).ok()?;
+        if source
+            .inline_content
+            .as_deref()
+            .is_some_and(|content| estimate_tokens(content) != text_tokens)
+        {
+            return None;
+        }
+        item_cursor = item_cursor.checked_add(1)?;
+        let mut group_total = text_tokens;
+        for _ in &source.images {
+            let image_item = items.get(item_cursor)?;
+            if u64::try_from(image_item.token_estimate).ok()
+                != Some(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION)
+            {
+                return None;
+            }
+            group_total = group_total.checked_add(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION)?;
+            item_cursor = item_cursor.checked_add(1)?;
+        }
+        group_tokens.push(group_total);
+    }
+    if item_cursor != items.len() {
+        return None;
+    }
+
+    let mandatory_tokens = expected
+        .iter()
+        .zip(&group_tokens)
+        .filter(|(source, _)| source.source_type == "user")
+        .try_fold(0_u64, |total, (_, tokens)| total.checked_add(*tokens))?;
+    let mandatory_images = expected
+        .iter()
+        .filter(|source| source.source_type == "user")
+        .try_fold(0_usize, |total, source| {
+            total.checked_add(source.images.len())
+        })?;
+    if mandatory_images > MAXIMUM_PROVIDER_IMAGE_INPUTS
+        || group_tokens
+            .first()?
+            .checked_add(mandatory_tokens)
+            .is_none_or(|required| required > token_budget)
+    {
+        return None;
+    }
+
+    let mut mandatory_tokens_remaining = mandatory_tokens;
+    let mut mandatory_images_remaining = mandatory_images;
+    let mut included_total = 0_u64;
+    let mut included_images = 0_usize;
+    let mut message_index = 0_usize;
+    let mut item_cursor = 0_usize;
+    let mut item_ids = HashSet::new();
+    for (source_index, (source, group_tokens)) in expected.iter().zip(group_tokens).enumerate() {
+        let text_item = items.get(item_cursor)?;
+        let text_token_estimate = u64::try_from(text_item.token_estimate).ok()?;
+        let mandatory = source.source_type == "user";
+        let image_count = source.images.len();
+        let should_include = if source_index == 0 || mandatory {
+            included_total
+                .checked_add(group_tokens)
+                .is_some_and(|candidate| candidate <= token_budget)
+                && included_images
+                    .checked_add(image_count)
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
+        } else {
+            included_total
+                .checked_add(group_tokens)
+                .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
+                .is_some_and(|candidate| candidate <= token_budget)
+                && included_images
+                    .checked_add(image_count)
+                    .and_then(|candidate| candidate.checked_add(mandatory_images_remaining))
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
+        };
+        let included = text_item.disposition == "included";
+        let rendered_content = source.inline_content.as_deref();
+        if text_item.ordinal != i64::try_from(item_cursor).ok()?
+            || ContextItemId::from_str(&text_item.item_id).is_err()
+            || !item_ids.insert(text_item.item_id.as_str())
+            || text_item.source_type != source.source_type
+            || text_item.sensitivity != source.sensitivity
+            || text_item.source_locator != source.source_locator
+            || text_item.source_content_digest != source.source_digest
+            || !valid_sha256_digest(&text_item.source_content_digest)
+            || !valid_sha256_digest(&text_item.rendered_content_digest)
+            || rendered_content.is_some_and(|content| {
+                sha256_digest(content.as_bytes()) != text_item.rendered_content_digest
+                    || estimate_tokens(content) != text_token_estimate
+            })
+            || text_item.transformation != "identity"
+            || included != should_include
+            || !matches!(text_item.disposition.as_str(), "included" | "excluded")
+            || text_item.inclusion_reason
+                != if source_index == 0 {
+                    "mandatory versioned turn baseline"
+                } else if mandatory {
+                    "mandatory latest authenticated user input"
+                } else if included {
+                    "authorized canonical source within token budget"
+                } else {
+                    "excluded by deterministic token budget"
+                }
+            || text_item.policy_decision
+                != if source_index == 0 {
+                    "allow: mandatory baseline"
+                } else if mandatory {
+                    "allow: mandatory owner input"
+                } else if included {
+                    "allow: owner session context"
+                } else {
+                    "exclude: context budget"
+                }
+        {
+            return None;
+        }
+
+        let message = if included {
+            let message = messages.get(message_index)?;
+            message_index = message_index.checked_add(1)?;
+            if !message_role_matches(message, &source.source_type)
+                || message.tool_call_id != source.tool_call_id
+                || sha256_digest(message.content.as_bytes()) != text_item.rendered_content_digest
+                || estimate_tokens(&message.content) != text_token_estimate
+                || !verify_manifest_content(text_item, source, &message.content)
+                || message.images.len() != source.images.len()
+            {
+                return None;
+            }
+            Some(message)
+        } else {
+            if source.inline_content.is_none()
+                || text_item.content_text.is_some()
+                || text_item.content_artifact_id.is_some()
+            {
+                return None;
+            }
+            None
+        };
+
+        item_cursor = item_cursor.checked_add(1)?;
+        for (image_ordinal, image) in source.images.iter().enumerate() {
+            let item = items.get(item_cursor)?;
+            let provider_image = message.and_then(|message| message.images.get(image_ordinal));
+            let expected_source_type = format!("{}_image", source.source_type);
+            if item.ordinal != i64::try_from(item_cursor).ok()?
+                || ContextItemId::from_str(&item.item_id).is_err()
+                || !item_ids.insert(item.item_id.as_str())
+                || item.source_type != expected_source_type
+                || item.sensitivity != source.sensitivity
+                || item.source_locator != format!("artifact://{}", image.artifact_id)
+                || item.source_content_digest != image.sha256_digest
+                || item.rendered_content_digest != image.sha256_digest
+                || item.token_estimate
+                    != i64::try_from(PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION).ok()?
+                || item.transformation != "canonical-image.v1"
+                || (item.disposition == "included") != included
+                || !matches!(item.disposition.as_str(), "included" | "excluded")
+                || item.inclusion_reason
+                    != if mandatory {
+                        "mandatory authenticated user image"
+                    } else if included {
+                        "authorized canonical image within token budget"
+                    } else {
+                        "excluded by deterministic image or token budget"
+                    }
+                || item.policy_decision
+                    != if mandatory {
+                        "allow: mandatory owner image"
+                    } else if included {
+                        "allow: owner session image"
+                    } else {
+                        "exclude: context budget"
+                    }
+                || item.content_text.is_some()
+                || item.content_artifact_id.as_deref()
+                    != included.then_some(image.artifact_id.to_string()).as_deref()
+            {
+                return None;
+            }
+            if let Some(provider_image) = provider_image {
+                if provider_image.artifact_id() != image.artifact_id
+                    || provider_image.media_type() != image.media_type
+                    || provider_image.sha256_digest() != image.sha256_digest
+                    || provider_image.size_bytes() != image.size_bytes
+                    || provider_image.validated_bytes().is_err()
+                {
+                    return None;
+                }
+            } else if included {
+                return None;
+            }
+            item_cursor = item_cursor.checked_add(1)?;
+        }
+
+        if mandatory {
+            mandatory_tokens_remaining = mandatory_tokens_remaining.checked_sub(group_tokens)?;
+            mandatory_images_remaining = mandatory_images_remaining.checked_sub(image_count)?;
+        }
+        if included {
+            included_total = included_total.checked_add(group_tokens)?;
+            included_images = included_images.checked_add(image_count)?;
+        }
+    }
+    (item_cursor == items.len()).then_some((included_total, message_index))
+}
+
 fn verify_manifest_content(
     item: &ReplayManifestItem,
     source: &ExpectedContextSource,
@@ -6741,6 +7744,7 @@ fn expected_inline_context_source(source: AgentContextSource) -> ExpectedContext
         artifact_id: None,
         size_bytes,
         tool_call_id: source.message.tool_call_id,
+        images: source.image_artifacts,
     }
 }
 
@@ -6923,6 +7927,7 @@ fn load_replay_phase_five_sources(
                     inline_content: Some(rendered),
                     artifact_id: None,
                     tool_call_id: None,
+                    images: Vec::new(),
                 });
             }
             "memory" => {
@@ -7015,6 +8020,7 @@ fn load_replay_phase_five_sources(
                     inline_content: Some(rendered),
                     artifact_id: None,
                     tool_call_id: None,
+                    images: Vec::new(),
                 });
             }
             _ => return Ok(None),
@@ -7215,7 +8221,9 @@ fn verify_final_boundary(
     task_id: TaskId,
     task: &AgentTaskView,
     final_attempt: &ReplayAttempt,
+    attempts: &[ReplayAttempt],
     tools: &[ReplayTool],
+    effects: &[agent_effect::ReplayAgentEffect],
 ) -> Result<bool, AgentStoreError> {
     let row = connection
         .query_row(
@@ -7271,11 +8279,29 @@ fn verify_final_boundary(
     let Some(ProviderResponse::Final { text }) = &final_attempt.response else {
         return Ok(false);
     };
-    let expected_tool = tools
+    let attempt_ordinals = attempts
+        .iter()
+        .map(|attempt| (attempt.attempt_id.as_str(), attempt.ordinal))
+        .collect::<HashMap<_, _>>();
+    let expected_read_tool = tools
         .iter()
         .rev()
         .find(|tool| tool.state == "succeeded")
-        .map(|tool| tool.tool_call_id.as_str());
+        .and_then(|tool| {
+            attempt_ordinals
+                .get(tool.model_attempt_id.as_str())
+                .map(|ordinal| (*ordinal, tool.tool_call_id.as_str()))
+        });
+    let expected_effect_tool = effects.iter().rev().find_map(|effect| {
+        attempt_ordinals
+            .get(effect.model_attempt_id.as_str())
+            .map(|ordinal| (*ordinal, effect.tool_call_id.as_str()))
+    });
+    let expected_tool = expected_read_tool.and_then(|(read_ordinal, tool_call_id)| {
+        let effect_is_newer =
+            expected_effect_tool.is_some_and(|(effect_ordinal, _)| effect_ordinal > read_ordinal);
+        (!effect_is_newer).then_some(tool_call_id)
+    });
     let Some(content) = content else {
         return Ok(false);
     };
@@ -9521,6 +10547,140 @@ pub(super) fn invariant(message: impl Into<String>) -> AgentStoreError {
 }
 
 #[cfg(test)]
+mod mcp_http_capability_tests {
+    use super::{mcp_descriptor_authority_within_capability_ceiling, valid_mcp_descriptor};
+    use mealy_application::{
+        McpHttpAuthentication, McpHttpServerConfig, McpPromptGrant, McpResourceGrant, McpToolGrant,
+        ProviderCredentialReference, mcp_http_prompt_read_descriptor,
+        mcp_http_read_tool_descriptor, mcp_http_resource_read_descriptor,
+    };
+    use mealy_domain::CapabilityGrant;
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn durable_replay_requires_the_recorded_http_mcp_authority_tuple() {
+        let grant = McpToolGrant::new(
+            json!({
+                "name": "lookup",
+                "inputSchema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {}
+                }
+            }),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("grant");
+        let server = McpHttpServerConfig::new(
+            "remote".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::Bearer {
+                credential: ProviderCredentialReference::Broker {
+                    secret_id: "mcp-remote".to_owned(),
+                },
+            },
+            "a".repeat(64),
+            true,
+            vec![grant.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("server");
+        let descriptor = mcp_http_read_tool_descriptor(&server, &grant).expect("descriptor");
+        let exact = CapabilityGrant {
+            network_destinations: BTreeSet::from(["origin:https://mcp.example.test".to_owned()]),
+            secret_references: BTreeSet::from(["broker:mcp-remote".to_owned()]),
+            ..CapabilityGrant::default()
+        };
+        assert!(mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &exact
+        ));
+
+        let mut changed = exact.clone();
+        changed.secret_references = BTreeSet::from(["broker:other".to_owned()]);
+        assert!(!mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &changed
+        ));
+
+        let resource = McpResourceGrant::new(
+            json!({"uri": "fixture://docs/readme", "name": "readme"}),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("resource");
+        let prompt = McpPromptGrant::new(
+            json!({
+                "name": "review",
+                "arguments": [{"name": "topic", "required": true}]
+            }),
+            5_000,
+            64 * 1_024,
+        )
+        .expect("prompt");
+        let catalog_server = McpHttpServerConfig::new(
+            "catalog".to_owned(),
+            "https://mcp.example.test/mcp".to_owned(),
+            McpHttpAuthentication::None,
+            "b".repeat(64),
+            true,
+            Vec::new(),
+            vec![resource.clone()],
+            vec![prompt.clone()],
+        )
+        .expect("catalog server");
+        let resource_descriptor =
+            mcp_http_resource_read_descriptor(&catalog_server, &resource).expect("resource");
+        let prompt_descriptor =
+            mcp_http_prompt_read_descriptor(&catalog_server, &prompt).expect("prompt");
+        assert!(valid_mcp_descriptor(&resource_descriptor));
+        assert!(valid_mcp_descriptor(&prompt_descriptor));
+        changed = exact;
+        changed.network_destinations =
+            BTreeSet::from(["origin:https://other.example.test".to_owned()]);
+        assert!(!mcp_descriptor_authority_within_capability_ceiling(
+            &descriptor,
+            &changed
+        ));
+    }
+}
+
+#[cfg(test)]
+mod capability_json_compatibility_tests {
+    use super::canonical_capability_json_matches;
+    use mealy_domain::CapabilityGrant;
+
+    const LEGACY_EMPTY_GRANT: &str = concat!(
+        r#"{"tools":[],"effectClasses":[],"workspaceRoots":[],"networkDestinations":[],"#,
+        r#""secretReferences":[],"profiles":[],"maximumDelegatedRuns":0}"#
+    );
+
+    #[test]
+    fn replay_accepts_only_canonical_current_or_v03_capability_json() {
+        let legacy =
+            serde_json::from_str::<CapabilityGrant>(LEGACY_EMPTY_GRANT).expect("legacy grant");
+        assert!(canonical_capability_json_matches(
+            &legacy,
+            LEGACY_EMPTY_GRANT
+        ));
+
+        let current = serde_json::to_string(&legacy).expect("current grant");
+        assert!(canonical_capability_json_matches(&legacy, &current));
+        assert!(!canonical_capability_json_matches(
+            &legacy,
+            r#"{"effectClasses":[],"tools":[],"workspaceRoots":[],"networkDestinations":[],"secretReferences":[],"profiles":[],"maximumDelegatedRuns":0}"#
+        ));
+        assert!(!canonical_capability_json_matches(
+            &legacy,
+            r#"{"tools":[],"effectClasses":[],"workspaceRoots":[],"networkDestinations":[],"secretReferences":[],"profiles":[]}"#
+        ));
+    }
+}
+
+#[cfg(test)]
 mod durable_json_tests {
     use super::{
         DURABLE_JSON_ENCODING, MAXIMUM_MODEL_REQUEST_JSON_BYTES, decode_durable_json,
@@ -9542,6 +10702,19 @@ mod durable_json_tests {
         assert_eq!(
             decode_durable_json(&encoded, MAXIMUM_MODEL_REQUEST_JSON_BYTES),
             Ok(canonical.clone())
+        );
+
+        let bounded_image_request = json!({
+            "imageData": "A".repeat(4 * 1_024 * 1_024 * 4 / 3 + 4),
+            "version": 1
+        })
+        .to_string();
+        let encoded_image =
+            encode_durable_json(&bounded_image_request, MAXIMUM_MODEL_REQUEST_JSON_BYTES)
+                .expect("compress bounded normalized image request");
+        assert_eq!(
+            decode_durable_json(&encoded_image, MAXIMUM_MODEL_REQUEST_JSON_BYTES),
+            Ok(bounded_image_request)
         );
 
         let historical = json!({"version": 1}).to_string();
@@ -9578,14 +10751,17 @@ mod durable_json_tests {
 #[cfg(test)]
 mod conversation_context_tests {
     use super::{
-        MAXIMUM_CONVERSATION_HISTORY_TURNS, SqliteStore, load_conversation_context_sources,
+        AgentStoreError, ExpectedContextSource, MAXIMUM_CONVERSATION_HISTORY_TURNS,
+        ReplayManifestItem, SqliteStore, load_conversation_context_sources,
+        load_input_context_images, verify_v3_manifest_projection,
     };
     use crate::SystemIdGenerator;
     use mealy_application::{
-        AgentContextSource, ContextDisposition, ContextEpoch, ContextError, MessageRole,
-        NormalizedMessage, compile_context, sha256_digest,
+        AgentContextImage, AgentContextSource, ContextDisposition, ContextEpoch, ContextError,
+        MessageRole, NormalizedImageInput, NormalizedMessage,
+        PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, compile_context, sha256_digest,
     };
-    use mealy_domain::{ContextEpochId, RunId, SessionId, TurnId};
+    use mealy_domain::{ArtifactId, ContextEpochId, RunId, SessionId, TurnId};
     use rusqlite::{Connection, params};
     use std::time::SystemTime;
 
@@ -9614,6 +10790,7 @@ mod conversation_context_tests {
             }
         }
         insert_current_turn(&store.connection, 36);
+        let image = insert_input_image(&store.connection, "inbox-35", 0);
 
         let sources = load_conversation_context_sources(
             &store.connection,
@@ -9621,6 +10798,7 @@ mod conversation_context_tests {
             SESSION_ID,
             PRINCIPAL_ID,
             0,
+            4,
         )
         .expect("load bounded history");
         assert_eq!(
@@ -9632,6 +10810,13 @@ mod conversation_context_tests {
         assert_eq!(
             sources.last().map(|source| source.message.content.as_str()),
             Some("assistant-35")
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .find(|source| source.source_locator == "inbox://inbox-35")
+                .map(|source| source.image_artifacts.as_slice()),
+            Some(std::slice::from_ref(&image))
         );
         assert!(sources.chunks_exact(2).all(|pair| {
             pair[0].source_type == "conversation_user"
@@ -9646,6 +10831,7 @@ mod conversation_context_tests {
             SESSION_ID,
             PRINCIPAL_ID,
             turn_30_completion_cursor,
+            4,
         )
         .expect("load post-compaction history");
         assert_eq!(after_compaction.len(), 10);
@@ -9664,10 +10850,97 @@ mod conversation_context_tests {
                 SESSION_ID,
                 "different-principal",
                 0,
+                0,
             )
             .expect("unauthorized history query fails closed")
             .is_empty()
         );
+    }
+
+    #[test]
+    fn image_history_remains_a_complete_chronological_suffix() {
+        let store = SqliteStore::open_in_memory(1).expect("open test store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO session(\
+                    id, principal_id, channel_binding_id, next_inbox_sequence, \
+                    created_at_ms, updated_at_ms\
+                 ) VALUES (?1, ?2, 'binding-conversation-test', 4, 1, 1)",
+                params![SESSION_ID, PRINCIPAL_ID],
+            )
+            .expect("seed session");
+        insert_completed_turn(&store.connection, 1);
+        insert_completed_turn(&store.connection, 2);
+        insert_current_turn(&store.connection, 3);
+        for ordinal in 0_i64..4 {
+            insert_input_image(&store.connection, "inbox-1", ordinal);
+        }
+
+        let sources = load_conversation_context_sources(
+            &store.connection,
+            "turn-3",
+            SESSION_ID,
+            PRINCIPAL_ID,
+            0,
+            3,
+        )
+        .expect("load image-bounded history");
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].source_locator, "inbox://inbox-2");
+        assert_eq!(sources[0].message.content, "user-2");
+        assert!(sources[0].image_artifacts.is_empty());
+        assert_eq!(sources[1].message.content, "assistant-2");
+        assert!(
+            sources
+                .iter()
+                .all(|source| source.source_locator != "inbox://inbox-1"),
+            "an image-bearing pair that cannot fit and every older pair must be omitted"
+        );
+    }
+
+    #[test]
+    fn image_context_rejects_a_dangling_blob_reference() {
+        let store = SqliteStore::open_in_memory(1).expect("open test store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO session(\
+                    id, principal_id, channel_binding_id, next_inbox_sequence, \
+                    created_at_ms, updated_at_ms\
+                 ) VALUES (?1, ?2, 'binding-conversation-test', 2, 1, 1)",
+                params![SESSION_ID, PRINCIPAL_ID],
+            )
+            .expect("seed session");
+        insert_completed_turn(&store.connection, 1);
+        let image = insert_input_image(&store.connection, "inbox-1", 0);
+
+        store
+            .connection
+            .pragma_update(None, "foreign_keys", false)
+            .expect("disable foreign keys for corruption fixture");
+        store
+            .connection
+            .execute(
+                "DELETE FROM artifact_blob WHERE algorithm = 'sha256' AND digest = ?1",
+                [image.sha256_digest],
+            )
+            .expect("remove referenced blob");
+        store
+            .connection
+            .pragma_update(None, "foreign_keys", true)
+            .expect("restore foreign keys");
+
+        assert!(matches!(
+            load_input_context_images(
+                &store.connection,
+                "inbox-1",
+                SESSION_ID,
+                PRINCIPAL_ID
+            ),
+            Err(AgentStoreError::InvariantViolation(message))
+                if message == "stored input image context references are incomplete"
+        ));
     }
 
     #[test]
@@ -9741,6 +11014,145 @@ mod conversation_context_tests {
         ));
     }
 
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn compiler_binds_ordered_images_as_sparse_artifact_items() {
+        const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\ncanonical";
+        let baseline = "base";
+        let epoch = ContextEpoch {
+            epoch_id: ContextEpochId::new(),
+            session_id: SessionId::new(),
+            epoch_number: 1,
+            baseline_version: "test-baseline-v1".to_owned(),
+            baseline_digest: sha256_digest(baseline.as_bytes()),
+            baseline_text: baseline.to_owned(),
+            agent_profile: serde_json::json!({}),
+            config_digest: sha256_digest(b"config"),
+            policy_digest: sha256_digest(b"policy"),
+            workspace_identity: "test://workspace".to_owned(),
+            created_at_ms: 1,
+        };
+        let artifact_id = ArtifactId::new();
+        let image = NormalizedImageInput::new(artifact_id, "image/png", ONE_PIXEL_PNG)
+            .expect("valid normalized image");
+        let mut current_user =
+            context_source("user", MessageRole::User, "inbox://current", "describe");
+        current_user.message.images.push(image.clone());
+        let token_budget = 1 + 2 + PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION;
+
+        let compiled = compile_context(
+            &SystemIdGenerator,
+            RunId::new(),
+            TurnId::new(),
+            &epoch,
+            1,
+            &[current_user],
+            token_budget,
+            "local-test",
+            sha256_digest(b"schemas").as_str(),
+            "test-policy-v1",
+            SystemTime::UNIX_EPOCH,
+        )
+        .expect("compile image context");
+
+        assert_eq!(compiled.manifest.compiler_version, "mealy.context.v3");
+        assert_eq!(compiled.manifest.total_token_estimate, token_budget);
+        assert_eq!(compiled.messages.len(), 2);
+        assert_eq!(compiled.messages[1].images, vec![image.clone()]);
+        assert_eq!(compiled.manifest.items.len(), 3);
+        let image_item = &compiled.manifest.items[2];
+        assert_eq!(image_item.source_type, "user_image");
+        assert_eq!(
+            image_item.source_locator,
+            format!("artifact://{artifact_id}")
+        );
+        assert_eq!(image_item.source_content_digest, image.sha256_digest());
+        assert_eq!(image_item.rendered_content_digest, image.sha256_digest());
+        assert_eq!(
+            image_item.token_estimate,
+            PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION
+        );
+        assert_eq!(image_item.content_artifact_id, Some(artifact_id));
+        assert!(image_item.content.is_none());
+
+        let replay_items = compiled
+            .manifest
+            .items
+            .iter()
+            .map(|item| ReplayManifestItem {
+                ordinal: i64::try_from(item.ordinal).expect("ordinal"),
+                item_id: item.item_id.to_string(),
+                disposition: item.disposition.as_str().to_owned(),
+                source_type: item.source_type.clone(),
+                source_locator: item.source_locator.clone(),
+                source_content_digest: item.source_content_digest.clone(),
+                rendered_content_digest: item.rendered_content_digest.clone(),
+                inclusion_reason: item.inclusion_reason.clone(),
+                sensitivity: item.sensitivity.clone(),
+                token_estimate: i64::try_from(item.token_estimate).expect("tokens"),
+                transformation: item.transformation.clone(),
+                policy_decision: item.policy_decision.clone(),
+                content_text: item.content.clone(),
+                content_artifact_id: item.content_artifact_id.map(|id| id.to_string()),
+            })
+            .collect::<Vec<_>>();
+        let image_evidence = AgentContextImage {
+            artifact_id,
+            media_type: image.media_type().to_owned(),
+            sha256_digest: image.sha256_digest().to_owned(),
+            size_bytes: image.size_bytes(),
+            width: 1,
+            height: 1,
+        };
+        let expected = [
+            ExpectedContextSource {
+                source_type: "baseline".to_owned(),
+                sensitivity: "internal".to_owned(),
+                source_locator: "baseline://test-baseline-v1".to_owned(),
+                source_digest: sha256_digest(baseline.as_bytes()),
+                inline_content: Some(baseline.to_owned()),
+                artifact_id: None,
+                size_bytes: u64::try_from(baseline.len()).expect("size"),
+                tool_call_id: None,
+                images: Vec::new(),
+            },
+            ExpectedContextSource {
+                source_type: "user".to_owned(),
+                sensitivity: "private".to_owned(),
+                source_locator: "inbox://current".to_owned(),
+                source_digest: sha256_digest(b"describe"),
+                inline_content: Some("describe".to_owned()),
+                artifact_id: None,
+                size_bytes: 8,
+                tool_call_id: None,
+                images: vec![image_evidence],
+            },
+        ];
+        assert_eq!(
+            verify_v3_manifest_projection(
+                &replay_items,
+                &expected,
+                &compiled.messages,
+                token_budget
+            ),
+            Some((token_budget, 2))
+        );
+        let mut drifted_messages = compiled.messages.clone();
+        drifted_messages[1].images = vec![
+            NormalizedImageInput::new(ArtifactId::new(), "image/png", ONE_PIXEL_PNG)
+                .expect("different image identity"),
+        ];
+        assert_eq!(
+            verify_v3_manifest_projection(
+                &replay_items,
+                &expected,
+                &drifted_messages,
+                token_budget
+            ),
+            None
+        );
+    }
+
     fn context_source(
         source_type: &str,
         role: MessageRole,
@@ -9754,12 +11166,88 @@ mod conversation_context_tests {
             message: NormalizedMessage {
                 role,
                 content: content.to_owned(),
+                images: Vec::new(),
                 tool_call_id: None,
             },
             sensitivity: "private".to_owned(),
             content_artifact_id: None,
+            image_artifacts: Vec::new(),
             memory_evidence: None,
             compaction_id: None,
+        }
+    }
+
+    fn insert_input_image(
+        connection: &Connection,
+        inbox_entry_id: &str,
+        ordinal: i64,
+    ) -> AgentContextImage {
+        let artifact_id = ArtifactId::new();
+        let digest = sha256_digest(format!("{inbox_entry_id}-{ordinal}").as_bytes());
+        let accepted_at_ms = connection
+            .query_row(
+                "SELECT accepted_at_ms FROM session_inbox WHERE inbox_entry_id = ?1",
+                [inbox_entry_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("load input acceptance time");
+        let access_policy =
+            serde_json::json!({"principalId": PRINCIPAL_ID, "sessionId": SESSION_ID}).to_string();
+        connection
+            .execute(
+                "INSERT INTO artifact_blob(algorithm, digest, size_bytes, relative_path, \
+                                            committed_at_ms) \
+                 VALUES ('sha256', ?1, 128, ?2, ?3)",
+                params![
+                    digest,
+                    format!("sha256/{digest}"),
+                    accepted_at_ms.saturating_sub(1),
+                ],
+            )
+            .expect("seed input image blob");
+        connection
+            .execute(
+                "INSERT INTO artifact(\
+                    id, blob_algorithm, blob_digest, principal_id, session_id, media_type, \
+                    origin_kind, origin_id, producer_kind, producer_id, sensitivity, \
+                    retention_class, access_policy_json, access_policy_digest, created_at_ms\
+                 ) VALUES (?1, 'sha256', ?2, ?3, ?4, 'image/png', 'session_input', ?5, \
+                           'builtin', 'mealyd.media-normalizer.v1', 'private', \
+                           'session_history', ?6, ?7, ?8)",
+                params![
+                    artifact_id.to_string(),
+                    digest,
+                    PRINCIPAL_ID,
+                    SESSION_ID,
+                    inbox_entry_id,
+                    access_policy,
+                    sha256_digest(access_policy.as_bytes()),
+                    accepted_at_ms,
+                ],
+            )
+            .expect("seed input image artifact");
+        connection
+            .execute(
+                "INSERT INTO session_inbox_media(\
+                    inbox_entry_id, ordinal, artifact_id, principal_id, session_id, media_type, \
+                    width, height\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'image/png', 32, 24)",
+                params![
+                    inbox_entry_id,
+                    ordinal,
+                    artifact_id.to_string(),
+                    PRINCIPAL_ID,
+                    SESSION_ID,
+                ],
+            )
+            .expect("seed ordered input image");
+        AgentContextImage {
+            artifact_id,
+            media_type: "image/png".to_owned(),
+            sha256_digest: digest,
+            size_bytes: 128,
+            width: 32,
+            height: 24,
         }
     }
 

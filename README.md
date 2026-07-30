@@ -143,7 +143,22 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > progress, and exact-subject approval commands. On Linux, real-provider runs can use bounded,
 > cited list/stat/read/search tools over explicitly granted workspaces; explicitly activated profiles can also use
 > bounded, cited web search/fetch. Owner-reviewed native MCP stdio servers can expose selected,
-> schema-pinned read-only tools through a fresh no-network Bubblewrap session per call. Explicit
+> schema-pinned read-only or effectful tools through a fresh no-network Bubblewrap session per
+> call. Remote Streamable HTTP MCP servers can expose separately reviewed read-only or effectful
+> tools, exact resources, and
+> prompt templates as untrusted evidence through exact
+> endpoint/bearer-reference grants, pinned resolution, fresh sessions, and complete inventory
+> revalidation. Explicit
+> v0.4 media profiles can accept bounded owner-supplied PNG/JPEG/WebP through isolated
+> metadata-stripping normalization and exact-route vision dispatch. A separate optional
+> `image.generate` effect supports one configured OpenAI Images or OpenRouter Images adapter:
+> every prompt requires exact local approval and an immutable cost/output reservation, output is
+> isolated-normalized to a private canonical JPEG artifact, and interrupted dispatch is never
+> retried. Guided stopped-home configuration imports or reuses a brokered key without performing a
+> potentially billable generation probe. The full-screen TUI attaches no-follow local images and
+> renders path-free evidence; the temporary dashboard admits browser-selected images and
+> digest-verifies canonical PNG/JPEG artifacts before in-memory preview. Line-chat/channel image
+> UX and edit/reference workflows remain outside this slice. Explicit
 > Linux x86_64 profiles can additionally enable a content-pinned Chrome Headless Shell
 > `browser.snapshot` tool: each call uses a fresh agent-only profile and private network namespace,
 > renders bounded accessibility evidence, can either follow one exact accessible GET link or
@@ -152,7 +167,13 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > It can also capture one exact accessible same-origin attachment up to 512 KiB into durable
 > digest/base64 evidence, and can return a bounded PNG without
 > exposing CDP or a personal browser profile. Browser traffic is narrowed to
-> the initial exact origin, so cross-origin redirects, subresources, and links fail closed. Explicit
+> the initial exact origin, so cross-origin redirects, subresources, and links fail closed. A
+> separately stopped-home-enabled `browser.transact` effect can submit one digest-matched
+> same-origin POST form only after exact authenticated owner approval. It revalidates an inert
+> form catalog in a fresh profile, closes the hostile page, reconstructs the approved form in a
+> controlled target, admits only digest-verified private upload artifacts, captures at most one
+> bounded response download, and never retries after the running boundary. It carries no ambient
+> login or personal-browser credentials. Explicit
 > `/act` turns can also create one new file in a
 > separately writable workspace after exact approval and sandboxed dispatch; `/edit` can atomically
 > replace one existing bounded file only while its approved current-content digest still matches,
@@ -185,9 +206,10 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > exposing the daemon bearer to the browser or providing an arbitrary proxy. It is not an
 > unrestricted general-purpose host assistant: recursive tree mutation, directory moves, overwrite/chmod,
 > interactive
-> arbitrary browser events/clicking, POST forms, uploads, unbounded/owner-path downloads,
-> persistent or personal profiles,
-> HTTP or credential-bearing MCP,
+> arbitrary browser events/clicking, origin-wide or unattended POST authority, owner-path uploads
+> or downloads, payments, cross-origin transactions, persistent or personal profiles,
+> OAuth dynamic client registration, resource-template expansion, resumable MCP streams, or
+> long-lived MCP sessions,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
 > clean-host release evidence must be verified in the exact tag's linked workflows. The published
 > v0.2.1 tag has a checked clean 24-hour packaged-binary report; the v0.3 candidate does not inherit
@@ -267,8 +289,36 @@ extra-tool drift. Each fresh session receives an empty environment, private `/tm
 home, workspace, secret, shell, `PATH`, or child-process authority, plus hard resource limits.
 Calls are cancellable, cited as `mcp://SERVER/TOOL`, durable, and recorded-only replayable after the
 executable is unavailable. Complete backups and migration rollback preserve and re-verify every
-configured server. This first boundary deliberately excludes scripts/interpreters, HTTP MCP,
-server secrets, host workspace mounts, and effectful MCP tools.
+configured server. A separate Streamable HTTP boundary pins a canonical HTTPS endpoint (or
+literal-loopback HTTP), opaque bearer reference, negotiated capability declarations, complete
+tool/resource/resource-template/prompt catalogs, exact selected definitions, schemas, and
+per-operation bounds. It disables proxies and redirects, checks and pins DNS, sends bounded
+Origin/media/protocol/session headers, supports bounded JSON and SSE responses, and repeats a fresh
+session plus complete catalog discovery immediately before every selected tool, resource read, or
+prompt retrieval. Static resource URIs take no model-selected path argument. Prompt arguments are
+restricted to the exact advertised string fields, and returned prompt messages are explicitly
+normalized as untrusted tool evidence rather than hidden/system instructions. Endpoint and
+credential authority are bound into durable descriptors and run ceilings; tokens never enter
+configuration or evidence. OAuth inspection validates the protected-resource challenge, exact
+resource audience, OAuth/OIDC issuer metadata, authorization-code flow, and PKCE S256 through the
+same SSRF-resistant pinned boundary; multiple issuers require owner selection. A separately
+approved stopped-daemon login now supports a pre-registered public client, fresh high-entropy state,
+PKCE S256, an exact literal-loopback callback, one-time authorization-code exchange, scope
+narrowing, and an owner-private no-symlink `0600` token-family broker. Login alone prints the
+consent URL without altering configuration or exposing model authority. A separate approved
+`oauth-add` transaction revalidates the complete metadata/catalog evidence before binding that
+token family to selected operations. Runtime access refreshes before expiry, serializes concurrent
+rotation, requires an exact unchanged scope and a new refresh token, and permits one
+generation-fenced retry after a `401`. Local revocation is allowed only after every configuration
+reference is removed. Encrypted secret backups and migration rollback carry validated token
+families; secret-free backups explicitly omit them. Dynamic registration/CIMD, issuer-side
+revocation, resource-template expansion, subscriptions, resumable GET, and long-lived session
+health remain deliberately excluded until later v0.4 slices. Owner-classified idempotent and
+non-idempotent MCP tools use the ordinary prepared-effect, exact-approval, fenced-attempt,
+reconciliation, validation, and replay ledger. Server annotations never grant effect authority.
+An interrupted idempotent action may create a bounded new fenced attempt under the same stable key;
+an ambiguous non-idempotent action parks as `outcome_unknown` until authenticated owner
+reconciliation. Both boundaries exclude host workspace mounts.
 The initial rendered-browser adapter similarly treats Chrome as untrusted runtime code. The complete
 Headless Shell bundle and CDP product are pinned, owner-installed, and re-verified; Bubblewrap gives
 each invocation an empty environment, ephemeral profile, private network namespace, and no
@@ -315,6 +365,15 @@ webhooks, system messages, other users, channels, and bot output are durably ign
 messages cap at 2,000 characters, suppress all mentions and embeds, and use a stable 25-character
 nonce with `enforce_nonce`; 429 responses honor the platform delay, while ambiguous transport,
 server, or acknowledgement outcomes are terminally parked rather than duplicated.
+The v0.4 Slack adapter reuses a platform-neutral channel boundary but retains Slack-specific
+least authority. Setup live-verifies one Socket Mode app token, one bot token, their exact
+workspace/application/bot identity, one human member, and one conversation. One connection is
+shared only by routes with identical installation and credential pins. Every bounded Socket Mode
+envelope is normalized and committed before its acknowledgement; acknowledged-but-unfinished
+input completes after restart. Outbound progress and results return to the exact originating
+thread with stable `client_msg_id`, per-channel rate pacing, disabled rich parsing/unfurls, and
+bounded acknowledgement validation. Slack messages cannot approve effects; approval remains an
+owner-local authenticated dashboard/API/CLI action.
 Recurring schedules are canonical SQLite state with IANA time zones, bounded coalesced misfire
 handling, same-schedule overlap policy, leased occurrence claims, deterministic session admission,
 UUIDv7-keyed duplicate-safe creation, revision-fenced pause/resume/cancel, and durable run history.
@@ -427,6 +486,9 @@ cargo run -p mealyctl -- --home .mealy channel telegram-pair
 cargo run -p mealyctl -- --home .mealy channel telegram-list
 cargo run -p mealyctl -- --home .mealy channel discord-pair --channel-id <DM_CHANNEL_ID>
 cargo run -p mealyctl -- --home .mealy channel discord-list
+cargo run -p mealyctl -- --home .mealy channel slack-create \
+  --user-id <SLACK_MEMBER_ID> --channel-id <SLACK_CONVERSATION_ID>
+cargo run -p mealyctl -- --home .mealy channel slack-list
 cargo run -p mealyctl -- --home .mealy schedule create <SESSION_ID> --name "weekday brief" --cron "0 9 * * MON-FRI" --timezone Pacific/Auckland "Prepare my weekday brief."
 cargo run -p mealyctl -- --home .mealy schedule list
 cargo run -p mealyctl -- --home .mealy backup nightly

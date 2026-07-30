@@ -168,7 +168,10 @@ The later native MCP stdio slice reuses this fail-closed boundary without treati
 metadata as authority: exact executable/full-toolset/full-definition/schema grants, fresh
 no-network Bubblewrap sessions, protocol/result bounds, cancellation, revocation, cited durable
 evidence, and execution-free replay are covered by fixture, CLI, and real-daemon process tests.
-HTTP MCP, resource mounts, credentials, and effectful MCP remain outside this completed subset.
+HTTP MCP, resource mounts, credentials, and effectful MCP were outside this completed phase-6
+subset. The later v0.4 work adds governed Streamable HTTP/OAuth plus owner-classified effectful
+stdio/HTTP calls through the existing approval, fenced-attempt, reconciliation, validation, and
+replay ledger; host resource mounts remain excluded.
 
 ## Phase 7: Operational hardening
 
@@ -224,9 +227,28 @@ recovery, replay, safe mode, CLI lifecycle, complete backup, migration reconstru
 cgroup limits, and CI/tag gates all cover the new adapter. Real Chrome tests prove rendering,
 non-read/upgrade denial, model citation, and replay after deleting the runtime.
 
-This slice intentionally does not implement arbitrary click/keyboard events, POST or multi-control
-forms, uploads, unbounded/owner-path downloads, persistent profiles, or personal-profile attachment. Those are effectful
-capabilities requiring a new approval/effect-ledger contract rather than a flag on the read tool.
+This read slice intentionally does not implement arbitrary click/keyboard events, POST or
+multi-control forms, uploads, unbounded/owner-path downloads, persistent profiles, or
+personal-profile attachment. The bounded POST subset is represented only by the separate
+approval/effect-ledger contract below, never by a flag on the read tool.
+
+## Productionization slice: one-shot transactional browser
+
+Status: implemented on the active v0.4 branch, pending the complete v0.4 release gate. A separate
+stopped-home flag exposes one high-risk non-idempotent `browser.transact` tool without changing the
+read browser's retry or authority contract. The exact canonical URL/origin/form digest, public
+controls, submitter, ordered private upload artifact identities/digests, runtime identity, limits,
+and deadline are bound into an authenticated per-invocation approval. A fresh worker reloads and
+revalidates the inert form catalog, closes the hostile source, reconstructs approved controls in a
+clean target, and permits one same-origin POST plus at most one bounded response download.
+
+The effect uses `NeverRetry`: dispatch ambiguity parks for owner reconciliation and restart cannot
+resubmit. Schema 23 binds the raw completed model tool call to the normalized intent, and
+recorded-only replay verifies the full graph without Chrome or network. Real Chrome and daemon
+process tests cover form/hidden/upload drift, extra/cross-origin request denial, one POST,
+crash/restart, no redispatch, reconciliation, and replay after runtime deletion. General browser
+automation, payments, ambient-login/personal profiles, and unattended transactions remain future
+contracts.
 
 ## Productionization slice: interactive operations dashboard
 
@@ -370,6 +392,6 @@ this profile; Telegram remains the bounded text-document channel.
 - plugin marketplace;
 - distributed scheduler;
 - multi-user product UX;
-- effectful browser interaction and personal-profile trust mode;
+- broader browser automation and personal-profile trust mode;
 
 These features consume established APIs. They must not introduce alternate state, queue, policy, or approval paths.

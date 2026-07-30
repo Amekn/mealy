@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 croner.workspace = true

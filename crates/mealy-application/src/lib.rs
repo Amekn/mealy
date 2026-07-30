@@ -5,7 +5,9 @@ mod agent_effect;
 mod approval;
 mod artifact;
 mod browser;
+mod browser_transaction;
 mod channel;
+mod channel_adapter;
 mod compaction;
 mod context;
 mod daemon_config;
@@ -16,7 +18,9 @@ mod effect_ledger;
 mod executor;
 mod extension;
 mod fixture_write;
+mod image_generation;
 mod mcp;
+mod mcp_oauth;
 mod memory;
 mod operations;
 mod outbox;
@@ -33,6 +37,8 @@ mod scheduler;
 mod session_export;
 mod session_workbench;
 mod sessions;
+mod slack;
+mod slack_channel;
 mod startup;
 mod telegram;
 mod timeline;
@@ -43,16 +49,17 @@ mod workspace_create;
 mod workspace_manage;
 
 pub use agent::{
-    AgentArtifactCommit, AgentBudgetUsage, AgentContextSource, AgentEvidenceStore,
-    AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport, AgentRunSnapshot,
-    AgentStoreError, AgentTaskView, AgentUseCaseError, DispatchModelAttemptCommit,
-    DispatchReadToolCommit, FinalMessageCommit, ForkContextBoundary, MAXIMUM_MODEL_PROGRESS_BYTES,
-    MAXIMUM_MODEL_PROGRESS_DELTA_BYTES, MAXIMUM_MODEL_PROGRESS_EVENTS, ModelDispatchReceipt,
-    ModelFailureReceipt, PrepareModelAttemptCommit, PrepareReadToolCommit,
-    RecordModelFailureCommit, RecordModelProgressCommit, RecordModelResultCommit,
-    RecordReadToolResultCommit, RequestTaskCancellationCommit, TaskCancellationCommitReceipt,
-    TaskControlAction, TaskControlCommit, TaskControlCommitReceipt, bounded_deadline,
-    checked_usage_total, provider_retry_delay, validate_tool_result,
+    AgentArtifactCommit, AgentBudgetUsage, AgentContextImage, AgentContextSource,
+    AgentEvidenceStore, AgentExecutionStore, AgentLoopLimits, AgentNextAction, AgentReplayReport,
+    AgentRunSnapshot, AgentStoreError, AgentTaskView, AgentUseCaseError,
+    DispatchModelAttemptCommit, DispatchReadToolCommit, FinalMessageCommit, ForkContextBoundary,
+    MAXIMUM_MODEL_PROGRESS_BYTES, MAXIMUM_MODEL_PROGRESS_DELTA_BYTES,
+    MAXIMUM_MODEL_PROGRESS_EVENTS, ModelDispatchReceipt, ModelFailureReceipt,
+    PrepareModelAttemptCommit, PrepareReadToolCommit, RecordModelFailureCommit,
+    RecordModelProgressCommit, RecordModelResultCommit, RecordReadToolResultCommit,
+    RequestTaskCancellationCommit, TaskCancellationCommitReceipt, TaskControlAction,
+    TaskControlCommit, TaskControlCommitReceipt, bounded_deadline, checked_usage_total,
+    provider_retry_delay, validate_tool_result,
 };
 pub use agent_effect::{
     AGENT_EFFECT_OBSERVATION_CONTRACT_VERSION, AgentEffectInvocation,
@@ -71,10 +78,24 @@ pub use artifact::{
 };
 pub use browser::{
     BROWSER_CDP_PROTOCOL_VERSION, BROWSER_MAXIMUM_BUNDLE_BYTES, BROWSER_MAXIMUM_BUNDLE_FILE_BYTES,
-    BROWSER_MAXIMUM_BUNDLE_FILES, BROWSER_SNAPSHOT_TOOL_ID, BrowserConfig, BrowserConfigError,
-    BrowserElementTarget, BrowserFillTarget, BrowserLinkTarget, BrowserSnapshotRequest,
-    browser_maximum_screenshot_bytes, browser_snapshot_descriptor,
-    validate_browser_snapshot_arguments,
+    BROWSER_MAXIMUM_BUNDLE_FILES, BROWSER_MAXIMUM_FORM_CONTROLS, BROWSER_MAXIMUM_FORMS,
+    BROWSER_SNAPSHOT_TOOL_ID, BrowserConfig, BrowserConfigError, BrowserElementTarget,
+    BrowserFillTarget, BrowserLinkTarget, BrowserSnapshotRequest, browser_maximum_screenshot_bytes,
+    browser_snapshot_descriptor, validate_browser_snapshot_arguments,
+};
+pub use browser_transaction::{
+    BROWSER_TRANSACTION_APPROVAL_EXPLANATION, BROWSER_TRANSACTION_CAPABILITY_PREFIX,
+    BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES, BROWSER_TRANSACTION_MAXIMUM_FIELD_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_FIELDS, BROWSER_TRANSACTION_MAXIMUM_FIELDS_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_OUTPUT_BYTES, BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES,
+    BROWSER_TRANSACTION_MAXIMUM_UPLOADS, BROWSER_TRANSACTION_MAXIMUM_UPLOADS_BYTES,
+    BROWSER_TRANSACTION_POLICY_VERSION, BROWSER_TRANSACTION_TIMEOUT_MS,
+    BROWSER_TRANSACTION_TOOL_ID, BrowserTransactionContractError, BrowserTransactionField,
+    BrowserTransactionPolicyGrant, BrowserTransactionRequest, BrowserTransactionUpload,
+    browser_transaction_approval_subject, browser_transaction_policy_grant,
+    browser_transaction_required_capability, browser_transaction_runtime_identity_digest,
+    browser_transaction_tool_descriptor, evaluate_browser_transaction_policy,
+    normalize_browser_transaction_arguments,
 };
 pub use channel::{
     CompleteWebhookDeliveryCommit, OutboundWebhookTarget, RegisterWebhookChannelCommit,
@@ -85,6 +106,10 @@ pub use channel::{
     WebhookDeliveryReservation, WebhookSignatureError, sign_webhook,
     validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
     webhook_input_dedupe_key, webhook_signature_digest,
+};
+pub use channel_adapter::{
+    ChannelAdapter, ChannelAdapterError, ChannelInboundDisposition, ChannelInboundMessage,
+    ChannelInboundReceipt, ChannelOutboundContent, ChannelOutboundRequest, ChannelPlatform,
 };
 pub use compaction::{
     COMPACTION_PROMPT_VERSION, CommitCompaction, CompactionSourceEvent, CompactionSourceSnapshot,
@@ -100,12 +125,18 @@ pub use context::{
 };
 pub use daemon_config::{DAEMON_CONFIG_FORMAT_VERSION, default_daemon_config_document};
 pub use delegation::{
+    AGENT_DELEGATE_GROUP_RESULT_LOCATOR, AGENT_DELEGATE_PARALLEL_TOOL_ID,
     AGENT_DELEGATE_RESULT_LOCATOR, AGENT_DELEGATE_TOOL_ID, AcquireResourceClaimCommit,
     AgentDelegationRequest, DELEGATION_CONTRACT_VERSION, DelegationStore, DelegationView,
-    LaunchAgentDelegationCommit, MAXIMUM_DELEGATION_CONTEXT_BYTES, MAXIMUM_DELEGATION_CRITERIA,
+    LaunchAgentDelegationCommit, LaunchParallelAgentDelegationCommit,
+    LaunchParallelDelegationChildCommit, MAXIMUM_DELEGATION_CHILD_KEY_BYTES,
+    MAXIMUM_DELEGATION_CONTEXT_BYTES, MAXIMUM_DELEGATION_CRITERIA,
     MAXIMUM_DELEGATION_INSTRUCTION_BYTES, MAXIMUM_DELEGATION_OBJECTIVE_BYTES,
-    PrepareDelegationCommit, RecordDelegationResultCommit, ResourceClass, StartDelegationCommit,
+    MAXIMUM_PARALLEL_DELEGATIONS, MINIMUM_PARALLEL_DELEGATIONS, ParallelAgentDelegationChild,
+    ParallelAgentDelegationRequest, PrepareDelegationCommit, RecordDelegationResultCommit,
+    ResourceClass, StartDelegationCommit, agent_delegate_parallel_tool_descriptor,
     agent_delegate_tool_descriptor, validate_delegation_commit,
+    validate_parallel_delegation_commit,
 };
 pub use digest::{SHA256_ALGORITHM, SHA256_DIGEST_HEX_LENGTH, is_sha256_digest, sha256_digest};
 pub use discord::{
@@ -162,11 +193,35 @@ pub use fixture_write::{
     fixture_write_approval_subject, fixture_write_file_descriptor,
     normalize_fixture_write_file_arguments,
 };
+pub use image_generation::{
+    IMAGE_GENERATION_APPROVAL_EXPLANATION, IMAGE_GENERATION_CAPABILITY_PREFIX,
+    IMAGE_GENERATION_MAXIMUM_OUTPUT_BYTES, IMAGE_GENERATION_MAXIMUM_PROMPT_BYTES,
+    IMAGE_GENERATION_MAXIMUM_TIMEOUT_MS, IMAGE_GENERATION_MINIMUM_TIMEOUT_MS,
+    IMAGE_GENERATION_POLICY_VERSION, IMAGE_GENERATION_TOOL_ID, ImageGenerationConfig,
+    ImageGenerationContractError, ImageGenerationPolicyGrant, ImageGenerationProtocol,
+    evaluate_image_generation_policy, image_generation_approval_subject,
+    image_generation_tool_descriptor, normalize_image_generation_arguments,
+};
 pub use mcp::{
-    MCP_MAXIMUM_ARGUMENTS, MCP_MAXIMUM_DEFINITION_BYTES, MCP_MAXIMUM_SERVERS,
-    MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION, McpConfigError, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, McpToolInspection, mcp_read_tool_descriptor,
-    mcp_tool_definition_digest, validate_mcp_server_set, validate_mcp_tool_arguments,
+    MCP_EFFECT_APPROVAL_EXPLANATION, MCP_EFFECT_POLICY_VERSION, MCP_MAXIMUM_ARGUMENTS,
+    MCP_MAXIMUM_DEFINITION_BYTES, MCP_MAXIMUM_HTTP_ENDPOINT_BYTES,
+    MCP_MAXIMUM_HTTP_GRANTS_PER_SERVER, MCP_MAXIMUM_PROMPTS_PER_SERVER,
+    MCP_MAXIMUM_RESOURCE_TEMPLATES_PER_SERVER, MCP_MAXIMUM_RESOURCES_PER_SERVER,
+    MCP_MAXIMUM_SERVERS, MCP_MAXIMUM_TOOLS_PER_SERVER, MCP_PROTOCOL_VERSION,
+    McpCatalogItemInspection, McpConfigError, McpEffectPolicyError, McpEffectPolicyGrant,
+    McpHttpAuthentication, McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig,
+    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
+    McpToolGrant, McpToolInspection, evaluate_mcp_effect_policy, mcp_effect_approval_subject,
+    mcp_effect_tool_descriptor, mcp_http_authority_digest, mcp_http_effect_tool_descriptor,
+    mcp_http_prompt_read_descriptor, mcp_http_read_tool_descriptor,
+    mcp_http_resource_read_descriptor, mcp_prompt_definition_digest, mcp_read_tool_descriptor,
+    mcp_resource_definition_digest, mcp_resource_template_definition_digest,
+    mcp_tool_definition_digest, validate_mcp_http_server_set, validate_mcp_prompt_arguments,
+    validate_mcp_server_set, validate_mcp_tool_arguments,
+};
+pub use mcp_oauth::{
+    MCP_OAUTH_MAXIMUM_AUTHORIZATION_SERVERS, MCP_OAUTH_MAXIMUM_METADATA_VALUES,
+    MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError, McpOAuthTokenGrant,
 };
 pub use memory::{
     CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,
@@ -206,13 +261,17 @@ pub use promotion::{
     valid_general_assistant_capability_ceiling,
 };
 pub use provider::{
-    CancellationProbe, CapabilityRequirement, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD, MessageRole,
-    ModelProvider, ModelUsage, NormalizedMessage, ProviderCapabilities, ProviderError,
-    ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy, ProviderLocality,
-    ProviderOutput, ProviderPricing, ProviderProgress, ProviderProgressSink, ProviderRequest,
-    ProviderResponse, ProviderRouteCandidate, ProviderRoutePlan, ProviderRoutingError,
-    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference, ProviderToolDefinition,
-    route_provider,
+    CancellationProbe, CapabilityRequirement, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole,
+    ModelProvider, ModelUsage, NormalizedImageInput, NormalizedMessage,
+    PROVIDER_IMAGE_INPUT_TOKEN_RESERVATION, ProviderCapabilities, ProviderError,
+    ProviderErrorClass, ProviderFailureDisposition, ProviderFallbackPolicy,
+    ProviderImageInputError, ProviderLocality, ProviderOutput, ProviderPricing, ProviderProgress,
+    ProviderProgressSink, ProviderRequest, ProviderResponse, ProviderRouteCandidate,
+    ProviderRoutePlan, ProviderRoutingError, ProviderRoutingPolicy, ProviderSelection,
+    ProviderSelectionPreference, ProviderToolDefinition, estimate_normalized_message_tokens,
+    route_provider, validate_provider_image_inputs,
 };
 pub use provider_config::{
     MAXIMUM_PROVIDER_CREDENTIAL_BYTES, MAXIMUM_PROVIDER_FALLBACKS, ProviderConfig,
@@ -260,9 +319,23 @@ pub use session_workbench::{
 };
 pub use sessions::{
     AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,
-    InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
-    SessionStoreError, SessionUseCaseError, admit_input, create_session,
-    create_session_with_selection,
+    InputAdmissionReceipt, InputImageArtifactCommit, OwnershipContext, SessionCreationCommit,
+    SessionStore, SessionStoreError, SessionUseCaseError, admit_input, admit_input_with_images,
+    create_session, create_session_with_selection,
+};
+pub use slack::{
+    SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
+    SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_acknowledgement_id,
+    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id,
+};
+pub use slack_channel::{
+    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,
+    PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
+    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, SLACK_MAXIMUM_DISPLAY_NAME_BYTES,
+    SLACK_MAXIMUM_ERROR_CODE_BYTES, SLACK_MAXIMUM_IGNORE_REASON_BYTES, SlackChannelBindingView,
+    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
+    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
+    slack_input_dedupe_key, validate_slack_binding, validate_slack_reservation,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,

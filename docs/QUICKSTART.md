@@ -81,7 +81,10 @@ passive: installing one does not create a user, start a service, or modify `$HOM
 > button, fill one exact non-password text/search control with an optional selected-field-only
 > same-origin GET, or capture one exact same-origin attachment up to 512 KiB in a fresh agent
 > profile. It cannot perform arbitrary keyboard/click events, POST or multi-control forms, uploads,
-> owner-path downloads, or persistent/personal-profile browsing. A
+> owner-path downloads, or persistent/personal-profile browsing. A separately enabled v0.4
+> transaction effect can submit one exact digest-matched same-origin POST after authenticated
+> owner approval, using only digest-verified private upload artifacts and `NeverRetry` recovery;
+> it does not widen the default read profile or provide ambient-login/general browser control. A
 > first-party Telegram bot channel supports
 > an exact user/chat allowlist, durable conversation controls, bounded text attachments, approvals,
 > restart recovery, scheduled turns, and guided private-chat pairing. Provider model discovery is
@@ -342,6 +345,13 @@ owner must choose `succeeded` or `failed`, enter a non-empty external-evidence J
 most 32 KiB, and confirm the exact effect, attempt, revision, tool, targets, and evidence size.
 Evidence is durable, so include only secret-free receipts/observations and never credentials.
 Ambiguous reconciliation retries reuse the same key; the operation is never redispatched.
+
+The Delegated work panel loads at most 20 recent children from the same exact owner binding. Each
+card shows canonical parent/child lineage and current state; `Inspect exact` renders the child’s
+effective read authority, separately enforced budget, and structured terminal result without
+copying them into browser-owned state. The panel is observational: ask the agent to delegate in an
+ordinary turn, cancel through the parent task when necessary, and use the scriptable
+`delegation list/status` commands for automation.
 
 The 30-day settled usage panel includes terminal root, delegated, and validation runs for the exact
 authenticated binding. It groups by UTC completion day, omits empty days, and shows complete
@@ -1057,6 +1067,102 @@ Changing the route set, endpoint, model, credential, price, locality, or residen
 requires the stopped-daemon `config provider` transaction. The switch also fails before mutation
 if reordering would violate the fallback trust-boundary invariant.
 
+### Optional v0.4 scriptable image input
+
+The v0.4 image slice is available through the API, scriptable CLI, full-screen TUI, and temporary
+owner-local dashboard for direct OpenAI Responses or Anthropic Messages routes. It is not enabled
+in line chat or external channels. Stop the service, enable the capability against the reviewed
+route chain, then start the service again:
+
+```sh
+systemctl --user stop mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-input --enable --approve
+systemctl --user start mealy.service
+
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  session send-image SESSION_ID ./screen.png ./detail.webp \
+  --prompt "Compare these two screenshots." \
+  --provider-id local.responses --model-id local-vision-model
+```
+
+Choose an endpoint/model that actually supports vision. Activation fails unless every configured
+primary/fallback route is direct OpenAI Responses or Anthropic Messages, and each image turn
+requires an exact route rather than automatic fallback. The CLI accepts one to four no-follow
+regular PNG/JPEG/WebP files outside the Mealy home, up to 2 MiB each and 4 MiB total. The daemon
+normalizes them in a fresh no-network worker, strips metadata, stores canonical owner-private
+artifacts, and returns their IDs.
+
+For interactive use, open `mealyctl tui`, press `F8` to choose an exact vision-capable route, press
+`F9` once per local image path, type an optional prompt, and press Enter. The TUI validates the
+same no-follow file boundary and shows path-free canonical image evidence in completed turns. In
+the dashboard, choose the exact model for the conversation or turn, use the Images file picker,
+and send. Browser selection exposes bytes and a display-only filename to the page, never a host
+path to Mealy or the model; the same 2 MiB-each, four-image, 4 MiB-total limits apply.
+
+The CLI prints its generated delivery key and artifact UUIDv7 values before dispatch. Retain those
+lines until the admission receipt arrives; after an ambiguous failure, pass the same
+`--idempotency-key` and one `--artifact-id` per original image. Do not generate replacements,
+reorder paths, or change content for that retry. To disable the capability, stop the service, run
+`media image-input --disable --approve`, and start the service again.
+
+### Optional v0.4 governed image generation
+
+Image generation is independent from image input and defaults off. Stop the service and activate
+one exact provider/model contract. This OpenRouter example deliberately uses a placeholder free
+model: first verify from the live catalog that the exact image-output model ends in `:free` and
+still has zero input, output, and auxiliary prices. If no such model is currently available, do
+not enable this route under a free-only policy.
+
+```sh
+systemctl --user stop mealy.service
+export OPENROUTER_API_KEY='replace-with-your-key'
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-generation --enable \
+  --protocol open-router-images \
+  --provider-id openrouter.images \
+  --base-url https://openrouter.ai/api/v1 \
+  --model 'OWNER_VERIFIED_IMAGE_MODEL:free' \
+  --residency openrouter \
+  --secret-id openrouter-images \
+  --credential-env OPENROUTER_API_KEY \
+  --size 1024x1024 \
+  --quality low \
+  --maximum-cost-microunits 50000 \
+  --maximum-output-bytes 2097152 \
+  --timeout-ms 120000 \
+  --approve
+unset OPENROUTER_API_KEY
+systemctl --user start mealy.service
+```
+
+For a local OpenAI-compatible image server, select `--protocol open-ai-images`, use a literal
+loopback base such as `http://127.0.0.1:11434/v1`, and omit both credential flags. A remote
+OpenAI-compatible endpoint requires HTTPS plus `--secret-id`; add `--credential-env` to import a
+new key, or omit it to reuse an existing broker entry. Configuration performs no image-generation
+probe because that operation can itself create billable, non-idempotent work.
+
+Ask the agent to create an image in an ordinary turn. It may propose `image.generate` with one
+prompt, but the provider call cannot occur until the local owner approves the exact provider,
+model, prompt, JPEG/size/quality, maximum cost, and output bound. Denial makes no image call. A
+successful tool observation contains the private artifact identity; use the authenticated
+`GET /v1/artifacts/{artifact_id}` and `/content` endpoints to inspect or retrieve it. An interrupted
+dispatch is never retried automatically. It parks `outcome_unknown`, conservatively charges the
+approved maximum in local accounting, and must be reconciled from external provider evidence.
+
+This generation backend accepts one canonical JPEG only. The dashboard Image artifacts panel can
+verify and preview the UUID returned in successful effect evidence; loading the exact effect and
+attempt pre-fills it when present. It retrieves through the temporary capability, requires
+PNG/JPEG metadata, and independently checks byte length and SHA-256 before creating an in-memory
+preview. The TUI shows canonical artifact metadata but deliberately does not emit terminal-specific
+pixel protocols. Channel previews, edits, masks, reference images, multiple outputs, streaming,
+and fallback remain unavailable. Disable generation while stopped with:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  media image-generation --disable --approve
+```
+
 Use `mealyctl chat` or the lower-level session commands shown above. A real-provider turn makes one
 bounded request, commits the normalized response and usage, runs deterministic integrity
 validation, and supports recorded-only replay without another network call. Definite transient
@@ -1243,12 +1349,13 @@ skill package bytes.
 
 ## Add a local MCP stdio tool
 
-The first MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, exact
-MCP protocol revision `2025-11-25`, and read-only computation only. A server receives direct
+The local MCP boundary is deliberately narrow: Linux only, native ELF stdio servers only, and exact
+MCP protocol revision `2025-11-25`. A server receives direct
 non-secret arguments and model-proposed tool arguments, but no inherited environment, network,
 Mealy home, host workspace, secret, shell, `PATH`, or writable persistent filesystem. Script and
-interpreter entry points, HTTP MCP, OAuth, server credentials, host resource mounts, and effectful
-tools are not supported yet.
+interpreter entry points and host resource mounts are not supported. Selected tools may be
+read-only, idempotent effects, or non-idempotent effects; effectful calls use Mealy's ordinary
+durable approval and recovery ledger.
 
 First inspect an exact canonical executable. Inspection runs the code inside the same sandbox but
 does not change agent authority or configuration:
@@ -1264,7 +1371,16 @@ stored in `config.json`; never put a token, password, private host path, or shel
 The JSON response contains the negotiated server metadata, every paginated tool definition, each
 definition digest, the complete tool-set digest, and the executable digest. Review the complete
 definitions and schemas. Mealy does not trust MCP annotations such as `readOnlyHint` as an
-authorization boundary.
+authorization boundary. The owner must classify each selected name explicitly:
+
+- `--allow-tool NAME` means read-only and cannot enter the effect ledger.
+- `--allow-tool idempotent:NAME` means an approved interrupted call may be retried as a new fenced
+  attempt with the same stable key.
+- `--allow-tool non-idempotent:NAME` means an ambiguous post-dispatch result is never retried and
+  parks for explicit owner reconciliation.
+
+Do not choose `idempotent` merely because the server advertises `idempotentHint`; verify the
+operation's downstream contract yourself. One remote name may appear in only one class.
 
 Stop Mealy, select only the exact remote tool names you intend to expose, and approve the
 installation:
@@ -1287,6 +1403,14 @@ tool-set pin plus each selected full definition. The model-visible name is
 `mcp.localtools.calculate`. A normal chat turn can use it when useful; successful evidence carries
 the citation `mcp://localtools/calculate`. `status` lists the enabled model-visible tool ID, and the
 task timeline records its exact version, schema, policy, output digest, and locator.
+
+To select an effectful operation, replace `--allow-tool calculate` with exactly one matching
+`--allow-tool idempotent:REMOTE_NAME` or `--allow-tool non-idempotent:REMOTE_NAME`. Every proposed
+effect requires an exact authenticated approval. Mealy revalidates the executable, complete
+inventory, selected definition, normalized arguments, target, and immutable run ceiling before it
+durably marks dispatch. An idempotent crash retry is a visible new attempt. A non-idempotent
+timeout, transport loss, or crash after dispatch becomes `outcome_unknown`; use the dashboard or
+effect reconciliation API only after independently verifying the remote result.
 
 Startup and every tool call launch a fresh process, negotiate the exact protocol, paginate the
 complete `tools/list`, and compare it with the owner-reviewed pins before `tools/call`. Any missing,
@@ -1316,6 +1440,160 @@ Configuration history and the content-addressed executable are retained for roll
 exports, backups, isolated restore verification, activation, and cross-schema rollback copy and
 re-verify every configured MCP executable. `--safe-mode` launches none of them. If one prevents a
 normal startup, keep the daemon stopped, run `mcp-list`, disable or revoke that server, and restart.
+
+## Add a remote Streamable HTTP MCP capability
+
+Mealy can expose owner-selected read-only or effectful tools, exact resource URIs, and prompts from an MCP
+Streamable HTTP endpoint using the stable `2025-11-25` protocol. This is a separate authority from
+generic web access. Production
+endpoints must use canonical HTTPS; literal-loopback HTTP is permitted for a server on the same
+machine. Redirects, proxies, userinfo, query/fragment-bearing endpoints, ambiguous/private DNS
+answers, unsolicited server requests, and live catalog changes fail closed.
+
+For a credentialless server, inspect its complete inventory without changing configuration:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http inspect \
+  remote-tools https://mcp.example.com/mcp
+```
+
+For a bearer-protected server, put the token in an environment variable for the two owner commands.
+The value is never printed or written to `config.json`:
+
+```sh
+read -rsp "MCP bearer token: " MCP_HTTP_BEARER_TOKEN
+export MCP_HTTP_BEARER_TOKEN
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http inspect \
+  remote-tools https://mcp.example.com/mcp \
+  --bearer-secret-id mcp.remote-tools
+```
+
+For an OAuth-protected server, first inspect only its public authorization metadata:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-inspect \
+  remote-tools https://mcp.example.com/mcp
+```
+
+This command does not open a browser, create a client, request consent, exchange a code, store a
+token, change configuration, or expose a tool. It validates the `401` challenge, protected-resource
+metadata, exact MCP `resource` audience, OAuth/OIDC issuer metadata, authorization-code support,
+and mandatory PKCE S256 through the same redirect-free, proxy-free, SSRF-resistant pinned network
+boundary. If the resource advertises multiple issuers, rerun with the exact reviewed
+`--authorization-server URL`; Mealy never chooses one silently.
+
+If the service operator has pre-registered Mealy as a native/public OAuth client, drain the daemon
+and stage one initial owner token family:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-login \
+  remote-tools https://mcp.example.com/mcp \
+  --oauth-client-id REVIEWED_PUBLIC_CLIENT_ID \
+  --oauth-token-set-id mcp.remote-tools.oauth \
+  --oauth-timeout-seconds 300 \
+  --approve
+```
+
+Open only the one-time authorization URL printed by Mealy. The authorization server returns to an
+ephemeral `http://127.0.0.1:PORT/callback`; Mealy requires the exact loopback Host, state, code, and
+PKCE S256 transaction, repeats the exact MCP `resource` at the token endpoint, and accepts only a
+bounded Bearer response with equal-or-narrower scope. The token family is written under
+`mcp-oauth-tokens/` with owner-only directory/file permissions; configuration, catalog grants, and
+model-visible authority remain unchanged. Do not use a confidential client secret with this
+command. Login alone cannot power a tool call.
+
+Review every returned tool, resource, resource-template, and prompt definition, drain Mealy, then
+install only the exact operations you intend to expose. Repeat any selection flag as needed. For
+the OAuth token family staged above:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-add \
+  remote-tools https://mcp.example.com/mcp \
+  --oauth-token-set-id mcp.remote-tools.oauth \
+  --allow-tool search \
+  --allow-resource 'docs://project/readme' \
+  --allow-prompt review \
+  --timeout-ms 30000 \
+  --maximum-output-bytes 262144 \
+  --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config mcp-list
+"$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
+```
+
+For the bearer token inspected earlier, use the otherwise equivalent `add` operation:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" drain
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http add \
+  remote-tools https://mcp.example.com/mcp \
+  --bearer-secret-id mcp.remote-tools \
+  --allow-tool search \
+  --allow-resource 'docs://project/readme' \
+  --allow-prompt review \
+  --timeout-ms 30000 \
+  --maximum-output-bytes 262144 \
+  --approve
+unset MCP_HTTP_BEARER_TOKEN
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config mcp-list
+"$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
+```
+
+`mcp-http add` repeats discovery before importing the bearer token into the owner-private broker.
+Configuration retains only `broker:mcp.remote-tools`. Startup and every invocation open a fresh
+session, initialize, send the required protocol/origin/media headers, rediscover the complete
+paginated tool/resource/resource-template/prompt catalog, compare all retained pins, validate
+arguments, and only then perform the selected read. Resource grants call only the exact selected
+URI. Prompt grants accept only the advertised string arguments, and returned prompt messages are
+tagged `untrusted_tool_evidence`; Mealy never inserts them as hidden or system instructions. The
+exact endpoint destination and opaque credential reference are bound into the
+durable descriptor and immutable run capability ceiling. JSON and SSE responses share hard byte,
+message, event-ID, timeout, schema, and normalized-result bounds. Recorded replay never contacts
+the server.
+
+`oauth-add`, startup, and re-enable revalidate the reviewed OAuth metadata and exact MCP audience
+before using the brokered token. Access tokens refresh before expiry. Refresh is serialized across
+processes, must preserve the exact approved scope, and—for a public client—must rotate the refresh
+token. A protected endpoint may trigger one generation-fenced refresh and one retry after rejecting
+the old access token; Mealy never loops retries. Opt-in encrypted secret backups and migration
+rollback preserve validated token records. Ordinary secret-free backups declare
+`mcp-oauth-tokens/` as excluded.
+
+Disable or revoke a server while Mealy is stopped:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http disable \
+  remote-tools --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http revoke \
+  remote-tools --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" mcp-http oauth-revoke \
+  mcp.remote-tools.oauth --approve
+```
+
+Re-enable with `mcp-http enable remote-tools --approve`; that command requires the referenced
+credential and an exact live inventory match before publishing authority. `oauth-revoke` removes
+only the local broker record and fails while any configured server still references the token
+family, so revoke every referencing server first. It does not call an issuer revocation endpoint;
+remove the authorization at the issuer separately when the service requires it. Dynamic client
+Use `--allow-tool idempotent:REMOTE_NAME` or
+`--allow-tool non-idempotent:REMOTE_NAME` when installing an effect. The three classifications are
+mutually exclusive. Both
+effect classes require exact approval and pass through the same prepared effect and attempt ledger
+as built-in Mealy actions. HTTP/OAuth endpoint, credential reference, complete catalog, definition,
+schema, arguments, target, executable identity, and policy are all approval-bound. A confirmed
+response becomes durable evidence. An interrupted idempotent call may create a bounded fenced
+retry; an ambiguous non-idempotent call parks as `outcome_unknown` until the owner supplies
+external reconciliation evidence. Recorded replay never contacts the endpoint or refreshes a
+token.
+
+Dynamic client registration/CIMD, resource-template expansion/subscriptions, resumable GET
+streams, long-lived sessions, and issuer-side revocation remain planned v0.4 slices.
+See the stable MCP
+[authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization),
+[resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources) and
+[schema](https://modelcontextprotocol.io/specification/2025-11-25/schema) references for the
+wire-level objects Mealy validates.
 
 ## Grant a read-only workspace
 
@@ -1628,11 +1906,42 @@ input/change/submit events. Optional GET submission is constructed and authorize
 not delegated to page script, and any request still must be same-origin GET/HEAD. This is not
 general clicking or arbitrary form automation.
 
-The browser does **not** dispatch keyboard/input/change events, submit POST or multi-control forms,
-upload files, choose owner download paths, capture more than one/512-KiB attachment, retain cookies,
-expose raw DOM/CDP, or use a personal profile. Arbitrary or effectful interaction requires a future
-approval contract and must not be inferred from `browser.snapshot`. Recorded task replay uses
-stored evidence and never launches Chrome, even if the installed runtime was later removed.
+The default `browser.snapshot` tool does **not** dispatch keyboard/input/change events, submit POST
+or multi-control forms, upload files, choose owner download paths, capture more than one/512-KiB
+attachment, retain cookies, expose raw DOM/CDP, or use a personal profile. Its read authority never
+implies transaction authority.
+
+To enable the separate v0.4 one-shot transaction effect, stop the daemon and approve the additional
+authority:
+
+```sh
+"$MEALYCTL" --home "$HOME/.mealy" drain
+"$MEALYCTL" --home "$HOME/.mealy" browser --enable-transactions --approve
+"$MEALYD" --home "$HOME/.mealy"
+```
+
+`browser.snapshot` then exposes a bounded inert catalog of actionable same-origin POST forms. When
+the model proposes `browser.transact`, Mealy parks the exact canonical initial URL, form digest,
+public values, submitter, private upload artifact IDs/digests, runtime identity, limits, and
+deadline for authenticated local approval. Approval is per invocation; a prior approval, page
+text, Slack message, or read-only browser grant cannot approve another transaction.
+
+After approval, a fresh isolated profile reloads and revalidates the exact form. Mealy closes that
+hostile page, reconstructs only the approved controls in a clean target, and permits one matching
+same-origin POST. Uploads can come only from existing owner-private content-addressed artifacts;
+host paths never enter the worker. One bounded same-origin response download may become a private
+artifact. A crash, cancellation, timeout, or daemon restart after dispatch becomes
+`outcome_unknown`, never retries, and requires `mealyctl effect reconcile` after the owner verifies
+the external result. Recorded task replay uses stored evidence and never launches Chrome or
+resubmits, even if the runtime was later removed.
+
+This contract has no ambient login cookies or saved credentials and does not support payments,
+WebAuthn, extension wallets, cross-origin identity flows, arbitrary clicks/JavaScript, unattended
+batches, or personal/persistent profiles. Disable only the transaction effect, while stopped, with:
+
+```sh
+"$MEALYCTL" --home "$HOME/.mealy" browser --disable-transactions --approve
+```
 
 Run browser-enabled production deployments through the installed systemd user service (or an
 equivalent cgroup). Its unit applies `MemoryHigh=1G`, `MemoryMax=1536M`, zero swap, and a task cap to
@@ -1643,6 +1952,7 @@ equivalent service-level physical-memory ceiling.
 Disable or revoke while stopped:
 
 ```sh
+"$MEALYCTL" --home "$HOME/.mealy" browser --disable-transactions --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-disable --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-enable --approve
 "$MEALYCTL" --home "$HOME/.mealy" config browser-revoke --approve
@@ -1652,7 +1962,9 @@ Re-enable repeats the full bundle/product/CDP/rendering verification. Disable an
 immutable runtime bytes for configuration rollback. `web-disable` is rejected while the browser is
 enabled; disable/revoke the browser first. Safe mode never launches it. Complete backups, isolated
 restore verification, activation, and cross-schema rollback preserve and re-verify the referenced
-bundle.
+bundle. Read-browser disable is rejected until transaction authority is disabled; terminal revoke
+removes both. Re-enabling the read browser does not reactivate transactions unless the separate
+`browser --enable-transactions --approve` command is run.
 
 ## Connect a Telegram bot
 
@@ -1810,6 +2122,57 @@ which the platform requires clients to honor
 result always remains in the local session timeline if a 2,000-character notification is
 truncated. Rotate by revoking, resetting the token in the Developer Portal, and pairing a new
 binding. Secret-bearing backups include the token only with explicit `--include-secrets`.
+
+## Connect a Slack Socket Mode app
+
+Create a Slack app for the workspace, enable Socket Mode, and create an app-level token with
+`connections:write`. Install the app to the workspace with only the bot scopes required by the
+chosen surface: conversation inspection, exact member inspection, the relevant message event
+history (`message.channels`, `message.groups`, or `message.im`), and `chat:write`. Subscribe only
+to the corresponding message event, invite the bot to a channel when Slack requires membership,
+then copy the exact member and conversation IDs. Mealy opens an outbound Socket Mode connection;
+it does not require an Internet-reachable webhook.
+
+Pass both credentials through separate one-shot environment variables, never through command
+arguments:
+
+```sh
+export SLACK_APP_TOKEN='xapp-...'
+export SLACK_BOT_TOKEN='xoxb-...'
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-create \
+  --user-id U01234567 \
+  --channel-id C01234567
+unset SLACK_APP_TOKEN SLACK_BOT_TOKEN
+```
+
+Creation proves that the app token can open Socket Mode and live-verifies the bot token,
+workspace, application, bot member, allowed human, and conversation before creating a dedicated
+session. Both tokens move into the owner-private credential broker and never enter configuration,
+SQLite, status, or logs. A channel or private-channel binding requires an explicit bot mention by
+default; add `--allow-unmentioned` only after reviewing that wider input surface. Direct-message
+IDs (`D...`) never require a mention. Reusing the same verified installation for another exact
+member/conversation route reuses one Socket Mode connection and the same credential pins.
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-list
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-status BINDING_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" channel slack-revoke BINDING_ID \
+  --expected-revision REVISION
+```
+
+Mealy persists the complete bounded normalized disposition before acknowledging each Slack
+envelope. If it stops after the acknowledgement but before admission, restart completes that
+reservation without duplicating the input. Wrong workspace, member, conversation, bot/system
+messages, unsupported event types, and missing required mentions are acknowledged as durable
+ignored evidence. Progress and results use the originating thread, disable Slack rich-text parsing
+and unfurls, cap output conservatively, and reuse the durable outbox ID as `client_msg_id`.
+Per-channel sends are paced at one per second and `429 Retry-After` is honored.
+
+Slack is deliberately not an approval authority. Approval notifications identify the local
+approval but instruct the owner to approve or deny through the authenticated dashboard or
+`mealyctl`; `/approve` and `/deny` Slack messages are ignored. Revoking the last route using an
+installation removes both brokered tokens, stops connection discovery, and retains its session,
+envelope, health, and journal evidence.
 
 ## Create a recurring schedule
 

@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    AgentContextSource, IdGenerator, MessageRole, NormalizedMessage, OwnershipContext,
-    is_sha256_digest, sha256_digest,
+    AgentContextSource, IdGenerator, MAXIMUM_PROVIDER_IMAGE_INPUTS, MessageRole, NormalizedMessage,
+    OwnershipContext, estimate_normalized_message_tokens, is_sha256_digest, sha256_digest,
 };
 
 /// Immutable baseline used while compiling requests for one session turn.
@@ -463,6 +463,17 @@ pub enum ContextError {
         /// Configured maximum.
         maximum: u64,
     },
+    /// Images appeared on a source that is not an authenticated user message.
+    #[error("context images are permitted only on authenticated user messages")]
+    InvalidImagePlacement,
+    /// Mandatory images exceed the provider-neutral request count bound.
+    #[error("mandatory context image count {actual} exceeds maximum {maximum}")]
+    MandatoryImageCountExceeded {
+        /// Mandatory image count.
+        actual: usize,
+        /// Provider-neutral request bound.
+        maximum: usize,
+    },
     /// Provider-neutral projection could not be encoded for hashing.
     #[error("context provider projection cannot be encoded")]
     ProjectionEncoding,
@@ -510,11 +521,28 @@ pub fn compile_context(
     if baseline_tokens > token_budget {
         return Err(ContextError::BaselineExceedsBudget);
     }
+    if sources
+        .iter()
+        .any(|source| !source.message.images.is_empty() && source.message.role != MessageRole::User)
+    {
+        return Err(ContextError::InvalidImagePlacement);
+    }
+    let mandatory_image_count = sources
+        .iter()
+        .filter(|source| source.source_type == "user")
+        .map(|source| source.message.images.len())
+        .sum::<usize>();
+    if mandatory_image_count > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+        return Err(ContextError::MandatoryImageCountExceeded {
+            actual: mandatory_image_count,
+            maximum: MAXIMUM_PROVIDER_IMAGE_INPUTS,
+        });
+    }
     let mandatory_source_tokens = sources
         .iter()
         .filter(|source| source.source_type == "user")
         .fold(0_u64, |total, source| {
-            total.saturating_add(estimate_tokens(&source.message.content))
+            total.saturating_add(estimate_normalized_message_tokens(&source.message))
         });
     let mandatory_tokens = baseline_tokens.saturating_add(mandatory_source_tokens);
     if mandatory_tokens > token_budget {
@@ -525,9 +553,12 @@ pub fn compile_context(
     }
     let mut total = baseline_tokens;
     let mut mandatory_tokens_remaining = mandatory_source_tokens;
+    let mut included_image_count = 0_usize;
+    let mut mandatory_images_remaining = mandatory_image_count;
     let mut messages = vec![NormalizedMessage {
         role: MessageRole::System,
         content: epoch.baseline_text.clone(),
+        images: Vec::new(),
         tool_call_id: None,
     }];
     let mut items = vec![ContextManifestItem {
@@ -548,30 +579,45 @@ pub fn compile_context(
         memory_evidence: None,
         compaction_id: None,
     }];
-    for (index, source) in sources.iter().enumerate() {
-        let token_estimate = estimate_tokens(&source.message.content);
+    let mut next_ordinal = 1_u64;
+    let contains_images = sources
+        .iter()
+        .any(|source| !source.message.images.is_empty());
+    for source in sources {
+        let text_token_estimate = estimate_tokens(&source.message.content);
+        let token_estimate = estimate_normalized_message_tokens(&source.message);
+        let image_count = source.message.images.len();
         let rendered_digest = sha256_digest(source.message.content.as_bytes());
         let mandatory = source.source_type == "user";
         let included = if mandatory {
             total
                 .checked_add(token_estimate)
                 .is_some_and(|candidate| candidate <= token_budget)
+                && included_image_count
+                    .checked_add(image_count)
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
         } else {
             total
                 .checked_add(token_estimate)
                 .and_then(|candidate| candidate.checked_add(mandatory_tokens_remaining))
                 .is_some_and(|candidate| candidate <= token_budget)
+                && included_image_count
+                    .checked_add(image_count)
+                    .and_then(|candidate| candidate.checked_add(mandatory_images_remaining))
+                    .is_some_and(|candidate| candidate <= MAXIMUM_PROVIDER_IMAGE_INPUTS)
         };
         if included {
             total = total.saturating_add(token_estimate);
+            included_image_count = included_image_count.saturating_add(image_count);
             messages.push(source.message.clone());
         }
         if mandatory {
             mandatory_tokens_remaining = mandatory_tokens_remaining.saturating_sub(token_estimate);
+            mandatory_images_remaining = mandatory_images_remaining.saturating_sub(image_count);
         }
         items.push(ContextManifestItem {
             item_id: ids.generate_context_item_id(),
-            ordinal: u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1),
+            ordinal: next_ordinal,
             disposition: if included {
                 ContextDisposition::Included
             } else {
@@ -589,7 +635,7 @@ pub fn compile_context(
                 "excluded by deterministic token budget".to_owned()
             },
             sensitivity: source.sensitivity.clone(),
-            token_estimate,
+            token_estimate: text_token_estimate,
             transformation: "identity".to_owned(),
             policy_decision: if mandatory {
                 "allow: mandatory owner input".to_owned()
@@ -604,6 +650,44 @@ pub fn compile_context(
             memory_evidence: included.then(|| source.memory_evidence.clone()).flatten(),
             compaction_id: included.then_some(source.compaction_id).flatten(),
         });
+        next_ordinal = next_ordinal.saturating_add(1);
+        for image in &source.message.images {
+            items.push(ContextManifestItem {
+                item_id: ids.generate_context_item_id(),
+                ordinal: next_ordinal,
+                disposition: if included {
+                    ContextDisposition::Included
+                } else {
+                    ContextDisposition::Excluded
+                },
+                source_type: format!("{}_image", source.source_type),
+                source_locator: format!("artifact://{}", image.artifact_id()),
+                source_content_digest: image.sha256_digest().to_owned(),
+                rendered_content_digest: image.sha256_digest().to_owned(),
+                inclusion_reason: if mandatory {
+                    "mandatory authenticated user image".to_owned()
+                } else if included {
+                    "authorized canonical image within token budget".to_owned()
+                } else {
+                    "excluded by deterministic image or token budget".to_owned()
+                },
+                sensitivity: source.sensitivity.clone(),
+                token_estimate: image.token_reservation(),
+                transformation: "canonical-image.v1".to_owned(),
+                policy_decision: if mandatory {
+                    "allow: mandatory owner image".to_owned()
+                } else if included {
+                    "allow: owner session image".to_owned()
+                } else {
+                    "exclude: context budget".to_owned()
+                },
+                content: None,
+                content_artifact_id: included.then_some(image.artifact_id()),
+                memory_evidence: None,
+                compaction_id: None,
+            });
+            next_ordinal = next_ordinal.saturating_add(1);
+        }
     }
     let projection = serde_json::json!({
         "epochId": epoch.epoch_id,
@@ -624,7 +708,12 @@ pub fn compile_context(
         turn_id,
         epoch_id: epoch.epoch_id,
         iteration,
-        compiler_version: "mealy.context.v2".to_owned(),
+        compiler_version: if contains_images {
+            "mealy.context.v3"
+        } else {
+            "mealy.context.v2"
+        }
+        .to_owned(),
         provider_residency: provider_residency.to_owned(),
         token_budget,
         total_token_estimate: total,

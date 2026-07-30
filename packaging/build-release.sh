@@ -80,6 +80,13 @@ release_documents=(
   decisions/0010-disconnect-resistant-update-transaction.md
   decisions/0011-session-lineage-and-thin-workbench-clients.md
   decisions/0012-transactional-provider-primary-switch.md
+  decisions/0013-atomic-parallel-delegation-groups.md
+  decisions/0014-governed-streamable-http-mcp.md
+  decisions/0015-crash-safe-slack-channel-boundary.md
+  decisions/0016-owner-classified-effectful-mcp.md
+  decisions/0017-content-addressed-bounded-image-input.md
+  decisions/0018-governed-image-generation-effect.md
+  decisions/0019-one-shot-transactional-browser-effects.md
   decisions/README.md
   research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md
   research/GAP_MATRIX.md
@@ -92,6 +99,7 @@ release_documents=(
   releases/v0.2.0.md
   releases/v0.2.1.md
   releases/v0.3.0.md
+  releases/v0.4.0.md
 )
 
 if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \

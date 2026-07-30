@@ -25,22 +25,24 @@ use mealy_protocol::{
     ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
     CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
-    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
-    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
-    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse,
-    ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse, HealthResponse,
-    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
-    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse,
-    MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ProviderCatalogResponse, ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeTelegramChannelRequest,
+    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
+    DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse,
+    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt,
+    EffectResponse, EnableExtensionRequest, ExportResponse, ExtensionInvocationResponse,
+    ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
+    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ReadinessResponse,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
+    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
     ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
     SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
-    SetMemoryPinRequest, StageExtensionManifestRequest, SubmitInputRequest,
+    SetMemoryPinRequest, SlackChannelResponse, SlackChannelsResponse,
+    StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
     TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
     TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
     UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
@@ -56,6 +58,8 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use thiserror::Error;
+
+const MAXIMUM_IMAGE_INPUT_BODY_BYTES: usize = 6 * 1024 * 1024;
 use tokio::sync::{Semaphore, TryAcquireError, watch};
 use tower::ServiceBuilder;
 use tower_http::{
@@ -522,6 +526,21 @@ pub trait ApiBackend: Send + Sync + 'static {
         session_id: String,
         request: SubmitInputRequest,
     ) -> Result<InputAdmissionResponse, BackendError>;
+
+    /// Isolates, normalizes, content-addresses, and durably admits ordered images.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when exact-route authority, hostile media validation,
+    /// authorization, idempotency, or persistence fails.
+    fn submit_image_input(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _session_id: String,
+        _request: SubmitImageInputRequest,
+    ) -> Result<InputAdmissionResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
 
     /// Reads authorized current session state.
     ///
@@ -1078,6 +1097,58 @@ pub trait ApiBackend: Send + Sync + 'static {
         Err(BackendError::Unavailable)
     }
 
+    /// Creates one exact Slack app/bot/human/conversation binding after live verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for invalid identity, credential, connectivity, or persistence.
+    fn create_slack_channel(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _request: CreateSlackChannelRequest,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists Slack channels owned by the authenticated principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization or persistence fails.
+    fn slack_channels(
+        &self,
+        _identity: AuthenticatedIdentity,
+    ) -> Result<SlackChannelsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Inspects one owner-authorized Slack binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when absent, unauthorized, or corrupt.
+    fn slack_channel(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Terminally revokes one Slack binding and its brokered app/bot credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for authorization, revision, credential, or persistence failure.
+    fn revoke_slack_channel(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _request: RevokeSlackChannelRequest,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
     /// Verifies and durably admits one external delivery without local bearer authentication.
     ///
     /// # Errors
@@ -1355,6 +1426,11 @@ fn build_router(
             post(submit_input_handler),
         )
         .route(
+            "/v1/sessions/{session_id}/image-inputs",
+            post(submit_image_input_handler)
+                .layer(DefaultBodyLimit::max(MAXIMUM_IMAGE_INPUT_BODY_BYTES)),
+        )
+        .route(
             "/v1/sessions/{session_id}/status",
             get(session_status_handler),
         )
@@ -1490,6 +1566,18 @@ fn build_router(
         .route(
             "/v1/channels/discord/{binding_id}/revoke",
             post(revoke_discord_channel_handler),
+        )
+        .route(
+            "/v1/channels/slack",
+            get(slack_channels_handler).post(create_slack_channel_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}",
+            get(slack_channel_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/revoke",
+            post(revoke_slack_channel_handler),
         )
         .route("/v1/admin/status", get(admin_status_handler))
         .route("/v1/admin/metrics", get(admin_metrics_handler))
@@ -2026,6 +2114,21 @@ async fn submit_input_handler(
     require_version(&request.api_version)?;
     let result = run_backend(state, move |backend| {
         backend.submit_input(identity, session_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn submit_image_input_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(session_id): Path<String>,
+    request: Result<Json<SubmitImageInputRequest>, JsonRejection>,
+) -> Result<Json<InputAdmissionResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.submit_image_input(identity, session_id, request)
     })
     .await?;
     Ok(Json(result))
@@ -2673,6 +2776,55 @@ async fn revoke_discord_channel_handler(
     Ok(Json(result))
 }
 
+async fn create_slack_channel_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    request: Result<Json<CreateSlackChannelRequest>, JsonRejection>,
+) -> Result<Json<SlackChannelResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_slack_channel(identity, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn slack_channels_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+) -> Result<Json<SlackChannelsResponse>, HttpError> {
+    let result = run_backend(state, move |backend| backend.slack_channels(identity)).await?;
+    Ok(Json(result))
+}
+
+async fn slack_channel_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+) -> Result<Json<SlackChannelResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.slack_channel(identity, binding_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn revoke_slack_channel_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+    request: Result<Json<RevokeSlackChannelRequest>, JsonRejection>,
+) -> Result<Json<SlackChannelResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.revoke_slack_channel(identity, binding_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
 async fn receive_signed_webhook_handler(
     State(state): State<AppState>,
     Path(binding_id): Path<String>,
@@ -3205,8 +3357,8 @@ const fn retryable(error: &BackendError) -> bool {
 mod tests {
     use super::{
         ApiAuth, ApiBackend, ApiConfig, ArtifactContent, AuthenticatedIdentity, BackendError,
-        SessionTranscriptContent, SessionTranscriptFormat, SignedWebhookEnvelope, router,
-        router_with_shutdown,
+        MAXIMUM_IMAGE_INPUT_BODY_BYTES, SessionTranscriptContent, SessionTranscriptFormat,
+        SignedWebhookEnvelope, router, router_with_shutdown,
     };
     use axum::{
         body::{Body, to_bytes},
@@ -3971,6 +4123,7 @@ mod tests {
                 api_version: API_VERSION.to_owned(),
                 session_id: "session-1".to_owned(),
                 inbox_entry_id: "inbox-1".to_owned(),
+                image_artifact_ids: Vec::new(),
                 inbox_sequence: 1,
                 delivery_mode: mealy_protocol::DeliveryMode::Queue,
                 provider_selection: mealy_protocol::ProviderSelectionCommand::Automatic,
@@ -5073,6 +5226,35 @@ mod tests {
             .await
             .expect("response");
         assert_json_error(response, StatusCode::PAYLOAD_TOO_LARGE).await;
+    }
+
+    #[tokio::test]
+    async fn image_input_has_a_bounded_route_specific_transport_limit() {
+        let (app, token) = app();
+        let below_route_limit = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/sessions/session-1/image-inputs")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(vec![b'x'; 1024 * 1024 + 1]))
+                    .expect("request below image route limit"),
+            )
+            .await
+            .expect("response below image route limit");
+        assert_json_error(below_route_limit, StatusCode::BAD_REQUEST).await;
+
+        let above_route_limit = app
+            .oneshot(
+                Request::post("/v1/sessions/session-1/image-inputs")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(vec![b'x'; MAXIMUM_IMAGE_INPUT_BODY_BYTES + 1]))
+                    .expect("request above image route limit"),
+            )
+            .await
+            .expect("response above image route limit");
+        assert_json_error(above_route_limit, StatusCode::PAYLOAD_TOO_LARGE).await;
     }
 
     #[tokio::test]

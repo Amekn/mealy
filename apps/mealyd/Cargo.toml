@@ -21,6 +21,7 @@ path = "../../crates/mealy-infrastructure/src/bin/mealy-mcp-fixture-server.rs"
 axum.workspace = true
 base64.workspace = true
 clap.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 mealy-api.workspace = true
 mealy-application.workspace = true
@@ -32,6 +33,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
@@ -42,6 +44,7 @@ rustix = { workspace = true, features = ["process"] }
 [dev-dependencies]
 eventsource-stream.workspace = true
 futures-util.workspace = true
+image.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

@@ -284,6 +284,14 @@ impl TimelineStore for SqliteStore {
                                 )\
                             )\
                         )) OR \
+                        (je.aggregate_kind = 'delegation_group' AND EXISTS(\
+                            SELECT 1 FROM delegation_group candidate \
+                            JOIN run_lineage lineage ON lineage.run_id = candidate.parent_run_id \
+                            JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                            WHERE candidate.id = je.aggregate_id \
+                              AND root_turn.session_id = ?2 \
+                              AND root_turn.turn_kind = 'canonical'\
+                        )) OR \
                         (je.aggregate_kind = 'resource_claim' AND EXISTS(\
                             SELECT 1 FROM resource_claim claim \
                             JOIN run_lineage lineage ON lineage.run_id = claim.run_id \
@@ -615,6 +623,14 @@ pub(super) fn high_watermark(
                               AND child_root.turn_kind = 'canonical'\
                         )\
                     )\
+                )) OR \
+                (je.aggregate_kind = 'delegation_group' AND EXISTS(\
+                    SELECT 1 FROM delegation_group candidate \
+                    JOIN run_lineage lineage ON lineage.run_id = candidate.parent_run_id \
+                    JOIN turn root_turn ON root_turn.run_id = lineage.root_run_id \
+                    WHERE candidate.id = je.aggregate_id \
+                      AND root_turn.session_id = ?2 \
+                      AND root_turn.turn_kind = 'canonical'\
                 )) OR \
                 (je.aggregate_kind = 'resource_claim' AND EXISTS(\
                     SELECT 1 FROM resource_claim claim \

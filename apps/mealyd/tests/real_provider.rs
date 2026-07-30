@@ -2,15 +2,19 @@
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::State,
     http::{HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use image::{DynamicImage, ImageBuffer, Rgb, codecs::jpeg::JpegEncoder};
 use mealy_application::{
     BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, DIRECT_PROVIDER_INPUT_TOKEN_OVERHEAD,
-    MCP_PROTOCOL_VERSION, McpServerConfig, McpToolGrant, sha256_digest,
+    MCP_PROTOCOL_VERSION, McpServerConfig, McpToolEffect, McpToolGrant, sha256_digest,
 };
+use mealy_domain::ArtifactId;
 use mealy_infrastructure::{
     FileProviderSecretStore, discover_mcp_stdio_server, inspect_browser_bundle,
     inspect_skill_package, probe_browser_bundle_product, publish_browser_bundle,
@@ -18,15 +22,18 @@ use mealy_infrastructure::{
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
-    CancelTaskRequest, CompactionResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
-    CreateSessionRequest, CreateSessionResponse, DelegationResponse, DelegationsResponse,
-    DeliveryMode, DoctorResponse, ForkSessionRequest, InputAdmissionResponse, LocalConnectionInfo,
-    PendingApprovalsResponse, ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
-    ResolveApprovalRequest, SessionCheckpointResponse, SessionForkResponse,
-    SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
-    SessionTranscriptExport, SubmitInputRequest, TaskCancellationReceipt, TaskReplayResponse,
-    TaskResponse, TaskStatus, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
-    ValidationMethodResponse, ValidationOutcomeResponse,
+    ArtifactMetadataResponse, CancelTaskRequest, CompactionResponse, CreateCompactionRequest,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
+    DelegationResponse, DelegationsResponse, DeliveryMode, DoctorResponse,
+    EffectReconciliationReceipt, EffectResponse, EffectStatusResponse, ForkSessionRequest,
+    InputAdmissionResponse, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
+    ProviderSelectionCommand, ReadinessResponse, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, SessionCheckpointResponse,
+    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
+    SessionStatusResponse, SessionTranscriptExport, SubmitImageInputRequest, SubmitInputRequest,
+    SubmittedImageInput, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TimelinePageResponse, UpdateSessionProviderSelectionRequest, ValidationMethodResponse,
+    ValidationOutcomeResponse,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -53,6 +60,23 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(home: &Path, safe_mode: bool) -> Self {
+        Self::spawn_with_agent_interval(home, safe_mode, 25)
+    }
+
+    fn spawn_with_agent_interval(home: &Path, safe_mode: bool, agent_interval_ms: u64) -> Self {
+        Self::spawn_configured(home, safe_mode, agent_interval_ms, 0)
+    }
+
+    fn spawn_with_effect_outcome_delay(home: &Path, effect_outcome_delay_ms: u64) -> Self {
+        Self::spawn_configured(home, false, 25, effect_outcome_delay_ms)
+    }
+
+    fn spawn_configured(
+        home: &Path,
+        safe_mode: bool,
+        agent_interval_ms: u64,
+        effect_outcome_delay_ms: u64,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mealyd"));
         command
             .arg("--home")
@@ -63,6 +87,10 @@ impl Daemon {
             .arg("10")
             .arg("--agent-delay-ms")
             .arg("0")
+            .arg("--agent-interval-ms")
+            .arg(agent_interval_ms.to_string())
+            .arg("--effect-outcome-delay-ms")
+            .arg(effect_outcome_delay_ms.to_string())
             .arg("--outbox-delay-ms")
             .arg("0")
             .env(
@@ -78,6 +106,11 @@ impl Daemon {
         Self {
             child: command.spawn().expect("mealyd process should start"),
         }
+    }
+
+    fn kill_and_wait(&mut self) {
+        self.child.kill().expect("kill mealyd");
+        self.child.wait().expect("wait for killed mealyd");
     }
 }
 
@@ -99,6 +132,7 @@ struct CapturedRequest {
 #[derive(Default)]
 struct MockProviderInner {
     requests: Vec<CapturedRequest>,
+    image_requests: Vec<CapturedRequest>,
     transient_failures_remaining: usize,
     pending_tool_call: PendingToolCall,
     web_tool_steps_remaining: u8,
@@ -117,8 +151,14 @@ enum PendingToolCall {
     Process,
     SkillResource,
     Delegation,
+    DelegationThenParallel,
+    ParallelDelegation,
+    ParallelAfterChild,
     Mcp,
+    ImageGeneration,
     Browser,
+    BrowserThenTransaction,
+    BrowserTransactionAfterSnapshot,
 }
 
 #[derive(Clone, Default)]
@@ -128,6 +168,7 @@ impl MockProviderState {
     fn with_transient_failures(count: usize) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: count,
             pending_tool_call: PendingToolCall::None,
             web_tool_steps_remaining: 0,
@@ -139,6 +180,7 @@ impl MockProviderState {
     fn with_workspace_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceRead,
             web_tool_steps_remaining: 0,
@@ -150,6 +192,7 @@ impl MockProviderState {
     fn with_workspace_create_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceCreate,
             web_tool_steps_remaining: 0,
@@ -161,6 +204,7 @@ impl MockProviderState {
     fn with_workspace_replace_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceReplace,
             web_tool_steps_remaining: 0,
@@ -172,6 +216,7 @@ impl MockProviderState {
     fn with_workspace_manage_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::WorkspaceManage,
             web_tool_steps_remaining: 0,
@@ -183,6 +228,7 @@ impl MockProviderState {
     fn with_process_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Process,
             web_tool_steps_remaining: 0,
@@ -194,6 +240,7 @@ impl MockProviderState {
     fn with_skill_resource_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::SkillResource,
             web_tool_steps_remaining: 0,
@@ -205,8 +252,33 @@ impl MockProviderState {
     fn with_delegation_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Delegation,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_parallel_delegation_tool_call() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::ParallelDelegation,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_serial_then_over_budget_parallel_delegation() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::DelegationThenParallel,
             web_tool_steps_remaining: 0,
             web_origin: None,
             delegated_child_delay_ms: 0,
@@ -216,8 +288,21 @@ impl MockProviderState {
     fn with_mcp_tool_call() -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Mcp,
+            web_tool_steps_remaining: 0,
+            web_origin: None,
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_image_generation_tool_call() -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::ImageGeneration,
             web_tool_steps_remaining: 0,
             web_origin: None,
             delegated_child_delay_ms: 0,
@@ -227,8 +312,21 @@ impl MockProviderState {
     fn with_browser_tool_call(web_origin: String) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::Browser,
+            web_tool_steps_remaining: 0,
+            web_origin: Some(web_origin),
+            delegated_child_delay_ms: 0,
+        })))
+    }
+
+    fn with_browser_transaction_tool_call(web_origin: String) -> Self {
+        Self(Arc::new(Mutex::new(MockProviderInner {
+            requests: Vec::new(),
+            image_requests: Vec::new(),
+            transient_failures_remaining: 0,
+            pending_tool_call: PendingToolCall::BrowserThenTransaction,
             web_tool_steps_remaining: 0,
             web_origin: Some(web_origin),
             delegated_child_delay_ms: 0,
@@ -246,9 +344,21 @@ impl MockProviderState {
         state
     }
 
+    fn with_delayed_parallel_delegation_tool_call(delay: Duration) -> Self {
+        let state = Self::with_parallel_delegation_tool_call();
+        state
+            .0
+            .lock()
+            .expect("provider capture lock")
+            .delegated_child_delay_ms =
+            u64::try_from(delay.as_millis()).expect("test delay fits u64");
+        state
+    }
+
     fn with_web_tool_calls(web_origin: String) -> Self {
         Self(Arc::new(Mutex::new(MockProviderInner {
             requests: Vec::new(),
+            image_requests: Vec::new(),
             transient_failures_remaining: 0,
             pending_tool_call: PendingToolCall::None,
             web_tool_steps_remaining: 2,
@@ -264,6 +374,14 @@ impl MockProviderState {
             .requests
             .clone()
     }
+
+    fn image_requests(&self) -> Vec<CapturedRequest> {
+        self.0
+            .lock()
+            .expect("provider capture lock")
+            .image_requests
+            .clone()
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -272,6 +390,10 @@ async fn responses_handler(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
+    let delegated_child_request = body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE")
+        || body
+            .to_string()
+            .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE");
     let authorization = headers
         .get(reqwest::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -285,8 +407,12 @@ async fn responses_handler(
         call_process,
         call_skill_resource,
         call_delegation,
+        call_parallel_delegation,
         call_mcp,
+        call_image_generation,
         call_browser,
+        call_browser_transaction_catalog,
+        call_browser_transaction,
         web_tool_call,
         delegated_child_delay_ms,
     ) = {
@@ -297,11 +423,19 @@ async fn responses_handler(
         });
         let fail = state.transient_failures_remaining > 0;
         state.transient_failures_remaining = state.transient_failures_remaining.saturating_sub(1);
-        let pending_tool_call = if fail {
+        let pending_tool_call = if fail
+            || delegated_child_request
+                && state.pending_tool_call == PendingToolCall::ParallelAfterChild
+        {
             PendingToolCall::None
         } else {
             std::mem::take(&mut state.pending_tool_call)
         };
+        if pending_tool_call == PendingToolCall::DelegationThenParallel {
+            state.pending_tool_call = PendingToolCall::ParallelAfterChild;
+        } else if pending_tool_call == PendingToolCall::BrowserThenTransaction {
+            state.pending_tool_call = PendingToolCall::BrowserTransactionAfterSnapshot;
+        }
         let web_tool_call = if !fail && state.web_tool_steps_remaining > 0 {
             let step = state.web_tool_steps_remaining;
             state.web_tool_steps_remaining = state.web_tool_steps_remaining.saturating_sub(1);
@@ -309,12 +443,11 @@ async fn responses_handler(
         } else {
             None
         };
-        let delegated_child_delay_ms =
-            if body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE") {
-                state.delegated_child_delay_ms
-            } else {
-                0
-            };
+        let delegated_child_delay_ms = if delegated_child_request {
+            state.delegated_child_delay_ms
+        } else {
+            0
+        };
         (
             fail,
             pending_tool_call == PendingToolCall::WorkspaceRead,
@@ -323,9 +456,22 @@ async fn responses_handler(
             pending_tool_call == PendingToolCall::WorkspaceManage,
             pending_tool_call == PendingToolCall::Process,
             pending_tool_call == PendingToolCall::SkillResource,
-            pending_tool_call == PendingToolCall::Delegation,
+            matches!(
+                pending_tool_call,
+                PendingToolCall::Delegation | PendingToolCall::DelegationThenParallel
+            ),
+            matches!(
+                pending_tool_call,
+                PendingToolCall::ParallelDelegation | PendingToolCall::ParallelAfterChild
+            ),
             pending_tool_call == PendingToolCall::Mcp,
-            pending_tool_call == PendingToolCall::Browser,
+            pending_tool_call == PendingToolCall::ImageGeneration,
+            matches!(
+                pending_tool_call,
+                PendingToolCall::Browser | PendingToolCall::BrowserThenTransaction
+            ),
+            pending_tool_call == PendingToolCall::BrowserThenTransaction,
+            pending_tool_call == PendingToolCall::BrowserTransactionAfterSnapshot,
             web_tool_call,
             delegated_child_delay_ms,
         )
@@ -610,6 +756,52 @@ async fn responses_handler(
         );
         return response;
     }
+    if call_parallel_delegation {
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"]
+                        .as_str()
+                        .is_some_and(|description| description.contains("two to eight isolated"))
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .expect("agent.delegate_parallel provider tool name");
+        let mut response = Json(json!({
+            "id": "resp-parallel-delegation-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-agent-delegate-parallel",
+                "name": tool_name,
+                "arguments": serde_json::json!({
+                    "delegations": [{
+                        "childKey": "first",
+                        "objective": "Assess the first bounded proof",
+                        "instructions": "Return the first concise isolated assessment.",
+                        "successCriteria": ["Return the first keyed result"],
+                        "context": {"evidenceLabel": "parallel-first"}
+                    }, {
+                        "childKey": "second",
+                        "objective": "Assess the second bounded proof",
+                        "instructions": "Return the second concise isolated assessment.",
+                        "successCriteria": ["Return the second keyed result"],
+                        "context": {"evidenceLabel": "parallel-second"}
+                    }]
+                }).to_string()
+            }],
+            "usage": {"input_tokens": 14, "output_tokens": 16, "total_tokens": 30}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-parallel-delegation-call"),
+        );
+        return response;
+    }
     if call_mcp {
         let tool_name = body["tools"]
             .as_array()
@@ -621,7 +813,7 @@ async fn responses_handler(
                 })
             })
             .and_then(|tool| tool["name"].as_str())
-            .expect("MCP provider tool name");
+            .unwrap_or_else(|| panic!("MCP provider tool name: {body}"));
         let mut response = Json(json!({
             "id": "resp-mcp-call",
             "object": "response",
@@ -639,6 +831,38 @@ async fn responses_handler(
         response
             .headers_mut()
             .insert("x-request-id", HeaderValue::from_static("req-mcp-call"));
+        return response;
+    }
+    if call_image_generation {
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"]
+                        .as_str()
+                        .is_some_and(|description| description.contains("Generates one JPEG"))
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .unwrap_or_else(|| panic!("image-generation provider tool name: {body}"));
+        let mut response = Json(json!({
+            "id": "resp-image-generation-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-image-generation",
+                "name": tool_name,
+                "arguments": "{\"prompt\":\"A quiet harbor at dawn\"}"
+            }],
+            "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-image-generation-call"),
+        );
         return response;
     }
     if call_browser {
@@ -660,6 +884,24 @@ async fn responses_handler(
             })
             .and_then(|tool| tool["name"].as_str())
             .expect("browser provider tool name");
+        let mut arguments = json!({
+            "url": if call_browser_transaction_catalog {
+                format!("{web_origin}/transaction-page")
+            } else {
+                format!("{web_origin}/page")
+            },
+            "maximumTextBytes": 4096,
+            "maximumElements": 16,
+        });
+        if !call_browser_transaction_catalog {
+            arguments["captureScreenshot"] = Value::Bool(true);
+            arguments["fillElement"] = json!({
+                "role": "searchbox",
+                "name": "Evidence query",
+                "value": "durable browser evidence",
+                "submitGetForm": true
+            });
+        }
         let mut response = Json(json!({
             "id": "resp-browser-call",
             "object": "response",
@@ -669,18 +911,7 @@ async fn responses_handler(
                 "type": "function_call",
                 "call_id": "call-browser-snapshot",
                 "name": tool_name,
-                "arguments": json!({
-                    "url": format!("{web_origin}/page"),
-                    "maximumTextBytes": 4096,
-                    "maximumElements": 16,
-                    "captureScreenshot": true,
-                    "fillElement": {
-                        "role": "searchbox",
-                        "name": "Evidence query",
-                        "value": "durable browser evidence",
-                        "submitGetForm": true
-                    }
-                }).to_string()
+                "arguments": arguments.to_string()
             }],
             "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
         }))
@@ -688,6 +919,56 @@ async fn responses_handler(
         response
             .headers_mut()
             .insert("x-request-id", HeaderValue::from_static("req-browser-call"));
+        return response;
+    }
+    if call_browser_transaction {
+        let web_origin = state
+            .0
+            .lock()
+            .expect("provider capture lock")
+            .web_origin
+            .clone()
+            .expect("browser origin");
+        let form_digest = find_string_field(&body, "formDigest")
+            .filter(|digest| mealy_application::is_sha256_digest(digest))
+            .expect("browser snapshot form digest");
+        let tool_name = body["tools"]
+            .as_array()
+            .and_then(|tools| {
+                tools.iter().find(|tool| {
+                    tool["description"].as_str().is_some_and(|description| {
+                        description.contains("digest-matched same-origin POST")
+                    })
+                })
+            })
+            .and_then(|tool| tool["name"].as_str())
+            .expect("browser transaction provider tool name");
+        let mut response = Json(json!({
+            "id": "resp-browser-transaction-call",
+            "object": "response",
+            "model": body["model"].clone(),
+            "status": "completed",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-browser-transaction",
+                "name": tool_name,
+                "arguments": json!({
+                    "initialUrl": format!("{web_origin}/transaction-page"),
+                    "formDigest": form_digest,
+                    "fields": [{
+                        "name": "message",
+                        "value": "exact durable browser transaction"
+                    }],
+                    "submitter": {"name": "action", "value": "send"}
+                }).to_string()
+            }],
+            "usage": {"input_tokens": 12, "output_tokens": 6, "total_tokens": 18}
+        }))
+        .into_response();
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_static("req-browser-transaction-call"),
+        );
         return response;
     }
     if let Some((step, web_origin)) = web_tool_call {
@@ -750,9 +1031,24 @@ async fn responses_handler(
             "The approved action reached durable effect state {status}; recorded observation sha256:{}",
             sha256_digest(observation_text.as_bytes())
         )
+    } else if body.to_string().contains("delegation://group-result") {
+        "The parent incorporated both ordered durable child results \
+         (delegation://group-result)."
+            .to_owned()
     } else if body.to_string().contains("delegation://result") {
         "The parent incorporated the durable isolated child result (delegation://result)."
             .to_owned()
+    } else if body
+        .to_string()
+        .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+        && body.to_string().contains("\"childKey\":\"first\"")
+    {
+        "The first parallel isolated child completed.".to_owned()
+    } else if body
+        .to_string()
+        .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+    {
+        "The second parallel isolated child completed.".to_owned()
     } else if body.to_string().contains("ISOLATED DELEGATED WORK PACKAGE") {
         "The isolated child execution completed and returned a result suitable for the waiting parent."
             .to_owned()
@@ -811,6 +1107,44 @@ async fn responses_handler(
     response.headers_mut().insert(
         "x-request-id",
         HeaderValue::from_static("req-process-proof"),
+    );
+    response
+}
+
+async fn image_generation_handler(
+    State(state): State<MockProviderState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let authorization = headers
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    state
+        .0
+        .lock()
+        .expect("provider capture lock")
+        .image_requests
+        .push(CapturedRequest {
+            authorization,
+            body: body.clone(),
+        });
+    let image =
+        DynamicImage::ImageRgb8(ImageBuffer::from_pixel(16, 16, Rgb([24_u8, 96_u8, 160_u8])));
+    let mut jpeg = Vec::new();
+    JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode_image(&image)
+        .expect("encode mock generated JPEG");
+    let mut response = Json(json!({
+        "data": [{
+            "b64_json": BASE64_STANDARD.encode(jpeg)
+        }],
+        "usage": {"cost": "0.012345"}
+    }))
+    .into_response();
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_static("req-image-generation-result"),
     );
     response
 }
@@ -1004,6 +1338,31 @@ fn find_effect_observation(value: &Value) -> Option<(Value, String)> {
         Value::Array(values) => values.iter().find_map(find_effect_observation),
         Value::Object(values) => values.values().find_map(find_effect_observation),
         Value::Null | Value::Bool(_) | Value::Number(_) => None,
+    }
+}
+
+fn find_string_field(value: &Value, field: &str) -> Option<String> {
+    match value {
+        Value::Object(values) => values
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                values
+                    .values()
+                    .find_map(|value| find_string_field(value, field))
+            }),
+        Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_string_field(value, field)),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .or_else(|| {
+                text.find('{')
+                    .and_then(|start| serde_json::from_str::<Value>(&text[start..]).ok())
+            })
+            .and_then(|decoded| find_string_field(&decoded, field)),
+        _ => None,
     }
 }
 
@@ -1268,7 +1627,7 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
     assert_eq!(requests[0].body["store"], false);
     assert_eq!(requests[0].body["stream"], true);
     assert_eq!(requests[0].body["parallel_tool_calls"], false);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
     assert!(
         requests[0].body["tools"][0]["description"]
             .as_str()
@@ -1376,6 +1735,130 @@ async fn configured_provider_completes_validates_and_replays_without_live_dispat
         home.path(),
         b"process-proof-secret"
     ));
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn exact_image_input_normalizes_dispatches_exports_and_replays_without_live_redispatch() {
+    const ONE_PIXEL_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    let state = MockProviderState::default();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_provider_image_input(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("image HTTP client");
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let artifact_id = ArtifactId::new();
+    let request = SubmitImageInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: "process-image-input".to_owned(),
+        delivery_mode: DeliveryMode::Queue,
+        content: "Describe this canonical image.".to_owned(),
+        provider_selection: ProviderSelectionCommand::Exact {
+            provider_id: "process-proof.responses".to_owned(),
+            model_id: "process-proof-model".to_owned(),
+        },
+        images: vec![SubmittedImageInput {
+            artifact_id: artifact_id.to_string(),
+            media_type: "image/png".to_owned(),
+            data_base64: ONE_PIXEL_PNG.to_owned(),
+        }],
+    };
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/image-inputs", session.session_id),
+        &request,
+    )
+    .await;
+    assert_eq!(admission.image_artifact_ids, vec![artifact_id.to_string()]);
+    assert!(!admission.duplicate);
+    let duplicate: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/image-inputs", session.session_id),
+        &request,
+    )
+    .await;
+    assert!(duplicate.duplicate);
+    assert_eq!(duplicate.inbox_entry_id, admission.inbox_entry_id);
+    assert_eq!(duplicate.image_artifact_ids, admission.image_artifact_ids);
+
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let task = wait_until_terminal(&client, &connection, &task_id).await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "{task:?}");
+    let requests = state.requests();
+    assert_eq!(requests.len(), 1);
+    let provider_body = requests[0].body.to_string();
+    assert!(provider_body.contains("\"type\":\"input_image\""));
+    assert!(provider_body.contains("data:image/jpeg;base64,"));
+    assert!(!provider_body.contains(ONE_PIXEL_PNG));
+
+    let transcript: SessionTranscriptExport = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/exports/json", session.session_id),
+    )
+    .await;
+    assert_eq!(transcript.schema_version, "mealy.session-transcript.v2");
+    assert_eq!(transcript.turns.len(), 1);
+    let images = &transcript.turns[0].user.images;
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].artifact_id, artifact_id.to_string());
+    assert_eq!(images[0].media_type, "image/jpeg");
+    assert_eq!((images[0].width, images[0].height), (1, 1));
+    assert!(images[0].size_bytes > 0);
+    assert_eq!(images[0].sha256_digest.len(), 64);
+
+    let database = rusqlite::Connection::open(home.path().join("mealy.sqlite3"))
+        .expect("open image evidence database");
+    let (compiler_version, sparse_image_references) = database
+        .query_row(
+            "SELECT manifest.compiler_version, \
+                    (SELECT COUNT(*) FROM context_manifest_bundle_artifact link \
+                     WHERE link.manifest_id = manifest.id AND link.artifact_id = ?1) \
+             FROM context_manifest manifest \
+             JOIN model_attempt attempt ON attempt.context_manifest_id = manifest.id \
+             ORDER BY manifest.iteration DESC LIMIT 1",
+            [artifact_id.to_string()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .expect("load durable image manifest evidence");
+    assert_eq!(compiler_version, "mealy.context.v3");
+    assert_eq!(sparse_image_references, 1);
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "{replay:?}");
+    assert_eq!(replay.live_provider_calls, 0);
+    assert_eq!(state.requests().len(), 1);
+
     provider_server.abort();
 }
 
@@ -1613,7 +2096,7 @@ async fn resumed_session_projects_bounded_ordered_conversation_and_replays_it() 
     );
     let transcript: SessionTranscriptExport =
         serde_json::from_slice(&json_bytes).expect("session transcript JSON");
-    assert_eq!(transcript.schema_version, "mealy.session-transcript.v1");
+    assert_eq!(transcript.schema_version, "mealy.session-transcript.v2");
     assert_eq!(transcript.session_id, session.session_id);
     assert_eq!(transcript.bounds.total_eligible_turns, 2);
     assert_eq!(transcript.bounds.omitted_turns, 0);
@@ -1866,7 +2349,11 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "skill.read_resource"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "skill.read_resource"
+        ]
     );
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -1908,7 +2395,7 @@ async fn enabled_skill_resource_is_bounded_cited_and_recorded_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
     assert!(requests[0].body.to_string().contains("skill.read_resource"));
     assert!(
         requests[1]
@@ -1964,7 +2451,10 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
     let connection = wait_until_ready(&client, home.path()).await;
     let status: AdminStatusResponse =
         authorized_get(&client, &connection, "/v1/admin/status").await;
-    assert_eq!(status.enabled_read_tools, ["agent.delegate"]);
+    assert_eq!(
+        status.enabled_read_tools,
+        ["agent.delegate", "agent.delegate_parallel"]
+    );
 
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -2149,6 +2639,400 @@ async fn provider_delegation_runs_isolated_child_and_resumes_parent_with_recorde
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
+async fn parallel_delegation_is_atomic_ordered_and_resumes_only_after_both_children() {
+    let state = MockProviderState::with_parallel_delegation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-process-proof".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run two independent bounded checks concurrently and combine them.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let parent = wait_until_terminal(&client, &connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Succeeded, "parent: {parent:?}");
+    assert_eq!((parent.model_attempts, parent.tool_calls), (2, 1));
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (2, 0)
+    );
+    assert!(
+        parent
+            .final_response
+            .as_deref()
+            .is_some_and(|response| { response.contains("delegation://group-result") })
+    );
+
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(delegations.delegations.len(), 2);
+    assert!(
+        delegations
+            .delegations
+            .iter()
+            .all(|delegation| delegation.state == "succeeded"),
+        "delegations: {delegations:?}"
+    );
+    for delegation in &delegations.delegations {
+        let child: TaskResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}", delegation.child_task_id),
+        )
+        .await;
+        assert_eq!(child.status, TaskStatus::Succeeded, "child: {child:?}");
+        let replay: TaskReplayResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}/replay", delegation.child_task_id),
+        )
+        .await;
+        assert!(replay.evidence_complete, "child replay: {replay:?}");
+    }
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert!(timeline.events.iter().any(|event| {
+        event.event_type == "tool.call.succeeded"
+            && event.payload["source_locator"] == "delegation://group-result"
+    }));
+
+    let requests = state.requests();
+    assert_eq!(requests.len(), 4, "provider requests: {requests:?}");
+    let child_requests = requests
+        .iter()
+        .filter(|request| {
+            request
+                .body
+                .to_string()
+                .contains("ISOLATED PARALLEL DELEGATED WORK PACKAGE")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(child_requests.len(), 2);
+    assert!(
+        child_requests
+            .iter()
+            .any(|request| request.body.to_string().contains("parallel-first"))
+    );
+    assert!(
+        child_requests
+            .iter()
+            .any(|request| request.body.to_string().contains("parallel-second"))
+    );
+    let parent_resume = requests
+        .last()
+        .expect("parent resume request")
+        .body
+        .to_string();
+    let first_position = parent_resume
+        .find("first")
+        .expect("first ordered child result");
+    let second_position = parent_resume
+        .find("second")
+        .expect("second ordered child result");
+    assert!(first_position < second_position);
+    assert!(parent_resume.contains("delegation://group-result"));
+
+    let parent_replay: TaskReplayResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/tasks/{parent_task_id}/replay"),
+    )
+    .await;
+    assert!(
+        parent_replay.evidence_complete,
+        "parent replay: {parent_replay:?}"
+    );
+    assert_eq!(
+        (
+            parent_replay.live_provider_calls,
+            parent_replay.live_tool_calls
+        ),
+        (0, 0)
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn queued_parallel_group_survives_an_abrupt_daemon_restart() {
+    let state = MockProviderState::with_parallel_delegation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+
+    let (session_id, parent_task_id) = {
+        // Keep the next worker claim far enough away to crash after the complete group commits but
+        // before either child can acquire a lease.
+        let _daemon = Daemon::spawn_with_agent_interval(home.path(), false, 5_000);
+        let connection = wait_until_ready(&client, home.path()).await;
+        let session: CreateSessionResponse = authorized_post(
+            &client,
+            &connection,
+            "/v1/sessions",
+            &CreateSessionRequest {
+                api_version: API_VERSION.to_owned(),
+                provider_selection: None,
+            },
+        )
+        .await;
+        let admission: InputAdmissionResponse = authorized_post(
+            &client,
+            &connection,
+            &format!("/v1/sessions/{}/inputs", session.session_id),
+            &SubmitInputRequest {
+                api_version: API_VERSION.to_owned(),
+                provider_selection: None,
+                idempotency_key: "parallel-delegation-abrupt-restart".to_owned(),
+                delivery_mode: DeliveryMode::Queue,
+                content: "Commit two bounded children, then wait for their ordered result."
+                    .to_owned(),
+            },
+        )
+        .await;
+        let parent_task_id = wait_for_task_id(
+            &client,
+            &connection,
+            &session.session_id,
+            admission.cursor.0,
+        )
+        .await;
+        let group_deadline = Instant::now() + COMPLETION_TIMEOUT;
+        let queued = loop {
+            let delegations: DelegationsResponse =
+                authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+            if delegations.delegations.len() == 2 {
+                break delegations;
+            }
+            assert!(
+                Instant::now() < group_deadline,
+                "parallel group was not durably admitted before restart"
+            );
+            sleep(Duration::from_millis(10)).await;
+        };
+        assert!(
+            queued
+                .delegations
+                .iter()
+                .all(|delegation| delegation.state == "queued"),
+            "a child escaped the deliberately delayed claim boundary: {queued:?}"
+        );
+        assert_eq!(
+            state.requests().len(),
+            1,
+            "a child provider request crossed the crash boundary"
+        );
+        (session.session_id, parent_task_id)
+    };
+    fs::remove_file(home.path().join("connection.json")).expect("remove stale descriptor");
+
+    let _restarted = Daemon::spawn(home.path(), false);
+    let restarted_connection = wait_until_ready(&client, home.path()).await;
+    let parent = wait_until_terminal(&client, &restarted_connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Succeeded, "parent: {parent:?}");
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (2, 0)
+    );
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &restarted_connection, "/v1/delegations?limit=20").await;
+    assert_eq!(delegations.delegations.len(), 2);
+    assert!(
+        delegations
+            .delegations
+            .iter()
+            .all(|delegation| delegation.state == "succeeded"),
+        "recovered delegations: {delegations:?}"
+    );
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &restarted_connection,
+        &format!("/v1/sessions/{session_id}/timeline?limit=1000"),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert_eq!(
+        state.requests().len(),
+        4,
+        "restart duplicated or skipped a provider boundary"
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn over_budget_parallel_group_rolls_back_every_proposed_child() {
+    let state = MockProviderState::with_serial_then_over_budget_parallel_delegation();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-atomic-budget-rejection".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run one child, then attempt two more bounded children.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let request_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    while state.requests().len() < 3 {
+        assert!(
+            Instant::now() < request_deadline,
+            "parent did not attempt its over-budget parallel group"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    // The model response has reached the daemon; allow its immediate writer transaction to
+    // reject the second reservation and roll back the first proposed child.
+    sleep(Duration::from_millis(250)).await;
+
+    let parent: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{parent_task_id}")).await;
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs
+        ),
+        (1, 0),
+        "partial child budget reservation escaped rollback: {parent:?}"
+    );
+    let delegations: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(
+        delegations.delegations.len(),
+        1,
+        "a proposed parallel child escaped rollback: {delegations:?}"
+    );
+    assert_eq!(delegations.delegations[0].state, "succeeded");
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.prepared")
+            .count(),
+        0,
+        "failed parallel group published durable evidence: {:?}",
+        timeline.events
+    );
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
 async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
     let state = MockProviderState::with_delayed_delegation_tool_call(Duration::from_millis(1_500));
     let (base_url, provider_server) = spawn_provider(state.clone()).await;
@@ -2254,8 +3138,8 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
     .await;
     for event_type in [
         "run.cancellation_waiting_for_delegation",
-        "run.cancellation_requested_by_parent",
-        "task.cancellation_requested_by_parent",
+        "run.child_cancellations_requested",
+        "task.child_cancellations_requested",
         "delegation.cancelled",
     ] {
         assert!(
@@ -2268,6 +3152,168 @@ async fn parent_cancellation_propagates_to_an_in_flight_delegated_child() {
         );
     }
     assert_eq!(state.requests().len(), 2);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn parent_cancellation_propagates_to_every_nonterminal_parallel_sibling() {
+    let state =
+        MockProviderState::with_delayed_parallel_delegation_tool_call(Duration::from_secs(3));
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection = wait_until_ready(&client, home.path()).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "parallel-delegation-parent-cancellation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Run two bounded checks, then await both results.".to_owned(),
+        },
+    )
+    .await;
+    let parent_task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let request_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    while state.requests().len() < 3 {
+        assert!(
+            Instant::now() < request_deadline,
+            "both parallel child provider requests did not begin"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    let running: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(running.delegations.len(), 2);
+    let running_ids = running
+        .delegations
+        .iter()
+        .filter(|delegation| delegation.state == "running")
+        .map(|delegation| delegation.delegation_id.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !running_ids.is_empty()
+            && running
+                .delegations
+                .iter()
+                .all(|delegation| matches!(delegation.state.as_str(), "running" | "succeeded")),
+        "running delegations: {running:?}"
+    );
+
+    let _: TaskCancellationReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/tasks/{parent_task_id}/cancel"),
+        &CancelTaskRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "parallel-parent-cancellation-command".to_owned(),
+            reason: "owner cancelled the parallel parent".to_owned(),
+        },
+    )
+    .await;
+    let parent = wait_until_terminal(&client, &connection, &parent_task_id).await;
+    assert_eq!(parent.status, TaskStatus::Cancelled, "parent: {parent:?}");
+    assert_eq!(
+        (
+            parent.usage.used_delegated_runs,
+            parent.usage.reserved_delegated_runs,
+            parent.usage.reserved_tool_calls
+        ),
+        (2, 0, 0)
+    );
+    assert!(parent.final_response.is_none());
+
+    let terminal: DelegationsResponse =
+        authorized_get(&client, &connection, "/v1/delegations?limit=20").await;
+    assert_eq!(terminal.delegations.len(), 2);
+    for delegation in &terminal.delegations {
+        let expected = if running_ids.contains(&delegation.delegation_id) {
+            "cancelled"
+        } else {
+            "succeeded"
+        };
+        assert_eq!(delegation.state, expected, "{delegation:?}");
+        assert_eq!(
+            delegation
+                .result
+                .as_ref()
+                .and_then(|value| value["status"].as_str()),
+            Some(expected)
+        );
+        let child: TaskResponse = authorized_get(
+            &client,
+            &connection,
+            &format!("/v1/tasks/{}", delegation.child_task_id),
+        )
+        .await;
+        assert_eq!(
+            child.status,
+            if expected == "cancelled" {
+                TaskStatus::Cancelled
+            } else {
+                TaskStatus::Succeeded
+            },
+            "child: {child:?}"
+        );
+    }
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation.cancelled")
+            .count(),
+        running_ids.len()
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "run.child_cancellations_requested")
+            .count(),
+        1
+    );
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "delegation_group.settled")
+            .count(),
+        1
+    );
+    assert_eq!(state.requests().len(), 3);
     provider_server.abort();
 }
 
@@ -2375,6 +3421,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
         status.enabled_read_tools,
         [
             "agent.delegate",
+            "agent.delegate_parallel",
             "workspace.list",
             "workspace.read",
             "workspace.search",
@@ -2427,7 +3474,7 @@ async fn configured_workspace_read_is_least_authority_cited_and_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(5));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
     assert!(requests[0].body.to_string().contains("workspace.read"));
     assert!(
         requests[1]
@@ -2512,7 +3559,11 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "mcp.fixture.add"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "mcp.fixture.add"
+        ]
     );
 
     let session: CreateSessionResponse = authorized_post(
@@ -2557,7 +3608,7 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
     assert!(requests[0].body.to_string().contains("mcp.fixture.add"));
     assert!(requests[1].body.to_string().contains("sum"));
     assert!(requests[1].body.to_string().contains("42"));
@@ -2597,6 +3648,1086 @@ async fn configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn owner_classified_mcp_effect_requires_exact_approval_dispatches_once_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    let installed_mcp = add_mcp_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &connection, "/v1/admin/status").await;
+    assert_eq!(status.enabled_action_tools, ["mcp.fixture.add"]);
+    assert_eq!(
+        status.enabled_read_tools,
+        ["agent.delegate", "agent.delegate_parallel"]
+    );
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "real-provider-mcp-effect".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &connection).await;
+    let approval = pending
+        .approvals
+        .first()
+        .expect("MCP effect must request approval");
+    assert_eq!(approval.subject.tool_id, "mcp.fixture.add");
+    assert_eq!(approval.subject.target_resources, ["mcp://fixture/add"]);
+    assert!(
+        approval
+            .subject
+            .capability_scope
+            .starts_with("mcp.invoke:fixture:add:sha256:")
+    );
+    assert!(
+        !approval
+            .subject
+            .capability_scope
+            .contains(&installed_mcp.display().to_string())
+    );
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-real-provider-mcp-effect".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "MCP effect task: {task:?}; provider requests: {:?}",
+        state.requests()
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let requests = state.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert!(requests[0].body.to_string().contains("mcp.fixture.add"));
+    assert!(requests[1].body.to_string().contains("effectRevision"));
+    assert!(requests.iter().all(|request| {
+        !request
+            .body
+            .to_string()
+            .contains(&installed_mcp.display().to_string())
+            && !request.body.to_string().contains("process-proof-secret")
+    }));
+
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1
+    );
+    assert!(
+        requests[1].body.to_string().contains("mcp://fixture/add"),
+        "the second model call must contain only durable MCP outcome evidence"
+    );
+
+    fs::remove_file(&installed_mcp).expect("remove live MCP executable before replay");
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.requests().len(), 2);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines, clippy::type_complexity)]
+async fn image_generation_reserves_budget_requires_approval_commits_artifact_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &connection, "/v1/admin/status").await;
+    assert_eq!(status.enabled_action_tools, ["image.generate"]);
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "real-provider-image-generation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Generate one approved image of a quiet harbor at dawn.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let approval_deadline = Instant::now() + COMPLETION_TIMEOUT;
+    let pending = loop {
+        let pending: PendingApprovalsResponse =
+            authorized_get(&client, &connection, "/v1/approvals").await;
+        if !pending.approvals.is_empty() {
+            break pending;
+        }
+        let current: TaskResponse =
+            authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+        if matches!(
+            current.status,
+            TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+        ) {
+            let timeline: TimelinePageResponse = authorized_get(
+                &client,
+                &connection,
+                &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+            )
+            .await;
+            panic!(
+                "image-generation task terminated before approval: {current:?}; requests: {:?}; \
+                 timeline: {:?}",
+                state.requests(),
+                timeline.events
+            );
+        }
+        assert!(
+            Instant::now() < approval_deadline,
+            "image-generation approval was not requested; task: {current:?}; requests: {:?}",
+            state.requests()
+        );
+        sleep(Duration::from_millis(20)).await;
+    };
+    let approval = pending
+        .approvals
+        .first()
+        .expect("image generation must request approval");
+    assert_eq!(approval.subject.tool_id, "image.generate");
+    assert_eq!(
+        approval.subject.target_resources,
+        ["image-provider://process-proof.images/model/process-proof-image-model"]
+    );
+    assert!(
+        approval
+            .subject
+            .capability_scope
+            .starts_with("media.image.generate:process-proof.images:process-proof-image-model:")
+    );
+    let waiting: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(waiting.usage.reserved_cost_microunits, 50_000);
+    assert_eq!(waiting.usage.reserved_output_bytes, 2_097_152);
+    assert!(state.image_requests().is_empty());
+
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-real-provider-image-generation".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "image-generation task: {task:?}; provider requests: {:?}; image requests: {:?}",
+        state.requests(),
+        state.image_requests()
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    assert_eq!(task.usage.reserved_cost_microunits, 0);
+    assert_eq!(task.usage.reserved_output_bytes, 0);
+    assert!(task.usage.used_cost_microunits >= 12_345);
+    assert!(task.usage.used_output_bytes > 0);
+
+    let requests = state.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].body.to_string().contains("image.generate"));
+    assert!(requests[1].body.to_string().contains("artifactId"));
+    assert!(requests.iter().all(|request| {
+        !request.body.to_string().contains("process-proof-secret")
+            && !request
+                .body
+                .to_string()
+                .contains(&home.path().display().to_string())
+    }));
+    let image_requests = state.image_requests();
+    assert_eq!(image_requests.len(), 1);
+    assert_eq!(image_requests[0].authorization, None);
+    assert_eq!(
+        image_requests[0].body,
+        json!({
+            "model": "process-proof-image-model",
+            "n": 1,
+            "output_format": "jpeg",
+            "prompt": "A quiet harbor at dawn",
+            "quality": "low",
+            "size": "1024x1024",
+            "stream": false
+        })
+    );
+
+    let database =
+        rusqlite::Connection::open(home.path().join("mealy.sqlite3")).expect("open daemon store");
+    let (
+        reservation_state,
+        maximum_cost,
+        maximum_output,
+        charged_cost,
+        charged_output,
+        artifact_id,
+        artifact_digest,
+        artifact_size,
+        media_type,
+        origin_kind,
+        producer_kind,
+        producer_id,
+        owner_kind,
+        relation,
+        artifact_event_type,
+    ): (
+        String,
+        i64,
+        i64,
+        i64,
+        i64,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = database
+        .query_row(
+            "SELECT reservation.state, reservation.maximum_cost_microunits, \
+                    reservation.maximum_output_bytes, reservation.charged_cost_microunits, \
+                    reservation.charged_output_bytes, artifact.id, artifact.blob_digest, \
+                    blob.size_bytes, artifact.media_type, artifact.origin_kind, \
+                    artifact.producer_kind, artifact.producer_id, reference.owner_kind, \
+                    reference.relation, event.event_type \
+             FROM agent_effect_budget_reservation reservation \
+             JOIN artifact_reference reference \
+               ON reference.owner_kind = 'effect' \
+              AND reference.owner_id = reservation.effect_id \
+             JOIN artifact ON artifact.id = reference.artifact_id \
+             JOIN artifact_blob blob \
+               ON blob.algorithm = artifact.blob_algorithm \
+              AND blob.digest = artifact.blob_digest \
+             JOIN journal_event event \
+               ON event.aggregate_kind = 'artifact' \
+              AND event.aggregate_id = artifact.id \
+              AND event.event_type = 'artifact.committed' \
+             WHERE reservation.effect_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ))
+            },
+        )
+        .expect("settled image-generation artifact evidence");
+    assert_eq!(reservation_state, "settled");
+    assert_eq!((maximum_cost, maximum_output), (50_000, 2_097_152));
+    assert_eq!(charged_cost, 12_345);
+    assert_eq!(charged_output, artifact_size);
+    assert!(artifact_size > 0 && artifact_size <= 2_097_152);
+    assert_eq!(media_type, "image/jpeg");
+    assert_eq!(origin_kind, "effect_attempt");
+    assert_eq!(producer_kind, "builtin");
+    assert_eq!(producer_id, "mealyd.image-generation.v1");
+    assert_eq!(
+        (owner_kind.as_str(), relation.as_str()),
+        ("effect", "output")
+    );
+    assert_eq!(artifact_event_type, "artifact.committed");
+    assert!(
+        database
+            .execute(
+                "UPDATE agent_effect_budget_reservation \
+                 SET charged_cost_microunits = charged_cost_microunits + 1 \
+                 WHERE effect_id = ?1",
+                [approval.effect_id.as_str()],
+            )
+            .is_err(),
+        "settled financial evidence must be immutable"
+    );
+    assert!(
+        database
+            .execute(
+                "DELETE FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+                [approval.effect_id.as_str()],
+            )
+            .is_err(),
+        "settled financial evidence must not be deletable"
+    );
+    let artifact_path = home.path().join("artifacts/sha256").join(&artifact_digest);
+    let artifact_bytes = fs::read(&artifact_path).expect("content-addressed generated artifact");
+    assert_eq!(
+        i64::try_from(artifact_bytes.len()).expect("artifact size"),
+        artifact_size
+    );
+    assert!(artifact_bytes.starts_with(&[0xff, 0xd8, 0xff]));
+    assert!(artifact_bytes.ends_with(&[0xff, 0xd9]));
+
+    let metadata: ArtifactMetadataResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/artifacts/{artifact_id}"),
+    )
+    .await;
+    assert_eq!(metadata.digest, artifact_digest);
+    assert_eq!(metadata.size_bytes, u64::try_from(artifact_size).unwrap());
+    assert_eq!(metadata.media_type, "image/jpeg");
+    assert_eq!(metadata.origin_kind, "effect_attempt");
+    assert_eq!(metadata.producer_id, "mealyd.image-generation.v1");
+    let content_response = client
+        .get(format!(
+            "{}/v1/artifacts/{artifact_id}/content",
+            connection.base_url
+        ))
+        .bearer_auth(&connection.bearer_token)
+        .send()
+        .await
+        .expect("authorized artifact content");
+    assert_eq!(content_response.status(), StatusCode::OK);
+    assert_eq!(
+        content_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/jpeg")
+    );
+    assert_eq!(
+        content_response
+            .bytes()
+            .await
+            .expect("artifact bytes")
+            .as_ref(),
+        artifact_bytes
+    );
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.requests().len(), 2);
+    assert_eq!(state.image_requests().len(), 1);
+    fs::remove_file(&artifact_path).expect("remove generated blob for replay corruption proof");
+    let missing_blob_replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(!missing_blob_replay.evidence_complete);
+    assert_eq!(state.requests().len(), 2);
+    assert_eq!(state.image_requests().len(), 1);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn denied_image_generation_releases_budget_without_crossing_the_provider_boundary() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let _daemon = Daemon::spawn(home.path(), false);
+    let connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "deny-real-provider-image-generation".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Propose one image, but do not dispatch it without my approval.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &connection).await;
+    let approval = pending.approvals.first().expect("image approval");
+    assert_eq!(approval.subject.tool_id, "image.generate");
+    let waiting: TaskResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}")).await;
+    assert_eq!(waiting.usage.reserved_cost_microunits, 50_000);
+    assert_eq!(waiting.usage.reserved_output_bytes, 2_097_152);
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "deny-image-generation-exact-subject".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Deny,
+        },
+    )
+    .await;
+    let task =
+        wait_until_terminal_with_timeout(&client, &connection, &task_id, Duration::from_secs(45))
+            .await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "denied task: {task:?}");
+    assert_eq!(task.usage.reserved_cost_microunits, 0);
+    assert_eq!(task.usage.reserved_output_bytes, 0);
+    assert_eq!(state.image_requests().len(), 0);
+
+    let database =
+        rusqlite::Connection::open(home.path().join("mealy.sqlite3")).expect("open daemon store");
+    let reservation: (String, i64, i64, Option<i64>) = database
+        .query_row(
+            "SELECT state, charged_cost_microunits, charged_output_bytes, settled_at_ms \
+             FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("denied reservation settlement");
+    assert_eq!(reservation.0, "settled");
+    assert_eq!((reservation.1, reservation.2), (0, 0));
+    assert!(reservation.3.is_some());
+    let artifact_count: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM artifact_reference \
+             WHERE owner_kind = 'effect' AND owner_id = ?1",
+            [approval.effect_id.as_str()],
+            |row| row.get(0),
+        )
+        .expect("denied artifact count");
+    assert_eq!(artifact_count, 0);
+
+    let replay: TaskReplayResponse =
+        authorized_get(&client, &connection, &format!("/v1/tasks/{task_id}/replay")).await;
+    assert!(replay.evidence_complete, "denied replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.image_requests().len(), 0);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn image_generation_dispatch_crash_never_retries_and_charges_the_full_reserved_cost() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_image_generation_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    enable_image_generation(home.path(), &base_url);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "image-generation-dispatch-crash".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Generate one image after exact approval.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("image approval");
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-image-generation-dispatch-crash".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let dispatch_deadline = Instant::now() + Duration::from_secs(15);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if state.image_requests().len() == 1
+            && let Some(event) = timeline
+                .events
+                .iter()
+                .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("image dispatch attempt")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < dispatch_deadline,
+            "image generation never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    assert_eq!(parked.usage.reserved_cost_microunits, 0);
+    assert_eq!(parked.usage.reserved_output_bytes, 0);
+    assert!(parked.usage.used_cost_microunits >= 50_000);
+    assert_eq!(state.image_requests().len(), 1);
+    let database = rusqlite::Connection::open(home.path().join("mealy.sqlite3"))
+        .expect("open recovered store");
+    let reservation: (String, i64, i64) = database
+        .query_row(
+            "SELECT state, charged_cost_microunits, charged_output_bytes \
+             FROM agent_effect_budget_reservation WHERE effect_id = ?1",
+            [effect_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("recovered image reservation");
+    assert_eq!(reservation, ("settled".to_owned(), 50_000, 0));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "never-retry image generation must not redispatch after recovery"
+    );
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-image-generation-dispatch-crash".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Failed,
+            evidence: json!({
+                "basis": "owner could not establish a retrievable generated artifact",
+                "providerRequestCount": 1,
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Failed);
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "reconciled task: {task:?}"
+    );
+    assert!(task.usage.used_cost_microunits >= 50_000);
+    assert_eq!(state.image_requests().len(), 1);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "crash replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(state.image_requests().len(), 1);
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn idempotent_mcp_effect_retries_after_crash_at_dispatch_boundary_and_replays() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    add_mcp_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "mcp-effect-crash-recovery".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed idempotent MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("MCP effect approval");
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-mcp-effect-crash-recovery".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if timeline
+            .events
+            .iter()
+            .any(|event| event.event_type == "effect.dispatched")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "MCP effect never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "recovered MCP effect task: {task:?}"
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        2,
+        "an idempotent interrupted call must create one new fenced retry attempt"
+    );
+    assert_eq!(state.requests().len(), 2);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "recovered replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn non_idempotent_mcp_effect_parks_after_dispatch_crash_until_owner_reconciles() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let state = MockProviderState::with_mcp_tool_call();
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    add_mcp_non_idempotent_effect_config(home.path());
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "mcp-non-idempotent-crash-recovery".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Invoke the reviewed non-idempotent MCP operation with 20 and 22.".to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = wait_for_pending_approval(&client, &first_connection).await;
+    let approval = pending.approvals.first().expect("MCP effect approval");
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-mcp-non-idempotent-crash-recovery".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if let Some(event) = timeline
+            .events
+            .iter()
+            .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("dispatch attempt id")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "non-idempotent MCP effect never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "a non-idempotent interrupted call must never be retried automatically"
+    );
+    assert_eq!(
+        state.requests().len(),
+        1,
+        "the model must remain parked until explicit reconciliation"
+    );
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-mcp-non-idempotent-crash-recovery".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Succeeded,
+            evidence: json!({
+                "basis": "owner verified the remote MCP operation completed",
+                "remoteReference": "fixture:add:20+22",
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.effect_id, effect_id);
+    assert_eq!(receipt.attempt_id, attempt_id);
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Succeeded);
+
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(
+        task.status,
+        TaskStatus::Succeeded,
+        "reconciled non-idempotent MCP effect task: {task:?}"
+    );
+    assert_eq!((task.model_attempts, task.tool_calls), (2, 1));
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1
+    );
+    assert_eq!(state.requests().len(), 2);
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(
+        replay.evidence_complete,
+        "reconciled non-idempotent replay: {replay:?}"
+    );
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    provider_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "set MEALY_BROWSER_BUNDLE to a reviewed Chrome Headless Shell bundle"]
 #[allow(clippy::too_many_lines)]
 async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_chrome() {
@@ -2624,7 +4755,12 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "browser.snapshot", "web.fetch"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "browser.snapshot",
+            "web.fetch",
+        ]
     );
 
     let session: CreateSessionResponse = authorized_post(
@@ -2675,7 +4811,7 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(4));
     assert!(requests[0].body.to_string().contains("browser.snapshot"));
     assert!(requests[0].body.to_string().contains("downloadLink"));
     assert!(
@@ -2721,6 +4857,247 @@ async fn configured_browser_is_rendered_isolated_cited_and_replays_without_live_
     assert_eq!(replay.tool_calls, 1);
     assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
     assert_eq!(state.requests().len(), 2);
+    provider_server.abort();
+    web_server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "set MEALY_BROWSER_BUNDLE to a reviewed Chrome Headless Shell bundle"]
+#[allow(clippy::too_many_lines)]
+async fn browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation() {
+    if !Path::new("/usr/bin/bwrap").is_file() {
+        return;
+    }
+    let source = std::env::var_os("MEALY_BROWSER_BUNDLE")
+        .map(std::path::PathBuf::from)
+        .expect("reviewed browser bundle path");
+    let (web_origin, web_state, web_server) = spawn_browser_transaction_web_server().await;
+    let state = MockProviderState::with_browser_transaction_tool_call(web_origin.clone());
+    let (base_url, provider_server) = spawn_provider(state.clone()).await;
+    let home = TempDir::new().expect("temporary daemon home");
+    write_provider_config(home.path(), &base_url);
+    let browser_path = add_transactional_browser_config(home.path(), &source, &web_origin);
+    FileProviderSecretStore::new(home.path().join("provider-secrets"))
+        .expect("provider broker")
+        .put("process-proof", "process-proof-secret")
+        .expect("broker provider secret");
+    let client = http_client();
+    let mut first_daemon = Daemon::spawn_with_effect_outcome_delay(home.path(), 60_000);
+    let first_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let status: AdminStatusResponse =
+        authorized_get(&client, &first_connection, "/v1/admin/status").await;
+    assert!(
+        status
+            .enabled_action_tools
+            .iter()
+            .any(|tool| tool == "browser.transact"),
+        "transaction effect must be separately visible: {status:?}"
+    );
+
+    let session: CreateSessionResponse = authorized_post(
+        &client,
+        &first_connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let admission: InputAdmissionResponse = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "browser-transaction-dispatch-crash".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content:
+                "Inspect the authorized form, then propose exactly one transaction for approval."
+                    .to_owned(),
+        },
+    )
+    .await;
+    let task_id = wait_for_task_id(
+        &client,
+        &first_connection,
+        &session.session_id,
+        admission.cursor.0,
+    )
+    .await;
+    let pending = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let pending: PendingApprovalsResponse =
+                authorized_get(&client, &first_connection, "/v1/approvals").await;
+            if !pending.approvals.is_empty() {
+                break pending;
+            }
+            let task: TaskResponse =
+                authorized_get(&client, &first_connection, &format!("/v1/tasks/{task_id}")).await;
+            if Instant::now() >= deadline
+                || matches!(
+                    task.status,
+                    TaskStatus::Succeeded | TaskStatus::Failed | TaskStatus::Cancelled
+                )
+            {
+                let timeline: TimelinePageResponse = authorized_get(
+                    &client,
+                    &first_connection,
+                    &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+                )
+                .await;
+                let failures = timeline
+                    .events
+                    .iter()
+                    .filter(|event| event.event_type.ends_with(".failed"))
+                    .map(|event| (&event.event_type, &event.payload))
+                    .collect::<Vec<_>>();
+                panic!(
+                    "browser approval was not requested; task={task:?}; failures={failures:?}; provider_request_count={}",
+                    state.requests().len()
+                );
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    };
+    let approval = pending.approvals.first().expect("browser approval");
+    assert_eq!(approval.subject.tool_id, "browser.transact");
+    assert!(
+        approval
+            .subject
+            .target_resources
+            .iter()
+            .any(|target| target == &format!("browser-transaction:{web_origin}"))
+    );
+    let effect_id = approval.effect_id.clone();
+    let _: ApprovalResolutionReceipt = authorized_post(
+        &client,
+        &first_connection,
+        &format!("/v1/approvals/{}/resolve", approval.approval_id),
+        &ResolveApprovalRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "approve-browser-transaction-dispatch-crash".to_owned(),
+            expected_subject_digest: approval.subject_digest.clone(),
+            decision: ApprovalDecisionCommand::Approve,
+        },
+    )
+    .await;
+    let dispatch_deadline = Instant::now() + Duration::from_secs(45);
+    let attempt_id = loop {
+        let timeline: TimelinePageResponse = authorized_get(
+            &client,
+            &first_connection,
+            &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+        )
+        .await;
+        if web_state.posts.load(Ordering::SeqCst) == 1
+            && let Some(event) = timeline
+                .events
+                .iter()
+                .find(|event| event.event_type == "effect.dispatched")
+        {
+            break event.payload["attempt_id"]
+                .as_str()
+                .expect("browser dispatch attempt")
+                .to_owned();
+        }
+        assert!(
+            Instant::now() < dispatch_deadline,
+            "browser transaction never crossed the durable dispatch boundary"
+        );
+        sleep(Duration::from_millis(10)).await;
+    };
+    first_daemon.kill_and_wait();
+
+    let _recovered_daemon = Daemon::spawn(home.path(), false);
+    let recovered_connection =
+        wait_until_ready_with_timeout(&client, home.path(), Duration::from_secs(45)).await;
+    let unknown = wait_until_effect_status(
+        &client,
+        &recovered_connection,
+        &effect_id,
+        EffectStatusResponse::OutcomeUnknown,
+    )
+    .await;
+    let parked: TaskResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}"),
+    )
+    .await;
+    assert_eq!(parked.status, TaskStatus::Waiting);
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
+    assert_eq!(web_state.bodies.lock().expect("POST bodies").len(), 1);
+    {
+        let bodies = web_state.bodies.lock().expect("POST bodies");
+        let body = &bodies[0];
+        for expected in [
+            b"csrf=private-fixture-csrf".as_slice(),
+            b"message=exact+durable+browser+transaction".as_slice(),
+            b"action=send".as_slice(),
+        ] {
+            assert!(
+                body.windows(expected.len())
+                    .any(|window| window == expected),
+                "encoded transaction body omitted an approved component: {body:?}"
+            );
+        }
+    }
+
+    let receipt: EffectReconciliationReceipt = authorized_post(
+        &client,
+        &recovered_connection,
+        &format!("/v1/effects/{effect_id}/attempts/{attempt_id}/reconcile"),
+        &ReconcileEffectRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "reconcile-browser-transaction-dispatch-crash".to_owned(),
+            expected_effect_revision: unknown.revision,
+            outcome: ReconciliationOutcomeCommand::Failed,
+            evidence: json!({
+                "basis": "owner verified the fixture transaction was intentionally treated as failed",
+                "observedPostCount": 1,
+            }),
+        },
+    )
+    .await;
+    assert_eq!(receipt.outcome, ReconciliationOutcomeCommand::Failed);
+    let task = wait_until_terminal_with_timeout(
+        &client,
+        &recovered_connection,
+        &task_id,
+        Duration::from_secs(45),
+    )
+    .await;
+    assert_eq!(task.status, TaskStatus::Succeeded, "browser task: {task:?}");
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
+    let timeline: TimelinePageResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/sessions/{}/timeline?limit=1000", session.session_id),
+    )
+    .await;
+    assert_eq!(
+        timeline
+            .events
+            .iter()
+            .filter(|event| event.event_type == "effect.dispatched")
+            .count(),
+        1,
+        "never-retry browser transaction must not redispatch after recovery"
+    );
+    fs::remove_dir_all(&browser_path).expect("remove live browser bundle before replay");
+    let replay: TaskReplayResponse = authorized_get(
+        &client,
+        &recovered_connection,
+        &format!("/v1/tasks/{task_id}/replay"),
+    )
+    .await;
+    assert!(replay.evidence_complete, "browser crash replay: {replay:?}");
+    assert_eq!((replay.live_provider_calls, replay.live_tool_calls), (0, 0));
+    assert_eq!(web_state.posts.load(Ordering::SeqCst), 1);
     provider_server.abort();
     web_server.abort();
 }
@@ -2839,7 +5216,7 @@ async fn explicit_action_creates_one_approved_file_and_replays_without_redispatc
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -2982,7 +5359,7 @@ async fn explicit_edit_applies_one_digest_pinned_patch_and_replays_without_redis
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -3139,7 +5516,7 @@ async fn explicit_manage_moves_one_digest_matched_file_and_replays_without_redis
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(
         requests[0]
             .body
@@ -3347,7 +5724,7 @@ async fn explicit_process_runs_one_pinned_command_and_replays_without_redispatch
 
     let requests = state.requests();
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(7));
     assert!(requests[0].body.to_string().contains("process.run"));
     assert!(
         !requests[0]
@@ -3580,10 +5957,10 @@ async fn workspace_revocation_rotates_context_and_removes_tool_authority_after_r
 
     let requests = state.requests();
     assert_eq!(requests.len(), 4);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(5));
-    assert_eq!(requests[1].body["tools"].as_array().map(Vec::len), Some(5));
-    assert_eq!(requests[2].body["tools"].as_array().map(Vec::len), Some(1));
-    assert_eq!(requests[3].body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[1].body["tools"].as_array().map(Vec::len), Some(6));
+    assert_eq!(requests[2].body["tools"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests[3].body["tools"].as_array().map(Vec::len), Some(2));
     for request in &requests[2..] {
         assert!(!request.body.to_string().contains("workspace://project"));
         assert!(
@@ -3620,7 +5997,12 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
         authorized_get(&client, &connection, "/v1/admin/status").await;
     assert_eq!(
         status.enabled_read_tools,
-        ["agent.delegate", "web.fetch", "web.search"]
+        [
+            "agent.delegate",
+            "agent.delegate_parallel",
+            "web.fetch",
+            "web.search"
+        ]
     );
     let session: CreateSessionResponse = authorized_post(
         &client,
@@ -3666,7 +6048,7 @@ async fn configured_web_search_and_fetch_are_bounded_cited_secret_safe_and_repla
 
     let requests = state.requests();
     assert_eq!(requests.len(), 3);
-    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(3));
+    assert_eq!(requests[0].body["tools"].as_array().map(Vec::len), Some(4));
     assert!(requests[0].body.to_string().contains("web.search"));
     assert!(requests[0].body.to_string().contains("web.fetch"));
     assert!(
@@ -4194,6 +6576,7 @@ async fn spawn_provider(state: MockProviderState) -> (String, JoinHandle<()>) {
     let address = listener.local_addr().expect("provider address");
     let app = Router::new()
         .route("/v1/responses", post(responses_handler))
+        .route("/v1/images/generations", post(image_generation_handler))
         .with_state(state);
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
@@ -4285,6 +6668,63 @@ async fn spawn_web_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
     (origin, requests, server)
 }
 
+#[derive(Clone, Default)]
+struct MockBrowserTransactionWebState {
+    requests: Arc<AtomicUsize>,
+    posts: Arc<AtomicUsize>,
+    bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+async fn mock_browser_transaction_page(
+    State(state): State<MockBrowserTransactionWebState>,
+) -> Response {
+    state.requests.fetch_add(1, Ordering::SeqCst);
+    (
+        [("content-type", "text/html; charset=utf-8")],
+        "<!doctype html><title>Transaction</title><form action=\"/transaction\" method=\"post\" enctype=\"application/x-www-form-urlencoded\"><input type=\"hidden\" name=\"csrf\" value=\"private-fixture-csrf\"><label>Message <textarea name=\"message\" maxlength=\"256\" required></textarea></label><button type=\"submit\" name=\"action\" value=\"send\">Send</button></form><script>setTimeout(()=>{try{HTMLFormElement.prototype.submit.call(document.forms[0])}catch(_){}},1000)</script>",
+    )
+        .into_response()
+}
+
+async fn mock_browser_transaction_result(
+    State(state): State<MockBrowserTransactionWebState>,
+    body: Bytes,
+) -> Response {
+    state.requests.fetch_add(1, Ordering::SeqCst);
+    state.posts.fetch_add(1, Ordering::SeqCst);
+    state
+        .bodies
+        .lock()
+        .expect("POST body capture")
+        .push(body.to_vec());
+    (
+        StatusCode::CREATED,
+        [("content-type", "text/html; charset=utf-8")],
+        "<!doctype html><title>Committed</title><main>Committed exact daemon transaction</main>",
+    )
+        .into_response()
+}
+
+async fn spawn_browser_transaction_web_server()
+-> (String, MockBrowserTransactionWebState, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock transaction endpoint");
+    let address = listener.local_addr().expect("transaction web address");
+    let origin = format!("http://{address}");
+    let state = MockBrowserTransactionWebState::default();
+    let app = Router::new()
+        .route("/transaction-page", get(mock_browser_transaction_page))
+        .route("/transaction", post(mock_browser_transaction_result))
+        .with_state(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("mock transaction web server");
+    });
+    (origin, state, server)
+}
+
 fn write_provider_config(home: &Path, base_url: &str) {
     fs::create_dir_all(home).expect("create daemon home");
     let config = json!({
@@ -4369,6 +6809,41 @@ fn enable_provider_streaming(home: &Path) {
         serde_json::to_vec_pretty(&config).expect("encode streaming provider config"),
     )
     .expect("write streaming provider config");
+}
+
+fn enable_provider_image_input(home: &Path) {
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read provider config"))
+        .expect("decode provider config");
+    config["imageInputEnabled"] = Value::Bool(true);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode image provider config"),
+    )
+    .expect("write image provider config");
+}
+
+fn enable_image_generation(home: &Path, base_url: &str) {
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read provider config"))
+        .expect("decode provider config");
+    config["imageGeneration"] = json!({
+        "providerId": "process-proof.images",
+        "protocol": "open_ai_images",
+        "baseUrl": base_url,
+        "model": "process-proof-image-model",
+        "residency": "local-test",
+        "size": "1024x1024",
+        "quality": "low",
+        "maximumCostMicrounits": 50_000,
+        "maximumOutputBytes": 2_097_152,
+        "timeoutMs": 5_000
+    });
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode image-generation config"),
+    )
+    .expect("write image-generation config");
 }
 
 fn add_skill_config(home: &Path) -> String {
@@ -4478,6 +6953,18 @@ fn add_workspace_config(home: &Path, workspace_id: &str, root: &Path) {
 }
 
 fn add_mcp_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::ReadOnly)
+}
+
+fn add_mcp_effect_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::Idempotent)
+}
+
+fn add_mcp_non_idempotent_effect_config(home: &Path) -> std::path::PathBuf {
+    add_mcp_config_with_effect(home, McpToolEffect::NonIdempotent)
+}
+
+fn add_mcp_config_with_effect(home: &Path, effect: McpToolEffect) -> std::path::PathBuf {
     let fixture = fs::canonicalize(env!("CARGO_BIN_EXE_mealyd-mcp-fixture-server"))
         .expect("canonical MCP fixture");
     let launcher =
@@ -4495,8 +6982,8 @@ fn add_mcp_config(home: &Path) -> std::path::PathBuf {
     .expect("discover MCP fixture");
     assert_eq!(discovery.protocol_version, MCP_PROTOCOL_VERSION);
     let add = discovery.tool("add").expect("MCP add definition");
-    let grant =
-        McpToolGrant::new(add.definition.clone(), 5_000, 128 * 1024).expect("MCP add grant");
+    let grant = McpToolGrant::new_with_effect(add.definition.clone(), effect, 5_000, 128 * 1024)
+        .expect("MCP add grant");
     let relative = format!("mcp-servers/{executable_digest}/server");
     let installed = home.join(&relative);
     fs::create_dir_all(installed.parent().expect("MCP install parent"))
@@ -4566,6 +7053,24 @@ fn add_browser_config(home: &Path, source: &Path, origin: &str) -> std::path::Pa
         serde_json::to_vec_pretty(&config).expect("encode browser provider config"),
     )
     .expect("write browser provider config");
+    installed
+}
+
+fn add_transactional_browser_config(
+    home: &Path,
+    source: &Path,
+    origin: &str,
+) -> std::path::PathBuf {
+    let installed = add_browser_config(home, source, origin);
+    let path = home.join("config.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).expect("read browser config"))
+        .expect("decode browser config");
+    config["browser"]["transactionalEnabled"] = Value::Bool(true);
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&config).expect("encode transactional browser config"),
+    )
+    .expect("write transactional browser config");
     installed
 }
 
@@ -4753,6 +7258,27 @@ async fn wait_for_pending_approval(
             return pending;
         }
         assert!(Instant::now() < deadline, "approval was not requested");
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_until_effect_status(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    effect_id: &str,
+    expected: EffectStatusResponse,
+) -> EffectResponse {
+    let deadline = Instant::now() + COMPLETION_TIMEOUT;
+    loop {
+        let effect: EffectResponse =
+            authorized_get(client, connection, &format!("/v1/effects/{effect_id}")).await;
+        if effect.status == expected {
+            return effect;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "effect did not reach {expected:?}: {effect:?}"
+        );
         sleep(Duration::from_millis(20)).await;
     }
 }

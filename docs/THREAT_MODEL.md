@@ -31,9 +31,11 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Delegated child model run | Untrusted bounded computation with explicit isolated context and an intersected read-only grant |
 | Built-in compiled adapter | Trusted code, reviewed with the daemon |
 | Third-party extension | Untrusted native code confined to its host process and grants |
-| Local MCP stdio server | Untrusted owner-selected native code confined to a fresh read-only sandbox and exact schema/tool-set grant |
+| Local MCP stdio server | Untrusted owner-selected native code confined to a fresh sandbox and exact schema/tool-set/effect-class grant |
+| Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item/effect-class grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
+| Image-generation provider and output | External billable effect; response metadata and binary bytes are untrusted |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
 | Sandbox worker | Disposable, lower-trust process |
 
@@ -45,13 +47,17 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 4. Application to executor: capability token, sandbox profile, effect ID, fencing token.
 5. Application to extension host: manifest grant and versioned RPC.
 6. Skill package to context/resource tool: exact inventory/digest verification, separate activation, and bounded reads.
-7. MCP server to tool evidence: executable/full-toolset/schema pinning, exact protocol lifecycle,
-   fresh no-network process isolation, bounded arguments/results, cancellation, and cited replay.
+7. MCP server to tool evidence: executable or endpoint/credential authority plus
+   full-toolset/schema pinning, exact protocol lifecycle, fresh isolated process or HTTP session,
+   bounded arguments/results, cancellation, and cited replay.
 8. Parent run to delegated child: explicit work package, read-only capability intersection,
    separate budget, depth zero, durable result fence, and cancellation propagation.
 9. Browser/page to evidence: complete runtime pin, private profile/network namespace, scoped
    Unix-socket proxy, GET/HEAD plus upgrade denial, CDP filtering, output normalization, and cleanup.
-10. SQLite/artifacts to presentation: authorization and redaction.
+10. Image-generation provider to artifact: exact approved adapter authority, non-idempotent effect
+    fencing, cost/output reservation, bounded response parsing, isolated media normalization, and
+    atomic content-addressed settlement.
+11. SQLite/artifacts to presentation: authorization and redaction.
 
 Session IDs, task IDs, continuation tokens, and shared gateway secrets are never principal boundaries by themselves.
 
@@ -64,6 +70,33 @@ Controls: model is untrusted; typed tool schema; default-deny policy; exact appr
 ### Duplicate external effect after crash
 
 Controls: durable intent-before-dispatch; stable idempotency key where supported; effect outcome state; stale-lease fencing; `outcome_unknown` reconciliation; no automatic non-idempotent retry.
+
+### Image generation duplicates spend or publishes hostile output
+
+Controls: image generation is absent by default and exposed only as the exact high-risk
+`image.generate` effect. Stopped-home configuration pins one OpenAI Images or OpenRouter Images
+protocol, canonical HTTPS origin or literal-loopback HTTP origin, provider/model, opaque
+credential reference, residency, JPEG output, size, quality, maximum cost/output bytes, and
+deadline. Proxies, redirects, URL-only results, multiple outputs, fallback, edits, masks, and
+streaming are disabled. The model supplies only a bounded prompt; trusted normalization injects
+the remaining authority, and the durable origin trigger proves both separately.
+
+The immutable run ceiling, policy, and exact owner approval bind the adapter/descriptor digests,
+target, network/secret authority, prompt, injected constraints, non-idempotent class, and
+never-retry recovery. A complete cost/output reservation exists before the run parks. Denial
+settles it at zero and performs no HTTP call. Dispatch records a fenced running attempt first. A
+5xx, transport ambiguity, or crash after dispatch parks `outcome_unknown`, conservatively charges
+the full approved cost ceiling, and can proceed only through authenticated revision-fenced
+external-evidence reconciliation; restart never redispatches.
+
+A confirmed response must contain one bounded base64 body and an in-budget nonnegative reported
+cost. The bytes are not decoded in the daemon. A fresh empty-environment, no-network media worker
+applies decode/pixel/resource limits and metadata-stripping canonical JPEG re-encoding; the daemon
+then rechecks signature, dimensions, digest, media type, and byte ceilings. Outcome, charge,
+artifact metadata/reference, and event settle atomically after content-addressed blob publication.
+Artifact access is exact-owner authenticated. Recorded replay resolves no credential and makes no
+network or approval call; changed/missing prompt, authority, charge, metadata, reference, event, or
+blob evidence fails closed. Safe backend storage does not authorize a client to render the bytes.
 
 ### Forged approval through a chat message or client history
 
@@ -81,6 +114,14 @@ type, and non-webhook/non-bot classification. Platform IDs are canonical decimal
 authorization by possession. Setup and runtime cursors fence old traffic; reservations make crash
 replay idempotent; revocation removes future target discovery while retaining evidence.
 
+Slack setup verifies the `xoxb-` bot against `auth.test`, the exact human through `users.info`, the
+exact conversation and membership through `conversations.info`, and proves the `xapp-` token can
+call `apps.connections.open`. The Socket Mode `hello.connection_info.app_id` must then equal the
+bot-token app identity before events are accepted. Routes may share a connection only when owner,
+workspace, app, bot, and both secret identities/digests agree. Runtime input repeats the exact
+workspace/conversation/member claims and rejects bot, subtype, malformed, or unmentioned shared
+messages. Token possession alone is not a local principal boundary.
+
 ### Channel backlog, rate, mention, and duplicate-message abuse
 
 Controls: bounded response bytes and record counts; Telegram long-poll limits; Discord full-page
@@ -92,6 +133,15 @@ acknowledgement; and terminal parking when remote acceptance is ambiguous. Attac
 Discord DM profile are ignored rather than fetched. Token bytes are header-only and the production
 base is the exact official API v10 endpoint, preventing credential exfiltration through an
 operator-supplied alternate HTTPS origin.
+
+Slack Web API and Socket Mode use fixed production origins, no proxy, no redirect, bounded HTTP
+bodies, and a one-MiB WebSocket message/frame ceiling. The complete normalized admit/ignore
+disposition is committed before the Socket Mode acknowledgement; a crash after remote
+acknowledgement therefore leaves recoverable local work. Envelope/body drift conflicts rather than
+reinterpreting evidence. Outbound messages are control-text escaped, rich parsing/unfurls are
+disabled, an exact originating thread is mandatory, per-channel sends are paced, `429 Retry-After`
+is bounded, and retries retain the outbox-derived `client_msg_id`. Slack messages are never an
+approval authority; approval-looking commands are durably ignored.
 
 ### Session-ID authorization bypass
 
@@ -122,6 +172,51 @@ admission. Secret access remains a separate broker/reference boundary. The gener
 does not convert workspace declarations into daemon-level filesystem authority; each governed
 worker still receives only its request-specific mounts.
 
+### Malformed image exhausts parsing resources or bypasses durable authority
+
+Controls: the provider-neutral envelope accepts only bounded PNG/JPEG/WebP bytes, binds the
+artifact identity, media type, size, and SHA-256 digest, permits images only on authenticated user
+messages, caps count and aggregate bytes, charges a conservative per-image token reservation, and
+revalidates every field before provider serialization. Text-only routes reject image content
+before dispatch. Capability defaults off. An approved stopped-daemon transaction can enable it
+only when every configured route is a direct OpenAI Responses or Anthropic Messages route; each
+admission still requires an exact provider/model whose capability contract contains image input.
+The public API has a separate 6 MiB transport ceiling, accepts only canonical padded base64 and
+retry-stable UUIDv7 artifact IDs, and bounds source bytes before decode. The CLI opens only
+no-follow regular allowlisted images outside the Mealy home and never submits a host path.
+
+Public ingress delegates every decode to a fresh identity-pinned, empty-environment, no-network
+Bubblewrap worker with no home/workspace/secret mount and hard process/protocol limits. The worker
+performs dimension/pixel enforcement and metadata-stripping re-encode; the daemon independently
+validates the complete returned evidence. This process boundary remains mandatory because
+supported decoder release notes acknowledge hostile inputs that can panic decoders.
+Content-addressed
+commit-before-link admission is now enforced: the private blob is atomically published first and
+schema 21 links only contiguous ordered artifacts whose owner, session, inbox origin, producer,
+media type, bounds, and access policy match. Admission idempotency binds the exact ordered image
+evidence; SQLite triggers reject later media/artifact/content-metadata/reference mutation; and a
+late acknowledgement failure rolls every canonical link back while age-gated collection retains a
+fresh orphan for recovery.
+
+Context-manifest v3 binds each selected image through a sparse artifact link and reserves 8,192
+tokens before dispatch. Trusted hydration rechecks authorization, metadata, digest, and canonical
+bytes; missing, dangling, cross-owner, or corrupt evidence fails the turn rather than silently
+dropping an image. Recorded-only replay compares the exact normalized request and performs no live
+provider or decoder call. Transcript v2 discloses ordered path-free metadata but embeds neither
+private paths nor image bytes. The TUI `F9` adapter reuses the no-follow CLI opener, retains only
+pending paths in process memory, requires an exact route, and renders metadata rather than terminal
+pixel protocols. The dashboard accepts only browser-selected bytes through a separate 6 MiB route,
+creates retry-stable UUIDv7 identities before dispatch, and applies the same per-image/aggregate
+limits before forwarding. Its viewer first authenticates exact-owner metadata, permits only
+canonical PNG/JPEG up to 2 MiB, and rechecks media type, length, and SHA-256 in both the loopback
+adapter and page before creating a lifetime-only object URL. It revokes the URL on replacement or
+page exit. The normalized browser decoder remains trusted client code; line-chat and channel visual
+surfaces remain disabled. A magic prefix alone is never accepted as public-ingress proof.
+
+Remote image URLs and provider file IDs are outside the contract, preventing mutable fetches,
+ambient network authority, and provider-retention dependence. See
+[ADR 0017](decisions/0017-content-addressed-bounded-image-input.md).
+
 ### Service supervision hides state or breaks governed workers
 
 Controls: Linux service generation holds the stopped-home lock, canonicalizes every path, and
@@ -147,8 +242,9 @@ tools, workspaces, network, processes, secrets, extensions, or delegation to the
 
 ### Malicious or changed MCP server gains ambient authority
 
-Controls: inspection and activation require an exact canonical native ELF and explicit selected
-tool names; installation publishes owner-private content-addressed bytes. The negotiated protocol,
+Controls: all transports require explicit selected authority. Native stdio inspection and
+activation require an exact canonical ELF and installation publishes owner-private
+content-addressed bytes. The negotiated protocol,
 complete paginated advertised tool set, each selected full definition, self-contained input/output
 schema, direct non-secret arguments, timeout, and output ceiling are pinned. Startup and every call
 re-hash and re-discover before dispatch, so missing, extra, or changed tools remove authority.
@@ -160,6 +256,54 @@ CPU, memory, file, descriptor, process, output, and wall-clock bounds contain fa
 is signalled and followed by termination. Output is untrusted, schema-checked when declared, cited,
 persisted, and replayed without execution. The server still sees arguments deliberately sent to
 it, and the host kernel remains the native-code isolation boundary.
+
+Streamable HTTP grants instead pin one canonical HTTPS endpoint (or literal-loopback HTTP), the
+exact opaque credential reference, protocol, negotiated capability declarations, complete
+tool/resource/resource-template/prompt inventory, and definitions. The owner selects exact tools,
+static resource URIs, and prompt names. Resource reads accept no dynamic URI; prompt inputs are
+restricted to the advertised string arguments and returned messages are tagged/cited as untrusted
+tool evidence, never hidden or system instructions. The destination
+and credential reference are cryptographically bound into the durable descriptor and immutable run
+ceiling. Resolution rejects mixed/private/reserved answers and pins accepted addresses; proxies and
+redirects are disabled. Required Origin/media/protocol/session headers are bounded, bearer and
+session values are sensitive zeroizing memory only, and every startup verification or call uses a
+fresh session. JSON/SSE parsers reject unsolicited server requests, inventory-change notifications,
+invalid correlation, unbounded events, catalog drift, and malformed results. OAuth metadata
+inspection sends an unauthenticated bounded probe and validates an advertised protected-resource
+metadata URL or both required well-known fallbacks. Metadata fetches reuse the same redirect-free,
+proxy-free, SSRF-resistant DNS-pinned boundary; the advertised resource must exactly match the MCP
+endpoint, multiple issuers require owner selection, issuer metadata must match that selection, and
+authorization-code plus PKCE S256 support is mandatory. Inspection creates no client, state,
+verifier, code, token, broker entry, configuration, or authority. A separate approved stopped-home
+login accepts only pre-registered public clients advertising token authentication method `none`.
+It creates fresh high-entropy state and verifier material, uses only PKCE S256, requests the exact
+resource, and accepts only one exact literal-loopback callback with bounded GET headers, Host,
+path, unique state/code fields, and no body. Code exchange reuses the pinned network boundary and
+accepts only bounded JSON Bearer material with required cache controls and non-broadened scope.
+Tokens are zeroized in process memory; the owner-private broker rejects symlink roots/records,
+unsafe modes, collisions, oversized records, and non-generation-one creation. The immutable
+non-secret grant binds resource, issuer, token endpoint, public client, scope, and metadata digest.
+Login changes no configuration or model authority. Separately approved activation revalidates that
+grant plus the complete catalog before publishing selected authority. Runtime refresh is
+cross-process serialized and generation-fenced; it repeats the exact resource/client, rejects
+scope changes and refresh-token reuse, and allows at most one `401`-triggered refresh/retry.
+Reference-safe local revocation cannot delete a token used by active configuration. Encrypted
+backups and migration recovery validate every record before restoration.
+
+Effect authority is selected by the owner as read-only, idempotent, or non-idempotent; server
+annotations remain untrusted hints. Effectful grants require the exact `service_operator` profile
+and bind the immutable run ceiling, executable or endpoint identity, credential reference, catalog,
+definition/schema, arguments, target, class, recovery, and policy into the descriptor and approval.
+The runtime and SQLite prepare boundary recheck that intersection, rediscover immediately before
+dispatch, and record a fenced running attempt before the external call. A definite pre-dispatch
+failure is terminal. Interrupted idempotent work may create a bounded new fenced attempt with the
+same stable key. Non-idempotent transport ambiguity or crash becomes `outcome_unknown`, parks the
+task, and requires authenticated revision-fenced owner reconciliation with external evidence.
+Replay performs no process, network, token refresh, approval, retry, or effect call. Adversarial
+real-process tests prove both crash branches and exact one-dispatch reconciliation.
+
+Issuer-side revocation, dynamic registration/CIMD, scope-challenge parking, resource-template
+expansion/subscriptions, resumable GET, and long-lived session health are not yet implemented.
 
 ### Parent model delegates hidden context or excess authority
 
@@ -226,13 +370,15 @@ a no-store page; the daemon bearer is retained only by the CLI process and is ne
 HTML, JSON, URLs, logs, or browser storage. Every request requires the exact numeric Host, API
 access additionally uses constant-time capability validation, and every mutation requires the
 exact loopback Origin rather than accepting an Origin-less request. A restrictive CSP,
-`frame-ancestors 'none'`, same-origin resource/opener policies, no CORS allowance, 64 KiB request
-bodies, canonical UUID route parsing, bounded timelines/evidence, and separate one-at-a-time
+`frame-ancestors 'none'`, same-origin resource/opener policies, no CORS allowance, 64 KiB ordinary
+request bodies plus one exact 6 MiB image-ingress route, canonical UUID route parsing, bounded
+timelines/evidence, and separate one-at-a-time
 snapshot, timeline, detail, and command permits limit compromise. Every ordinary daemon body is
 streamed under an 8 MiB ceiling before decode; transcript attachments have a separate 32 MiB
 ceiling and are verified before browser download. The adapter exposes only a hard-coded snapshot,
-session create/title/checkpoint/fork/input, transcript export, timeline, exact approval-resolution,
-cooperative task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost
+session create/title/checkpoint/fork/text-or-image input, transcript export, timeline, exact
+owner-scoped PNG/JPEG artifact metadata/content, exact approval-resolution, cooperative
+task-cancellation, exact bounded 30-day terminal usage and per-task usage/cost
 inspection, effect/attempt inspection,
 unknown-effect reconciliation, and exact
 schedule-create/detail/run-history/pause/resume/cancel plus fixed governed-memory
@@ -507,20 +653,42 @@ installation.
 - Duplicate delivery and stale lease tests prove no unauthorized transition.
 - Provider payload and child environment tests prove secret minimization.
 - Extension-host crash and malicious-request fixtures cannot stop or bypass the daemon.
-- MCP fixtures prove network/filesystem/environment/process isolation, framing and output bounds,
-  full-toolset/executable drift denial, cancellation, daemon survival, and zero-execution replay.
+- MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
+  SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
+  executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.
+  OAuth fixtures additionally prove bounded challenge parsing, path/root and OAuth/OIDC discovery
+  order, exact resource/issuer binding, explicit multi-issuer selection, PKCE S256 enforcement, and
+  metadata inspection without home or broker mutation.
+- Image-generation process tests prove approval and immutable budget reservation before one
+  dispatch, denial without dispatch, exact pinned provider requests, bounded isolated JPEG
+  normalization, atomic private artifact settlement, crash-after-dispatch with zero retry and
+  conservative full-cost accounting, explicit reconciliation, recorded-only replay, and
+  missing-blob corruption denial.
 - The pinned real Headless Shell gate proves fresh-profile/CDP identity, rendering, safe exact-link
   same-origin navigation, exact form-free button activation plus submit-button denial, native
   text-control fill plus selected-field-only GET and POST/password/hidden-field denial, one bounded
   GUID-confined attachment plus oversized/ambient-download denial, screenshot
   bounds, non-read/WebSocket denial, model-visible citation,
   complete bundle backup/recovery, and replay after runtime deletion.
+- The separately enabled transactional-browser gate proves that inert POST-form catalogs expose
+  hidden-value digests rather than secrets; exact form/action/control/upload drift fails before
+  dispatch; only owner-private digest-matched artifacts can become uploads; the hostile source
+  target is closed before a controlled form is armed; exactly one same-origin POST can cross the
+  proxy; background/second writes, popups, service workers, and cross-origin redirects fail closed;
+  and a crash after dispatch parks for authenticated reconciliation without redispatch.
+- Schema 23 binds the exact completed model tool call to the normalized transaction intent,
+  admitting only omitted optional collections. Replay reconstructs policy, approval, attempt,
+  reconciliation, observation, event chain, capability ceiling, and final boundary without Chrome
+  or network. Noncanonical URLs, unknown fields, changed form digests/values, approval-subject
+  drift, and missing evidence fail closed.
 - API binds loopback only and rejects missing credentials and disallowed Origins.
 - The dashboard process test proves exact Host/Origin/token enforcement, DNS-rebinding rejection,
   no daemon-bearer disclosure, fixed snapshot/timeline aggregation, exact typed command forwarding,
-  stable idempotency, subject-digest binding, exact schedule identity/revision/status validation,
-  malformed/oversized/arbitrary-route denial before daemon access, CSP/no-store headers, and
-  lifetime cleanup.
+  stable image delivery/artifact identities, canonical base64 and exact-route enforcement,
+  double-verified image artifact content, stable idempotency, subject-digest binding, exact schedule
+  identity/revision/status validation, malformed/oversized/arbitrary-route denial before daemon
+  access, CSP/no-store headers, and lifetime cleanup. A pseudo-terminal process test separately
+  proves `F9` no-follow admission to the selected exact route and terminal restoration.
 
 ## Deferred risks
 

@@ -16,5 +16,12 @@ ADRs record decisions that shape multiple modules or are expensive to reverse. T
 | [0010](0010-disconnect-resistant-update-transaction.md) | Disconnect-resistant, health-gated release update transaction | Accepted |
 | [0011](0011-session-lineage-and-thin-workbench-clients.md) | Canonical session lineage and thin workbench clients | Accepted |
 | [0012](0012-transactional-provider-primary-switch.md) | Transactional promotion of an already-configured provider route | Accepted |
+| [0013](0013-atomic-parallel-delegation-groups.md) | Atomic, ordered groups for bounded parallel delegation | Accepted |
+| [0014](0014-governed-streamable-http-mcp.md) | Governed Streamable HTTP MCP boundary | Accepted |
+| [0015](0015-crash-safe-slack-channel-boundary.md) | Crash-safe Slack channel boundary | Accepted |
+| [0016](0016-owner-classified-effectful-mcp.md) | Owner-classified effectful MCP through the durable effect ledger | Accepted |
+| [0017](0017-content-addressed-bounded-image-input.md) | Content-addressed bounded image input | Accepted |
+| [0018](0018-governed-image-generation-effect.md) | Governed image generation through the durable effect ledger | Accepted |
+| [0019](0019-one-shot-transactional-browser-effects.md) | One-shot transactional browser effects | Accepted |
 
 New ADRs use the next four-digit number and begin as `Proposed`. Superseding an ADR keeps the old file and links both directions.

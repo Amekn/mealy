@@ -1,9 +1,11 @@
 use super::{SqliteStore, agent};
 use mealy_application::{
-    AGENT_DELEGATE_TOOL_ID, AcquireResourceClaimCommit, AgentDelegationRequest, AgentLoopLimits,
-    AgentStoreError, DELEGATION_CONTRACT_VERSION, DelegationStore, DelegationView,
-    LaunchAgentDelegationCommit, OwnershipContext, PrepareDelegationCommit,
-    RecordDelegationResultCommit, StartDelegationCommit, sha256_digest, validate_delegation_commit,
+    AGENT_DELEGATE_PARALLEL_TOOL_ID, AGENT_DELEGATE_TOOL_ID, AcquireResourceClaimCommit,
+    AgentDelegationRequest, AgentLoopLimits, AgentStoreError, DELEGATION_CONTRACT_VERSION,
+    DelegationStore, DelegationView, LaunchAgentDelegationCommit,
+    LaunchParallelAgentDelegationCommit, OwnershipContext, ParallelAgentDelegationRequest,
+    PrepareDelegationCommit, RecordDelegationResultCommit, StartDelegationCommit, sha256_digest,
+    validate_delegation_commit, validate_parallel_delegation_commit,
 };
 use mealy_domain::{CapabilityGrant, DelegationId, FencingToken, LeaseFence, RiskClass, RunId};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -22,7 +24,26 @@ impl DelegationStore for SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(agent::map_sqlite_error)?;
         let parent = load_parent(&transaction, commit.parent_fence, prepared_at_ms)?;
-        insert_delegation_graph(&transaction, &commit, &parent, prepared_at_ms)?;
+        insert_delegation_group(
+            &transaction,
+            &commit.delegation_id.to_string(),
+            commit.parent_fence.run_id(),
+            None,
+            "serial",
+            1,
+            prepared_at_ms,
+        )?;
+        insert_delegation_graph(
+            &transaction,
+            &commit,
+            &parent,
+            &DelegationGroupChild {
+                group_id: commit.delegation_id.to_string(),
+                group_ordinal: 1,
+                child_key: "result".to_owned(),
+            },
+            prepared_at_ms,
+        )?;
         let view = load_delegation_view(&transaction, None, commit.delegation_id)?;
         transaction.commit().map_err(agent::map_sqlite_error)?;
         Ok(view)
@@ -42,7 +63,26 @@ impl DelegationStore for SqliteStore {
         let parent = load_parent(&transaction, commit.delegation.parent_fence, launched_at_ms)?;
         validate_agent_tool_origin(&transaction, &commit)?;
         let package_text = render_agent_child_package(&commit)?;
-        insert_delegation_graph(&transaction, &commit.delegation, &parent, launched_at_ms)?;
+        insert_delegation_group(
+            &transaction,
+            &commit.delegation.delegation_id.to_string(),
+            commit.delegation.parent_fence.run_id(),
+            Some(commit.parent_tool_call_id),
+            "serial",
+            1,
+            launched_at_ms,
+        )?;
+        insert_delegation_graph(
+            &transaction,
+            &commit.delegation,
+            &parent,
+            &DelegationGroupChild {
+                group_id: commit.delegation.delegation_id.to_string(),
+                group_ordinal: 1,
+                child_key: "result".to_owned(),
+            },
+            launched_at_ms,
+        )?;
         insert_delegated_turn(
             &transaction,
             &commit,
@@ -50,10 +90,116 @@ impl DelegationStore for SqliteStore {
             &package_text,
             launched_at_ms,
         )?;
-        park_parent_for_child(&transaction, &commit, &parent, launched_at_ms)?;
+        park_parent_for_delegation_group(
+            &transaction,
+            &ParentDelegationPark {
+                fence: commit.delegation.parent_fence,
+                parent_tool_call_id: commit.parent_tool_call_id,
+                group_id: commit.delegation.delegation_id.to_string(),
+                child_run_ids: vec![commit.delegation.child_run_id],
+                tool_event_id: commit.tool_event_id,
+                lease_event_id: commit.lease_event_id,
+                parent_run_event_id: commit.parent_run_event_id,
+                parent_task_event_id: commit.parent_task_event_id,
+            },
+            &parent,
+            launched_at_ms,
+        )?;
         let view = load_delegation_view(&transaction, None, commit.delegation.delegation_id)?;
         transaction.commit().map_err(agent::map_sqlite_error)?;
         Ok(view)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn launch_parallel_agent_delegation(
+        &mut self,
+        commit: LaunchParallelAgentDelegationCommit,
+    ) -> Result<Vec<DelegationView>, AgentStoreError> {
+        validate_parallel_delegation_commit(&commit)?;
+        let first = &commit.children[0].delegation;
+        let launched_at_ms = agent::epoch_milliseconds(first.prepared_at)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(agent::map_sqlite_error)?;
+        let parent = load_parent(&transaction, first.parent_fence, launched_at_ms)?;
+        validate_parallel_agent_tool_origin(&transaction, &commit)?;
+        let packages = commit
+            .children
+            .iter()
+            .enumerate()
+            .map(|(index, child)| render_parallel_agent_child_package(&commit, index, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        let child_count = i64::try_from(commit.children.len())
+            .map_err(|_| agent::invariant("parallel child count exceeds SQLite"))?;
+        insert_delegation_group(
+            &transaction,
+            &commit.group_id.to_string(),
+            first.parent_fence.run_id(),
+            Some(commit.parent_tool_call_id),
+            "parallel",
+            child_count,
+            launched_at_ms,
+        )?;
+        agent::append_agent_event(
+            &transaction,
+            commit.group_event_id,
+            "delegation_group",
+            &commit.group_id.to_string(),
+            "delegation_group.prepared",
+            launched_at_ms,
+            parse_id(&parent.correlation_id, "delegation-group correlation ID")?,
+            json!({
+                "parent_run_id": first.parent_fence.run_id(),
+                "parent_tool_call_id": commit.parent_tool_call_id,
+                "child_count": child_count,
+                "completion_policy": "all_terminal",
+                "child_keys": commit.children.iter()
+                    .map(|child| child.child_key.as_str())
+                    .collect::<Vec<_>>(),
+            }),
+        )?;
+        for (index, child) in commit.children.iter().enumerate() {
+            insert_delegation_graph(
+                &transaction,
+                &child.delegation,
+                &parent,
+                &DelegationGroupChild {
+                    group_id: commit.group_id.to_string(),
+                    group_ordinal: i64::try_from(index + 1)
+                        .map_err(|_| agent::invariant("parallel ordinal exceeds SQLite"))?,
+                    child_key: child.child_key.clone(),
+                },
+                launched_at_ms,
+            )?;
+        }
+        insert_parallel_delegated_turns(&transaction, &commit, &parent, &packages, launched_at_ms)?;
+        park_parent_for_delegation_group(
+            &transaction,
+            &ParentDelegationPark {
+                fence: first.parent_fence,
+                parent_tool_call_id: commit.parent_tool_call_id,
+                group_id: commit.group_id.to_string(),
+                child_run_ids: commit
+                    .children
+                    .iter()
+                    .map(|child| child.delegation.child_run_id)
+                    .collect(),
+                tool_event_id: commit.tool_event_id,
+                lease_event_id: commit.lease_event_id,
+                parent_run_event_id: commit.parent_run_event_id,
+                parent_task_event_id: commit.parent_task_event_id,
+            },
+            &parent,
+            launched_at_ms,
+        )?;
+        let views = commit
+            .children
+            .iter()
+            .map(|child| load_delegation_view(&transaction, None, child.delegation.delegation_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit().map_err(agent::map_sqlite_error)?;
+        Ok(views)
     }
 
     fn start_delegation(
@@ -321,6 +467,8 @@ impl DelegationStore for SqliteStore {
                 ],
             )
             .map_err(agent::map_sqlite_error)?;
+        let group_changed =
+            settle_terminal_delegation_group(&transaction, commit.delegation_id, completed_at_ms)?;
         let budget_changed = transaction
             .execute(
                 "UPDATE run_budget_usage SET revision = revision + 1, \
@@ -335,8 +483,9 @@ impl DelegationStore for SqliteStore {
             run_changed,
             task_changed,
             delegation_changed,
+            group_changed,
             budget_changed,
-        ] != [1, 1, 1, 1, 1]
+        ] != [1, 1, 1, 1, 1, 1]
         {
             return Err(AgentStoreError::Conflict);
         }
@@ -418,11 +567,66 @@ impl DelegationStore for SqliteStore {
     }
 }
 
+struct DelegationGroupChild {
+    group_id: String,
+    group_ordinal: i64,
+    child_key: String,
+}
+
+fn insert_delegation_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    parent_run_id: RunId,
+    parent_tool_call_id: Option<mealy_domain::ToolCallId>,
+    mode: &str,
+    child_count: i64,
+    created_at_ms: i64,
+) -> Result<(), AgentStoreError> {
+    transaction
+        .execute(
+            "INSERT INTO delegation_group(\
+                id, parent_run_id, parent_tool_call_id, mode, completion_policy, child_count, \
+                state, created_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, 'all_terminal', ?5, 'active', ?6)",
+            params![
+                group_id,
+                parent_run_id.to_string(),
+                parent_tool_call_id.map(|id| id.to_string()),
+                mode,
+                child_count,
+                created_at_ms,
+            ],
+        )
+        .map_err(agent::map_sqlite_error)?;
+    Ok(())
+}
+
+pub(super) fn settle_terminal_delegation_group(
+    transaction: &Transaction<'_>,
+    delegation_id: DelegationId,
+    completed_at_ms: i64,
+) -> Result<usize, AgentStoreError> {
+    transaction
+        .execute(
+            "UPDATE delegation_group SET state = 'settled', completed_at_ms = ?1 \
+             WHERE id = (SELECT group_id FROM delegation WHERE id = ?2) \
+               AND state = 'active' \
+               AND child_count = (SELECT COUNT(*) FROM delegation child \
+                                  WHERE child.group_id = delegation_group.id) \
+               AND NOT EXISTS(SELECT 1 FROM delegation child \
+                              WHERE child.group_id = delegation_group.id \
+                                AND child.state IN ('queued', 'running'))",
+            params![completed_at_ms, delegation_id.to_string()],
+        )
+        .map_err(agent::map_sqlite_error)
+}
+
 #[allow(clippy::too_many_lines)]
 fn insert_delegation_graph(
     transaction: &Transaction<'_>,
     commit: &PrepareDelegationCommit,
     parent: &ParentEvidence,
+    group: &DelegationGroupChild,
     prepared_at_ms: i64,
 ) -> Result<(), AgentStoreError> {
     let parent_capabilities = serde_json::from_str::<CapabilityGrant>(&parent.capabilities_json)
@@ -430,7 +634,9 @@ fn insert_delegation_graph(
     parent_capabilities
         .validate()
         .map_err(|_| agent::invariant("parent capability ceiling is not canonical"))?;
-    if parent_capabilities.maximum_delegated_runs == 0 {
+    if parent_capabilities.maximum_delegated_runs == 0
+        || parent_capabilities.maximum_delegation_depth == 0
+    {
         return Err(AgentStoreError::BudgetExceeded(
             "parent run has no delegation authority".to_owned(),
         ));
@@ -538,9 +744,9 @@ fn insert_delegation_graph(
                 success_criteria_json, success_criteria_digest, context_package_json, \
                 context_package_digest, requested_capabilities_json, \
                 effective_capabilities_json, effective_capabilities_digest, budget_json, \
-                budget_digest, state, created_at_ms\
+                budget_digest, state, created_at_ms, group_id, group_ordinal, child_key\
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
-                       ?15, ?16, ?17, 'queued', ?18)",
+                       ?15, ?16, ?17, 'queued', ?18, ?19, ?20, ?21)",
             params![
                 commit.delegation_id.to_string(),
                 commit.parent_fence.run_id().to_string(),
@@ -562,6 +768,9 @@ fn insert_delegation_graph(
                 child_budget_json,
                 sha256_digest(child_budget_json.as_bytes()),
                 prepared_at_ms,
+                group.group_id.as_str(),
+                group.group_ordinal,
+                group.child_key.as_str(),
             ],
         )
         .map_err(agent::map_sqlite_error)?;
@@ -672,6 +881,91 @@ fn validate_agent_tool_origin(
     Ok(())
 }
 
+fn validate_parallel_agent_tool_origin(
+    transaction: &Transaction<'_>,
+    commit: &LaunchParallelAgentDelegationCommit,
+) -> Result<(), AgentStoreError> {
+    let fence = commit.children[0].delegation.parent_fence;
+    let token = i64::try_from(fence.fencing_token().get())
+        .map_err(|_| agent::invariant("parent parallel tool token exceeds SQLite range"))?;
+    let arguments_json = transaction
+        .query_row(
+            "SELECT tool.arguments_json FROM tool_call tool \
+             JOIN run_loop_state loop ON loop.run_id = tool.run_id \
+             WHERE tool.tool_call_id = ?1 AND tool.run_id = ?2 \
+               AND tool.tool_id = ?3 AND tool.state = 'prepared' \
+               AND tool.prepared_lease_id = ?4 AND tool.prepared_owner_id = ?5 \
+               AND tool.prepared_fencing_token = ?6 \
+               AND loop.next_action = 'dispatch_read_tool' \
+               AND loop.current_tool_call_id = tool.tool_call_id",
+            params![
+                commit.parent_tool_call_id.to_string(),
+                fence.run_id().to_string(),
+                AGENT_DELEGATE_PARALLEL_TOOL_ID,
+                fence.lease_id().to_string(),
+                fence.owner_id().to_string(),
+                token,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(agent::map_sqlite_error)?
+        .ok_or(AgentStoreError::Conflict)?;
+    let arguments = serde_json::from_str::<Value>(&arguments_json)
+        .map_err(|_| agent::invariant("stored parallel delegation arguments are invalid"))?;
+    if serde_json::to_string(&arguments).ok().as_deref() != Some(arguments_json.as_str()) {
+        return Err(agent::invariant(
+            "stored parallel delegation arguments are not canonical",
+        ));
+    }
+    let request = ParallelAgentDelegationRequest::from_arguments(&arguments)?;
+    if request.delegations.len() != commit.children.len() {
+        return Err(agent::invariant(
+            "parallel delegation fan-out differs from the committed model tool call",
+        ));
+    }
+    for (provider_child, committed_child) in request.delegations.into_iter().zip(&commit.children) {
+        let expected_work_order = json!({
+            "contractVersion": DELEGATION_CONTRACT_VERSION,
+            "delegationGroupId": commit.group_id,
+            "childKey": provider_child.child_key,
+            "objective": provider_child.objective,
+            "instructions": provider_child.instructions,
+            "parentToolCallId": commit.parent_tool_call_id,
+        });
+        let expected_context = json!({
+            "contractVersion": DELEGATION_CONTRACT_VERSION,
+            "delegationGroupId": commit.group_id,
+            "childKey": committed_child.child_key,
+            "parentToolCallId": commit.parent_tool_call_id,
+            "context": provider_child.context.unwrap_or_else(|| json!({"provided": false})),
+        });
+        let criteria_match = committed_child.delegation.success_criteria.objective
+            == expected_work_order["objective"]
+                .as_str()
+                .unwrap_or_default()
+            && committed_child.delegation.success_criteria.criteria.len()
+                == provider_child.success_criteria.len()
+            && committed_child
+                .delegation
+                .success_criteria
+                .criteria
+                .iter()
+                .zip(provider_child.success_criteria)
+                .all(|(criterion, requirement)| criterion.requirement == requirement);
+        if committed_child.child_key != expected_work_order["childKey"].as_str().unwrap_or_default()
+            || committed_child.delegation.work_order != expected_work_order
+            || committed_child.delegation.context_package != expected_context
+            || !criteria_match
+        {
+            return Err(agent::invariant(
+                "parallel child contract differs from the committed model tool call",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn render_agent_child_package(
     commit: &LaunchAgentDelegationCommit,
 ) -> Result<String, AgentStoreError> {
@@ -689,6 +983,33 @@ fn render_agent_child_package(
     if content.len() > 240 * 1024 || content.chars().any(|character| character == '\0') {
         return Err(agent::invariant(
             "rendered delegated work package exceeds the isolated context bound",
+        ));
+    }
+    Ok(content)
+}
+
+fn render_parallel_agent_child_package(
+    commit: &LaunchParallelAgentDelegationCommit,
+    index: usize,
+    child: &mealy_application::LaunchParallelDelegationChildCommit,
+) -> Result<String, AgentStoreError> {
+    let content = format!(
+        "[ISOLATED PARALLEL DELEGATED WORK PACKAGE — use only this explicit package and declared \
+         tools; do not infer or request the parent's hidden conversation or sibling context]\n{}",
+        json!({
+            "contractVersion": DELEGATION_CONTRACT_VERSION,
+            "delegationGroupId": commit.group_id,
+            "groupOrdinal": index + 1,
+            "childKey": child.child_key,
+            "delegationId": child.delegation.delegation_id,
+            "workOrder": child.delegation.work_order,
+            "successCriteria": child.delegation.success_criteria,
+            "contextPackage": child.delegation.context_package,
+        })
+    );
+    if content.len() > 240 * 1024 || content.chars().any(|character| character == '\0') {
+        return Err(agent::invariant(
+            "rendered parallel delegated work package exceeds the isolated context bound",
         ));
     }
     Ok(content)
@@ -778,14 +1099,125 @@ fn insert_delegated_turn(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
-fn park_parent_for_child(
+fn insert_parallel_delegated_turns(
     transaction: &Transaction<'_>,
-    commit: &LaunchAgentDelegationCommit,
+    commit: &LaunchParallelAgentDelegationCommit,
+    parent: &ParentEvidence,
+    package_texts: &[String],
+    launched_at_ms: i64,
+) -> Result<(), AgentStoreError> {
+    if package_texts.len() != commit.children.len() {
+        return Err(agent::invariant(
+            "parallel delegated package count diverged",
+        ));
+    }
+    for (index, (child, package_text)) in commit.children.iter().zip(package_texts).enumerate() {
+        let offset = i64::try_from(index)
+            .map_err(|_| agent::invariant("parallel inbox ordinal exceeds SQLite"))?;
+        let sequence = parent
+            .next_inbox_sequence
+            .checked_add(offset)
+            .ok_or_else(|| agent::invariant("parallel delegated inbox sequence overflow"))?;
+        transaction
+            .execute(
+                "INSERT INTO session_inbox(\
+                    inbox_entry_id, session_id, sequence, dedupe_key, delivery_mode, state, \
+                    content, admission_event_id, acknowledgement_outbox_id, correlation_id, \
+                    accepted_at_ms\
+                 ) VALUES (?1, ?2, ?3, ?4, 'queue', 'pending', ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    child.child_inbox_entry_id.to_string(),
+                    parent.session_id,
+                    sequence,
+                    format!("delegation:{}", child.delegation.delegation_id),
+                    package_text,
+                    child.delegation.event_id.to_string(),
+                    child.child_acknowledgement_outbox_id.to_string(),
+                    parent.correlation_id,
+                    launched_at_ms,
+                ],
+            )
+            .map_err(agent::map_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO turn(\
+                    id, session_id, inbox_entry_id, task_id, run_id, status, revision, \
+                    correlation_id, created_at_ms, context_epoch_id, turn_kind\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 0, ?6, ?7, ?8, 'delegated')",
+                params![
+                    child.child_turn_id.to_string(),
+                    parent.session_id,
+                    child.child_inbox_entry_id.to_string(),
+                    child.delegation.child_task_id.to_string(),
+                    child.delegation.child_run_id.to_string(),
+                    parent.correlation_id,
+                    launched_at_ms,
+                    Option::<String>::None,
+                ],
+            )
+            .map_err(agent::map_sqlite_error)?;
+        let inbox_changed = transaction
+            .execute(
+                "UPDATE session_inbox SET state = 'promoted', promoted_at_ms = ?1, \
+                                          promoted_turn_id = ?2 \
+                 WHERE inbox_entry_id = ?3 AND session_id = ?4 AND state = 'pending'",
+                params![
+                    launched_at_ms,
+                    child.child_turn_id.to_string(),
+                    child.child_inbox_entry_id.to_string(),
+                    parent.session_id,
+                ],
+            )
+            .map_err(agent::map_sqlite_error)?;
+        if inbox_changed != 1 {
+            return Err(AgentStoreError::Conflict);
+        }
+    }
+    let child_count = i64::try_from(commit.children.len())
+        .map_err(|_| agent::invariant("parallel child count exceeds SQLite"))?;
+    let next_sequence = parent
+        .next_inbox_sequence
+        .checked_add(child_count)
+        .ok_or_else(|| agent::invariant("parallel delegated inbox sequence overflow"))?;
+    let session_changed = transaction
+        .execute(
+            "UPDATE session SET next_inbox_sequence = ?1, revision = revision + 1, \
+                                updated_at_ms = MAX(updated_at_ms, ?2) \
+             WHERE id = ?3 AND next_inbox_sequence = ?4 AND active_turn_id = ?5",
+            params![
+                next_sequence,
+                launched_at_ms,
+                parent.session_id,
+                parent.next_inbox_sequence,
+                parent.turn_id,
+            ],
+        )
+        .map_err(agent::map_sqlite_error)?;
+    if session_changed != 1 {
+        return Err(AgentStoreError::Conflict);
+    }
+    Ok(())
+}
+
+struct ParentDelegationPark {
+    fence: LeaseFence,
+    parent_tool_call_id: mealy_domain::ToolCallId,
+    group_id: String,
+    child_run_ids: Vec<RunId>,
+    tool_event_id: mealy_domain::EventId,
+    lease_event_id: mealy_domain::EventId,
+    parent_run_event_id: mealy_domain::EventId,
+    parent_task_event_id: mealy_domain::EventId,
+}
+
+#[allow(clippy::too_many_lines)]
+fn park_parent_for_delegation_group(
+    transaction: &Transaction<'_>,
+    commit: &ParentDelegationPark,
     parent: &ParentEvidence,
     launched_at_ms: i64,
 ) -> Result<(), AgentStoreError> {
-    let fence = commit.delegation.parent_fence;
+    let fence = commit.fence;
     let token = i64::try_from(fence.fencing_token().get())
         .map_err(|_| agent::invariant("parent delegation token exceeds SQLite range"))?;
     let next_token = token
@@ -869,7 +1301,8 @@ fn park_parent_for_child(
         launched_at_ms,
         correlation_id,
         json!({
-            "delegation_id": commit.delegation.delegation_id,
+            "delegation_group_id": commit.group_id.as_str(),
+            "child_count": commit.child_run_ids.len(),
             "invalidated_fencing_token": token,
             "current_fencing_token": next_token,
         }),
@@ -883,8 +1316,8 @@ fn park_parent_for_child(
         launched_at_ms,
         correlation_id,
         json!({
-            "delegation_id": commit.delegation.delegation_id,
-            "child_run_id": commit.delegation.child_run_id,
+            "delegation_group_id": commit.group_id.as_str(),
+            "child_run_ids": &commit.child_run_ids,
         }),
     )?;
     agent::append_agent_event(
@@ -896,7 +1329,8 @@ fn park_parent_for_child(
         launched_at_ms,
         correlation_id,
         json!({
-            "delegation_id": commit.delegation.delegation_id,
+            "delegation_group_id": commit.group_id.as_str(),
+            "child_count": commit.child_run_ids.len(),
             "run_id": fence.run_id(),
         }),
     )
@@ -1212,6 +1646,7 @@ mod tests {
                 delivery_mode: DeliveryMode::Queue,
                 dedupe_key: "phase4-parent".to_owned(),
                 content: "fixture.write_file {\"operation\":\"write_file\",\"relativePath\":\"delegated.txt\",\"content\":\"parent contract\"}".to_owned(),
+                images: Vec::new(),
                 provider_selection:
                     mealy_application::ProviderSelectionPreference::InheritSession,
                 maximum_pending_inputs: 1_024,

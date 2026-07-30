@@ -27,6 +27,7 @@ mod recovery;
 mod schedule;
 mod scheduler;
 mod sessions;
+mod slack;
 mod telegram;
 mod timeline;
 mod transcript;
@@ -51,10 +52,16 @@ const MIGRATION_0015: &str = include_str!("../migrations/0015_usage_reporting.sq
 const MIGRATION_0016: &str = include_str!("../migrations/0016_context_manifest_bundles.sql");
 const MIGRATION_0017: &str = include_str!("../migrations/0017_session_workbench.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_provider_selection.sql");
+const MIGRATION_0019: &str = include_str!("../migrations/0019_parallel_delegation_groups.sql");
+const MIGRATION_0020: &str = include_str!("../migrations/0020_slack_socket_channel.sql");
+const MIGRATION_0021: &str = include_str!("../migrations/0021_session_input_media.sql");
+const MIGRATION_0022: &str =
+    include_str!("../migrations/0022_agent_effect_budget_reservations.sql");
+const MIGRATION_0023: &str = include_str!("../migrations/0023_browser_transaction_origin.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 18;
+pub const LATEST_SCHEMA_VERSION: i64 = 23;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -329,6 +336,46 @@ impl SqliteStore {
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (18, ?1)",
                 [applied_at_ms],
             )?;
+            existing_version = 18;
+        }
+        if existing_version == 18 {
+            transaction.execute_batch(MIGRATION_0019)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (19, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 19;
+        }
+        if existing_version == 19 {
+            transaction.execute_batch(MIGRATION_0020)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (20, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 20;
+        }
+        if existing_version == 20 {
+            transaction.execute_batch(MIGRATION_0021)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (21, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 21;
+        }
+        if existing_version == 21 {
+            transaction.execute_batch(MIGRATION_0022)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (22, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 22;
+        }
+        if existing_version == 22 {
+            transaction.execute_batch(MIGRATION_0023)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (23, ?1)",
+                [applied_at_ms],
+            )?;
         }
         transaction.commit()?;
         Ok(Self { connection })
@@ -529,6 +576,40 @@ impl SqliteStore {
         }) {
             return Err(StoreError::NotReady(
                 "terminal usage-report index is missing or malformed".to_owned(),
+            ));
+        }
+        let effect_budget_objects = self.connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_schema \
+             WHERE name IN (\
+                'agent_effect_budget_reservation', \
+                'agent_effect_budget_reservation_insert_guard', \
+                'agent_effect_budget_reservation_update_guard', \
+                'agent_effect_budget_reservation_delete_guard'\
+             )",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if effect_budget_objects != 4 {
+            return Err(StoreError::NotReady(
+                "governed external-effect budget schema is incomplete".to_owned(),
+            ));
+        }
+        let effect_origin_trigger = self
+            .connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name = 'agent_effect_invocation_origin_insert'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if effect_origin_trigger.as_deref().is_none_or(|sql| {
+            !sql.contains("effect.tool_id = 'image.generate'")
+                || !sql.contains("json_object")
+                || !sql.contains("$.maximumCostMicrounits")
+        }) {
+            return Err(StoreError::NotReady(
+                "governed image-effect model-origin schema is incomplete".to_owned(),
             ));
         }
         Ok(())
@@ -790,10 +871,11 @@ mod tests {
     use super::{
         JournalRecord, LATEST_SCHEMA_VERSION, MIGRATION_0001, MIGRATION_0002, MIGRATION_0003,
         MIGRATION_0004, MIGRATION_0005, MIGRATION_0006, MIGRATION_0007, MIGRATION_0008,
-        MIGRATION_0009, MIGRATION_0010, OutboxRecord, SqliteStore, StoreError, TaskMutation,
-        ensure_initial_journal_envelope, ensure_phase_one_run_columns,
+        MIGRATION_0009, MIGRATION_0010, MIGRATION_0023, OutboxRecord, SqliteStore, StoreError,
+        TaskMutation, ensure_initial_journal_envelope, ensure_phase_one_run_columns,
     };
     use mealy_domain::{CorrelationId, EventId, OutboxId, PrincipalId, TaskId, TaskState};
+    use rusqlite::Connection;
     use serde_json::json;
     use std::{collections::BTreeSet, fs, path::PathBuf};
 
@@ -823,6 +905,167 @@ mod tests {
                 let _ = fs::remove_file(self.sidecar(suffix));
             }
         }
+    }
+
+    fn remove_parallel_delegation_schema(connection: &Connection) {
+        remove_slack_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TRIGGER delegation_group_child_insert;
+                 DROP TRIGGER delegation_group_identity_immutable;
+                 DROP TRIGGER delegation_group_contract_immutable;
+                 DROP TRIGGER delegation_group_settlement;
+                 DROP TRIGGER delegation_group_no_reopen;
+                 DROP TRIGGER delegation_group_no_delete;
+                 DROP INDEX delegation_group_ordinal_idx;
+                 DROP INDEX delegation_group_child_key_idx;
+                 DROP INDEX delegation_group_parent_state_idx;
+                 ALTER TABLE delegation DROP COLUMN group_id;
+                 ALTER TABLE delegation DROP COLUMN group_ordinal;
+                 ALTER TABLE delegation DROP COLUMN child_key;
+                 DROP TABLE delegation_group;
+                 DELETE FROM schema_version WHERE version = 19;",
+            )
+            .expect("remove v19 parallel delegation schema");
+    }
+
+    fn remove_slack_schema(connection: &Connection) {
+        remove_media_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE slack_envelope_receipt;
+                 DROP TABLE slack_channel_health;
+                 DROP TABLE slack_channel_binding;
+                 DELETE FROM schema_version WHERE version = 20;",
+            )
+            .expect("remove v20 Slack channel schema");
+    }
+
+    fn remove_image_generation_schema(connection: &Connection) {
+        remove_browser_transaction_origin_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE agent_effect_budget_reservation;
+                 DROP TRIGGER agent_effect_invocation_origin_insert;
+                 CREATE TRIGGER agent_effect_invocation_origin_insert
+                 BEFORE INSERT ON agent_effect_invocation
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS(
+                         SELECT 1
+                         FROM effect_intent intent
+                         JOIN effect ON effect.id = intent.effect_id
+                         JOIN model_attempt attempt ON attempt.attempt_id = NEW.model_attempt_id
+                         WHERE intent.effect_id = NEW.effect_id
+                           AND intent.run_id = NEW.run_id
+                           AND intent.task_id = NEW.task_id
+                           AND effect.task_id = NEW.task_id
+                           AND effect.run_id = NEW.run_id
+                           AND attempt.run_id = NEW.run_id
+                           AND attempt.state = 'completed'
+                           AND attempt.response_kind = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.kind') = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.tool_id') = effect.tool_id
+                           AND json(json_extract(attempt.response_json, '$.arguments'))
+                               = json(intent.normalized_arguments_json)
+                     ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
+                 END;
+                 DELETE FROM schema_version WHERE version = 22;",
+            )
+            .expect("remove v22 image generation schema");
+    }
+
+    fn remove_browser_transaction_origin_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER agent_effect_invocation_origin_insert;
+                 CREATE TRIGGER agent_effect_invocation_origin_insert
+                 BEFORE INSERT ON agent_effect_invocation
+                 BEGIN
+                     SELECT CASE WHEN NOT EXISTS(
+                         SELECT 1
+                         FROM effect_intent intent
+                         JOIN effect ON effect.id = intent.effect_id
+                         JOIN model_attempt attempt ON attempt.attempt_id = NEW.model_attempt_id
+                         WHERE intent.effect_id = NEW.effect_id
+                           AND intent.run_id = NEW.run_id
+                           AND intent.task_id = NEW.task_id
+                           AND effect.task_id = NEW.task_id
+                           AND effect.run_id = NEW.run_id
+                           AND attempt.run_id = NEW.run_id
+                           AND attempt.state = 'completed'
+                           AND attempt.response_kind = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.kind') = 'tool_call'
+                           AND json_extract(attempt.response_json, '$.tool_id') = effect.tool_id
+                           AND (
+                               (
+                                   effect.tool_id <> 'image.generate'
+                                   AND json(json_extract(attempt.response_json, '$.arguments'))
+                                       = json(intent.normalized_arguments_json)
+                               )
+                               OR
+                               (
+                                   effect.tool_id = 'image.generate'
+                                   AND json(json_extract(attempt.response_json, '$.arguments'))
+                                       = json_object(
+                                           'prompt',
+                                           json_extract(
+                                               intent.normalized_arguments_json, '$.prompt'
+                                           )
+                                         )
+                                   AND json_type(
+                                         intent.normalized_arguments_json,
+                                         '$.maximumCostMicrounits'
+                                       ) = 'integer'
+                                   AND json_extract(
+                                         intent.normalized_arguments_json,
+                                         '$.maximumCostMicrounits'
+                                       ) > 0
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.model'
+                                       ) = 'text'
+                                   AND json_extract(
+                                         intent.normalized_arguments_json, '$.outputFormat'
+                                       ) = 'jpeg'
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.quality'
+                                       ) = 'text'
+                                   AND json_type(
+                                         intent.normalized_arguments_json, '$.size'
+                                       ) = 'text'
+                                   AND (
+                                       SELECT COUNT(*)
+                                       FROM json_each(intent.normalized_arguments_json)
+                                   ) = 6
+                               )
+                           )
+                     ) THEN RAISE(
+                         ABORT,
+                         'agent effect origin does not match normalized model result'
+                     ) END;
+                 END;
+                 DELETE FROM schema_version WHERE version = 23;",
+            )
+            .expect("remove v23 browser transaction origin schema");
+    }
+
+    fn remove_media_schema(connection: &Connection) {
+        remove_image_generation_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TRIGGER session_input_reference_immutable_delete;
+                 DROP TRIGGER session_input_reference_immutable_update;
+                 DROP TRIGGER session_input_reference_insert_guard;
+                 DROP TRIGGER session_input_blob_immutable_update;
+                 DROP TRIGGER session_input_artifact_immutable_update;
+                 DROP TRIGGER session_inbox_media_immutable_delete;
+                 DROP TRIGGER session_inbox_media_immutable_update;
+                 DROP TRIGGER session_inbox_media_create_reference;
+                 DROP TRIGGER session_inbox_media_insert_guard;
+                 DROP INDEX session_inbox_media_owner_idx;
+                 DROP TABLE session_inbox_media;
+                 DELETE FROM schema_version WHERE version = 21;",
+            )
+            .expect("remove v21 session input media schema");
     }
 
     fn journal(event_id: EventId, event_type: &str) -> JournalRecord {
@@ -2213,6 +2456,7 @@ mod tests {
     #[test]
     fn v14_upgrade_installs_usage_index_and_compact_manifest_schema() {
         let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
         store
             .connection
             .execute_batch(
@@ -2234,7 +2478,7 @@ mod tests {
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
-                 DELETE FROM schema_version WHERE version IN (15, 16, 17, 18);",
+                 DELETE FROM schema_version WHERE version IN (15, 16, 17, 18, 19);",
             )
             .expect("construct exact v14 predecessor");
         let connection = store.connection;
@@ -2282,6 +2526,7 @@ mod tests {
     #[test]
     fn v16_upgrade_installs_session_workbench_and_immutable_lineage() {
         let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
         store
             .connection
             .execute_batch(
@@ -2302,7 +2547,7 @@ mod tests {
                  DROP TABLE session_lineage;
                  DROP TABLE session_checkpoint;
                  DROP TABLE session_metadata;
-                 DELETE FROM schema_version WHERE version IN (17, 18);",
+                 DELETE FROM schema_version WHERE version IN (17, 18, 19);",
             )
             .expect("construct exact v16 predecessor");
         let connection = store.connection;
@@ -2361,6 +2606,343 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v18_upgrade_installs_parallel_delegation_group_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_parallel_delegation_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v18 parallel delegation schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "delegation_group",
+            "delegation_group_child_insert",
+            "delegation_group_settlement",
+            "delegation_group_identity_immutable",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query parallel delegation schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        let columns = upgraded
+            .connection
+            .prepare("SELECT name FROM pragma_table_info('delegation')")
+            .and_then(|mut statement| {
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()
+            })
+            .expect("delegation columns");
+        for column in ["group_id", "group_ordinal", "child_key"] {
+            assert!(columns.contains(column), "{column} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v19_upgrade_installs_slack_socket_reservation_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_slack_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v19 Slack channel schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "slack_channel_binding",
+            "slack_channel_health",
+            "slack_envelope_receipt",
+            "slack_channel_binding_insert_guard",
+            "slack_envelope_transition",
+            "slack_envelope_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query Slack schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v20_upgrade_installs_session_input_media_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_media_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v20 session input media schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "session_inbox_media",
+            "session_inbox_media_insert_guard",
+            "session_inbox_media_create_reference",
+            "session_inbox_media_immutable_update",
+            "session_input_artifact_immutable_update",
+            "session_input_blob_immutable_update",
+            "session_input_reference_insert_guard",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query session input media schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v21_upgrade_installs_image_effect_budget_and_normalized_origin_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_image_generation_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v21 image effect budget schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "agent_effect_budget_reservation",
+            "agent_effect_budget_reservation_insert_guard",
+            "agent_effect_budget_reservation_update_guard",
+            "agent_effect_budget_reservation_delete_guard",
+            "agent_effect_invocation_origin_insert",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query image effect budget schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        let origin_trigger: String = upgraded
+            .connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name = 'agent_effect_invocation_origin_insert'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("image effect model-origin trigger");
+        assert!(origin_trigger.contains("effect.tool_id = 'image.generate'"));
+        assert!(origin_trigger.contains("json_object"));
+        upgraded
+            .readiness_check()
+            .expect("upgraded image effect readiness");
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v22_upgrade_installs_browser_transaction_origin_invariant() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_browser_transaction_origin_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v22 browser transaction origin schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        let origin_trigger: String = upgraded
+            .connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name = 'agent_effect_invocation_origin_insert'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("browser transaction model-origin trigger");
+        for evidence in [
+            "effect.tool_id = 'browser.transact'",
+            "'initialUrl'",
+            "'formDigest'",
+            "'fields'",
+            "'submitter'",
+            "'uploads'",
+        ] {
+            assert!(
+                origin_trigger.contains(evidence),
+                "browser origin trigger omitted {evidence}"
+            );
+        }
+        upgraded
+            .readiness_check()
+            .expect("upgraded browser transaction readiness");
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded integrity");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn browser_transaction_origin_trigger_accepts_only_bounded_normalization() {
+        let connection = Connection::open_in_memory().expect("origin fixture database");
+        connection
+            .execute_batch(
+                "CREATE TABLE effect_intent(
+                     effect_id TEXT PRIMARY KEY,
+                     run_id TEXT NOT NULL,
+                     task_id TEXT NOT NULL,
+                     normalized_arguments_json TEXT NOT NULL
+                 );
+                 CREATE TABLE effect(
+                     id TEXT PRIMARY KEY,
+                     task_id TEXT NOT NULL,
+                     run_id TEXT NOT NULL,
+                     tool_id TEXT NOT NULL
+                 );
+                 CREATE TABLE model_attempt(
+                     attempt_id TEXT PRIMARY KEY,
+                     run_id TEXT NOT NULL,
+                     state TEXT NOT NULL,
+                     response_kind TEXT NOT NULL,
+                     response_json TEXT NOT NULL
+                 );
+                 CREATE TABLE agent_effect_invocation(
+                     effect_id TEXT NOT NULL,
+                     run_id TEXT NOT NULL,
+                     task_id TEXT NOT NULL,
+                     model_attempt_id TEXT NOT NULL
+                 );
+                 CREATE TRIGGER agent_effect_invocation_origin_insert
+                 BEFORE INSERT ON agent_effect_invocation BEGIN SELECT 1; END;",
+            )
+            .expect("minimal v22 origin schema");
+        connection
+            .execute_batch(MIGRATION_0023)
+            .expect("install browser origin trigger");
+
+        let form_digest = "a".repeat(64);
+        let normalized = json!({
+            "initialUrl": "https://example.test/form",
+            "formDigest": form_digest,
+            "fields": [{"name": "message", "value": "approved"}],
+            "uploads": [],
+        });
+        connection
+            .execute(
+                "INSERT INTO effect_intent(
+                     effect_id, run_id, task_id, normalized_arguments_json
+                 ) VALUES ('effect', 'run', 'task', ?1);
+                 ",
+                [normalized.to_string()],
+            )
+            .expect("normalized intent");
+        connection
+            .execute(
+                "INSERT INTO effect(id, task_id, run_id, tool_id)
+                 VALUES ('effect', 'task', 'run', 'browser.transact')",
+                [],
+            )
+            .expect("effect");
+
+        let insert_invocation = |connection: &Connection| {
+            connection.execute(
+                "INSERT INTO agent_effect_invocation(
+                     effect_id, run_id, task_id, model_attempt_id
+                 ) VALUES ('effect', 'run', 'task', 'attempt')",
+                [],
+            )
+        };
+        let set_response = |connection: &Connection, arguments: serde_json::Value| {
+            connection
+                .execute("DELETE FROM model_attempt", [])
+                .expect("replace model attempt");
+            connection
+                .execute(
+                    "INSERT INTO model_attempt(
+                         attempt_id, run_id, state, response_kind, response_json
+                     ) VALUES ('attempt', 'run', 'completed', 'tool_call', ?1)",
+                    [json!({
+                        "kind": "tool_call",
+                        "tool_id": "browser.transact",
+                        "arguments": arguments,
+                    })
+                    .to_string()],
+                )
+                .expect("model response");
+        };
+
+        set_response(
+            &connection,
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+            }),
+        );
+        insert_invocation(&connection).expect("omitted optional arrays are bounded normalization");
+        connection
+            .execute("DELETE FROM agent_effect_invocation", [])
+            .expect("reset invocation");
+
+        for tampered in [
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "b".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+            }),
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "changed"}],
+            }),
+            json!({
+                "initialUrl": "https://example.test/form",
+                "formDigest": "a".repeat(64),
+                "fields": [{"name": "message", "value": "approved"}],
+                "unexpected": true,
+            }),
+        ] {
+            set_response(&connection, tampered);
+            let error = insert_invocation(&connection).expect_err("tampered origin must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("agent effect origin does not match normalized model result")
+            );
+        }
     }
 
     #[test]

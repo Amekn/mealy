@@ -14,39 +14,45 @@ use axum::{
     response::{Html, IntoResponse, Response as AxumResponse},
     routing::{get, post},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use mealy_application::{
     EXTENSION_POLICY_VERSION, MAXIMUM_EFFECT_OUTCOME_DETAILS_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS,
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS, ScheduleDefinition,
-    sha256_digest, valid_fork_idempotency_key, valid_session_metadata,
+    is_sha256_digest, sha256_digest, valid_fork_idempotency_key, valid_session_metadata,
     validate_schedule_definition,
 };
 use mealy_domain::{
-    ApprovalId, AttemptId, ContextManifestId, EffectId, EventId, ExtensionFilesystemAccess,
-    ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId, MemoryId, MemoryRevisionId,
-    PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId, SessionId, TaskId,
-    ValidationId,
+    ApprovalId, ArtifactId, AttemptId, ContextManifestId, DelegationId, EffectId, EventId,
+    ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionManifest, InboxEntryId,
+    MemoryId, MemoryRevisionId, PrincipalId, RunId, ScheduleId, ScheduleRunId, SessionCheckpointId,
+    SessionId, TaskId, ValidationId,
 };
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, AdminUsageReportResponse, ApprovalDecisionCommand,
-    ApprovalResolutionReceipt, CancelTaskRequest, CorrectMemoryRequest, CreateScheduleRequest,
-    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse, DeliveryMode,
-    DoctorResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
-    EnableExtensionRequest, ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest,
-    ExtensionResponse, ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest,
-    InputAdmissionResponse, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
-    MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryResponse,
-    MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand,
-    MemoryStatusResponse, MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest,
-    ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
-    ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
-    ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
-    SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
-    SessionStatusResponse, SessionTitleResponse, SessionTranscriptExport, SessionsResponse,
-    SetMemoryPinRequest, SubmitInputRequest, TaskCancellationReceipt, TaskResponse, TaskStatus,
-    TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+    ApprovalResolutionReceipt, ArtifactMetadataResponse, CancelTaskRequest, CorrectMemoryRequest,
+    CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
+    CreateSessionResponse, DelegationsResponse, DeliveryMode, DoctorResponse,
+    EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest,
+    ExtensionFilesystemAccessCommand, ExtensionLifecycleRequest, ExtensionResponse,
+    ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest, InputAdmissionResponse,
+    LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ProviderCatalogResponse, ProviderSelectionCommand, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, ScheduleLifecycleRequest,
+    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse,
+    ScheduleRunStatusResponse, ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse,
+    SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    SessionProviderSelectionResponse, SessionStatusResponse, SessionTitleResponse,
+    SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest, SubmitImageInputRequest,
+    SubmitInputRequest, TaskCancellationReceipt, TaskResponse, TaskStatus, TimelinePageResponse,
+    UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -65,11 +71,14 @@ const DASHBOARD_TOKEN_HEADER: &str = "x-mealy-dashboard";
 const DASHBOARD_TOKEN_PLACEHOLDER: &str = "__MEALY_DASHBOARD_TOKEN__";
 const DASHBOARD_NONCE_PLACEHOLDER: &str = "__MEALY_DASHBOARD_NONCE__";
 const MAXIMUM_DASHBOARD_BODY_BYTES: usize = 64 * 1024;
+const MAXIMUM_DASHBOARD_IMAGE_BODY_BYTES: usize = 6 * 1024 * 1024;
 const MAXIMUM_DASHBOARD_INPUT_BYTES: usize = 16 * 1024;
 const MAXIMUM_IDEMPOTENCY_KEY_BYTES: usize = 256;
 const MAXIMUM_CANCELLATION_REASON_BYTES: usize = 1024;
 const MAXIMUM_TIMELINE_PAGE_SIZE: usize = 200;
 const MAXIMUM_DASHBOARD_SCHEDULES: usize = 1_000;
+const MAXIMUM_DASHBOARD_DELEGATIONS: usize = 20;
+const MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES: usize = 64 * 1024;
 const MAXIMUM_SCHEDULE_RUNS_PAGE_SIZE: usize = 100;
 const MAXIMUM_SCHEDULE_RUN_REASON_BYTES: usize = 4 * 1024;
 const MAXIMUM_DASHBOARD_SCHEDULE_PROMPT_BYTES: usize = 48 * 1024;
@@ -468,7 +477,7 @@ pub(crate) async fn run(
     }
     let content_security_policy = HeaderValue::from_str(&format!(
         "default-src 'none'; base-uri 'none'; connect-src 'self'; form-action 'none'; \
-         frame-ancestors 'none'; img-src 'self' data:; script-src 'nonce-{encoded_nonce}'; \
+         frame-ancestors 'none'; img-src 'self' data: blob:; script-src 'nonce-{encoded_nonce}'; \
          style-src 'nonce-{encoded_nonce}'"
     ))
     .map_err(|_| CliError::Protocol("dashboard CSP could not be encoded".to_owned()))?;
@@ -488,6 +497,7 @@ pub(crate) async fn run(
     let application = Router::new()
         .route("/", get(index))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/delegations", get(delegations))
         .route("/api/sessions", post(create_session))
         .route(
             "/api/sessions/{session_id}/title",
@@ -515,12 +525,22 @@ pub(crate) async fn run(
             post(submit_session_input),
         )
         .route(
+            "/api/sessions/{session_id}/image-inputs",
+            post(submit_session_image_input)
+                .layer(DefaultBodyLimit::max(MAXIMUM_DASHBOARD_IMAGE_BODY_BYTES)),
+        )
+        .route(
             "/api/approvals/{approval_id}/resolve",
             post(resolve_approval),
         )
         .route("/api/tasks/{task_id}/cancel", post(cancel_task))
         .route("/api/tasks/{task_id}/usage", post(task_usage))
         .route("/api/effects/{effect_id}", get(effect_detail))
+        .route("/api/artifacts/{artifact_id}", get(artifact_metadata))
+        .route(
+            "/api/artifacts/{artifact_id}/content",
+            get(artifact_image_content),
+        )
         .route(
             "/api/effect-attempts/{attempt_id}",
             get(effect_attempt_detail),
@@ -619,6 +639,29 @@ async fn snapshot(State(state): State<DashboardState>, headers: HeaderMap) -> Ax
         eprintln!("dashboard snapshot refresh could not load the connection descriptor");
         let _ = std::io::stderr().flush();
         dashboard_connection_error()
+    };
+    secure_response(response, &state)
+}
+
+async fn delegations(State(state): State<DashboardState>, headers: HeaderMap) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(detail_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let path = format!("/v1/delegations?limit={MAXIMUM_DASHBOARD_DELEGATIONS}");
+            match fetch::<DelegationsResponse>(&state.client, &connection, &path).await {
+                Ok(response) if valid_delegation_projection(&response) => {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("delegation projection"),
+                Err(error) => dashboard_backend_error(&error, "delegation projection"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
     };
     secure_response(response, &state)
 }
@@ -1060,10 +1103,33 @@ fn validate_dashboard_session_transcript_json(
     let included_turns = u64::try_from(export.turns.len())
         .map_err(|_| CliError::Protocol("transcript turn count exceeds u64".to_owned()))?;
     let content_bytes = export.turns.iter().try_fold(0_u64, |total, turn| {
+        let image_bytes = turn.user.images.iter().try_fold(0_u64, |bytes, image| {
+            if image.artifact_id.parse::<ArtifactId>().is_err()
+                || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg")
+                || !is_sha256_digest(&image.sha256_digest)
+                || image.size_bytes == 0
+                || image.size_bytes
+                    > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+                || image.width == 0
+                || image.height == 0
+                || image.width > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+                || image.height > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            {
+                return Err(CliError::Protocol(
+                    "dashboard transcript image evidence is invalid".to_owned(),
+                ));
+            }
+            bytes
+                .checked_add(image.size_bytes)
+                .ok_or_else(|| CliError::Protocol("transcript image size overflowed".to_owned()))
+        })?;
         if sha256_digest(turn.user.content.as_bytes()) != turn.user.content_digest
             || sha256_digest(turn.assistant.content.as_bytes()) != turn.assistant.content_digest
             || u64::try_from(turn.user.content.len()).ok() != Some(turn.user.byte_length)
             || u64::try_from(turn.assistant.content.len()).ok() != Some(turn.assistant.byte_length)
+            || turn.user.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+            || image_bytes
+                > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES).unwrap_or(u64::MAX)
         {
             return Err(CliError::Protocol(
                 "dashboard transcript message evidence is invalid".to_owned(),
@@ -1075,7 +1141,10 @@ fn validate_dashboard_session_transcript_json(
             .ok_or_else(|| CliError::Protocol("transcript content size overflowed".to_owned()))
     })?;
     if export.api_version != API_VERSION
-        || export.schema_version != "mealy.session-transcript.v1"
+        || !matches!(
+            export.schema_version.as_str(),
+            "mealy.session-transcript.v1" | "mealy.session-transcript.v2"
+        )
         || export.session_id != expected_session_id
         || export.bounds.maximum_turns != maximum_turns
         || export.bounds.maximum_content_bytes != SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES
@@ -1102,7 +1171,8 @@ fn validate_dashboard_session_transcript_html(
     let lowercase = html.to_ascii_lowercase();
     if !html.starts_with("<!doctype html>")
         || !html.ends_with("</html>\n")
-        || !html.contains("mealy.session-transcript.v1")
+        || !(html.contains("mealy.session-transcript.v1")
+            || html.contains("mealy.session-transcript.v2"))
         || !html.contains(expected_session_id)
         || !html.contains(INERT_CSP_META)
         || [
@@ -1300,6 +1370,146 @@ async fn submit_session_input(
                 }
                 Ok(_) => dashboard_protocol_error("input admission"),
                 Err(error) => dashboard_backend_error(&error, "input admission"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn submit_session_image_input(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(session_id): RoutePath<String>,
+    request: Result<Json<SubmitImageInputRequest>, JsonRejection>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_mutation(&state, &headers) {
+        return response;
+    }
+    let Ok(session_id) = session_id.parse::<SessionId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(Json(request)) = request else {
+        return secure_response(invalid_dashboard_json(), &state);
+    };
+    if !valid_dashboard_image_input(&request) {
+        return secure_response(invalid_dashboard_command(), &state);
+    }
+    let requested_artifacts = request
+        .images
+        .iter()
+        .map(|image| image.artifact_id.clone())
+        .collect::<Vec<_>>();
+    let requested_selection = request.provider_selection.clone();
+    let Ok(_permit) = Arc::clone(&state.command_permit).try_acquire_owned() else {
+        return secure_response(command_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let session_id = session_id.to_string();
+            let path = format!("/v1/sessions/{session_id}/image-inputs");
+            match post_to_daemon::<_, InputAdmissionResponse>(
+                &state.client,
+                &connection,
+                &path,
+                &request,
+            )
+            .await
+            {
+                Ok(response)
+                    if valid_api_version(&response.api_version)
+                        && response.session_id == session_id
+                        && response.image_artifact_ids == requested_artifacts
+                        && response.provider_selection == requested_selection =>
+                {
+                    Json(response).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("image input admission"),
+                Err(error) => dashboard_backend_error(&error, "image input admission"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn artifact_metadata(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(artifact_id): RoutePath<String>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(artifact_id) = artifact_id.parse::<ArtifactId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(detail_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let artifact_id = artifact_id.to_string();
+            let path = format!("/v1/artifacts/{artifact_id}");
+            match fetch::<ArtifactMetadataResponse>(&state.client, &connection, &path).await {
+                Ok(metadata) if valid_dashboard_image_artifact(&metadata, &artifact_id) => {
+                    Json(metadata).into_response()
+                }
+                Ok(_) => dashboard_protocol_error("image artifact metadata"),
+                Err(error) => dashboard_backend_error(&error, "image artifact metadata"),
+            }
+        }
+        Err(()) => dashboard_connection_error(),
+    };
+    secure_response(response, &state)
+}
+
+async fn artifact_image_content(
+    State(state): State<DashboardState>,
+    headers: HeaderMap,
+    RoutePath(artifact_id): RoutePath<String>,
+) -> AxumResponse {
+    if let Some(response) = authorize_dashboard_read(&state, &headers) {
+        return response;
+    }
+    let Ok(artifact_id) = artifact_id.parse::<ArtifactId>() else {
+        return secure_response(invalid_dashboard_identifier(), &state);
+    };
+    let Ok(_permit) = Arc::clone(&state.detail_permit).try_acquire_owned() else {
+        return secure_response(detail_in_progress(), &state);
+    };
+    let response = match dashboard_connection(&state) {
+        Ok(connection) => {
+            let artifact_id = artifact_id.to_string();
+            match fetch_dashboard_image_artifact(&state.client, &connection, &artifact_id).await {
+                Ok((metadata, bytes)) => {
+                    let Ok(content_type) = HeaderValue::from_str(&metadata.media_type) else {
+                        return secure_response(
+                            dashboard_protocol_error("image artifact content"),
+                            &state,
+                        );
+                    };
+                    let Ok(content_digest) = HeaderValue::from_str(&metadata.digest) else {
+                        return secure_response(
+                            dashboard_protocol_error("image artifact content"),
+                            &state,
+                        );
+                    };
+                    let mut response = bytes.into_response();
+                    response
+                        .headers_mut()
+                        .insert(header::CONTENT_TYPE, content_type);
+                    response.headers_mut().insert(
+                        header::CONTENT_DISPOSITION,
+                        HeaderValue::from_static("inline; filename=\"mealy-image\""),
+                    );
+                    response.headers_mut().insert(
+                        HeaderName::from_static("x-mealy-content-sha256"),
+                        content_digest,
+                    );
+                    response
+                }
+                Err(error) => dashboard_backend_error(&error, "image artifact content"),
             }
         }
         Err(()) => dashboard_connection_error(),
@@ -2938,6 +3148,32 @@ async fn fetch_snapshot(
     Ok(snapshot)
 }
 
+fn valid_delegation_projection(response: &DelegationsResponse) -> bool {
+    let mut ids = BTreeSet::new();
+    response.api_version == API_VERSION
+        && response.delegations.len() <= MAXIMUM_DASHBOARD_DELEGATIONS
+        && response.delegations.iter().all(|delegation| {
+            delegation.api_version == API_VERSION
+                && delegation.delegation_id.parse::<DelegationId>().is_ok()
+                && delegation.parent_run_id.parse::<RunId>().is_ok()
+                && delegation.child_task_id.parse::<TaskId>().is_ok()
+                && delegation.child_run_id.parse::<RunId>().is_ok()
+                && ids.insert(delegation.delegation_id.as_str())
+                && matches!(
+                    delegation.state.as_str(),
+                    "queued" | "running" | "succeeded" | "failed" | "cancelled"
+                )
+                && bounded_json_value(&delegation.effective_capabilities)
+                && bounded_json_value(&delegation.child_budget)
+                && delegation.result.as_ref().is_none_or(bounded_json_value)
+        })
+}
+
+fn bounded_json_value(value: &serde_json::Value) -> bool {
+    serde_json::to_vec(value)
+        .is_ok_and(|bytes| bytes.len() <= MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES)
+}
+
 fn dashboard_snapshot_source<T>(result: Result<T, CliError>, source: &str) -> Result<T, CliError> {
     result.map_err(|error| {
         CliError::Protocol(format!(
@@ -3076,6 +3312,52 @@ async fn patch_to_daemon<Q: Serialize + ?Sized, T: DeserializeOwned>(
     .send()
     .await?;
     decode_dashboard(response).await
+}
+
+async fn fetch_dashboard_image_artifact(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    artifact_id: &str,
+) -> Result<(ArtifactMetadataResponse, Vec<u8>), CliError> {
+    let metadata_path = format!("/v1/artifacts/{artifact_id}");
+    let metadata = fetch::<ArtifactMetadataResponse>(client, connection, &metadata_path).await?;
+    if !valid_dashboard_image_artifact(&metadata, artifact_id) {
+        return Err(CliError::Protocol(
+            "image artifact metadata violated its bounded contract".to_owned(),
+        ));
+    }
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/artifacts/{artifact_id}/content",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    if !response.status().is_success() {
+        return Err(server_error(response).await);
+    }
+    if response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        != Some(metadata.media_type.as_str())
+    {
+        return Err(CliError::Protocol(
+            "image artifact content type did not match metadata".to_owned(),
+        ));
+    }
+    let maximum = usize::try_from(metadata.size_bytes).map_err(|_| {
+        CliError::Protocol("image artifact size did not fit the local platform".to_owned())
+    })?;
+    let bytes = read_bounded_success_body(response, maximum).await?;
+    if bytes.len() != maximum || sha256_digest(&bytes) != metadata.digest {
+        return Err(CliError::Protocol(
+            "image artifact content did not match immutable metadata".to_owned(),
+        ));
+    }
+    Ok((metadata, bytes))
 }
 
 fn valid_session_checkpoint_response(
@@ -3281,6 +3563,77 @@ fn valid_provider_selection(selection: &ProviderSelectionCommand) -> bool {
                 && !model_id.chars().any(char::is_control)
         }
     }
+}
+
+fn valid_dashboard_image_input(request: &SubmitImageInputRequest) -> bool {
+    if !valid_api_version(&request.api_version)
+        || !valid_idempotency_key(&request.idempotency_key)
+        || request.content.trim().is_empty()
+        || request.content.len() > MAXIMUM_DASHBOARD_INPUT_BYTES
+        || !matches!(
+            request.provider_selection,
+            ProviderSelectionCommand::Exact { .. }
+        )
+        || !valid_provider_selection(&request.provider_selection)
+        || request.images.is_empty()
+        || request.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+    {
+        return false;
+    }
+    let mut artifacts = BTreeSet::new();
+    let mut total_bytes = 0_usize;
+    request.images.iter().all(|image| {
+        let Ok(artifact_id) = image.artifact_id.parse::<ArtifactId>() else {
+            return false;
+        };
+        if artifact_id.as_uuid().get_version_num() != 7
+            || !artifacts.insert(artifact_id)
+            || !matches!(
+                image.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            )
+        {
+            return false;
+        }
+        let Ok(bytes) = BASE64_STANDARD.decode(&image.data_base64) else {
+            return false;
+        };
+        if bytes.is_empty()
+            || bytes.len() > MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES
+            || BASE64_STANDARD.encode(&bytes) != image.data_base64
+        {
+            return false;
+        }
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        total_bytes <= MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES
+    })
+}
+
+fn valid_dashboard_image_artifact(metadata: &ArtifactMetadataResponse, artifact_id: &str) -> bool {
+    valid_api_version(&metadata.api_version)
+        && metadata.artifact_id == artifact_id
+        && metadata.artifact_id.parse::<ArtifactId>().is_ok()
+        && metadata.algorithm == "sha256"
+        && is_sha256_digest(&metadata.digest)
+        && metadata.size_bytes > 0
+        && metadata.size_bytes
+            <= u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+        && matches!(metadata.media_type.as_str(), "image/png" | "image/jpeg")
+        && valid_artifact_label(&metadata.origin_kind, 64)
+        && valid_artifact_label(&metadata.origin_id, 255)
+        && valid_artifact_label(&metadata.producer_kind, 64)
+        && valid_artifact_label(&metadata.producer_id, 255)
+        && valid_artifact_label(&metadata.sensitivity, 64)
+        && valid_artifact_label(&metadata.retention_class, 64)
+        && is_sha256_digest(&metadata.access_policy_digest)
+        && metadata.created_at_ms >= 0
+}
+
+fn valid_artifact_label(value: &str, maximum_bytes: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum_bytes
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
 }
 
 fn valid_session_provider_selection(
@@ -4279,21 +4632,26 @@ fn current_epoch_milliseconds() -> Result<u64, CliError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DASHBOARD_TEMPLATE, DASHBOARD_TOKEN_PLACEHOLDER, DashboardCreateScheduleRequest,
-        DashboardEnableExtensionRequest, DashboardState, MAXIMUM_JAVASCRIPT_SAFE_INTEGER,
-        dashboard_memory_source_locator, schedule_matches_create_request, valid_admin_usage_report,
-        valid_dashboard_mutation_origin, valid_dashboard_request_origin,
-        valid_dashboard_schedule_create_request, valid_dashboard_token,
-        valid_extension_enable_request, valid_extension_response, valid_memories_response,
-        valid_memory_response, valid_memory_search_response, valid_reconciliation_evidence,
-        valid_schedule_response, valid_schedule_runs_response, valid_task_response,
+        API_VERSION, DASHBOARD_TEMPLATE, DASHBOARD_TOKEN_PLACEHOLDER,
+        DashboardCreateScheduleRequest, DashboardEnableExtensionRequest, DashboardState,
+        MAXIMUM_JAVASCRIPT_SAFE_INTEGER, dashboard_memory_source_locator,
+        schedule_matches_create_request, valid_admin_usage_report, valid_dashboard_image_artifact,
+        valid_dashboard_image_input, valid_dashboard_mutation_origin,
+        valid_dashboard_request_origin, valid_dashboard_schedule_create_request,
+        valid_dashboard_token, valid_delegation_projection, valid_extension_enable_request,
+        valid_extension_response, valid_memories_response, valid_memory_response,
+        valid_memory_search_response, valid_reconciliation_evidence, valid_schedule_response,
+        valid_schedule_runs_response, valid_task_response,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
+    use mealy_domain::{DelegationId, RunId, TaskId};
     use mealy_protocol::{
-        AdminUsageBucketResponse, AdminUsageReportResponse, ExtensionFilesystemAccessCommand,
+        AdminUsageBucketResponse, AdminUsageReportResponse, ArtifactMetadataResponse,
+        DelegationResponse, DelegationsResponse, ExtensionFilesystemAccessCommand,
         ExtensionMountGrantCommand, ExtensionResponse, ExtensionStatusResponse, MemoriesResponse,
         MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, MissedRunPolicyCommand,
-        ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse, TaskResponse,
+        ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
+        SubmitImageInputRequest, TaskResponse,
     };
     use reqwest::Client;
     use serde_json::json;
@@ -4314,6 +4672,87 @@ mod tests {
             detail_permit: Arc::new(Semaphore::new(1)),
             command_permit: Arc::new(Semaphore::new(1)),
         }
+    }
+
+    #[test]
+    fn image_input_and_preview_are_exact_route_identity_and_digest_bounded() {
+        let artifact_id = "019f0000-0000-7000-8000-000000000071";
+        let mut request: SubmitImageInputRequest = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "idempotencyKey": "dashboard-image-stable-1",
+            "deliveryMode": "queue",
+            "content": "Describe the selected image.",
+            "providerSelection": {
+                "mode": "exact",
+                "providerId": "fixture.responses",
+                "modelId": "fixture-vision"
+            },
+            "images": [{
+                "artifactId": artifact_id,
+                "mediaType": "image/png",
+                "dataBase64": "iVBORw=="
+            }]
+        }))
+        .expect("image input request");
+        assert!(valid_dashboard_image_input(&request));
+        request.provider_selection = mealy_protocol::ProviderSelectionCommand::Automatic;
+        assert!(!valid_dashboard_image_input(&request));
+        request.provider_selection = mealy_protocol::ProviderSelectionCommand::Exact {
+            provider_id: "fixture.responses".to_owned(),
+            model_id: "fixture-vision".to_owned(),
+        };
+        request.images[0].data_base64 = "iVBORw".to_owned();
+        assert!(!valid_dashboard_image_input(&request));
+
+        let mut metadata = ArtifactMetadataResponse {
+            api_version: "v1".to_owned(),
+            artifact_id: artifact_id.to_owned(),
+            algorithm: "sha256".to_owned(),
+            digest: "a".repeat(64),
+            size_bytes: 4,
+            media_type: "image/png".to_owned(),
+            origin_kind: "effect_attempt".to_owned(),
+            origin_id: "019f0000-0000-7000-8000-000000000072".to_owned(),
+            producer_kind: "image_generation".to_owned(),
+            producer_id: "fixture.images".to_owned(),
+            sensitivity: "private".to_owned(),
+            retention_class: "task_evidence".to_owned(),
+            access_policy_digest: "b".repeat(64),
+            created_at_ms: 1_800_000_000_000,
+        };
+        assert!(valid_dashboard_image_artifact(&metadata, artifact_id));
+        metadata.media_type = "image/svg+xml".to_owned();
+        assert!(!valid_dashboard_image_artifact(&metadata, artifact_id));
+    }
+
+    #[test]
+    fn delegation_cards_require_unique_canonical_bounded_evidence() {
+        let delegation = DelegationResponse {
+            api_version: API_VERSION.to_owned(),
+            delegation_id: DelegationId::new().to_string(),
+            parent_run_id: RunId::new().to_string(),
+            child_task_id: TaskId::new().to_string(),
+            child_run_id: RunId::new().to_string(),
+            effective_capabilities: json!({"enabledReadTools": ["workspace.read"]}),
+            child_budget: json!({"maximumModelCalls": 2}),
+            state: "running".to_owned(),
+            result: None,
+        };
+        let response = DelegationsResponse {
+            api_version: API_VERSION.to_owned(),
+            delegations: vec![delegation.clone()],
+        };
+        assert!(valid_delegation_projection(&response));
+
+        let mut duplicate = response.clone();
+        duplicate.delegations.push(delegation);
+        assert!(!valid_delegation_projection(&duplicate));
+
+        let mut oversized = response;
+        oversized.delegations[0].result = Some(json!(
+            "x".repeat(super::MAXIMUM_DASHBOARD_DELEGATION_EVIDENCE_BYTES + 1)
+        ));
+        assert!(!valid_delegation_projection(&oversized));
     }
 
     #[test]

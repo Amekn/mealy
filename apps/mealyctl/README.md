@@ -226,6 +226,13 @@ non-secret configuration, not a credential path. See
 [`docs/QUICKSTART.md`](../../docs/QUICKSTART.md) for the isolation, drift, cancellation, replay,
 backup, unsupported-platform, and recovery boundaries.
 
+The separate top-level `mcp-http` namespace governs stable-2025-11-25 Streamable HTTP tools,
+static resources, and prompts. `mcp-http oauth-inspect SERVER ENDPOINT` performs only bounded,
+redirect-free, DNS-pinned protected-resource and OAuth/OIDC metadata discovery; multiple issuers
+require `--authorization-server EXACT_ISSUER`, and PKCE S256 is mandatory. It creates no OAuth
+client, token, broker entry, configuration, or tool authority. OAuth registration/login/token
+lifecycle remains a later v0.4 slice.
+
 `config browser-inspect BUNDLE` verifies a complete Chrome Headless Shell inventory and runs only
 its version probe in a no-network/no-home namespace. After web destinations are enabled,
 `browser-add BUNDLE --approve` copies exact bytes into content-addressed private storage and must

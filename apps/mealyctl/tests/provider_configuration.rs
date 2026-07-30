@@ -1441,6 +1441,90 @@ fn provider_secret_revocation_requires_stopped_unreferenced_explicit_authority()
 }
 
 #[test]
+fn provider_image_input_requires_explicit_authority_and_only_direct_routes() {
+    let rejected_home = tempfile::tempdir().expect("temporary rejected Mealy home");
+    fs::create_dir(rejected_home.path().join("config-history"))
+        .expect("rejected configuration history");
+    fs::write(
+        rejected_home.path().join("config.json"),
+        serde_json::to_vec_pretty(&default_config()).expect("encode rejected config"),
+    )
+    .expect("write rejected config");
+    let rejected = provider_image_input(rejected_home.path(), true, true);
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("provider configuration is invalid")
+    );
+    let unchanged: Value = serde_json::from_slice(
+        &fs::read(rejected_home.path().join("config.json")).expect("unchanged config"),
+    )
+    .expect("unchanged JSON");
+    assert!(unchanged.get("imageInputEnabled").is_none());
+
+    let home = tempfile::tempdir().expect("temporary Mealy home");
+    fs::create_dir(home.path().join("config-history")).expect("configuration history");
+    fs::write(
+        home.path().join("config.json"),
+        serde_json::to_vec_pretty(&default_config()).expect("encode default config"),
+    )
+    .expect("write default config");
+    let configured = configure(home.path(), "image-provider-secret");
+    assert!(
+        configured.status.success(),
+        "direct provider configuration failed: {}",
+        String::from_utf8_lossy(&configured.stderr)
+    );
+
+    let unapproved = provider_image_input(home.path(), true, false);
+    assert!(!unapproved.status.success());
+    let before: Value = serde_json::from_slice(
+        &fs::read(home.path().join("config.json")).expect("unapproved config"),
+    )
+    .expect("unapproved JSON");
+    assert!(before.get("imageInputEnabled").is_none());
+
+    let enabled = provider_image_input(home.path(), true, true);
+    assert!(
+        enabled.status.success(),
+        "image input enable failed: {}",
+        String::from_utf8_lossy(&enabled.stderr)
+    );
+    let response: Value = serde_json::from_slice(&enabled.stdout).expect("enable response");
+    assert_eq!(response["enabled"], true);
+    assert_eq!(response["providerIds"], json!(["test.responses"]));
+    assert_eq!(response["restartRequired"], true);
+    let enabled_config: Value =
+        serde_json::from_slice(&fs::read(home.path().join("config.json")).expect("enabled config"))
+            .expect("enabled JSON");
+    assert_eq!(enabled_config["imageInputEnabled"], true);
+
+    let disabled = provider_image_input(home.path(), false, true);
+    assert!(
+        disabled.status.success(),
+        "image input disable failed: {}",
+        String::from_utf8_lossy(&disabled.stderr)
+    );
+    let response: Value = serde_json::from_slice(&disabled.stdout).expect("disable response");
+    assert_eq!(response["enabled"], false);
+    let disabled_config: Value = serde_json::from_slice(
+        &fs::read(home.path().join("config.json")).expect("disabled config"),
+    )
+    .expect("disabled JSON");
+    assert!(disabled_config.get("imageInputEnabled").is_none());
+    assert!(
+        fs::read_dir(home.path().join("config-history"))
+            .expect("configuration history")
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("pre-provider-image-input-")
+            })
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn config_provider_brokers_secret_and_rejects_ambiguous_rotation() {
     let home = tempfile::tempdir().expect("temporary Mealy home");
@@ -2180,6 +2264,19 @@ fn web_enable(home: &Path, approve: bool) -> std::process::Output {
         command.arg("--approve");
     }
     command.output().expect("enable web access")
+}
+
+fn provider_image_input(home: &Path, enable: bool, approve: bool) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_mealyctl"));
+    command
+        .arg("--home")
+        .arg(home)
+        .args(["media", "image-input"])
+        .arg(if enable { "--enable" } else { "--disable" });
+    if approve {
+        command.arg("--approve");
+    }
+    command.output().expect("configure provider image input")
 }
 
 fn workspace_config(

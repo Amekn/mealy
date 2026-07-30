@@ -5,10 +5,12 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mealy_application::{
-    BROWSER_CDP_PROTOCOL_VERSION, BrowserConfig, BrowserSnapshotRequest, CancellationProbe,
-    ReadOnlyTool, ReadToolDescriptor, ReadToolError, ReadToolOutput, WebAccessConfig,
-    browser_maximum_screenshot_bytes, browser_snapshot_descriptor, sha256_digest,
-    validate_browser_snapshot_arguments,
+    BROWSER_CDP_PROTOCOL_VERSION, BROWSER_MAXIMUM_FORM_CONTROLS, BROWSER_MAXIMUM_FORMS,
+    BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES, BrowserConfig, BrowserSnapshotRequest,
+    BrowserTransactionRequest, CancellationProbe, ReadOnlyTool, ReadToolDescriptor, ReadToolError,
+    ReadToolOutput, ToolDescriptor, WebAccessConfig, browser_maximum_screenshot_bytes,
+    browser_snapshot_descriptor, browser_transaction_tool_descriptor,
+    normalize_browser_transaction_arguments, sha256_digest, validate_browser_snapshot_arguments,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -43,6 +45,7 @@ const BROWSER_SANDBOX_BUNDLE: &str = "/browser";
 const BROWSER_SANDBOX_EXECUTABLE: &str = "/browser/chrome-headless-shell";
 const BROWSER_SANDBOX_PROFILE: &str = "/profile";
 const BROWSER_SANDBOX_DOWNLOADS: &str = "/profile/mealy-downloads";
+const BROWSER_SANDBOX_UPLOADS: &str = "/uploads";
 const BROWSER_SANDBOX_PROXY: &str = "/run/mealy/browser-proxy.sock";
 const BROWSER_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const BROWSER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -211,6 +214,58 @@ const BROWSER_READ_ONLY_BOOTSTRAP: &str = r"(() => {
     });
   } catch (_) {}
 })();";
+
+const BROWSER_TRANSACTION_BOOTSTRAP: &str = r"(() => {
+  const denied = () => { throw new DOMException('Blocked by Mealy transactional browser policy', 'SecurityError'); };
+  try { Object.defineProperty(globalThis, 'open', {value: denied, writable: false, configurable: false}); } catch (_) {}
+  for (const name of ['WebSocket', 'EventSource']) {
+    try { Object.defineProperty(globalThis, name, {value: class { constructor() { denied(); } }, writable: false, configurable: false}); } catch (_) {}
+  }
+  try { Object.defineProperty(navigator, 'sendBeacon', {value: () => false, writable: false, configurable: false}); } catch (_) {}
+  try {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    Object.defineProperty(globalThis, 'fetch', {value: (input, init = {}) => {
+      const method = String(init.method || (input && input.method) || 'GET').toUpperCase();
+      return method === 'GET' || method === 'HEAD' ? originalFetch(input, init) : Promise.reject(new DOMException('Blocked by Mealy transactional browser policy', 'SecurityError'));
+    }, writable: false, configurable: false});
+  } catch (_) {}
+  try {
+    const originalOpen = XMLHttpRequest.prototype.open;
+    Object.defineProperty(XMLHttpRequest.prototype, 'open', {value: function(method, ...rest) {
+      const normalized = String(method || 'GET').toUpperCase();
+      if (normalized !== 'GET' && normalized !== 'HEAD') denied();
+      return originalOpen.call(this, normalized, ...rest);
+    }, writable: false, configurable: false});
+  } catch (_) {}
+})();";
+
+const BROWSER_CONTROLLED_FORM_FUNCTION: &str = r"function (action, encoding, hidden, fields, uploads, submitter) {
+      try {
+        const form = document.createElement('form');
+        form.setAttribute('action', String(action));
+        form.setAttribute('method', 'post');
+        form.setAttribute('enctype', String(encoding));
+        form.setAttribute('target', '_self');
+        const appendHidden = (name, value) => {
+          const control = document.createElement('input');
+          control.setAttribute('type', 'hidden');
+          control.setAttribute('name', String(name));
+          control.value = String(value);
+          form.appendChild(control);
+        };
+        for (const field of hidden) appendHidden(field.name, field.value);
+        for (const field of fields) appendHidden(field.name, field.value);
+        for (const name of uploads) {
+          const control = document.createElement('input');
+          control.setAttribute('type', 'file');
+          control.setAttribute('name', String(name));
+          form.appendChild(control);
+        }
+        if (submitter !== null) appendHidden(submitter.name, submitter.value);
+        document.body.replaceChildren(form);
+        return form;
+      } catch (_) { return null; }
+    }";
 
 struct NeverCancelled;
 
@@ -675,12 +730,13 @@ impl BrowserReadTool {
             Arc::clone(&self.web_config),
             initial_url.origin().ascii_serialization(),
             cancellation,
+            false,
         )?;
-        let worker_request = BrowserWorkerRequest {
+        let worker_request = BrowserWorkerRequest::Snapshot(BrowserSnapshotWorkerRequest {
             request,
             expected_product: self.config.product().to_owned(),
             expected_protocol_version: self.config.protocol_version().to_owned(),
-        };
+        });
         let input =
             serde_json::to_vec(&worker_request).map_err(|_| BrowserHostError::InvalidProtocol)?;
         if input.len() > BROWSER_MAXIMUM_WORKER_INPUT_BYTES {
@@ -744,47 +800,13 @@ impl BrowserReadTool {
     }
 
     fn spawn_worker(&self, call: &BrowserCallDirectory) -> Result<Child, BrowserHostError> {
-        let mut command = Command::new(&self.bubblewrap_path);
-        command.env_clear().args([
-            "--unshare-all",
-            "--unshare-user",
-            "--disable-userns",
-            "--die-with-parent",
-            "--new-session",
-            "--clearenv",
-            "--cap-drop",
-            "ALL",
-            "--hostname",
-            "mealy-browser",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--dir",
-            "/runtime",
-            "--dir",
-            "/run",
-            "--dir",
-            "/run/mealy",
-        ]);
-        for (source, target) in browser_runtime_mounts() {
-            command.arg("--ro-bind").arg(source).arg(target);
-        }
+        let mut command = browser_worker_command(
+            &self.bubblewrap_path,
+            &self.worker_path,
+            &self.bundle_path,
+            call,
+        );
         command
-            .arg("--ro-bind")
-            .arg(&self.worker_path)
-            .arg(BROWSER_SANDBOX_WORKER)
-            .arg("--ro-bind")
-            .arg(&self.bundle_path)
-            .arg(BROWSER_SANDBOX_BUNDLE)
-            .arg("--bind")
-            .arg(call.profile_path())
-            .arg(BROWSER_SANDBOX_PROFILE)
-            .arg("--bind")
-            .arg(call.proxy_path())
-            .arg(BROWSER_SANDBOX_PROXY)
             .arg("--setenv")
             .arg("HOME")
             .arg(BROWSER_SANDBOX_PROFILE)
@@ -802,6 +824,559 @@ impl BrowserReadTool {
             .spawn()
             .map_err(|_| BrowserHostError::ProcessFailed)
     }
+}
+
+fn browser_worker_command(
+    bubblewrap_path: &Path,
+    worker_path: &Path,
+    bundle_path: &Path,
+    call: &BrowserCallDirectory,
+) -> Command {
+    let mut command = Command::new(bubblewrap_path);
+    command.env_clear().args([
+        "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
+        "--die-with-parent",
+        "--new-session",
+        "--clearenv",
+        "--cap-drop",
+        "ALL",
+        "--hostname",
+        "mealy-browser",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/runtime",
+        "--dir",
+        "/run",
+        "--dir",
+        "/run/mealy",
+    ]);
+    for (source, target) in browser_runtime_mounts() {
+        command.arg("--ro-bind").arg(source).arg(target);
+    }
+    command
+        .arg("--ro-bind")
+        .arg(worker_path)
+        .arg(BROWSER_SANDBOX_WORKER)
+        .arg("--ro-bind")
+        .arg(bundle_path)
+        .arg(BROWSER_SANDBOX_BUNDLE)
+        .arg("--bind")
+        .arg(call.profile_path())
+        .arg(BROWSER_SANDBOX_PROFILE)
+        .arg("--bind")
+        .arg(call.proxy_path())
+        .arg(BROWSER_SANDBOX_PROXY);
+    command
+}
+
+/// One already verified owner-private artifact supplied to a transactional browser call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserTransactionUploadFile {
+    control_name: String,
+    artifact_id: String,
+    artifact_digest: String,
+    file_name: String,
+    media_type: String,
+    bytes: Vec<u8>,
+}
+
+impl BrowserTransactionUploadFile {
+    /// Constructs bytes that must exactly match one normalized transaction upload binding.
+    ///
+    /// Validation against the canonical artifact row and blob remains the caller's responsibility;
+    /// this adapter independently rechecks the request metadata before mounting any bytes.
+    #[must_use]
+    pub fn new(
+        control_name: String,
+        artifact_id: String,
+        artifact_digest: String,
+        file_name: String,
+        media_type: String,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            control_name,
+            artifact_id,
+            artifact_digest,
+            file_name,
+            media_type,
+            bytes,
+        }
+    }
+}
+
+/// Bounded download bytes confirmed by one transactional browser attempt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserTransactionDownload {
+    /// Untrusted response media type normalized by the worker.
+    pub media_type: String,
+    /// Exact same-origin response URL.
+    pub url: String,
+    /// Verified SHA-256 digest of [`Self::bytes`].
+    pub digest: String,
+    /// Bytes awaiting atomic owner-private artifact publication.
+    pub bytes: Vec<u8>,
+}
+
+/// Confirmed transaction response before the agent atomically publishes any download artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BrowserTransactionExecution {
+    /// Canonical bounded response evidence with no embedded binary.
+    pub evidence: Value,
+    /// Optional confirmed response download.
+    pub download: Option<BrowserTransactionDownload>,
+}
+
+/// Startup-verified one-shot transactional browser adapter.
+pub struct BrowserTransactionTool {
+    descriptor: ToolDescriptor,
+    config: BrowserConfig,
+    web_config: Arc<WebAccessConfig>,
+    bundle_path: PathBuf,
+    bubblewrap_path: PathBuf,
+    worker_path: PathBuf,
+    worker_digest: String,
+    calls_root: PathBuf,
+    invocation_count: AtomicUsize,
+}
+
+impl std::fmt::Debug for BrowserTransactionTool {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserTransactionTool")
+            .field("descriptor", &self.descriptor)
+            .field("config", &self.config)
+            .field("bundle_path", &self.bundle_path)
+            .field("worker_path", &self.worker_path)
+            .field("invocation_count", &self.invocation_count())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BrowserTransactionTool {
+    /// Loads one separately enabled content-pinned transaction profile.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed for disabled transaction authority, unsafe web configuration, redirected
+    /// paths, runtime drift, or an untrusted Bubblewrap executable.
+    pub fn load(
+        home: &Path,
+        bubblewrap_path: &Path,
+        worker_path: &Path,
+        config: BrowserConfig,
+        web_config: WebAccessConfig,
+    ) -> Result<Self, BrowserHostError> {
+        if !cfg!(target_os = "linux") {
+            return Err(BrowserHostError::UnsupportedHost);
+        }
+        config
+            .validate()
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        web_config
+            .validate()
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        if !config.enabled() || !config.transactional_enabled() || !web_config.enabled {
+            return Err(BrowserHostError::InvalidConfiguration);
+        }
+        let home = exact_canonical_directory(home)?;
+        let bundle_path = exact_canonical_directory(&home.join(config.bundle_path()))?;
+        if !bundle_path.starts_with(&home) {
+            return Err(BrowserHostError::InvalidConfiguration);
+        }
+        let inspection = inspect_browser_bundle(&bundle_path, Some(config.bundle_digest()))
+            .map_err(|_| BrowserHostError::IdentityMismatch)?;
+        if inspection.executable_digest() != config.executable_digest() {
+            return Err(BrowserHostError::IdentityMismatch);
+        }
+        let bubblewrap_path = exact_canonical_file(bubblewrap_path)?;
+        if !is_trusted_system_executable(&bubblewrap_path) {
+            return Err(BrowserHostError::UnsupportedHost);
+        }
+        let worker_path = exact_canonical_file(worker_path)?;
+        let worker_digest = digest_file(&worker_path)?;
+        let descriptor = browser_transaction_tool_descriptor(&config)
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        let calls_root = create_private_directory(&home.join("runtime/browser-transaction-calls"))?;
+        Ok(Self {
+            descriptor,
+            config,
+            web_config: Arc::new(web_config),
+            bundle_path,
+            bubblewrap_path,
+            worker_path,
+            worker_digest,
+            calls_root,
+            invocation_count: AtomicUsize::new(0),
+        })
+    }
+
+    /// Exact configured effect descriptor.
+    #[must_use]
+    pub fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    /// Exact stopped-daemon browser configuration bound to this adapter.
+    #[must_use]
+    pub const fn config(&self) -> &BrowserConfig {
+        &self.config
+    }
+
+    /// Number of transaction calls that reached this adapter process.
+    #[must_use]
+    pub fn invocation_count(&self) -> usize {
+        self.invocation_count.load(Ordering::SeqCst)
+    }
+
+    /// Performs one already approved transaction in a fresh isolated profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrowserHostError`] for request/upload drift, runtime drift, destination denial,
+    /// cancellation, timeout, an ambiguous worker boundary, or invalid response evidence.
+    pub fn execute(
+        &self,
+        arguments: &Value,
+        uploads: &[BrowserTransactionUploadFile],
+        cancellation: &dyn CancellationProbe,
+    ) -> Result<BrowserTransactionExecution, BrowserHostError> {
+        self.invocation_count.fetch_add(1, Ordering::SeqCst);
+        self.verify_identity()?;
+        let canonical = normalize_browser_transaction_arguments(arguments)
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        if canonical != *arguments {
+            return Err(BrowserHostError::InvalidConfiguration);
+        }
+        let request = serde_json::from_value::<BrowserTransactionRequest>(canonical)
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        let initial_url = Url::parse(request.initial_url())
+            .map_err(|_| BrowserHostError::InvalidConfiguration)?;
+        resolve_pinned_web_destination(&initial_url, &self.web_config)
+            .map_err(|_| BrowserHostError::DestinationDenied)?;
+        if cancellation.is_cancelled() {
+            return Err(BrowserHostError::Cancelled);
+        }
+        let call = BrowserCallDirectory::create(&self.calls_root)?;
+        let upload_paths = stage_browser_transaction_uploads(&call, &request, uploads)?;
+        let proxy = BrowserProxy::start(
+            call.proxy_path(),
+            Arc::clone(&self.web_config),
+            initial_url.origin().ascii_serialization(),
+            cancellation,
+            true,
+        )?;
+        let worker_request = BrowserWorkerRequest::Transaction(BrowserTransactionWorkerRequest {
+            request,
+            upload_paths,
+            expected_product: self.config.product().to_owned(),
+            expected_protocol_version: self.config.protocol_version().to_owned(),
+        });
+        let input =
+            serde_json::to_vec(&worker_request).map_err(|_| BrowserHostError::InvalidProtocol)?;
+        if input.len() > BROWSER_MAXIMUM_WORKER_INPUT_BYTES {
+            return Err(BrowserHostError::OutputLimitExceeded);
+        }
+        let mut child = self.spawn_worker(&call)?;
+        child
+            .stdin
+            .take()
+            .ok_or(BrowserHostError::ProcessFailed)?
+            .write_all(&input)
+            .map_err(|_| BrowserHostError::ProcessFailed)?;
+        let stdout = child.stdout.take().ok_or(BrowserHostError::ProcessFailed)?;
+        let stderr = child.stderr.take().ok_or(BrowserHostError::ProcessFailed)?;
+        let stdout_thread =
+            thread::spawn(move || read_bounded_stream(stdout, BROWSER_MAXIMUM_WORKER_OUTPUT_BYTES));
+        let stderr_thread =
+            thread::spawn(move || read_bounded_stream(stderr, BROWSER_MAXIMUM_STDERR_BYTES));
+        let started = Instant::now();
+        let status = loop {
+            if cancellation.is_cancelled() {
+                terminate_child(&mut child);
+                drop(proxy);
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(BrowserHostError::Cancelled);
+            }
+            if started.elapsed() >= BROWSER_CALL_TIMEOUT {
+                terminate_child(&mut child);
+                drop(proxy);
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(BrowserHostError::TimedOut);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => thread::sleep(BROWSER_POLL_INTERVAL),
+                Err(_) => {
+                    terminate_child(&mut child);
+                    return Err(BrowserHostError::ProcessFailed);
+                }
+            }
+        };
+        drop(proxy);
+        let output = stdout_thread
+            .join()
+            .map_err(|_| BrowserHostError::ProcessFailed)??;
+        let stderr = stderr_thread
+            .join()
+            .map_err(|_| BrowserHostError::ProcessFailed)??;
+        if !status.success() || !stderr.is_empty() {
+            return Err(BrowserHostError::ProcessFailed);
+        }
+        let envelope = serde_json::from_slice::<BrowserWorkerResponse>(&output)
+            .map_err(|_| BrowserHostError::InvalidProtocol)?;
+        match (envelope.result, envelope.error, envelope.error_stage) {
+            (Some(result), None, None) => decode_browser_transaction_result(
+                result,
+                self.config.product(),
+                self.config.protocol_version(),
+            ),
+            (None, Some(error), Some(stage)) => Err(error.into_host_error(stage)),
+            _ => Err(BrowserHostError::InvalidProtocol),
+        }
+    }
+
+    fn verify_identity(&self) -> Result<(), BrowserHostError> {
+        if digest_file(&self.worker_path)? != self.worker_digest {
+            return Err(BrowserHostError::IdentityMismatch);
+        }
+        let inspection =
+            inspect_browser_bundle(&self.bundle_path, Some(self.config.bundle_digest()))
+                .map_err(|_| BrowserHostError::IdentityMismatch)?;
+        if inspection.executable_digest() != self.config.executable_digest() {
+            return Err(BrowserHostError::IdentityMismatch);
+        }
+        Ok(())
+    }
+
+    fn spawn_worker(&self, call: &BrowserCallDirectory) -> Result<Child, BrowserHostError> {
+        let mut command = browser_worker_command(
+            &self.bubblewrap_path,
+            &self.worker_path,
+            &self.bundle_path,
+            call,
+        );
+        command
+            .arg("--ro-bind")
+            .arg(call.uploads_path())
+            .arg(BROWSER_SANDBOX_UPLOADS)
+            .arg("--setenv")
+            .arg("HOME")
+            .arg(BROWSER_SANDBOX_PROFILE)
+            .arg("--setenv")
+            .arg("LANG")
+            .arg("C.UTF-8")
+            .arg("--chdir")
+            .arg(BROWSER_SANDBOX_PROFILE)
+            .arg("--")
+            .arg(BROWSER_SANDBOX_WORKER)
+            .arg(BROWSER_WORKER_ARGUMENT)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| BrowserHostError::ProcessFailed)
+    }
+}
+
+fn stage_browser_transaction_uploads(
+    call: &BrowserCallDirectory,
+    request: &BrowserTransactionRequest,
+    uploads: &[BrowserTransactionUploadFile],
+) -> Result<Vec<String>, BrowserHostError> {
+    if request.uploads().len() != uploads.len() {
+        return Err(BrowserHostError::InvalidConfiguration);
+    }
+    let mut paths = Vec::with_capacity(uploads.len());
+    for (index, (binding, upload)) in request.uploads().iter().zip(uploads).enumerate() {
+        let size = u64::try_from(upload.bytes.len()).unwrap_or(u64::MAX);
+        if upload.control_name != binding.control_name()
+            || upload.artifact_id != binding.artifact_id()
+            || upload.artifact_digest != binding.artifact_digest()
+            || upload.file_name != binding.file_name()
+            || upload.media_type != binding.media_type()
+            || size != binding.size_bytes()
+            || sha256_digest(&upload.bytes) != upload.artifact_digest
+        {
+            return Err(BrowserHostError::IdentityMismatch);
+        }
+        let directory_name = format!("upload-{index}");
+        let directory = call.uploads_path().join(&directory_name);
+        fs::create_dir(&directory).map_err(io_error)?;
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+        let path = directory.join(binding.file_name());
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(io_error)?;
+        file.write_all(&upload.bytes).map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).map_err(io_error)?;
+        paths.push(format!(
+            "{BROWSER_SANDBOX_UPLOADS}/{directory_name}/{}",
+            binding.file_name()
+        ));
+    }
+    Ok(paths)
+}
+
+fn decode_browser_transaction_result(
+    mut result: Value,
+    expected_product: &str,
+    expected_protocol_version: &str,
+) -> Result<BrowserTransactionExecution, BrowserHostError> {
+    let object = result
+        .as_object_mut()
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let expected = BTreeSet::from([
+        "browserProduct",
+        "download",
+        "finalUrl",
+        "formDigest",
+        "protocolVersion",
+        "requestDigest",
+        "responseStatus",
+        "text",
+        "title",
+        "truncatedText",
+    ]);
+    if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+        return Err(BrowserHostError::InvalidProtocol);
+    }
+    let download = object
+        .remove("download")
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let download = decode_browser_transaction_download(&download)?;
+    let final_url = object
+        .get("finalUrl")
+        .and_then(Value::as_str)
+        .filter(|url| !url.is_empty() && url.len() <= 4_096)
+        .and_then(|url| Url::parse(url).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    if object.get("browserProduct").and_then(Value::as_str) != Some(expected_product)
+        || object.get("protocolVersion").and_then(Value::as_str) != Some(expected_protocol_version)
+        || object
+            .get("title")
+            .and_then(Value::as_str)
+            .is_none_or(|title| title.len() > 4_096 || title.chars().any(char::is_control))
+        || object
+            .get("text")
+            .and_then(Value::as_str)
+            .is_none_or(|text| text.len() > 128 * 1_024 || text.chars().any(char::is_control))
+        || object
+            .get("truncatedText")
+            .and_then(Value::as_bool)
+            .is_none()
+        || object
+            .get("formDigest")
+            .and_then(Value::as_str)
+            .is_none_or(|digest| !mealy_application::is_sha256_digest(digest))
+        || object
+            .get("requestDigest")
+            .and_then(Value::as_str)
+            .is_none_or(|digest| !mealy_application::is_sha256_digest(digest))
+    {
+        return Err(BrowserHostError::InvalidProtocol);
+    }
+    let response_status = cdp_nonnegative_integer(object.get("responseStatus"))?;
+    if !(100..=599).contains(&response_status) {
+        return Err(BrowserHostError::InvalidProtocol);
+    }
+    object.insert("responseStatus".to_owned(), Value::from(response_status));
+    if download
+        .as_ref()
+        .and_then(|download| Url::parse(&download.url).ok())
+        .is_some_and(|url| url.origin() != final_url.origin())
+    {
+        return Err(BrowserHostError::InvalidDownloadProtocol);
+    }
+    Ok(BrowserTransactionExecution {
+        evidence: result,
+        download,
+    })
+}
+
+fn decode_browser_transaction_download(
+    download: &Value,
+) -> Result<Option<BrowserTransactionDownload>, BrowserHostError> {
+    if download.is_null() {
+        return Ok(None);
+    }
+    let download = download
+        .as_object()
+        .ok_or(BrowserHostError::InvalidDownloadProtocol)?;
+    if download.keys().map(String::as_str).collect::<BTreeSet<_>>()
+        != BTreeSet::from([
+            "dataBase64",
+            "mediaType",
+            "sha256Digest",
+            "sizeBytes",
+            "url",
+        ])
+    {
+        return Err(BrowserHostError::InvalidDownloadProtocol);
+    }
+    let encoded = download
+        .get("dataBase64")
+        .and_then(Value::as_str)
+        .ok_or(BrowserHostError::InvalidDownloadProtocol)?;
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| BrowserHostError::InvalidDownloadProtocol)?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let digest = download
+        .get("sha256Digest")
+        .and_then(Value::as_str)
+        .filter(|digest| {
+            mealy_application::is_sha256_digest(digest) && *digest == sha256_digest(&bytes)
+        })
+        .ok_or(BrowserHostError::InvalidDownloadProtocol)?;
+    if size == 0
+        || size > BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES
+        || download.get("sizeBytes").and_then(Value::as_u64) != Some(size)
+    {
+        return Err(BrowserHostError::InvalidDownloadProtocol);
+    }
+    let media_type = download
+        .get("mediaType")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.contains('/')
+                && !value.chars().any(char::is_control)
+        })
+        .ok_or(BrowserHostError::InvalidDownloadProtocol)?;
+    let url = download
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|url| {
+            !url.is_empty()
+                && url.len() <= 4_096
+                && Url::parse(url).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                })
+        })
+        .ok_or(BrowserHostError::InvalidDownloadProtocol)?;
+    Ok(Some(BrowserTransactionDownload {
+        media_type: media_type.to_owned(),
+        url: url.to_owned(),
+        digest: digest.to_owned(),
+        bytes,
+    }))
 }
 
 impl ReadOnlyTool for BrowserReadTool {
@@ -898,8 +1473,24 @@ fn map_browser_read_error(error: &BrowserHostError) -> ReadToolError {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BrowserWorkerRequest {
+enum BrowserWorkerRequest {
+    Snapshot(BrowserSnapshotWorkerRequest),
+    Transaction(BrowserTransactionWorkerRequest),
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserSnapshotWorkerRequest {
     request: BrowserSnapshotRequest,
+    expected_product: String,
+    expected_protocol_version: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BrowserTransactionWorkerRequest {
+    request: BrowserTransactionRequest,
+    upload_paths: Vec<String>,
     expected_product: String,
     expected_protocol_version: String,
 }
@@ -951,6 +1542,13 @@ enum BrowserWorkerStage {
     DownloadValidation,
     DownloadRead,
     DocumentIdentity,
+    FormCatalog,
+    TransactionFormCatalog,
+    TransactionFormPreparation,
+    TransactionUpload,
+    TransactionDispatch,
+    TransactionWait,
+    TransactionResult,
     AccessibilityTree,
     AccessibilityNormalization,
     Screenshot,
@@ -993,6 +1591,13 @@ impl BrowserWorkerStage {
             Self::DownloadValidation => "download_validation",
             Self::DownloadRead => "download_read",
             Self::DocumentIdentity => "document_identity",
+            Self::FormCatalog => "form_catalog",
+            Self::TransactionFormCatalog => "transaction_form_catalog",
+            Self::TransactionFormPreparation => "transaction_form_preparation",
+            Self::TransactionUpload => "transaction_upload",
+            Self::TransactionDispatch => "transaction_dispatch",
+            Self::TransactionWait => "transaction_wait",
+            Self::TransactionResult => "transaction_result",
             Self::AccessibilityTree => "accessibility_tree",
             Self::AccessibilityNormalization => "accessibility_normalization",
             Self::Screenshot => "screenshot",
@@ -1136,6 +1741,7 @@ struct BrowserCallDirectory {
     root: PathBuf,
     profile: PathBuf,
     proxy: PathBuf,
+    uploads: PathBuf,
 }
 
 impl BrowserCallDirectory {
@@ -1156,10 +1762,16 @@ impl BrowserCallDirectory {
                     #[cfg(unix)]
                     fs::set_permissions(&profile, fs::Permissions::from_mode(0o700))
                         .map_err(io_error)?;
+                    let uploads = root.join("uploads");
+                    fs::create_dir(&uploads).map_err(io_error)?;
+                    #[cfg(unix)]
+                    fs::set_permissions(&uploads, fs::Permissions::from_mode(0o700))
+                        .map_err(io_error)?;
                     return Ok(Self {
                         proxy: root.join("proxy.sock"),
                         root,
                         profile,
+                        uploads,
                     });
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -1177,6 +1789,10 @@ impl BrowserCallDirectory {
 
     fn proxy_path(&self) -> &Path {
         &self.proxy
+    }
+
+    fn uploads_path(&self) -> &Path {
+        &self.uploads
     }
 }
 
@@ -1199,6 +1815,7 @@ impl BrowserProxy {
         config: Arc<WebAccessConfig>,
         allowed_origin: String,
         _cancellation: &dyn CancellationProbe,
+        allow_post: bool,
     ) -> Result<Self, BrowserHostError> {
         let listener = UnixListener::bind(socket_path).map_err(io_error)?;
         listener.set_nonblocking(true).map_err(io_error)?;
@@ -1237,6 +1854,7 @@ impl BrowserProxy {
                                 &connection_origin,
                                 &connection_stop,
                                 &connection_bytes,
+                                allow_post,
                             );
                         }));
                     }
@@ -1266,6 +1884,7 @@ impl BrowserProxy {
         _config: Arc<WebAccessConfig>,
         _allowed_origin: String,
         _cancellation: &dyn CancellationProbe,
+        _allow_post: bool,
     ) -> Result<Self, BrowserHostError> {
         Err(BrowserHostError::UnsupportedHost)
     }
@@ -1286,12 +1905,14 @@ impl Drop for BrowserProxy {
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)] // Keep HTTP framing, authority, and body forwarding in one audit path.
 fn handle_proxy_connection(
     mut client: UnixStream,
     config: &WebAccessConfig,
     allowed_origin: &str,
     stop: &Arc<AtomicBool>,
     transferred: &Arc<AtomicU64>,
+    allow_post: bool,
 ) -> Result<(), BrowserHostError> {
     client
         .set_read_timeout(Some(BROWSER_IO_TIMEOUT))
@@ -1299,7 +1920,7 @@ fn handle_proxy_connection(
     client
         .set_write_timeout(Some(BROWSER_IO_TIMEOUT))
         .map_err(io_error)?;
-    let header = read_proxy_header(&mut client, stop)?;
+    let (header, prefetched_body) = read_proxy_header(&mut client, stop)?;
     let header_text = std::str::from_utf8(&header).map_err(|_| BrowserHostError::ProcessFailed)?;
     let mut lines = header_text[..header_text.len().saturating_sub(4)].split("\r\n");
     let request_line = lines.next().ok_or(BrowserHostError::ProcessFailed)?;
@@ -1311,11 +1932,22 @@ fn handle_proxy_connection(
     let method = fields[0];
     let target = fields[1];
     let headers = parse_proxy_headers(lines)?;
+    let content_length = headers
+        .get("content-length")
+        .map(|value| value.parse::<u64>())
+        .transpose()
+        .map_err(|_| BrowserHostError::DestinationDenied)?
+        .unwrap_or(0);
     if headers.contains_key("proxy-authorization")
         || headers.contains_key("transfer-encoding")
-        || headers
-            .get("content-length")
-            .is_some_and(|value| value != "0")
+        || !allow_post && content_length != 0
+        || content_length
+            > mealy_application::BROWSER_TRANSACTION_MAXIMUM_UPLOADS_BYTES
+                .saturating_add(
+                    u64::try_from(mealy_application::BROWSER_TRANSACTION_MAXIMUM_FIELDS_BYTES)
+                        .unwrap_or(u64::MAX),
+                )
+                .saturating_add(1024 * 1024)
     {
         write_proxy_error(&mut client, 403, "Forbidden");
         return Err(BrowserHostError::DestinationDenied);
@@ -1327,7 +1959,7 @@ fn handle_proxy_connection(
             .write_all(b"HTTP/1.1 200 Connection Established\r\nConnection: close\r\n\r\n")
             .map_err(io_error)?;
         relay_proxy_tunnel(&mut client, &mut remote, stop, transferred)
-    } else if matches!(method, "GET" | "HEAD") {
+    } else if matches!(method, "GET" | "HEAD") || allow_post && method == "POST" {
         let url = Url::parse(target).map_err(|_| BrowserHostError::DestinationDenied)?;
         if !matches!(url.scheme(), "http" | "https") || url.scheme() != "http" {
             write_proxy_error(&mut client, 403, "Forbidden");
@@ -1367,9 +1999,28 @@ fn handle_proxy_connection(
                 write!(remote, "{name}: {value}\r\n").map_err(io_error)?;
             }
         }
+        if method == "POST" {
+            write!(remote, "Content-Length: {content_length}\r\n").map_err(io_error)?;
+        }
         remote
             .write_all(b"Connection: close\r\n\r\n")
             .map_err(io_error)?;
+        if method == "POST" {
+            let prefetched_length = u64::try_from(prefetched_body.len()).unwrap_or(u64::MAX);
+            if prefetched_length > content_length {
+                return Err(BrowserHostError::DestinationDenied);
+            }
+            write_counted_proxy_bytes(&mut remote, &prefetched_body, stop, transferred)?;
+            copy_exact_bounded(
+                &mut client,
+                &mut remote,
+                content_length.saturating_sub(prefetched_length),
+                stop,
+                transferred,
+            )?;
+        } else if !prefetched_body.is_empty() {
+            return Err(BrowserHostError::DestinationDenied);
+        }
         copy_bounded(&mut remote, &mut client, stop, transferred)
     } else {
         write_proxy_error(&mut client, 405, "Method Not Allowed");
@@ -1381,7 +2032,7 @@ fn handle_proxy_connection(
 fn read_proxy_header(
     stream: &mut UnixStream,
     stop: &AtomicBool,
-) -> Result<Vec<u8>, BrowserHostError> {
+) -> Result<(Vec<u8>, Vec<u8>), BrowserHostError> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 2048];
     loop {
@@ -1392,14 +2043,16 @@ fn read_proxy_header(
             Ok(0) => return Err(BrowserHostError::ProcessFailed),
             Ok(read) => {
                 bytes.extend_from_slice(&buffer[..read]);
+                if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let header_length = position.saturating_add(4);
+                    if header_length > BROWSER_MAXIMUM_PROXY_HEADER_BYTES {
+                        return Err(BrowserHostError::OutputLimitExceeded);
+                    }
+                    let body = bytes.split_off(header_length);
+                    return Ok((bytes, body));
+                }
                 if bytes.len() > BROWSER_MAXIMUM_PROXY_HEADER_BYTES {
                     return Err(BrowserHostError::OutputLimitExceeded);
-                }
-                if bytes.ends_with(b"\r\n\r\n") {
-                    return Ok(bytes);
-                }
-                if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                    return Err(BrowserHostError::ProcessFailed);
                 }
             }
             Err(error)
@@ -1410,6 +2063,26 @@ fn read_proxy_header(
             Err(error) => return Err(io_error(error)),
         }
     }
+}
+
+fn write_counted_proxy_bytes(
+    destination: &mut impl Write,
+    bytes: &[u8],
+    stop: &AtomicBool,
+    transferred: &AtomicU64,
+) -> Result<(), BrowserHostError> {
+    if stop.load(Ordering::Acquire) {
+        return Err(BrowserHostError::Cancelled);
+    }
+    let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let total = transferred
+        .fetch_add(length, Ordering::AcqRel)
+        .saturating_add(length);
+    if total > BROWSER_MAXIMUM_PROXY_BYTES {
+        stop.store(true, Ordering::Release);
+        return Err(BrowserHostError::OutputLimitExceeded);
+    }
+    destination.write_all(bytes).map_err(io_error)
 }
 
 fn parse_proxy_headers<'a>(
@@ -1521,6 +2194,46 @@ fn copy_bounded(
     copy_bounded_with_local_stop(source, destination, stop, &local, transferred)
 }
 
+fn copy_exact_bounded(
+    source: &mut impl Read,
+    destination: &mut impl Write,
+    mut remaining: u64,
+    stop: &AtomicBool,
+    transferred: &AtomicU64,
+) -> Result<(), BrowserHostError> {
+    let mut buffer = [0_u8; 16 * 1024];
+    while remaining > 0 {
+        if stop.load(Ordering::Acquire) {
+            return Err(BrowserHostError::Cancelled);
+        }
+        let maximum = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        match source.read(&mut buffer[..maximum]) {
+            Ok(0) => return Err(BrowserHostError::ProcessFailed),
+            Ok(read) => {
+                let read_u64 = u64::try_from(read).unwrap_or(u64::MAX);
+                let total = transferred
+                    .fetch_add(read_u64, Ordering::AcqRel)
+                    .saturating_add(read_u64);
+                if total > BROWSER_MAXIMUM_PROXY_BYTES {
+                    stop.store(true, Ordering::Release);
+                    return Err(BrowserHostError::OutputLimitExceeded);
+                }
+                destination.write_all(&buffer[..read]).map_err(io_error)?;
+                remaining = remaining.saturating_sub(read_u64);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    Ok(())
+}
+
 fn copy_bounded_with_local_stop(
     source: &mut impl Read,
     destination: &mut impl Write,
@@ -1615,7 +2328,10 @@ pub fn browser_worker_main() -> std::process::ExitCode {
                 BrowserHostError::InvalidProtocol,
             )
         })?;
-        run_browser_worker(&request)
+        match &request {
+            BrowserWorkerRequest::Snapshot(request) => run_browser_worker(request),
+            BrowserWorkerRequest::Transaction(request) => run_browser_transaction_worker(request),
+        }
     })();
     let envelope = match response {
         Ok(result) => BrowserWorkerResponse {
@@ -1650,7 +2366,7 @@ pub fn browser_worker_main() -> std::process::ExitCode {
 
 #[cfg(unix)]
 fn run_browser_worker(
-    request: &BrowserWorkerRequest,
+    request: &BrowserSnapshotWorkerRequest,
 ) -> Result<Value, BrowserWorkerExecutionError> {
     if request.expected_protocol_version != BROWSER_CDP_PROTOCOL_VERSION
         || request.expected_product.is_empty()
@@ -1662,9 +2378,13 @@ fn run_browser_worker(
             BrowserHostError::InvalidConfiguration,
         ));
     }
-    let (relay, mut browser, mut cdp, session) = at_browser_stage(
+    let (relay, mut browser, mut cdp, session, _target) = at_browser_stage(
         BrowserWorkerStage::Initialization,
-        initialize_browser_session(request),
+        initialize_browser_session(
+            &request.expected_product,
+            &request.expected_protocol_version,
+            false,
+        ),
     )?;
     at_browser_stage(
         BrowserWorkerStage::InitialNavigation,
@@ -1682,6 +2402,10 @@ fn run_browser_worker(
     at_browser_stage(
         BrowserWorkerStage::DocumentIdentity,
         validate_document_origin(request.request.url(), &document.url),
+    )?;
+    let forms = at_browser_stage(
+        BrowserWorkerStage::FormCatalog,
+        browser_form_catalog(&mut cdp, &session, request.request.url()),
     )?;
     let tree = at_browser_stage(
         BrowserWorkerStage::AccessibilityTree,
@@ -1711,6 +2435,7 @@ fn run_browser_worker(
         "filledElement": actions.filled_element,
         "finalUrl": document.url,
         "followedLink": actions.followed_link,
+        "forms": forms,
         "protocolVersion": request.expected_protocol_version.as_str(),
         "screenshot": screenshot,
         "sourceLocator": request.request.url(),
@@ -1735,6 +2460,702 @@ fn run_browser_worker(
     browser.shutdown();
     drop(relay);
     Ok(result)
+}
+
+#[cfg(unix)]
+#[allow(clippy::too_many_lines)] // Keep the one-shot dispatch and evidence sequence reviewable in order.
+fn run_browser_transaction_worker(
+    request: &BrowserTransactionWorkerRequest,
+) -> Result<Value, BrowserWorkerExecutionError> {
+    if request.expected_protocol_version != BROWSER_CDP_PROTOCOL_VERSION
+        || request.expected_product.is_empty()
+        || request.expected_product.len() > 128
+        || request.expected_product.chars().any(char::is_control)
+        || request.upload_paths.len() != request.request.uploads().len()
+        || request
+            .upload_paths
+            .iter()
+            .enumerate()
+            .any(|(index, path)| {
+                path != &format!(
+                    "{BROWSER_SANDBOX_UPLOADS}/upload-{index}/{}",
+                    request.request.uploads()[index].file_name()
+                )
+            })
+    {
+        return Err(worker_error(
+            BrowserWorkerStage::Configuration,
+            BrowserHostError::InvalidConfiguration,
+        ));
+    }
+    let (relay, mut browser, mut cdp, source_session, source_target) = at_browser_stage(
+        BrowserWorkerStage::Initialization,
+        initialize_browser_session(
+            &request.expected_product,
+            &request.expected_protocol_version,
+            true,
+        ),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::InitialNavigation,
+        navigate_and_wait(&mut cdp, &source_session, request.request.initial_url()),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::InitialWait,
+        cdp.pump_for(Duration::from_millis(250)),
+    )?;
+    let initial = Url::parse(request.request.initial_url()).map_err(|_| {
+        worker_error(
+            BrowserWorkerStage::Configuration,
+            BrowserHostError::InvalidConfiguration,
+        )
+    })?;
+    let raw_forms = at_browser_stage(
+        BrowserWorkerStage::TransactionFormCatalog,
+        load_raw_browser_forms(&mut cdp, &source_session),
+    )?;
+    let mut matches = raw_forms
+        .into_iter()
+        .take(BROWSER_MAXIMUM_FORMS)
+        .enumerate()
+        .filter_map(|(index, form)| {
+            normalize_browser_form(form.clone(), &initial)
+                .ok()
+                .filter(|form| {
+                    form.get("formDigest").and_then(Value::as_str)
+                        == Some(request.request.form_digest())
+                })
+                .map(|normalized| (index, form, normalized))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(worker_error(
+            BrowserWorkerStage::TransactionFormCatalog,
+            BrowserHostError::DestinationDenied,
+        ));
+    }
+    let (_form_index, raw_form, form) = matches.pop().ok_or_else(|| {
+        worker_error(
+            BrowserWorkerStage::TransactionFormCatalog,
+            BrowserHostError::DestinationDenied,
+        )
+    })?;
+    at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        validate_transaction_request_against_form(&request.request, &form),
+    )?;
+    let action = form
+        .get("action")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            worker_error(
+                BrowserWorkerStage::TransactionFormCatalog,
+                BrowserHostError::InvalidProtocol,
+            )
+        })?
+        .to_owned();
+    let encoding = form
+        .get("encoding")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            worker_error(
+                BrowserWorkerStage::TransactionFormCatalog,
+                BrowserHostError::InvalidProtocol,
+            )
+        })?
+        .to_owned();
+    let session = at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        create_controlled_transaction_session(&mut cdp),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        close_browser_target(&mut cdp, &source_target),
+    )?;
+    let form_object_id = at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        create_controlled_transaction_form(
+            &mut cdp,
+            &session,
+            &action,
+            &encoding,
+            &raw_form,
+            &request.request,
+        ),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::TransactionUpload,
+        prepare_transaction_uploads(
+            &mut cdp,
+            &session,
+            &form_object_id,
+            &request.request,
+            &request.upload_paths,
+        ),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        fs::create_dir(BROWSER_SANDBOX_DOWNLOADS).map_err(io_error),
+    )?;
+    at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        cdp.command(
+            "Browser.setDownloadBehavior",
+            json!({
+                "behavior": "allowAndName",
+                "downloadPath": BROWSER_SANDBOX_DOWNLOADS,
+                "eventsEnabled": true
+            }),
+            None,
+        ),
+    )?;
+    let request_digest = sha256_digest(
+        json!({
+            "contractVersion": "mealy.browser-transaction-dispatch.v1",
+            "action": action,
+            "arguments": request.request,
+            "browserProduct": request.expected_product,
+            "protocolVersion": request.expected_protocol_version,
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let before = at_browser_stage(
+        BrowserWorkerStage::TransactionFormPreparation,
+        main_frame_identity(&mut cdp, &session),
+    )?;
+    cdp.transaction_post = Some(AllowedBrowserPost {
+        url: action.clone(),
+        request_digest: request_digest.clone(),
+        used: false,
+        network_request_id: None,
+        response: None,
+    });
+    at_browser_stage(
+        BrowserWorkerStage::TransactionDispatch,
+        submit_transaction_form(&mut cdp, &session, &form_object_id),
+    )?;
+    let response = wait_for_transaction_response(&mut cdp, &session, &before, &initial)?;
+    let allowed = cdp.transaction_post.as_ref().ok_or_else(|| {
+        worker_error(
+            BrowserWorkerStage::TransactionResult,
+            BrowserHostError::InvalidProtocol,
+        )
+    })?;
+    if !allowed.used
+        || allowed.request_digest != request_digest
+        || allowed.response.as_ref().is_none_or(|observed| {
+            observed.url != response.url || observed.status != response.status
+        })
+    {
+        return Err(worker_error(
+            BrowserWorkerStage::TransactionResult,
+            BrowserHostError::InvalidProtocol,
+        ));
+    }
+    let response_url = Url::parse(&response.url).map_err(|_| {
+        worker_error(
+            BrowserWorkerStage::TransactionResult,
+            BrowserHostError::InvalidProtocol,
+        )
+    })?;
+    if response_url.origin() != initial.origin() {
+        return Err(worker_error(
+            BrowserWorkerStage::TransactionResult,
+            BrowserHostError::DestinationDenied,
+        ));
+    }
+    let download = if cdp
+        .download
+        .as_ref()
+        .is_some_and(|download| matches!(download.state, CdpDownloadState::Completed))
+    {
+        let completed = cdp.download.clone().ok_or_else(|| {
+            worker_error(
+                BrowserWorkerStage::TransactionResult,
+                BrowserHostError::InvalidDownloadProtocol,
+            )
+        })?;
+        let download_url = Url::parse(&completed.url).map_err(|_| {
+            worker_error(
+                BrowserWorkerStage::TransactionResult,
+                BrowserHostError::InvalidDownloadProtocol,
+            )
+        })?;
+        if download_url.origin() != initial.origin() {
+            return Err(worker_error(
+                BrowserWorkerStage::TransactionResult,
+                BrowserHostError::DestinationDenied,
+            ));
+        }
+        let path = Path::new(BROWSER_SANDBOX_DOWNLOADS).join(&completed.guid);
+        let bytes = at_browser_stage(
+            BrowserWorkerStage::DownloadRead,
+            read_browser_transaction_download(&path),
+        )?;
+        Some(json!({
+            "dataBase64": BASE64_STANDARD.encode(&bytes),
+            "mediaType": "application/octet-stream",
+            "sha256Digest": sha256_digest(&bytes),
+            "sizeBytes": bytes.len(),
+            "url": completed.url,
+        }))
+    } else {
+        None
+    };
+    let (final_url, title, text, truncated_text) = if download.is_some() {
+        (response.url.clone(), String::new(), String::new(), false)
+    } else {
+        let document = at_browser_stage(
+            BrowserWorkerStage::TransactionResult,
+            document_identity(&mut cdp, &session),
+        )?;
+        at_browser_stage(
+            BrowserWorkerStage::TransactionResult,
+            validate_document_origin(request.request.initial_url(), &document.url),
+        )?;
+        let tree = at_browser_stage(
+            BrowserWorkerStage::TransactionResult,
+            accessibility_tree(&mut cdp, &session),
+        )?;
+        let normalized = at_browser_stage(
+            BrowserWorkerStage::TransactionResult,
+            normalize_accessibility_tree(&tree, 128 * 1024, 1),
+        )?;
+        (
+            document.url,
+            document.title,
+            normalized.text,
+            normalized.truncated_text,
+        )
+    };
+    let result = json!({
+        "browserProduct": request.expected_product,
+        "download": download,
+        "finalUrl": final_url,
+        "formDigest": request.request.form_digest(),
+        "protocolVersion": request.expected_protocol_version,
+        "requestDigest": request_digest,
+        "responseStatus": response.status,
+        "text": text,
+        "title": title,
+        "truncatedText": truncated_text,
+    });
+    let encoded = serde_json::to_vec(&result).map_err(|_| {
+        worker_error(
+            BrowserWorkerStage::ResultEncoding,
+            BrowserHostError::InvalidProtocol,
+        )
+    })?;
+    if encoded.len() > BROWSER_MAXIMUM_WORKER_OUTPUT_BYTES {
+        return Err(worker_error(
+            BrowserWorkerStage::ResultEncoding,
+            BrowserHostError::OutputLimitExceeded,
+        ));
+    }
+    cdp.close_browser();
+    browser.shutdown();
+    drop(relay);
+    Ok(result)
+}
+
+fn validate_transaction_request_against_form(
+    request: &BrowserTransactionRequest,
+    form: &Value,
+) -> Result<(), BrowserHostError> {
+    let controls = form
+        .get("controls")
+        .and_then(Value::as_array)
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let mut fields = request
+        .fields()
+        .iter()
+        .map(|field| (field.name(), field.value()))
+        .collect::<BTreeMap<_, _>>();
+    let mut uploads = request
+        .uploads()
+        .iter()
+        .map(|upload| (upload.control_name(), upload))
+        .collect::<BTreeMap<_, _>>();
+    let mut submitter_matched = request.submitter().is_none();
+    for control in controls {
+        let name = control
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let kind = control
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let required = control
+            .get("required")
+            .and_then(Value::as_bool)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let maximum = control
+            .get("maximumBytes")
+            .and_then(Value::as_u64)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        match kind {
+            "text" | "textarea" => {
+                let value = fields
+                    .remove(name)
+                    .ok_or(BrowserHostError::DestinationDenied)?;
+                if u64::try_from(value.len()).unwrap_or(u64::MAX) > maximum
+                    || required && value.is_empty()
+                {
+                    return Err(BrowserHostError::DestinationDenied);
+                }
+            }
+            "file" => {
+                if let Some(upload) = uploads.remove(name) {
+                    if upload.size_bytes() > maximum
+                        || !browser_media_type_accepted(
+                            upload.media_type(),
+                            control
+                                .get("acceptedMediaTypes")
+                                .and_then(Value::as_array)
+                                .ok_or(BrowserHostError::InvalidProtocol)?,
+                        )
+                    {
+                        return Err(BrowserHostError::DestinationDenied);
+                    }
+                } else if required {
+                    return Err(BrowserHostError::DestinationDenied);
+                }
+            }
+            "submit" => {
+                if let Some(submitter) = request.submitter()
+                    && submitter.name() == name
+                    && control.get("submitterValue").and_then(Value::as_str)
+                        == Some(submitter.value())
+                {
+                    submitter_matched = true;
+                }
+            }
+            _ => return Err(BrowserHostError::InvalidProtocol),
+        }
+    }
+    if !fields.is_empty()
+        || !uploads.is_empty()
+        || !submitter_matched
+        || !request.uploads().is_empty()
+            && form.get("encoding").and_then(Value::as_str) != Some("multipart/form-data")
+    {
+        return Err(BrowserHostError::DestinationDenied);
+    }
+    Ok(())
+}
+
+fn browser_media_type_accepted(media_type: &str, accepted: &[Value]) -> bool {
+    accepted.is_empty()
+        || accepted.iter().any(|item| {
+            item.as_str().is_some_and(|accepted| {
+                accepted == media_type
+                    || accepted
+                        .strip_suffix("/*")
+                        .is_some_and(|prefix| media_type.starts_with(&format!("{prefix}/")))
+            })
+        })
+}
+
+fn create_controlled_transaction_form(
+    cdp: &mut CdpClient,
+    session: &str,
+    action: &str,
+    encoding: &str,
+    source: &RawBrowserForm,
+    request: &BrowserTransactionRequest,
+) -> Result<String, BrowserHostError> {
+    let hidden = source
+        .controls
+        .iter()
+        .filter(|control| {
+            !control.disabled
+                && control.tag == "input"
+                && control.r#type == "hidden"
+                && !control.name.is_empty()
+        })
+        .map(|control| {
+            json!({
+                "name": control.name,
+                "value": control.value,
+            })
+        })
+        .collect::<Vec<_>>();
+    let fields =
+        serde_json::to_value(request.fields()).map_err(|_| BrowserHostError::InvalidProtocol)?;
+    let uploads = request
+        .uploads()
+        .iter()
+        .map(mealy_application::BrowserTransactionUpload::control_name)
+        .collect::<Vec<_>>();
+    let submitter =
+        serde_json::to_value(request.submitter()).map_err(|_| BrowserHostError::InvalidProtocol)?;
+    let frame = main_frame_identity(cdp, session)?;
+    let world = cdp.command(
+        "Page.createIsolatedWorld",
+        json!({
+            "frameId": frame.frame,
+            "worldName": "mealy-transaction-controller",
+            "grantUniveralAccess": false,
+        }),
+        Some(session),
+    )?;
+    let context_id = world
+        .get("executionContextId")
+        .and_then(Value::as_u64)
+        .filter(|context_id| *context_id > 0)
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let global = cdp.command(
+        "Runtime.evaluate",
+        json!({
+            "expression": "globalThis",
+            "returnByValue": false,
+            "awaitPromise": false,
+            "userGesture": false,
+            "contextId": context_id,
+        }),
+        Some(session),
+    )?;
+    let global_id = global
+        .get("result")
+        .and_then(|result| result.get("objectId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 512)
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let created = cdp.command(
+        "Runtime.callFunctionOn",
+        json!({
+            "functionDeclaration": BROWSER_CONTROLLED_FORM_FUNCTION,
+            "objectId": global_id,
+            "arguments": [
+                {"value": action},
+                {"value": encoding},
+                {"value": hidden},
+                {"value": fields},
+                {"value": uploads},
+                {"value": submitter}
+            ],
+            "returnByValue": false,
+            "awaitPromise": false,
+            "userGesture": false,
+        }),
+        Some(session),
+    )?;
+    created
+        .get("result")
+        .and_then(|result| result.get("objectId"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 512)
+        .map(str::to_owned)
+        .ok_or(BrowserHostError::InvalidProtocol)
+}
+
+fn prepare_transaction_uploads(
+    cdp: &mut CdpClient,
+    session: &str,
+    form_object_id: &str,
+    request: &BrowserTransactionRequest,
+    upload_paths: &[String],
+) -> Result<(), BrowserHostError> {
+    for (upload, path) in request.uploads().iter().zip(upload_paths) {
+        let bytes = read_transaction_upload(path)?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != upload.size_bytes()
+            || sha256_digest(&bytes) != upload.artifact_digest()
+        {
+            return Err(BrowserHostError::IdentityMismatch);
+        }
+        let resolved = cdp.command(
+            "Runtime.callFunctionOn",
+            json!({
+                "functionDeclaration": r"function (name) {
+                  const formElements = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get;
+                  const matches = Array.from(formElements.call(this)).filter(control =>
+                    control instanceof HTMLInputElement
+                    && String(control.type).toLowerCase() === 'file'
+                    && String(control.name) === String(name)
+                    && !control.disabled
+                  );
+                  return matches.length === 1 ? matches[0] : null;
+                }",
+                "objectId": form_object_id,
+                "arguments": [{"value": upload.control_name()}],
+                "returnByValue": false,
+                "awaitPromise": false,
+                "userGesture": false,
+            }),
+            Some(session),
+        )?;
+        let object_id = resolved
+            .get("result")
+            .and_then(|result| result.get("objectId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or(BrowserHostError::DestinationDenied)?;
+        cdp.command(
+            "DOM.setFileInputFiles",
+            json!({"files": [path], "objectId": object_id}),
+            Some(session),
+        )?;
+    }
+    Ok(())
+}
+
+fn read_transaction_upload(path: &str) -> Result<Vec<u8>, BrowserHostError> {
+    if !path.starts_with(&format!("{BROWSER_SANDBOX_UPLOADS}/upload-"))
+        || path.len() > 128
+        || path.chars().any(char::is_control)
+    {
+        return Err(BrowserHostError::InvalidConfiguration);
+    }
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(|_| BrowserHostError::IdentityMismatch)?
+    };
+    #[cfg(not(unix))]
+    let file = File::open(path).map_err(io_error)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file()
+        || metadata.len() > mealy_application::BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES
+    {
+        return Err(BrowserHostError::OutputLimitExceeded);
+    }
+    let mut bytes = Vec::new();
+    file.take(mealy_application::BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        > mealy_application::BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES
+    {
+        return Err(BrowserHostError::OutputLimitExceeded);
+    }
+    Ok(bytes)
+}
+
+fn submit_transaction_form(
+    cdp: &mut CdpClient,
+    session: &str,
+    form_object_id: &str,
+) -> Result<(), BrowserHostError> {
+    let submitted = cdp.command(
+        "Runtime.callFunctionOn",
+        json!({
+            "functionDeclaration": r"function () {
+              try {
+                const form = this;
+                const submit = HTMLFormElement.prototype.submit;
+                setTimeout(() => submit.call(form), 0);
+                return true;
+              } catch (_) { return false; }
+            }",
+            "objectId": form_object_id,
+            "returnByValue": true,
+            "awaitPromise": false,
+            "userGesture": true,
+        }),
+        Some(session),
+    )?;
+    if submitted
+        .get("result")
+        .and_then(|result| result.get("value"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(BrowserHostError::ProcessFailed);
+    }
+    Ok(())
+}
+
+fn wait_for_transaction_response(
+    cdp: &mut CdpClient,
+    session: &str,
+    before: &PageLoadIdentity,
+    initial: &Url,
+) -> Result<BrowserDocumentResponse, BrowserWorkerExecutionError> {
+    let started = Instant::now();
+    loop {
+        if started.elapsed() >= Duration::from_secs(15) {
+            let source = if cdp
+                .transaction_post
+                .as_ref()
+                .is_some_and(|transaction| transaction.used)
+            {
+                BrowserHostError::PageLoadTimedOut
+            } else {
+                BrowserHostError::ProcessFailed
+            };
+            return Err(worker_error(BrowserWorkerStage::TransactionWait, source));
+        }
+        at_browser_stage(
+            BrowserWorkerStage::TransactionWait,
+            cdp.pump_for(Duration::from_millis(50)),
+        )?;
+        let response = cdp
+            .transaction_post
+            .as_ref()
+            .and_then(|transaction| transaction.response.clone());
+        let download_complete = cdp
+            .download
+            .as_ref()
+            .is_some_and(|download| matches!(download.state, CdpDownloadState::Completed));
+        let current = at_browser_stage(
+            BrowserWorkerStage::TransactionWait,
+            main_frame_identity(cdp, session),
+        )?;
+        let page_complete = current != *before && cdp.completed_page_loads.contains(&current);
+        if let Some(response) = response
+            && (download_complete || page_complete || started.elapsed() >= Duration::from_secs(1))
+        {
+            let response_url = Url::parse(&response.url).map_err(|_| {
+                worker_error(
+                    BrowserWorkerStage::TransactionWait,
+                    BrowserHostError::InvalidProtocol,
+                )
+            })?;
+            if response_url.origin() != initial.origin() {
+                return Err(worker_error(
+                    BrowserWorkerStage::TransactionWait,
+                    BrowserHostError::DestinationDenied,
+                ));
+            }
+            return Ok(response);
+        }
+    }
+}
+
+fn read_browser_transaction_download(path: &Path) -> Result<Vec<u8>, BrowserHostError> {
+    #[cfg(unix)]
+    let file = {
+        use rustix::fs::{Mode, OFlags, open};
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(|_| BrowserHostError::InvalidDownloadProtocol)?
+    };
+    #[cfg(not(unix))]
+    let file = OpenOptions::new().read(true).open(path).map_err(io_error)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file() || metadata.len() > BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES {
+        return Err(BrowserHostError::OutputLimitExceeded);
+    }
+    let mut bytes = Vec::new();
+    file.take(BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES {
+        return Err(BrowserHostError::OutputLimitExceeded);
+    }
+    Ok(bytes)
 }
 
 fn validate_document_origin(initial_url: &str, final_url: &str) -> Result<(), BrowserHostError> {
@@ -1778,8 +3199,10 @@ fn perform_browser_actions(
 
 #[cfg(unix)]
 fn initialize_browser_session(
-    request: &BrowserWorkerRequest,
-) -> Result<(LocalProxyRelay, BrowserChild, CdpClient, String), BrowserHostError> {
+    expected_product: &str,
+    expected_protocol_version: &str,
+    transactional: bool,
+) -> Result<(LocalProxyRelay, BrowserChild, CdpClient, String, String), BrowserHostError> {
     let relay = LocalProxyRelay::start(Path::new(BROWSER_SANDBOX_PROXY))?;
     let browser = BrowserChild::spawn(relay.address())?;
     let (port, path) = wait_for_devtools_endpoint(Path::new(BROWSER_SANDBOX_PROFILE))?;
@@ -1797,17 +3220,58 @@ fn initialize_browser_session(
     let websocket_url = format!("ws://127.0.0.1:{port}{path}");
     let (websocket, _) = tungstenite::client(websocket_url, stream)
         .map_err(|_| BrowserHostError::InvalidProtocol)?;
-    let mut cdp = CdpClient::new(websocket);
+    let maximum_download_bytes = if transactional {
+        BROWSER_TRANSACTION_MAXIMUM_DOWNLOAD_BYTES
+    } else {
+        BROWSER_MAXIMUM_DOWNLOAD_BYTES
+    };
+    let mut cdp = CdpClient::new(websocket, maximum_download_bytes);
     let version = cdp.command("Browser.getVersion", json!({}), None)?;
-    if version.get("product").and_then(Value::as_str) != Some(request.expected_product.as_str())
-        || version.get("protocolVersion").and_then(Value::as_str)
-            != Some(request.expected_protocol_version.as_str())
+    if version.get("product").and_then(Value::as_str) != Some(expected_product)
+        || version.get("protocolVersion").and_then(Value::as_str) != Some(expected_protocol_version)
     {
         return Err(BrowserHostError::IdentityMismatch);
     }
     let target = cdp.command(
         "Target.createTarget",
         json!({"url": "about:blank", "newWindow": false, "background": false}),
+        None,
+    )?;
+    let target_id = target
+        .get("targetId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .ok_or(BrowserHostError::InvalidProtocol)?
+        .to_owned();
+    let attached = cdp.command(
+        "Target.attachToTarget",
+        json!({"targetId": target_id, "flatten": true}),
+        None,
+    )?;
+    let session = attached
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 256)
+        .ok_or(BrowserHostError::InvalidProtocol)?
+        .to_owned();
+    cdp.command(
+        "Browser.setDownloadBehavior",
+        json!({"behavior": "deny", "eventsEnabled": false}),
+        None,
+    )?;
+    let bootstrap = if transactional {
+        BROWSER_TRANSACTION_BOOTSTRAP
+    } else {
+        BROWSER_READ_ONLY_BOOTSTRAP
+    };
+    configure_browser_target(&mut cdp, &session, Some(bootstrap))?;
+    Ok((relay, browser, cdp, session, target_id))
+}
+
+fn create_controlled_transaction_session(cdp: &mut CdpClient) -> Result<String, BrowserHostError> {
+    let target = cdp.command(
+        "Target.createTarget",
+        json!({"url": "about:blank", "newWindow": false, "background": true}),
         None,
     )?;
     let target_id = target
@@ -1826,11 +3290,28 @@ fn initialize_browser_session(
         .filter(|value| !value.is_empty() && value.len() <= 256)
         .ok_or(BrowserHostError::InvalidProtocol)?
         .to_owned();
-    cdp.command(
-        "Browser.setDownloadBehavior",
-        json!({"behavior": "deny", "eventsEnabled": false}),
-        None,
+    configure_browser_target(cdp, &session, None)?;
+    navigate_and_wait(
+        cdp,
+        &session,
+        "data:text/html,%3C%21doctype%20html%3E%3Ctitle%3EMealy%20transaction%3C%2Ftitle%3E%3Cbody%3E%3C%2Fbody%3E",
     )?;
+    Ok(session)
+}
+
+fn close_browser_target(cdp: &mut CdpClient, target_id: &str) -> Result<(), BrowserHostError> {
+    let closed = cdp.command("Target.closeTarget", json!({"targetId": target_id}), None)?;
+    if closed.get("success").and_then(Value::as_bool) != Some(true) {
+        return Err(BrowserHostError::ProcessFailed);
+    }
+    Ok(())
+}
+
+fn configure_browser_target(
+    cdp: &mut CdpClient,
+    session: &str,
+    bootstrap: Option<&str>,
+) -> Result<(), BrowserHostError> {
     for (method, params) in [
         ("Page.enable", json!({})),
         ("Runtime.enable", json!({})),
@@ -1843,10 +3324,6 @@ fn initialize_browser_session(
             json!({"urls": ["ws://*", "wss://*", "ftp://*", "file://*"]}),
         ),
         ("Page.setLifecycleEventsEnabled", json!({"enabled": true})),
-        (
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({"source": BROWSER_READ_ONLY_BOOTSTRAP}),
-        ),
         (
             "Emulation.setDeviceMetricsOverride",
             json!({
@@ -1864,9 +3341,16 @@ fn initialize_browser_session(
             }),
         ),
     ] {
-        cdp.command(method, params, Some(&session))?;
+        cdp.command(method, params, Some(session))?;
     }
-    Ok((relay, browser, cdp, session))
+    if let Some(bootstrap) = bootstrap {
+        cdp.command(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({"source": bootstrap}),
+            Some(session),
+        )?;
+    }
+    Ok(())
 }
 
 fn follow_requested_link(
@@ -2332,7 +3816,17 @@ fn activate_form_free_button(
 
 #[cfg(not(unix))]
 fn run_browser_worker(
-    _request: &BrowserWorkerRequest,
+    _request: &BrowserSnapshotWorkerRequest,
+) -> Result<Value, BrowserWorkerExecutionError> {
+    Err(worker_error(
+        BrowserWorkerStage::Configuration,
+        BrowserHostError::UnsupportedHost,
+    ))
+}
+
+#[cfg(not(unix))]
+fn run_browser_transaction_worker(
+    _request: &BrowserTransactionWorkerRequest,
 ) -> Result<Value, BrowserWorkerExecutionError> {
     Err(worker_error(
         BrowserWorkerStage::Configuration,
@@ -2574,6 +4068,8 @@ struct CdpClient {
     accessibility_sequence: u64,
     completed_accessibility_roots: BTreeMap<(String, String), AccessibilityRootCompletion>,
     download: Option<CdpDownload>,
+    transaction_post: Option<AllowedBrowserPost>,
+    maximum_download_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -2605,6 +4101,68 @@ struct CdpDownload {
     state: CdpDownloadState,
 }
 
+#[derive(Clone, Debug)]
+struct AllowedBrowserPost {
+    url: String,
+    request_digest: String,
+    used: bool,
+    network_request_id: Option<String>,
+    response: Option<BrowserDocumentResponse>,
+}
+
+impl AllowedBrowserPost {
+    fn admit(
+        &mut self,
+        method: &str,
+        resource_type: &str,
+        url: &str,
+        network_request_id: Option<&str>,
+    ) -> bool {
+        if self.used
+            || method != "POST"
+            || resource_type != "Document"
+            || self.url != url
+            || self.network_request_id.is_some()
+                && network_request_id.is_some()
+                && self.network_request_id.as_deref() != network_request_id
+        {
+            return false;
+        }
+        if self.network_request_id.is_none() {
+            self.network_request_id = network_request_id.map(str::to_owned);
+        }
+        self.used = true;
+        true
+    }
+
+    fn observe_network_request(
+        &mut self,
+        method: &str,
+        resource_type: &str,
+        url: &str,
+        request_id: &str,
+    ) -> Result<(), BrowserHostError> {
+        if method != "POST" || resource_type != "Document" || self.url != url {
+            return Ok(());
+        }
+        if self
+            .network_request_id
+            .as_deref()
+            .is_some_and(|observed| observed != request_id)
+        {
+            return Err(BrowserHostError::InvalidProtocol);
+        }
+        self.network_request_id = Some(request_id.to_owned());
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct BrowserDocumentResponse {
+    url: String,
+    status: u16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CdpDownloadState {
     InProgress,
@@ -2613,7 +4171,7 @@ enum CdpDownloadState {
 }
 
 impl CdpClient {
-    fn new(websocket: WebSocket<TcpStream>) -> Self {
+    fn new(websocket: WebSocket<TcpStream>, maximum_download_bytes: u64) -> Self {
         Self {
             websocket,
             next_id: 1,
@@ -2623,6 +4181,8 @@ impl CdpClient {
             accessibility_sequence: 0,
             completed_accessibility_roots: BTreeMap::new(),
             download: None,
+            transaction_post: None,
+            maximum_download_bytes,
         }
     }
 
@@ -2748,6 +4308,10 @@ impl CdpClient {
             self.handle_download_progress(object)?;
         } else if method == "Fetch.requestPaused" {
             self.handle_paused_request(object)?;
+        } else if method == "Network.requestWillBeSent" {
+            self.handle_network_request(object)?;
+        } else if method == "Network.responseReceived" {
+            self.handle_document_response(object)?;
         } else if method == "Fetch.authRequired" {
             self.handle_auth_required(object)?;
         } else if method == "Accessibility.loadComplete" {
@@ -2799,8 +4363,27 @@ impl CdpClient {
             .and_then(Value::as_str)
             .filter(|value| value.len() <= 32 && !value.chars().any(char::is_control))
             .ok_or(BrowserHostError::InvalidProtocol)?;
+        let url = params
+            .get("request")
+            .and_then(|request| request.get("url"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 4_096)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let resource_type = params
+            .get("resourceType")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() <= 64 && !value.chars().any(char::is_control))
+            .ok_or(BrowserHostError::InvalidProtocol)?;
         let session_id = event.get("sessionId").and_then(Value::as_str);
-        let (command, params) = if matches!(method, "GET" | "HEAD") {
+        let network_request_id = params
+            .get("networkId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 512);
+        let transaction_allowed = self
+            .transaction_post
+            .as_mut()
+            .is_some_and(|allowed| allowed.admit(method, resource_type, url, network_request_id));
+        let (command, params) = if matches!(method, "GET" | "HEAD") || transaction_allowed {
             ("Fetch.continueRequest", json!({"requestId": request_id}))
         } else {
             (
@@ -2810,6 +4393,86 @@ impl CdpClient {
         };
         let id = self.send_command(command, params, session_id)?;
         self.ignored_responses.insert(id);
+        Ok(())
+    }
+
+    fn handle_document_response(
+        &mut self,
+        event: &Map<String, Value>,
+    ) -> Result<(), BrowserHostError> {
+        let params = event
+            .get("params")
+            .and_then(Value::as_object)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        if params.get("type").and_then(Value::as_str) != Some("Document") {
+            return Ok(());
+        }
+        let response = params
+            .get("response")
+            .and_then(Value::as_object)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let url = response
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 4_096)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let status = cdp_nonnegative_integer(response.get("status"))
+            .ok()
+            .and_then(|status| u16::try_from(status).ok())
+            .filter(|status| (100..=599).contains(status))
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let request_id = params
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        if self.transaction_post.as_mut().is_some_and(|transaction| {
+            transaction.network_request_id.as_deref() == Some(request_id)
+        }) && let Some(transaction) = self.transaction_post.as_mut()
+        {
+            transaction.response = Some(BrowserDocumentResponse {
+                url: url.to_owned(),
+                status,
+            });
+        }
+        Ok(())
+    }
+
+    fn handle_network_request(
+        &mut self,
+        event: &Map<String, Value>,
+    ) -> Result<(), BrowserHostError> {
+        let params = event
+            .get("params")
+            .and_then(Value::as_object)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let resource_type = params
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() <= 64 && !value.chars().any(char::is_control))
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let request = params
+            .get("request")
+            .and_then(Value::as_object)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let method = request
+            .get("method")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() <= 32 && !value.chars().any(char::is_control))
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let url = request
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 4_096)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        let request_id = params
+            .get("requestId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 512)
+            .ok_or(BrowserHostError::InvalidProtocol)?;
+        if let Some(transaction) = self.transaction_post.as_mut() {
+            transaction.observe_network_request(method, resource_type, url, request_id)?;
+        }
         Ok(())
     }
 
@@ -2884,8 +4547,8 @@ impl CdpClient {
             .ok_or(BrowserHostError::InvalidProtocol)?;
         let received = cdp_nonnegative_integer(params.get("receivedBytes"))?;
         let total = cdp_nonnegative_integer(params.get("totalBytes"))?;
-        if received > BROWSER_MAXIMUM_DOWNLOAD_BYTES
-            || total > BROWSER_MAXIMUM_DOWNLOAD_BYTES
+        if received > self.maximum_download_bytes
+            || total > self.maximum_download_bytes
             || total != 0 && received > total
         {
             return Err(BrowserHostError::OutputLimitExceeded);
@@ -3351,6 +5014,330 @@ fn node_attribute(described: &Value, name: &str) -> Option<String> {
     })
 }
 
+const BROWSER_FORM_CATALOG_EXPRESSION: &str = r"(() => {
+  const bounded = (value, maximum) => {
+    const text = String(value == null ? '' : value);
+    return {value: text.slice(0, maximum + 1), truncated: text.length > maximum};
+  };
+  const formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'action').get;
+  const formElements = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get;
+  const formEncoding = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'enctype').get;
+  const formMethod = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'method').get;
+  const formTarget = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'target').get;
+  return Array.from(document.forms).slice(0, 17).map(form => {
+    try {
+      const elements = formElements.call(form);
+      const action = bounded(formAction.call(form), 4096);
+      const target = bounded(formTarget.call(form), 256);
+      const controls = Array.from(elements).slice(0, 65).map(element => {
+        const name = bounded(element.name, 256);
+        const value = bounded(element.value, 8192);
+        const accept = bounded(element.accept, 2048);
+        const tag = bounded(element.tagName, 32);
+        const type = bounded(element.type, 32);
+        return {
+          accept: accept.value,
+          acceptTruncated: accept.truncated,
+          disabled: Boolean(element.disabled),
+          maxLength: Number.isSafeInteger(element.maxLength) ? element.maxLength : -1,
+          multiple: Boolean(element.multiple),
+          name: name.value,
+          nameTruncated: name.truncated,
+          required: Boolean(element.required),
+          tag: tag.value.toLowerCase(),
+          tagTruncated: tag.truncated,
+          type: type.value.toLowerCase(),
+          typeTruncated: type.truncated,
+          value: value.value,
+          valueTruncated: value.truncated
+        };
+      });
+      return {
+        action: action.value,
+        actionTruncated: action.truncated,
+        controls,
+        controlsTruncated: elements.length > 64,
+        encoding: String(formEncoding.call(form) || '').toLowerCase(),
+        method: String(formMethod.call(form) || '').toLowerCase(),
+        target: target.value,
+        targetTruncated: target.truncated
+      };
+    } catch (_) {
+      return null;
+    }
+  }).filter(value => value !== null);
+})()";
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawBrowserForm {
+    action: String,
+    action_truncated: bool,
+    controls: Vec<RawBrowserFormControl>,
+    controls_truncated: bool,
+    encoding: String,
+    method: String,
+    target: String,
+    target_truncated: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(clippy::struct_excessive_bools)] // Mirrors separately bounded DOM attributes from Chrome.
+struct RawBrowserFormControl {
+    accept: String,
+    accept_truncated: bool,
+    disabled: bool,
+    max_length: i64,
+    multiple: bool,
+    name: String,
+    name_truncated: bool,
+    required: bool,
+    tag: String,
+    tag_truncated: bool,
+    r#type: String,
+    type_truncated: bool,
+    value: String,
+    value_truncated: bool,
+}
+
+fn browser_form_catalog(
+    cdp: &mut CdpClient,
+    session: &str,
+    initial_url: &str,
+) -> Result<Vec<Value>, BrowserHostError> {
+    let forms = load_raw_browser_forms(cdp, session)?;
+    let initial = Url::parse(initial_url).map_err(|_| BrowserHostError::InvalidConfiguration)?;
+    Ok(forms
+        .into_iter()
+        .take(BROWSER_MAXIMUM_FORMS)
+        .filter_map(|form| normalize_browser_form(form, &initial).ok())
+        .collect())
+}
+
+fn load_raw_browser_forms(
+    cdp: &mut CdpClient,
+    session: &str,
+) -> Result<Vec<RawBrowserForm>, BrowserHostError> {
+    let frame = main_frame_identity(cdp, session)?;
+    let world = cdp.command(
+        "Page.createIsolatedWorld",
+        json!({
+            "frameId": frame.frame,
+            "worldName": "mealy-form-catalog-observer",
+            "grantUniveralAccess": false,
+        }),
+        Some(session),
+    )?;
+    let context_id = world
+        .get("executionContextId")
+        .and_then(Value::as_u64)
+        .filter(|context_id| *context_id > 0)
+        .ok_or(BrowserHostError::InvalidProtocol)?;
+    let evaluated = cdp.command(
+        "Runtime.evaluate",
+        json!({
+            "expression": BROWSER_FORM_CATALOG_EXPRESSION,
+            "returnByValue": true,
+            "awaitPromise": false,
+            "userGesture": false,
+            "contextId": context_id,
+        }),
+        Some(session),
+    )?;
+    evaluated
+        .get("result")
+        .and_then(|result| result.get("value"))
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<RawBrowserForm>>(value).ok())
+        .ok_or(BrowserHostError::InvalidProtocol)
+}
+
+#[allow(clippy::too_many_lines)] // Canonical form evidence is intentionally assembled in one pass.
+fn normalize_browser_form(form: RawBrowserForm, initial: &Url) -> Result<Value, BrowserHostError> {
+    if form.action_truncated
+        || form.controls_truncated
+        || form.target_truncated
+        || form.method != "post"
+        || !matches!(form.target.as_str(), "" | "_self")
+        || !matches!(
+            form.encoding.as_str(),
+            "application/x-www-form-urlencoded" | "multipart/form-data"
+        )
+        || form.controls.len() > BROWSER_MAXIMUM_FORM_CONTROLS
+    {
+        return Err(BrowserHostError::DestinationDenied);
+    }
+    let mut action = Url::parse(&form.action).map_err(|_| BrowserHostError::DestinationDenied)?;
+    action.set_fragment(None);
+    if !matches!(action.scheme(), "http" | "https")
+        || !action.username().is_empty()
+        || action.password().is_some()
+        || action.host_str().is_none()
+        || action.origin() != initial.origin()
+        || action.as_str().len() > 4_096
+    {
+        return Err(BrowserHostError::DestinationDenied);
+    }
+    let mut canonical_controls = Vec::new();
+    let mut public_controls = Vec::new();
+    let mut names = BTreeSet::new();
+    for control in form.controls {
+        if control.name_truncated
+            || control.tag_truncated
+            || control.type_truncated
+            || control.value_truncated
+            || control.accept_truncated
+            || control.name.len() > 256
+            || control.tag.len() > 32
+            || control.r#type.len() > 32
+            || control.value.len() > 8_192
+            || control.accept.len() > 2_048
+            || control.name.chars().any(char::is_control)
+            || control
+                .value
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        {
+            return Err(BrowserHostError::InvalidProtocol);
+        }
+        if control.name.is_empty() {
+            canonical_controls.push(json!({
+                "disabled": control.disabled,
+                "kind": "unnamed",
+                "tag": control.tag,
+                "type": control.r#type,
+            }));
+            continue;
+        }
+        if !valid_browser_form_control_name(&control.name) || !names.insert(control.name.clone()) {
+            return Err(BrowserHostError::DestinationDenied);
+        }
+        if control.disabled {
+            canonical_controls.push(json!({
+                "disabled": true,
+                "kind": "disabled",
+                "name": control.name,
+                "tag": control.tag,
+                "type": control.r#type,
+            }));
+            continue;
+        }
+        let kind = match (control.tag.as_str(), control.r#type.as_str()) {
+            ("input", "hidden") => "hidden",
+            ("input", "text" | "search" | "email" | "url" | "tel") => "text",
+            ("textarea", _) => "textarea",
+            ("input", "file") if !control.multiple => "file",
+            ("input" | "button", "submit") => "submit",
+            _ => return Err(BrowserHostError::DestinationDenied),
+        };
+        let accepted_media_types = if kind == "file" {
+            normalize_browser_accept_types(&control.accept)?
+        } else if control.accept.is_empty() {
+            Vec::new()
+        } else {
+            return Err(BrowserHostError::InvalidProtocol);
+        };
+        let maximum_bytes = match kind {
+            "text" | "textarea" => {
+                if control.max_length < 0 {
+                    8_192
+                } else {
+                    usize::try_from(control.max_length)
+                        .unwrap_or(usize::MAX)
+                        .min(8_192)
+                }
+            }
+            "file" => usize::try_from(mealy_application::BROWSER_TRANSACTION_MAXIMUM_UPLOAD_BYTES)
+                .unwrap_or(usize::MAX),
+            "submit" => 8_192,
+            "hidden" => control.value.len(),
+            _ => return Err(BrowserHostError::InvalidProtocol),
+        };
+        let value_digest = sha256_digest(control.value.as_bytes());
+        canonical_controls.push(json!({
+            "acceptedMediaTypes": accepted_media_types,
+            "disabled": false,
+            "kind": kind,
+            "maximumBytes": maximum_bytes,
+            "multiple": control.multiple,
+            "name": control.name,
+            "required": control.required,
+            "valueBytes": control.value.len(),
+            "valueDigest": value_digest,
+        }));
+        if kind != "hidden" {
+            public_controls.push(json!({
+                "acceptedMediaTypes": accepted_media_types,
+                "kind": kind,
+                "maximumBytes": maximum_bytes,
+                "name": control.name,
+                "required": control.required,
+                "submitterValue": (kind == "submit").then_some(control.value),
+            }));
+        }
+    }
+    if !public_controls.iter().any(|control| {
+        control
+            .get("kind")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| matches!(kind, "file" | "submit" | "text" | "textarea"))
+    }) {
+        return Err(BrowserHostError::DestinationDenied);
+    }
+    let canonical = json!({
+        "contractVersion": "mealy.browser-form-catalog.v1",
+        "action": action.as_str(),
+        "controls": canonical_controls,
+        "encoding": form.encoding,
+        "method": "post",
+        "target": "_self",
+    });
+    Ok(json!({
+        "action": action.as_str(),
+        "controls": public_controls,
+        "encoding": form.encoding,
+        "formDigest": sha256_digest(canonical.to_string().as_bytes()),
+    }))
+}
+
+fn normalize_browser_accept_types(value: &str) -> Result<Vec<String>, BrowserHostError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut result = value
+        .split(',')
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if result.is_empty()
+        || result.len() > 16
+        || result.iter().any(|item| {
+            item.is_empty()
+                || item.len() > 128
+                || !item.contains('/')
+                || item.bytes().any(|byte| {
+                    !byte.is_ascii_alphanumeric()
+                        && !matches!(byte, b'/' | b'.' | b'+' | b'-' | b'*')
+                })
+        })
+    {
+        return Err(BrowserHostError::DestinationDenied);
+    }
+    result.sort();
+    result.dedup();
+    Ok(result)
+}
+
+fn valid_browser_form_control_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.trim() == value
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'[' | b']')
+        })
+}
+
 struct DocumentIdentity {
     url: String,
     title: String,
@@ -3690,14 +5677,21 @@ fn encode_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccessibilityRootCompletion, BROWSER_MAXIMUM_CONCURRENT_PROXY_CONNECTIONS,
-        BROWSER_MAXIMUM_PROXY_CONNECTIONS_PER_CALL, BrowserProxy, BrowserVerificationOrigin,
-        NeverCancelled, PageLoadIdentity, accessibility_load_completion, accessibility_tree_root,
-        cdp_nonnegative_integer, normalize_accessibility_tree, normalize_untrusted_text,
+        AccessibilityRootCompletion, AllowedBrowserPost, BASE64_STANDARD,
+        BROWSER_MAXIMUM_CONCURRENT_PROXY_CONNECTIONS, BROWSER_MAXIMUM_PROXY_CONNECTIONS_PER_CALL,
+        BrowserHostError, BrowserProxy, BrowserVerificationOrigin, NeverCancelled,
+        PageLoadIdentity, RawBrowserForm, RawBrowserFormControl, accessibility_load_completion,
+        accessibility_tree_root, cdp_nonnegative_integer, decode_browser_transaction_result,
+        normalize_accessibility_tree, normalize_browser_form, normalize_untrusted_text,
         page_document_is_ready, read_browser_verification_request, reap_finished_threads,
         record_completed_page_load, reserve_browser_connection, truncate_utf8_to_bytes,
+        validate_transaction_request_against_form,
     };
-    use mealy_application::WebAccessConfig;
+    use base64::Engine as _;
+    use mealy_application::{
+        BrowserTransactionRequest, WebAccessConfig, normalize_browser_transaction_arguments,
+        sha256_digest,
+    };
     use serde_json::json;
     use std::{
         collections::BTreeSet,
@@ -3708,6 +5702,216 @@ mod tests {
         thread,
         time::Duration,
     };
+    use url::Url;
+
+    fn transaction_form(hidden_value: &str) -> RawBrowserForm {
+        RawBrowserForm {
+            action: "https://example.com/submit".to_owned(),
+            action_truncated: false,
+            controls: vec![
+                RawBrowserFormControl {
+                    accept: String::new(),
+                    accept_truncated: false,
+                    disabled: false,
+                    max_length: -1,
+                    multiple: false,
+                    name: "csrf".to_owned(),
+                    name_truncated: false,
+                    required: false,
+                    tag: "input".to_owned(),
+                    tag_truncated: false,
+                    r#type: "hidden".to_owned(),
+                    type_truncated: false,
+                    value: hidden_value.to_owned(),
+                    value_truncated: false,
+                },
+                RawBrowserFormControl {
+                    accept: String::new(),
+                    accept_truncated: false,
+                    disabled: false,
+                    max_length: 256,
+                    multiple: false,
+                    name: "message".to_owned(),
+                    name_truncated: false,
+                    required: true,
+                    tag: "textarea".to_owned(),
+                    tag_truncated: false,
+                    r#type: "textarea".to_owned(),
+                    type_truncated: false,
+                    value: String::new(),
+                    value_truncated: false,
+                },
+                RawBrowserFormControl {
+                    accept: "image/png,image/jpeg".to_owned(),
+                    accept_truncated: false,
+                    disabled: false,
+                    max_length: -1,
+                    multiple: false,
+                    name: "attachment".to_owned(),
+                    name_truncated: false,
+                    required: false,
+                    tag: "input".to_owned(),
+                    tag_truncated: false,
+                    r#type: "file".to_owned(),
+                    type_truncated: false,
+                    value: String::new(),
+                    value_truncated: false,
+                },
+            ],
+            controls_truncated: false,
+            encoding: "multipart/form-data".to_owned(),
+            method: "post".to_owned(),
+            target: String::new(),
+            target_truncated: false,
+        }
+    }
+
+    #[test]
+    fn post_form_catalog_is_bounded_path_safe_and_hides_hidden_values() {
+        let initial = Url::parse("https://example.com/form").expect("initial URL");
+        let normalized = normalize_browser_form(transaction_form("private-csrf-value"), &initial)
+            .expect("actionable form");
+        assert_eq!(normalized["action"], "https://example.com/submit");
+        assert_eq!(normalized["encoding"], "multipart/form-data");
+        assert_eq!(normalized["controls"].as_array().map(Vec::len), Some(2));
+        assert!(!normalized.to_string().contains("private-csrf-value"));
+        let drifted = normalize_browser_form(transaction_form("changed-csrf-value"), &initial)
+            .expect("drifted form");
+        assert_ne!(normalized["formDigest"], drifted["formDigest"]);
+        let cross_origin = normalize_browser_form(
+            RawBrowserForm {
+                action: "https://attacker.example/submit".to_owned(),
+                ..transaction_form("private-csrf-value")
+            },
+            &initial,
+        );
+        assert!(cross_origin.is_err());
+    }
+
+    #[test]
+    fn transaction_request_must_exactly_match_public_form_controls() {
+        let initial = Url::parse("https://example.com/form").expect("initial URL");
+        let form =
+            normalize_browser_form(transaction_form("private-csrf-value"), &initial).expect("form");
+        let bytes = b"exact-image";
+        let canonical = normalize_browser_transaction_arguments(&json!({
+            "initialUrl": "https://example.com/form",
+            "formDigest": form["formDigest"],
+            "fields": [{"name": "message", "value": "exact request"}],
+            "uploads": [{
+                "controlName": "attachment",
+                "artifactId": "artifact-1",
+                "artifactDigest": sha256_digest(bytes),
+                "fileName": "owner-image.png",
+                "mediaType": "image/png",
+                "sizeBytes": bytes.len()
+            }]
+        }))
+        .expect("canonical request");
+        let request =
+            serde_json::from_value::<BrowserTransactionRequest>(canonical).expect("request");
+        assert!(validate_transaction_request_against_form(&request, &form).is_ok());
+
+        let wrong_media = normalize_browser_transaction_arguments(&json!({
+            "initialUrl": "https://example.com/form",
+            "formDigest": form["formDigest"],
+            "fields": [{"name": "message", "value": "exact request"}],
+            "uploads": [{
+                "controlName": "attachment",
+                "artifactId": "artifact-1",
+                "artifactDigest": sha256_digest(bytes),
+                "fileName": "owner-image.txt",
+                "mediaType": "text/plain",
+                "sizeBytes": bytes.len()
+            }]
+        }))
+        .expect("structurally canonical request");
+        let wrong_media =
+            serde_json::from_value::<BrowserTransactionRequest>(wrong_media).expect("request");
+        assert!(matches!(
+            validate_transaction_request_against_form(&wrong_media, &form),
+            Err(BrowserHostError::DestinationDenied)
+        ));
+    }
+
+    #[test]
+    fn transaction_post_admission_is_exact_and_one_shot() {
+        let mut allowed = AllowedBrowserPost {
+            url: "https://example.com/submit".to_owned(),
+            request_digest: "a".repeat(64),
+            used: false,
+            network_request_id: None,
+            response: None,
+        };
+        assert!(!allowed.admit(
+            "POST",
+            "XHR",
+            "https://example.com/submit",
+            Some("request-1")
+        ));
+        assert!(!allowed.admit(
+            "POST",
+            "Document",
+            "https://example.com/other",
+            Some("request-1")
+        ));
+        assert!(allowed.admit("POST", "Document", "https://example.com/submit", None));
+        allowed
+            .observe_network_request(
+                "POST",
+                "Document",
+                "https://example.com/submit",
+                "request-1",
+            )
+            .expect("correlate network request");
+        assert_eq!(allowed.network_request_id.as_deref(), Some("request-1"));
+        assert!(!allowed.admit(
+            "POST",
+            "Document",
+            "https://example.com/submit",
+            Some("request-2")
+        ));
+    }
+
+    #[test]
+    fn transaction_result_decoder_rechecks_download_bytes() {
+        let bytes = b"confirmed download";
+        let valid = json!({
+            "browserProduct": "HeadlessChrome/151.0.7922.47",
+            "download": {
+                "dataBase64": BASE64_STANDARD.encode(bytes),
+                "mediaType": "application/octet-stream",
+                "sha256Digest": sha256_digest(bytes),
+                "sizeBytes": bytes.len(),
+                "url": "https://example.com/download"
+            },
+            "finalUrl": "https://example.com/submit",
+            "formDigest": "b".repeat(64),
+            "protocolVersion": "1.3",
+            "requestDigest": "c".repeat(64),
+            "responseStatus": 200.0,
+            "text": "",
+            "title": "",
+            "truncatedText": false
+        });
+        let decoded =
+            decode_browser_transaction_result(valid.clone(), "HeadlessChrome/151.0.7922.47", "1.3")
+                .expect("valid result");
+        assert_eq!(
+            decoded
+                .download
+                .as_ref()
+                .map(|download| download.bytes.as_slice()),
+            Some(bytes.as_slice())
+        );
+
+        let mut drifted = valid;
+        drifted["download"]["sha256Digest"] = json!("d".repeat(64));
+        assert!(matches!(
+            decode_browser_transaction_result(drifted, "HeadlessChrome/151.0.7922.47", "1.3"),
+            Err(BrowserHostError::InvalidDownloadProtocol)
+        ));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3729,6 +5933,7 @@ mod tests {
             }),
             "https://example.com".to_owned(),
             &NeverCancelled,
+            false,
         )
         .expect("proxy");
 

@@ -13,6 +13,37 @@ use std::{str::FromStr, time::SystemTime};
 
 const MAXIMUM_READY_EFFECTS: usize = 1_024;
 
+fn image_effect_budget_reservation(
+    proposal: &mealy_application::RecordEffectProposalCommit,
+) -> Result<(i64, i64), AgentStoreError> {
+    let request = &proposal.policy_request;
+    if request.tool.tool_id != mealy_application::IMAGE_GENERATION_TOOL_ID {
+        return Ok((0, 0));
+    }
+    let maximum_cost = request
+        .normalized_arguments
+        .get("maximumCostMicrounits")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| agent::invariant("image effect lacks its approved cost ceiling"))?;
+    if request.tool.effect_class != mealy_domain::EffectClass::NonIdempotent
+        || request.tool.idempotency != mealy_domain::IdempotencyClass::NonIdempotent
+        || request.tool.recovery != mealy_domain::RecoveryStrategy::NeverRetry
+        || request.tool.executor != mealy_domain::ExecutorKind::Builtin
+        || request.tool.maximum_output_bytes == 0
+    {
+        return Err(agent::invariant(
+            "image effect budget authority does not match its non-idempotent contract",
+        ));
+    }
+    Ok((
+        i64::try_from(maximum_cost)
+            .map_err(|_| agent::invariant("image cost ceiling exceeds SQLite range"))?,
+        i64::try_from(request.tool.maximum_output_bytes)
+            .map_err(|_| agent::invariant("image output ceiling exceeds SQLite range"))?,
+    ))
+}
+
 impl AgentEffectStore for SqliteStore {
     fn expired_agent_effect_approvals(
         &self,
@@ -90,15 +121,27 @@ impl AgentEffectStore for SqliteStore {
         if owner.task_id != commit.proposal.policy_request.task_id {
             return Err(AgentStoreError::Conflict);
         }
+        let (reserved_cost, reserved_output) = image_effect_budget_reservation(&commit.proposal)?;
 
         let budget_changed = transaction
             .execute(
                 "UPDATE run_budget_usage SET revision = revision + 1, \
-                                             reserved_tool_calls = reserved_tool_calls + 1 \
+                    reserved_tool_calls = reserved_tool_calls + 1, \
+                    reserved_cost_microunits = reserved_cost_microunits + ?3, \
+                    reserved_output_bytes = reserved_output_bytes + ?4 \
                  WHERE run_id = ?1 AND cancellation_requested_at_ms IS NULL \
                    AND deadline_at_ms > ?2 \
-                   AND used_tool_calls + reserved_tool_calls + 1 <= maximum_tool_calls",
-                params![commit.fence.run_id().to_string(), parked_at_ms],
+                   AND used_tool_calls + reserved_tool_calls + 1 <= maximum_tool_calls \
+                   AND used_cost_microunits + reserved_cost_microunits + ?3 \
+                       <= maximum_cost_microunits \
+                   AND used_output_bytes + reserved_output_bytes + ?4 \
+                       <= maximum_output_bytes",
+                params![
+                    commit.fence.run_id().to_string(),
+                    parked_at_ms,
+                    reserved_cost,
+                    reserved_output,
+                ],
             )
             .map_err(agent::map_sqlite_error)?;
         if budget_changed != 1 {
@@ -124,6 +167,23 @@ impl AgentEffectStore for SqliteStore {
                 ],
             )
             .map_err(agent::map_sqlite_error)?;
+        if reserved_cost > 0 {
+            transaction
+                .execute(
+                    "INSERT INTO agent_effect_budget_reservation(\
+                        effect_id, run_id, maximum_cost_microunits, maximum_output_bytes, \
+                        state, created_at_ms\
+                     ) VALUES (?1, ?2, ?3, ?4, 'reserved', ?5)",
+                    params![
+                        commit.proposal.effect_id.to_string(),
+                        commit.fence.run_id().to_string(),
+                        reserved_cost,
+                        reserved_output,
+                        parked_at_ms,
+                    ],
+                )
+                .map_err(agent::map_sqlite_error)?;
+        }
 
         let token = i64::try_from(commit.fence.fencing_token().get())
             .map_err(|_| agent::invariant("agent effect fencing token exceeds SQLite range"))?;
@@ -505,6 +565,7 @@ impl AgentEffectStore for SqliteStore {
             return Err(AgentStoreError::Conflict);
         }
         let projection = load_terminal_projection(&transaction, &invocation)?;
+        settle_undispatched_image_budget(&transaction, &invocation, &projection, observed_at_ms)?;
         let content = projection.content.to_string();
         let content_digest = sha256_digest(content.as_bytes());
         let byte_length = i64::try_from(content.len())
@@ -645,6 +706,69 @@ impl AgentEffectStore for SqliteStore {
     }
 }
 
+fn settle_undispatched_image_budget(
+    transaction: &rusqlite::Transaction<'_>,
+    invocation: &AgentEffectInvocation,
+    projection: &TerminalProjection,
+    settled_at_ms: i64,
+) -> Result<(), AgentStoreError> {
+    let reservation = transaction
+        .query_row(
+            "SELECT maximum_cost_microunits, maximum_output_bytes, state \
+             FROM agent_effect_budget_reservation \
+             WHERE effect_id = ?1 AND run_id = ?2",
+            params![
+                invocation.effect_id.to_string(),
+                invocation.run_id.to_string(),
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(agent::map_sqlite_error)?;
+    let Some((maximum_cost, maximum_output, state)) = reservation else {
+        return Ok(());
+    };
+    if state == "settled" {
+        return Ok(());
+    }
+    if state != "reserved"
+        || projection.content.get("status").and_then(Value::as_str) != Some("denied")
+    {
+        return Err(agent::invariant(
+            "only an undispatched denied image effect may release an unsettled reservation",
+        ));
+    }
+    let budget_changed = transaction
+        .execute(
+            "UPDATE run_budget_usage SET revision = revision + 1, \
+                reserved_cost_microunits = reserved_cost_microunits - ?1, \
+                reserved_output_bytes = reserved_output_bytes - ?2 \
+             WHERE run_id = ?3 \
+               AND reserved_cost_microunits >= ?1 \
+               AND reserved_output_bytes >= ?2",
+            params![maximum_cost, maximum_output, invocation.run_id.to_string(),],
+        )
+        .map_err(agent::map_sqlite_error)?;
+    let reservation_changed = transaction
+        .execute(
+            "UPDATE agent_effect_budget_reservation \
+             SET state = 'settled', settled_at_ms = ?1 \
+             WHERE effect_id = ?2 AND state = 'reserved'",
+            params![settled_at_ms, invocation.effect_id.to_string()],
+        )
+        .map_err(agent::map_sqlite_error)?;
+    if [budget_changed, reservation_changed] != [1, 1] {
+        return Err(AgentStoreError::Conflict);
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct ReplayAgentEffect {
     pub(super) effect_id: String,
@@ -653,6 +777,12 @@ pub(super) struct ReplayAgentEffect {
     pub(super) tool_id: String,
     pub(super) arguments: Value,
     pub(super) target_resources: Vec<String>,
+    pub(super) effect_class: mealy_domain::EffectClass,
+    pub(super) status: EffectStatus,
+    pub(super) maximum_output_bytes: u64,
+    pub(super) executable_identity_digest: String,
+    pub(super) network_destinations: Vec<String>,
+    pub(super) secret_references: Vec<String>,
     pub(super) message_id: String,
     pub(super) content: String,
     pub(super) content_digest: String,
@@ -766,21 +896,29 @@ pub(super) fn load_replay_agent_effects(
                     | EffectStatus::Compensated
             )
             || i64::try_from(view.revision).ok() != Some(observed_revision)
-            || !matches!(
+            || !(matches!(
                 view.policy_request.tool.tool_id.as_str(),
                 mealy_application::FIXTURE_WRITE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_CREATE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_REPLACE_FILE_TOOL_ID
                     | mealy_application::WORKSPACE_MANAGE_PATH_TOOL_ID
                     | mealy_application::PROCESS_RUN_TOOL_ID
-            )
+                    | mealy_application::IMAGE_GENERATION_TOOL_ID
+                    | mealy_application::BROWSER_TRANSACTION_TOOL_ID
+            ) || view.policy_request.tool.tool_id.starts_with("mcp."))
             || !valid_replay_write_contract(&view)
         {
             return Ok(None);
         }
-        if !verify_effect_model_origin(connection, run_id, &model_attempt_id, &tool_call_id, &view)?
-            || !verify_terminal_effect_attempt(connection, effect_id, view.status)?
-        {
+        let model_origin = verify_effect_model_origin(
+            connection,
+            run_id,
+            &model_attempt_id,
+            &tool_call_id,
+            &view,
+        )?;
+        let terminal_attempt = verify_terminal_effect_attempt(connection, effect_id, view.status)?;
+        if !model_origin || !terminal_attempt {
             return Ok(None);
         }
         let invocation = AgentEffectInvocation {
@@ -793,29 +931,35 @@ pub(super) fn load_replay_agent_effects(
         let projection = load_terminal_projection(connection, &invocation)?;
         let expected_content = projection.content.to_string();
         let expected_digest = sha256_digest(expected_content.as_bytes());
-        if content != expected_content
-            || content_digest != expected_digest
-            || message_role.as_deref() != Some("tool")
-            || media_type.as_deref() != Some("application/json")
-            || byte_length.and_then(|value| usize::try_from(value).ok()) != Some(content.len())
-            || message_content.as_deref() != Some(content.as_str())
-            || content_artifact_id.is_some()
-            || message_digest.as_deref() != Some(content_digest.as_str())
-            || source_attempt_id.is_some()
-            || source_tool_call_id.is_some()
-            || source_effect_id.as_deref() != Some(effect_id_text.as_str())
-            || message_created_at_ms != Some(observed_at_ms)
-            || !verify_effect_observation_event(
-                connection,
-                &message_id,
-                effect_id,
-                observed_revision,
-                &model_attempt_id,
-                &tool_call_id,
-                &content_digest,
-                observed_at_ms,
-            )?
-            || !agent::verify_aggregate_sequence_chain(connection, "effect", &effect_id_text)?
+        let projection_matches = content == expected_content;
+        let digest_matches = content_digest == expected_digest;
+        let observation_event = verify_effect_observation_event(
+            connection,
+            &message_id,
+            effect_id,
+            observed_revision,
+            &model_attempt_id,
+            &tool_call_id,
+            &content_digest,
+            observed_at_ms,
+        )?;
+        let aggregate_chain =
+            agent::verify_aggregate_sequence_chain(connection, "effect", &effect_id_text)?;
+        let metadata_matches = message_role.as_deref() == Some("tool")
+            && media_type.as_deref() == Some("application/json")
+            && byte_length.and_then(|value| usize::try_from(value).ok()) == Some(content.len())
+            && message_content.as_deref() == Some(content.as_str())
+            && content_artifact_id.is_none()
+            && message_digest.as_deref() == Some(content_digest.as_str())
+            && source_attempt_id.is_none()
+            && source_tool_call_id.is_none()
+            && source_effect_id.as_deref() == Some(effect_id_text.as_str())
+            && message_created_at_ms == Some(observed_at_ms);
+        if !projection_matches
+            || !digest_matches
+            || !metadata_matches
+            || !observation_event
+            || !aggregate_chain
         {
             return Ok(None);
         }
@@ -826,6 +970,12 @@ pub(super) fn load_replay_agent_effects(
             tool_id: view.policy_request.tool.tool_id.clone(),
             arguments: view.policy_request.normalized_arguments.clone(),
             target_resources: view.policy_request.target_resources.clone(),
+            effect_class: view.policy_request.tool.effect_class,
+            status: view.status,
+            maximum_output_bytes: view.policy_request.tool.maximum_output_bytes,
+            executable_identity_digest: view.policy_request.tool.executable_identity_digest.clone(),
+            network_destinations: view.policy_request.network_destinations.clone(),
+            secret_references: view.policy_request.secret_references.clone(),
             message_id,
             content,
             content_digest,
@@ -842,6 +992,15 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
     };
     let request = &view.policy_request;
     let effect_id = view.effect_id;
+    if request.tool.tool_id.starts_with("mcp.") {
+        return valid_replay_mcp_effect_contract(view);
+    }
+    if request.tool.tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+        return valid_replay_image_generation_contract(view);
+    }
+    if request.tool.tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+        return valid_replay_browser_transaction_contract(view);
+    }
     if request.tool.tool_id == mealy_application::FIXTURE_WRITE_FILE_TOOL_ID {
         let Some(workspace_root) = request.workspace_roots.first() else {
             return false;
@@ -928,6 +1087,220 @@ fn valid_replay_write_contract(view: &mealy_application::EffectLedgerView) -> bo
         return false;
     }
     valid_replay_workspace_create_contract(view, workspace_id, workspace_root)
+}
+
+fn valid_replay_browser_transaction_contract(view: &mealy_application::EffectLedgerView) -> bool {
+    let Some(approval) = view.approval.as_ref() else {
+        return false;
+    };
+    let request = &view.policy_request;
+    let (
+        Some(capability),
+        Some(target_resource),
+        Some(network_destination),
+        Some(initial_url),
+        Some(form_digest),
+    ) = (
+        request
+            .tool
+            .required_capabilities
+            .first()
+            .filter(|_| request.tool.required_capabilities.len() == 1),
+        request
+            .target_resources
+            .first()
+            .filter(|_| request.target_resources.len() == 1),
+        request
+            .network_destinations
+            .first()
+            .filter(|_| request.network_destinations.len() == 1),
+        request
+            .normalized_arguments
+            .get("initialUrl")
+            .and_then(Value::as_str),
+        request
+            .normalized_arguments
+            .get("formDigest")
+            .and_then(Value::as_str),
+    )
+    else {
+        return false;
+    };
+    let Ok(origin) = url::Url::parse(initial_url).map(|url| url.origin().ascii_serialization())
+    else {
+        return false;
+    };
+    if target_resource != &format!("browser-transaction:{origin}")
+        || network_destination != &format!("origin:{origin}")
+        || request.resource_claims
+            != [format!(
+                "browser-transaction-form:{target_resource}:{form_digest}"
+            )]
+        || !request.secret_references.is_empty()
+        || !request.workspace_roots.is_empty()
+    {
+        return false;
+    }
+    let grant = mealy_application::BrowserTransactionPolicyGrant {
+        principal_id: request.principal_id,
+        channel_binding_id: request.channel_binding_id,
+        task_id: request.task_id,
+        run_id: request.run_id,
+        tool_descriptor_digest: request.tool.descriptor_digest.clone(),
+        runtime_identity_digest: request.tool.executable_identity_digest.clone(),
+        capability: capability.clone(),
+        target_resource: target_resource.clone(),
+        network_destination: network_destination.clone(),
+        valid_from_ms: request.evaluated_at_ms,
+        expires_at_ms: approval.subject.expires_at_ms,
+    };
+    let normalized =
+        mealy_application::normalize_browser_transaction_arguments(&request.normalized_arguments)
+            .is_ok_and(|normalized| normalized == request.normalized_arguments);
+    let policy = mealy_application::evaluate_browser_transaction_policy(request, &grant)
+        == view.policy_evaluation;
+    let subject = mealy_application::browser_transaction_approval_subject(
+        view.effect_id,
+        request,
+        &grant,
+        approval.subject.expires_at_ms,
+    )
+    .is_ok_and(|subject| subject == approval.subject);
+    normalized && policy && subject
+}
+
+fn valid_replay_image_generation_contract(view: &mealy_application::EffectLedgerView) -> bool {
+    let Some(approval) = view.approval.as_ref() else {
+        return false;
+    };
+    let request = &view.policy_request;
+    let (
+        Some(capability),
+        Some(target_resource),
+        Some(network_destination),
+        Some(maximum_cost_microunits),
+        Some(model),
+        Some(output_format),
+        Some(quality),
+        Some(size),
+    ) = (
+        request
+            .tool
+            .required_capabilities
+            .first()
+            .filter(|_| request.tool.required_capabilities.len() == 1),
+        request
+            .target_resources
+            .first()
+            .filter(|_| request.target_resources.len() == 1),
+        request
+            .network_destinations
+            .first()
+            .filter(|_| request.network_destinations.len() == 1),
+        request
+            .normalized_arguments
+            .get("maximumCostMicrounits")
+            .and_then(Value::as_u64),
+        request
+            .normalized_arguments
+            .get("model")
+            .and_then(Value::as_str),
+        request
+            .normalized_arguments
+            .get("outputFormat")
+            .and_then(Value::as_str),
+        request
+            .normalized_arguments
+            .get("quality")
+            .and_then(Value::as_str),
+        request
+            .normalized_arguments
+            .get("size")
+            .and_then(Value::as_str),
+    )
+    else {
+        return false;
+    };
+    if output_format != "jpeg" || request.secret_references.len() > 1 {
+        return false;
+    }
+    let dispatch_constraints_digest = sha256_digest(
+        json!({
+            "maximumCostMicrounits": maximum_cost_microunits,
+            "model": model,
+            "outputFormat": output_format,
+            "quality": quality,
+            "size": size,
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    let grant = mealy_application::ImageGenerationPolicyGrant {
+        principal_id: request.principal_id,
+        channel_binding_id: request.channel_binding_id,
+        task_id: request.task_id,
+        run_id: request.run_id,
+        tool_descriptor_digest: request.tool.descriptor_digest.clone(),
+        adapter_identity_digest: request.tool.executable_identity_digest.clone(),
+        dispatch_constraints_digest,
+        capability: capability.clone(),
+        target_resource: target_resource.clone(),
+        network_destination: network_destination.clone(),
+        secret_reference: request.secret_references.first().cloned(),
+        valid_from_ms: request.evaluated_at_ms,
+        expires_at_ms: approval.subject.expires_at_ms,
+    };
+    mealy_application::evaluate_image_generation_policy(request, &grant) == view.policy_evaluation
+        && mealy_application::image_generation_approval_subject(
+            view.effect_id,
+            request,
+            &grant,
+            approval.subject.expires_at_ms,
+        )
+        .is_ok_and(|subject| subject == approval.subject)
+}
+
+fn valid_replay_mcp_effect_contract(view: &mealy_application::EffectLedgerView) -> bool {
+    let Some(approval) = view.approval.as_ref() else {
+        return false;
+    };
+    let request = &view.policy_request;
+    let effect = match request.tool.effect_class {
+        mealy_domain::EffectClass::Idempotent => mealy_application::McpToolEffect::Idempotent,
+        mealy_domain::EffectClass::NonIdempotent => mealy_application::McpToolEffect::NonIdempotent,
+        mealy_domain::EffectClass::ReadOnly | mealy_domain::EffectClass::Reversible => {
+            return false;
+        }
+    };
+    let Some(capability) = request.tool.required_capabilities.first() else {
+        return false;
+    };
+    let Some(target_resource) = request.target_resources.first() else {
+        return false;
+    };
+    let grant = mealy_application::McpEffectPolicyGrant {
+        principal_id: request.principal_id,
+        channel_binding_id: request.channel_binding_id,
+        task_id: request.task_id,
+        run_id: request.run_id,
+        tool_descriptor_digest: request.tool.descriptor_digest.clone(),
+        executable_identity_digest: request.tool.executable_identity_digest.clone(),
+        effect,
+        capability: capability.clone(),
+        target_resource: target_resource.clone(),
+        network_destination: request.network_destinations.first().cloned(),
+        secret_reference: request.secret_references.first().cloned(),
+        valid_from_ms: request.evaluated_at_ms,
+        expires_at_ms: approval.subject.expires_at_ms,
+    };
+    mealy_application::evaluate_mcp_effect_policy(request, &grant) == view.policy_evaluation
+        && mealy_application::mcp_effect_approval_subject(
+            view.effect_id,
+            request,
+            &grant,
+            approval.subject.expires_at_ms,
+        )
+        .is_ok_and(|subject| subject == approval.subject)
 }
 
 fn valid_replay_workspace_create_contract(
@@ -1068,12 +1441,16 @@ fn verify_effect_model_origin(
     }) else {
         return Ok(false);
     };
-    let origin_matches = matches!(
-        response,
-        ProviderResponse::ToolCall { ref tool_id, ref arguments }
-            if tool_id == &view.policy_request.tool.tool_id
-                && arguments == &view.policy_request.normalized_arguments
-    );
+    let origin_matches = if let ProviderResponse::ToolCall { tool_id, arguments } = response {
+        tool_id == view.policy_request.tool.tool_id
+            && model_effect_arguments_match(
+                &tool_id,
+                &arguments,
+                &view.policy_request.normalized_arguments,
+            )
+    } else {
+        false
+    };
     Ok(!tool_call_id.is_empty()
         && state == "completed"
         && response_kind == "tool_call"
@@ -1081,6 +1458,19 @@ fn verify_effect_model_origin(
         && origin_matches
         && declared.input_schema == view.policy_request.tool.input_schema
         && declared.schema_digest == view.policy_request.tool.input_schema_digest)
+}
+
+fn model_effect_arguments_match(tool_id: &str, raw: &Value, normalized: &Value) -> bool {
+    if tool_id == mealy_application::IMAGE_GENERATION_TOOL_ID {
+        return raw.as_object().is_some_and(|arguments| {
+            arguments.len() == 1 && arguments.get("prompt") == normalized.get("prompt")
+        });
+    }
+    if tool_id == mealy_application::BROWSER_TRANSACTION_TOOL_ID {
+        return mealy_application::normalize_browser_transaction_arguments(raw)
+            .is_ok_and(|canonical| canonical == *normalized);
+    }
+    raw == normalized
 }
 
 fn verify_terminal_effect_attempt(

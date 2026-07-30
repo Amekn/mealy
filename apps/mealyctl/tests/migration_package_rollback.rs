@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mealy_application::OwnershipContext;
 use mealy_domain::{ChannelBindingId, PrincipalId};
 use mealy_infrastructure::{
-    FileProviderSecretStore, SqliteStore, create_pre_migration_backup,
+    FileProviderSecretStore, LATEST_SCHEMA_VERSION, SqliteStore, create_pre_migration_backup,
     inspect_existing_schema_version,
 };
 use std::{
@@ -59,7 +59,9 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         .expect("provider secret");
 
     downgrade_fixture_to_v13(&database);
-    let migration = create_pre_migration_backup(&home, &database, 13, 18, SystemTime::now())
+    let latest =
+        u64::try_from(LATEST_SCHEMA_VERSION).expect("latest schema version is nonnegative");
+    let migration = create_pre_migration_backup(&home, &database, 13, latest, SystemTime::now())
         .expect("migration backup");
     let migration_name = migration
         .path
@@ -74,7 +76,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     };
     let sbom = prepare_sbom(root.path(), &repository, target);
     let old_package = build_package(root.path(), &repository, &sbom, target, 13, "old");
-    let new_package = build_package(root.path(), &repository, &sbom, target, 18, "new");
+    let new_package = build_package(root.path(), &repository, &sbom, target, latest, "new");
     let prefix = root.path().join("prefix");
     run_success(
         Command::new(repository.join("packaging/install.sh"))
@@ -91,7 +93,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
         "install schema-13 package",
     );
 
-    drop(SqliteStore::open(&database, 2).expect("migrate active home to schema 18"));
+    drop(SqliteStore::open(&database, 2).expect("migrate active home to latest schema"));
     run_success(
         Command::new(repository.join("packaging/install.sh"))
             .env("MEALY_TEST_REAL_MEALYCTL", env!("CARGO_BIN_EXE_mealyctl"))
@@ -104,7 +106,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
             .arg(&prefix)
             .arg("--home")
             .arg(&home),
-        "install schema-18 package",
+        "install latest-schema package",
     );
     fs::write(
         home.join("newer-only.txt"),
@@ -115,10 +117,10 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     let manager = prefix.join("share/mealy-manager.sh");
     let denied = rollback_command(&manager, &prefix, &home, migration_name, &"0".repeat(64));
     assert!(!denied.status.success());
-    assert_eq!(package_schema(&prefix), 18);
+    assert_eq!(package_schema(&prefix), latest);
     assert_eq!(
         inspect_existing_schema_version(&database).expect("schema after compensated denial"),
-        Some(18)
+        Some(latest)
     );
     assert!(home.join("newer-only.txt").is_file());
 
@@ -159,7 +161,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     assert_eq!(
         inspect_existing_schema_version(&preserved.join("mealy.sqlite3"))
             .expect("preserved migrated schema"),
-        Some(18)
+        Some(latest)
     );
 }
 
@@ -167,12 +169,63 @@ fn downgrade_fixture_to_v13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
         .execute_batch(
-            "DROP INDEX run_terminal_completion_idx;
+            "DROP TABLE agent_effect_budget_reservation;
+             DROP TRIGGER agent_effect_invocation_origin_insert;
+             CREATE TRIGGER agent_effect_invocation_origin_insert
+             BEFORE INSERT ON agent_effect_invocation
+             BEGIN
+                 SELECT CASE WHEN NOT EXISTS(
+                     SELECT 1
+                     FROM effect_intent intent
+                     JOIN effect ON effect.id = intent.effect_id
+                     JOIN model_attempt attempt ON attempt.attempt_id = NEW.model_attempt_id
+                     WHERE intent.effect_id = NEW.effect_id
+                       AND intent.run_id = NEW.run_id
+                       AND intent.task_id = NEW.task_id
+                       AND effect.task_id = NEW.task_id
+                       AND effect.run_id = NEW.run_id
+                       AND attempt.run_id = NEW.run_id
+                       AND attempt.state = 'completed'
+                       AND attempt.response_kind = 'tool_call'
+                       AND json_extract(attempt.response_json, '$.kind') = 'tool_call'
+                       AND json_extract(attempt.response_json, '$.tool_id') = effect.tool_id
+                       AND json(json_extract(attempt.response_json, '$.arguments'))
+                           = json(intent.normalized_arguments_json)
+                 ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
+             END;
+             DROP TRIGGER session_input_reference_immutable_delete;
+             DROP TRIGGER session_input_reference_immutable_update;
+             DROP TRIGGER session_input_reference_insert_guard;
+             DROP TRIGGER session_input_blob_immutable_update;
+             DROP TRIGGER session_input_artifact_immutable_update;
+             DROP TRIGGER session_inbox_media_immutable_delete;
+             DROP TRIGGER session_inbox_media_immutable_update;
+             DROP TRIGGER session_inbox_media_create_reference;
+             DROP TRIGGER session_inbox_media_insert_guard;
+             DROP INDEX session_inbox_media_owner_idx;
+             DROP TABLE session_inbox_media;
+             DROP TRIGGER delegation_group_child_insert;
+             DROP TRIGGER delegation_group_identity_immutable;
+             DROP TRIGGER delegation_group_contract_immutable;
+             DROP TRIGGER delegation_group_settlement;
+             DROP TRIGGER delegation_group_no_reopen;
+             DROP TRIGGER delegation_group_no_delete;
+             DROP INDEX delegation_group_ordinal_idx;
+             DROP INDEX delegation_group_child_key_idx;
+             DROP INDEX delegation_group_parent_state_idx;
+             ALTER TABLE delegation DROP COLUMN group_id;
+             ALTER TABLE delegation DROP COLUMN group_ordinal;
+             ALTER TABLE delegation DROP COLUMN child_key;
+             DROP TABLE delegation_group;
+             DROP INDEX run_terminal_completion_idx;
              DROP TRIGGER model_attempt_manifest_token_total_insert;
              DROP TABLE context_manifest_bundle_memory_citation;
              DROP TABLE context_manifest_bundle_compaction;
              DROP TABLE context_manifest_bundle_artifact;
              DROP TABLE context_manifest_bundle;
+             DROP TABLE slack_envelope_receipt;
+             DROP TABLE slack_channel_health;
+             DROP TABLE slack_channel_binding;
              DROP TABLE discord_message_receipt;
              DROP TABLE discord_channel_health;
              DROP TABLE discord_channel_cursor;
@@ -189,7 +242,9 @@ fn downgrade_fixture_to_v13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
-             DELETE FROM schema_version WHERE version IN (14, 15, 16, 17, 18);
+             DELETE FROM schema_version WHERE version IN (
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+             );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )
         .expect("simulate schema 13");

@@ -26,12 +26,45 @@ Required checks:
 - idempotent duplicate input admission;
 - lease claim races and expiry;
 - artifact rename/link crash cleanup;
+- ordered owner-private image blob/link idempotency and rollback;
 - migration from every supported snapshot;
 - backup and restore integrity.
+
+Schema-21 storage tests bind up to four ordered canonical image artifacts to one durable inbox
+entry and verify exact duplicate receipts, evidence-drift conflicts, owner/channel denial,
+path-free artifact projection, journal versioning, immutable media/artifact/blob/reference
+metadata, and complete rollback after a late outbox collision. The v20-to-v21 migration is applied
+in place and passes integrity verification. The file-backed `durable_admission` integration test
+crosses the real Bubblewrap normalizer, atomically publishes its canonical bytes to the private
+SHA-256 store, links them to SQLite, reopens both evidence layers, verifies the bytes, and proves a
+rejected post-publication link leaves only a fresh unreferenced blob retained by age-gated garbage
+collection.
 
 ### Process-boundary tests
 
 Spawn the real executor/extension protocol. Verify framing, malformed messages, size limits, cancellation, timeout, stdout/stderr pressure, secret minimization, worker death, and daemon survival.
+
+`crates/mealy-infrastructure/tests/media_normalizer.rs` crosses the real Bubblewrap boundary with
+the exact media worker and proves a valid PNG is normalized while media mismatch, malformed input,
+and pre-allocation oversize fail closed. Focused media units additionally cover deterministic
+JPEG/PNG re-encoding, alpha preservation, metadata removal, APNG and animated-WebP denial,
+dimension-first rejection, and bounded downscaling. The daemon verifies canonical headers, bytes,
+size, and digest without invoking the image decoder in its own process.
+
+The `real_provider` process suite includes one exact image-bearing turn through the public daemon
+API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
+delivery/artifact identities, verifies an exact duplicate creates no second dispatch, and observes
+canonical JPEG bytes in the captured provider request. It then checks schema-v3 sparse
+context-manifest evidence, transcript-v2 path-free metadata, and recorded-only replay with zero
+live provider redispatches. Corruption units fail closed on missing/dangling media links,
+unauthorized artifacts, metadata drift, and blob digest/byte drift.
+
+`mealy-api` separately proves the image route accepts a body above the ordinary 1 MiB JSON ceiling
+but returns the versioned `payload_too_large` error above its exact 6 MiB transport bound.
+`mealyctl` units reject symlinks, paths below the Mealy home, unsupported extensions, empty and
+oversized images, and retain no host path. Its process configuration test requires explicit
+approval, rejects a non-direct route, persists rollback history, and proves reversible activation
+for a direct provider chain.
 
 GitHub's Ubuntu 24.04 runner enables AppArmor's unprivileged-user-namespace restriction, which can
 make Bubblewrap fail while bringing up its private loopback device with `RTM_NEWADDR: Operation not
@@ -173,18 +206,43 @@ JSON Schema resolution, required task support, invalid arguments, digest drift, 
 grants.
 
 `apps/mealyctl/tests/mcp_configuration.rs` crosses the stopped-home client boundary. It proves
-read-only listing, approval-before-execution/mutation, exact selected-tool publication,
-disable/re-enable/revoke semantics, live tool-set verification, and retained configuration
-history. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable` scenario in
+read-only listing, approval-before-execution/mutation, exact selected-tool/static-resource/prompt
+publication, disable/re-enable/revoke semantics, live complete-catalog verification, and retained
+configuration history. The same real client boundary proves OAuth metadata inspection leaves both
+configuration and the credential broker unchanged. It also drives a complete approved login
+against real loopback metadata/token/callback sockets, proves state plus PKCE/resource parameters,
+requires bounded cache-controlled narrowed Bearer material, writes one private generation-one token
+record, and leaves configuration/model authority unchanged. The same process proof then activates
+selected catalog authority with that exact family, refuses token deletion while referenced,
+revokes the server, and durably removes the local token record. Infrastructure OAuth fixtures prove
+bounded multi-scheme challenge parsing, advertised and path/root protected-resource metadata
+discovery, exact resource and issuer binding, explicit multi-issuer selection, OAuth/OIDC discovery
+order, authorization-code support, mandatory PKCE S256, state-mismatch rejection before network,
+zeroizing/redacted token handling, idempotent private creation, no-follow root/record rejection,
+cross-process single refresh/rotation, exact-scope enforcement, generation-fenced `401` recovery,
+and durable local revocation.
+Infrastructure HTTP fixtures additionally prove paginated
+tool/resource/resource-template/prompt discovery, exact resource reads, prompt argument fencing,
+untrusted-evidence normalization, authority-bound durable descriptors, and fail-closed catalog
+drift. The `configured_mcp_tool_is_sandboxed_model_visible_cited_and_replayable` scenario in
 `apps/mealyd/tests/real_provider.rs` starts the real daemon, advertises the exact model-visible MCP
 schema, executes a sandboxed call, requires an `mcp://` citation, removes the installed executable,
 and still verifies recorded-only replay with zero provider or tool calls. Maintenance tests prove
 complete backups, isolated verification, and cross-schema home reconstruction preserve exact MCP
-bytes and executable permissions.
+bytes, executable permissions, and validated encrypted OAuth token families without placing them
+in secret-free archives.
+
+Effectful MCP coverage adds pure policy forgery tests, backward-compatible read-only grant
+decoding, descriptor/class binding, mutually exclusive CLI selection, and immutable promotion
+ceiling checks. Real daemon/provider/process scenarios prove an exact approval followed by one
+dispatch and execution-free replay; an idempotent hard crash after the durable dispatch boundary
+creates one separately fenced retry and completes; a non-idempotent crash records
+`outcome_unknown`, remains parked with exactly one dispatch and no second model call, resumes only
+after revision-fenced owner evidence, and replays with zero live calls.
 
 The `linux-browser-conformance` CI lane downloads only the repository-pinned Chrome Headless Shell
 archive through `scripts/fetch-browser-runtime.sh`, verifies its exact HTTPS artifact size and
-SHA-256, and sets `MEALY_BROWSER_BUNDLE` for three opt-in real-process suites.
+SHA-256, and sets `MEALY_BROWSER_BUNDLE` for four opt-in real-process suites.
 `crates/mealy-infrastructure/tests/browser_runtime.rs` proves complete bundle identity, isolated
 CDP `1.3`/product startup, private proxy routing, rendered accessibility output, exact accessible
 GET-link following, exact native form-free button activation, exact text/search fill, selected-
@@ -204,7 +262,12 @@ disable/re-enable/revoke, web-authority dependency, and retained rollback bytes.
 real-provider suite proves exact model schema exposure (including bounded attachment capture), safe GET-form filling, rendering through
 the normal agent loop, artifact-backed screenshot evidence, URL citation, and complete
 zero-live-call replay after the
-browser bundle is deleted. Maintenance fixtures cover every bundle file and executable-mode bit in
+browser bundle is deleted.
+`browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation` separately
+crosses the daemon/effect boundary with the real pinned browser: it proves exact approval, one
+same-origin POST, a hard death after durable dispatch, `outcome_unknown` recovery without retry,
+revision-fenced reconciliation, and complete zero-live-call replay. Maintenance fixtures cover
+every bundle file and executable-mode bit in
 complete backup, isolated restore verification, and migration reconstruction. These large tests
 are ignored in ordinary local runs but mandatory in CI and tag release workflows.
 
@@ -305,6 +368,16 @@ setup, token isolation, canonical string snowflakes, a newest-first 106-message 
 without loss, reserve-before-admission, exact sender rejection, attachment rejection, hard restart,
 429 `Retry-After`, stable nonce reuse, mention suppression, progress/final delivery, transcript
 transport isolation, secret deletion, and terminal revocation.
+
+`apps/mealyd/tests/slack_channel.rs` runs the public daemon against real loopback Slack Web API
+and WebSocket fixtures. It live-verifies both token roles and every identity pin, proves neither
+token enters SQLite, then kills the daemon after the fixture observes a Socket Mode
+acknowledgement but before admission. Restart completes the persisted normalized disposition
+without another input, returns acknowledgements and results to the exact originating thread,
+honors one `429 Retry-After`, reuses `client_msg_id`, re-acknowledges an exact duplicate without
+duplication, durably ignores a wrong sender, removes both final-route broker entries, and preserves
+terminal evidence. `sqlite::slack` separately covers migration, shared-installation invariants,
+pending-envelope reconstruction, thread lookup, health, and revocation.
 
 The Phase 7 process suite at `apps/mealyd/tests/phase7_operations.rs` starts real daemon processes
 for safe mode, clean drain, corrupt-open failure, and a provider call deliberately held beyond a
@@ -642,6 +715,7 @@ Each boundary is tested by a deterministic failpoint before and after the action
 | Migration | before backup; during migration; before version marker; exact-digest cross-schema activation; inherited stopped-home lock; atomic preserved-home exchange |
 | Browser | before process; after CDP attach; during navigation; during proxy tunnel; before normalized commit; cancellation/deadline; runtime deletion before replay |
 | Discord DM | after setup fence; before message reservation; after reservation; before cursor commit; saturated-page backfill; after 429; after remote accept; before outbox commit; hard restart/revocation |
+| Slack Socket Mode | after live setup; after reservation before acknowledgement; after remote acknowledgement before admission; pending restart completion; duplicate envelope; 429 and stable `client_msg_id`; shared-route change; revocation |
 
 ## Security matrix
 
@@ -650,13 +724,19 @@ Each boundary is tested by a deterministic failpoint before and after the action
 - Forged channel identity and replayed webhook.
 - Discord DM wrong sender/channel/bot/webhook/system message, snowflake ambiguity, saturated-page
   gap, malicious mention text, nonce mismatch, rate-limit abuse, and ambiguous send acknowledgement.
+- Slack wrong workspace/app/member/conversation, token-role mismatch, app-token/bot-token
+  cross-installation mix, malformed/oversized frames, missing mention, bot/subtype events,
+  envelope/body drift, duplicate acknowledgement, approval-looking chat text, unsafe socket URL,
+  thread ambiguity, and rate-limit/client-message-ID drift.
 - Cross-principal session/task/artifact/memory access.
 - Model text pretending to approve an effect.
 - Approval replay with changed arguments, tool version, target, policy, principal, or expiry.
 - Sandbox path traversal, symlink, environment, process, and network escape attempts.
 - Extension requests undeclared capability/secret/network target.
-- MCP executable/tool/schema drift, malformed or excessive protocol output, ambient
-  filesystem/environment/network/process access, and ignored cancellation.
+- MCP executable/tool/schema/class drift, forged annotations/arguments/targets/executable or
+  network/secret authority, malformed or excessive protocol output, ambient
+  filesystem/environment/network/process access, ignored cancellation, idempotent fenced-retry
+  loss, and non-idempotent post-dispatch retry.
 - Browser bundle/product/protocol drift, personal-profile/host-CDP absence, unauthorized
   destination/method/auth/download/upgrade/direct-socket attempts, form/submit activation,
   excessive traffic/screenshot, startup/load timeout, and runtime-free replay.

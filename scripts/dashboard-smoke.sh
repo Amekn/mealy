@@ -58,6 +58,11 @@ for binary in "$mealyd" "$mealyctl" "$sample_extension"; do
     exit 66
   fi
 done
+supported_schema_version=$("$mealyd" --print-supported-schema-version)
+if [[ ! $supported_schema_version =~ ^[1-9][0-9]*$ ]]; then
+  echo "dashboard smoke daemon reported an invalid supported schema version" >&2
+  exit 66
+fi
 
 temporary_root=${TMPDIR:-/tmp}
 home=$(mktemp -d "$temporary_root/mealy-dashboard-smoke.XXXXXX")
@@ -170,7 +175,8 @@ if contains_daemon_token "$home/index.html"; then
 fi
 
 snapshot=$(dashboard_snapshot initial)
-jq -e '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == 18
+jq -e --argjson schema "$supported_schema_version" \
+  '.apiVersion == "v1" and .status.runStatus == "running" and .status.schemaVersion == $schema
   and .providerCatalog.catalogScope == "configured_route"
   and (.providerCatalog.routes | length) >= 1
   and .providerCatalog.routes[0].selectable == true
@@ -304,9 +310,9 @@ for format in json html; do
 done
 jq -e --arg fork "$fork_session_id" --arg source "$session_id" \
   --arg checkpoint "$checkpoint_id" \
-  '.apiVersion == "v1" and .schemaVersion == "mealy.session-transcript.v1" and .sessionId == $fork and .lineage.rootSessionId == $source and .lineage.parentSessionId == $source and .lineage.parentCheckpointId == $checkpoint and .bounds.totalEligibleTurns == 0 and .turns == []' \
+  '.apiVersion == "v1" and .schemaVersion == "mealy.session-transcript.v2" and .sessionId == $fork and .lineage.rootSessionId == $source and .lineage.parentSessionId == $source and .lineage.parentCheckpointId == $checkpoint and .bounds.totalEligibleTurns == 0 and .turns == []' \
   "$home/session-export.json" >/dev/null
-grep -Fq 'mealy.session-transcript.v1' "$home/session-export.html"
+grep -Fq 'mealy.session-transcript.v2' "$home/session-export.html"
 grep -Fq "$fork_session_id" "$home/session-export.html"
 grep -Fq "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\">" \
   "$home/session-export.html"
@@ -830,5 +836,5 @@ fi
 wait "$daemon_pid"
 daemon_pid=
 
-printf 'dashboard smoke: ok (schema 18, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
-  "$session_id" "$task_id" "$schedule_id" "$memory_id" "$extension_id"
+printf 'dashboard smoke: ok (schema %s, session %s, task %s, schedule %s, memory %s, extension %s)\n' \
+  "$supported_schema_version" "$session_id" "$task_id" "$schedule_id" "$memory_id" "$extension_id"

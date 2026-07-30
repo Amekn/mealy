@@ -296,6 +296,24 @@ pub struct SessionTranscriptCitationResponse {
     pub cursor: TimelineCursor,
 }
 
+/// Path-free canonical image evidence included with an exported owner input.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTranscriptImageResponse {
+    /// Owner/session-scoped logical artifact identity.
+    pub artifact_id: String,
+    /// Canonical normalized media type.
+    pub media_type: String,
+    /// SHA-256 digest of the canonical image bytes.
+    pub sha256_digest: String,
+    /// Exact canonical byte count.
+    pub size_bytes: u64,
+    /// Canonical decoded width.
+    pub width: u32,
+    /// Canonical decoded height.
+    pub height: u32,
+}
+
 /// Verbatim owner input and its admission evidence.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +326,9 @@ pub struct SessionTranscriptUserMessageResponse {
     pub content_digest: String,
     /// Exact UTF-8 byte count.
     pub byte_length: u64,
+    /// Ordered path-free canonical image evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SessionTranscriptImageResponse>,
     /// Canonical admission time in UTC epoch milliseconds.
     pub accepted_at_ms: i64,
     /// Admission event and cursor.
@@ -451,6 +472,36 @@ pub struct SubmitInputRequest {
     pub provider_selection: Option<ProviderSelectionCommand>,
 }
 
+/// One client-identified hostile image submitted for isolated normalization.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmittedImageInput {
+    /// Client-proposed `UUIDv7` retained across ambiguous retries.
+    pub artifact_id: String,
+    /// Claimed source media type; the isolated worker must independently prove it.
+    pub media_type: String,
+    /// Standard padded base64 source bytes; remote URLs and provider file IDs are unsupported.
+    pub data_base64: String,
+}
+
+/// Authenticated image-bearing input admitted only through an exact image-capable route.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SubmitImageInputRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Stable channel delivery key retained across ambiguous retries.
+    pub idempotency_key: String,
+    /// Durable ordering behavior.
+    pub delivery_mode: DeliveryMode,
+    /// Bounded UTF-8 content accompanying the ordered images.
+    pub content: String,
+    /// Exact configured image-capable provider/model route.
+    pub provider_selection: ProviderSelectionCommand,
+    /// One to four ordered source images.
+    pub images: Vec<SubmittedImageInput>,
+}
+
 /// Durable admission response returned only after commit.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -461,6 +512,9 @@ pub struct InputAdmissionResponse {
     pub session_id: String,
     /// Opaque inbox-entry ID.
     pub inbox_entry_id: String,
+    /// Ordered canonical image artifacts bound to the admitted input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_artifact_ids: Vec<String>,
     /// Positive session-scoped FIFO sequence.
     pub inbox_sequence: u64,
     /// Delivery behavior bound to the idempotency key.
@@ -2261,6 +2315,112 @@ pub struct RevokeDiscordChannelRequest {
     pub expected_revision: u64,
 }
 
+/// Administrative creation of one exact Slack app/workspace/member/conversation binding.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSlackChannelRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Socket Mode app token read from a one-shot environment variable by the CLI.
+    pub app_token: String,
+    /// Bot token read from a one-shot environment variable by the CLI.
+    pub bot_token: String,
+    /// Exact Slack member allowed to submit messages.
+    pub slack_user_id: String,
+    /// Exact Slack conversation allowed for inbound and outbound messages.
+    pub slack_channel_id: String,
+    /// Whether shared-channel input must explicitly mention the verified bot.
+    pub require_mention: bool,
+}
+
+impl std::fmt::Debug for CreateSlackChannelRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreateSlackChannelRequest")
+            .field("api_version", &self.api_version)
+            .field("app_token", &"[REDACTED]")
+            .field("bot_token", &"[REDACTED]")
+            .field("slack_user_id", &self.slack_user_id)
+            .field("slack_channel_id", &self.slack_channel_id)
+            .field("require_mention", &self.require_mention)
+            .finish()
+    }
+}
+
+/// Slack channel lifecycle exposed to the owner.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackChannelStatusResponse {
+    /// Socket Mode input and Web API output are active.
+    Active,
+    /// Both token authorities are terminally revoked.
+    Revoked,
+}
+
+/// Owner-safe Slack binding projection without token material.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackChannelResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable channel binding.
+    pub binding_id: String,
+    /// Dedicated durable conversation session.
+    pub session_id: String,
+    /// Exact verified Slack workspace.
+    pub team_id: String,
+    /// Workspace display name observed during setup.
+    pub team_name: String,
+    /// Exact Slack application bound to the Socket Mode hello.
+    pub app_id: String,
+    /// Exact allowed Slack member.
+    pub slack_user_id: String,
+    /// Exact allowed Slack conversation.
+    pub slack_channel_id: String,
+    /// Verified bot member identity.
+    pub bot_user_id: String,
+    /// Bot display name observed during setup.
+    pub bot_name: String,
+    /// Whether shared-channel messages must mention the bot.
+    pub require_mention: bool,
+    /// Current lifecycle.
+    pub status: SlackChannelStatusResponse,
+    /// Optimistic-concurrency revision.
+    pub revision: u64,
+    /// Most recent successful Socket Mode observation.
+    pub last_success_at_ms: Option<i64>,
+    /// Most recent failed Socket Mode observation.
+    pub last_failure_at_ms: Option<i64>,
+    /// Consecutive Socket Mode failures.
+    pub consecutive_failures: u64,
+    /// Stable secret-free last error code.
+    pub last_error_code: Option<String>,
+    /// UTC creation time.
+    pub created_at_ms: i64,
+    /// UTC last lifecycle update time.
+    pub updated_at_ms: i64,
+}
+
+/// Deterministically ordered owner Slack-channel list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackChannelsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Owner-authorized bindings.
+    pub channels: Vec<SlackChannelResponse>,
+}
+
+/// Optimistic terminal Slack-channel revocation command.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeSlackChannelRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Exact current channel revision.
+    pub expected_revision: u64,
+}
+
 /// Strict raw-body contract authenticated by the signed webhook ingress.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3128,8 +3288,9 @@ mod tests {
     use super::{
         API_VERSION, ArtifactMetadataResponse, CancelTaskRequest, ContextItemDisposition,
         ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
-        CreateDiscordChannelRequest, CreateTelegramChannelRequest, DeliveryMode,
-        SessionSummaryResponse, SubmitInputRequest, TimelineCursor,
+        CreateDiscordChannelRequest, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+        DeliveryMode, ProviderSelectionCommand, SessionSummaryResponse, SubmitImageInputRequest,
+        SubmitInputRequest, SubmittedImageInput, TimelineCursor,
     };
 
     #[test]
@@ -3145,6 +3306,41 @@ mod tests {
         assert_eq!(value["apiVersion"], API_VERSION);
         assert_eq!(value["idempotencyKey"], "delivery-1");
         assert_eq!(value["deliveryMode"], "interrupt_then_queue");
+    }
+
+    #[test]
+    fn submit_image_input_wire_shape_is_exact_and_closed() {
+        let request = SubmitImageInputRequest {
+            api_version: API_VERSION.to_owned(),
+            idempotency_key: "image-delivery-1".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "describe".to_owned(),
+            provider_selection: ProviderSelectionCommand::Exact {
+                provider_id: "local.responses".to_owned(),
+                model_id: "vision-model".to_owned(),
+            },
+            images: vec![SubmittedImageInput {
+                artifact_id: "019f0000-0000-7000-8000-000000000001".to_owned(),
+                media_type: "image/png".to_owned(),
+                data_base64: "iVBORw==".to_owned(),
+            }],
+        };
+        let value = serde_json::to_value(&request).expect("serialize image request");
+        assert_eq!(value["apiVersion"], API_VERSION);
+        assert_eq!(value["idempotencyKey"], "image-delivery-1");
+        assert_eq!(value["providerSelection"]["mode"], "exact");
+        assert_eq!(
+            value["images"][0]["artifactId"],
+            "019f0000-0000-7000-8000-000000000001"
+        );
+        assert_eq!(value["images"][0]["dataBase64"], "iVBORw==");
+
+        let mut drifted = value;
+        drifted["images"][0]["remoteUrl"] = serde_json::json!("https://example.invalid/image.png");
+        assert!(
+            serde_json::from_value::<SubmitImageInputRequest>(drifted).is_err(),
+            "ambient remote image authority must not enter the closed request schema"
+        );
     }
 
     #[test]
@@ -3172,6 +3368,22 @@ mod tests {
         let debug = format!("{request:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("super-secret"));
+    }
+
+    #[test]
+    fn slack_setup_debug_output_redacts_both_tokens() {
+        let request = CreateSlackChannelRequest {
+            api_version: API_VERSION.to_owned(),
+            app_token: "xapp-super-secret".to_owned(),
+            bot_token: "xoxb-super-secret".to_owned(),
+            slack_user_id: "U01234567".to_owned(),
+            slack_channel_id: "C01234567".to_owned(),
+            require_mention: true,
+        };
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("xapp-super-secret"));
+        assert!(!debug.contains("xoxb-super-secret"));
     }
 
     #[test]

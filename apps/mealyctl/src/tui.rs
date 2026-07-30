@@ -1,11 +1,13 @@
 //! Full-screen terminal workbench backed only by canonical daemon projections.
 
 use super::{
-    CliError, MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES, authorized, decode,
-    generate_idempotency_key, load_connection, read_bounded_success_body, server_error,
+    CliError, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES, MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES,
+    authorized, decode, generate_idempotency_key, load_connection, prepare_local_image_attachment,
+    read_bounded_success_body, server_error, submit_image_input_with_retry,
     submit_input_with_retry, terminal_safe_single_line, terminal_safe_text,
     validate_session_transcript_json, write_private_new_file,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use crossterm::{
     event::{
         DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
@@ -14,17 +16,22 @@ use crossterm::{
     execute,
 };
 use futures_util::StreamExt as _;
-use mealy_application::{ApprovalSubject, InputAdmissionLimits, valid_session_metadata};
-use mealy_domain::{ApprovalId, EffectId, PrincipalId, SessionId, TaskId};
+use mealy_application::{
+    ApprovalSubject, InputAdmissionLimits, MAXIMUM_PROVIDER_IMAGE_INPUTS, valid_session_metadata,
+};
+use mealy_domain::{
+    ApprovalId, ArtifactId, DelegationId, EffectId, PrincipalId, RunId, SessionId, TaskId,
+};
 use mealy_protocol::{
     API_VERSION, AdminStatusResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt,
     ApprovalResponse, ApprovalStatusResponse, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, DeliveryMode, ForkSessionRequest, LocalConnectionInfo,
-    PendingApprovalsResponse, ProviderCatalogResponse, ProviderCatalogRouteResponse,
-    ProviderSelectionCommand, ResolveApprovalRequest, SessionCheckpointResponse,
-    SessionForkResponse, SessionProviderSelectionResponse, SessionSearchResponse,
-    SessionStatusResponse, SessionSummaryResponse, SessionTranscriptExport, SessionsResponse,
-    SubmitInputRequest, TimelineEvent, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
+    CreateSessionResponse, DelegationResponse, DelegationsResponse, DeliveryMode,
+    ForkSessionRequest, LocalConnectionInfo, PendingApprovalsResponse, ProviderCatalogResponse,
+    ProviderCatalogRouteResponse, ProviderSelectionCommand, ResolveApprovalRequest,
+    SessionCheckpointResponse, SessionForkResponse, SessionProviderSelectionResponse,
+    SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse, SessionTranscriptExport,
+    SessionsResponse, SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput,
+    TimelineEvent, TimelinePageResponse, UpdateSessionProviderSelectionRequest,
     UpdateSessionTitleRequest,
 };
 use ratatui::{
@@ -45,12 +52,15 @@ use std::{
 const MAXIMUM_SESSIONS: usize = 100;
 const MAXIMUM_SEARCH_RESULTS: usize = 100;
 const MAXIMUM_APPROVALS: usize = 100;
+const MAXIMUM_DELEGATIONS: usize = 20;
 const MAXIMUM_RECENT_EVENTS: usize = 500;
 const TIMELINE_INITIAL_CURSOR_WINDOW: u64 = 10_000;
 const MAXIMUM_RENDERED_EVENT_DETAIL_BYTES: usize = 8 * 1024;
 const MAXIMUM_NOTICE_BYTES: usize = 512;
+const MAXIMUM_IMAGE_PATH_BYTES: usize = 4_096;
 const MAXIMUM_CONSECUTIVE_REFRESH_FAILURES: u8 = 5;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const DEFAULT_IMAGE_PROMPT: &str = "Describe the attached image or images.";
 
 /// Initial session choice for the workbench.
 #[derive(Clone, Debug)]
@@ -95,6 +105,7 @@ impl Focus {
 enum InputPurpose {
     Search,
     Rename,
+    ImagePath,
 }
 
 #[derive(Clone, Debug)]
@@ -142,6 +153,7 @@ enum Action {
     SelectSession,
     CreateSession,
     Send(String),
+    AttachImage(String),
     Search(String),
     Rename(String),
     Checkpoint,
@@ -267,7 +279,9 @@ struct Workbench {
     session_provider_selection: Option<SessionProviderSelectionResponse>,
     next_turn_provider_selection: Option<ProviderSelectionCommand>,
     approvals: Vec<ApprovalResponse>,
+    delegations: Vec<DelegationResponse>,
     composer: Editor,
+    pending_image_paths: Vec<PathBuf>,
     focus: Focus,
     overlay: Option<Overlay>,
     transcript_scroll: u16,
@@ -295,7 +309,9 @@ impl Workbench {
             session_provider_selection: None,
             next_turn_provider_selection: None,
             approvals: Vec::new(),
+            delegations: Vec::new(),
             composer: Editor::default(),
+            pending_image_paths: Vec::new(),
             focus: Focus::Composer,
             overlay: None,
             transcript_scroll: u16::MAX,
@@ -682,22 +698,56 @@ async fn perform_action(
         Action::Send(content) => {
             let session_id = selected_id_owned(state)?;
             let maximum = InputAdmissionLimits::default().maximum_content_bytes();
-            if content.is_empty() || content.len() > maximum {
+            if (content.is_empty() && state.pending_image_paths.is_empty())
+                || content.len() > maximum
+            {
                 return Err(CliError::Protocol(format!(
                     "composer content must contain 1 through {maximum} UTF-8 bytes"
                 )));
             }
             let connection = current_connection(home)?;
-            let request = SubmitInputRequest {
-                api_version: API_VERSION.to_owned(),
-                provider_selection: state.next_turn_provider_selection.clone(),
-                idempotency_key: generate_idempotency_key()?,
-                delivery_mode: DeliveryMode::Queue,
-                content,
+            let admission = if state.pending_image_paths.is_empty() {
+                let request = SubmitInputRequest {
+                    api_version: API_VERSION.to_owned(),
+                    provider_selection: state.next_turn_provider_selection.clone(),
+                    idempotency_key: generate_idempotency_key()?,
+                    delivery_mode: DeliveryMode::Queue,
+                    content,
+                };
+                submit_input_with_retry(client, home, &connection, &session_id, &request).await?
+            } else {
+                let selection = state
+                    .next_turn_provider_selection
+                    .as_ref()
+                    .or_else(|| {
+                        state
+                            .session_provider_selection
+                            .as_ref()
+                            .map(|selection| &selection.provider_selection)
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        CliError::Protocol(
+                            "image input requires a loaded exact provider/model route".to_owned(),
+                        )
+                    })?;
+                submit_workbench_images(
+                    client,
+                    home,
+                    &connection,
+                    &session_id,
+                    if content.is_empty() {
+                        DEFAULT_IMAGE_PROMPT.to_owned()
+                    } else {
+                        content
+                    },
+                    selection,
+                    &state.pending_image_paths,
+                )
+                .await?
             };
-            let admission =
-                submit_input_with_retry(client, home, &connection, &session_id, &request).await?;
             state.composer.clear();
+            state.pending_image_paths.clear();
             state.next_turn_provider_selection = None;
             state.set_notice(
                 format!(
@@ -707,6 +757,32 @@ async fn perform_action(
                 false,
             );
             refresh_all(client, home, state, false).await
+        }
+        Action::AttachImage(path) => {
+            if path.is_empty()
+                || path.len() > MAXIMUM_IMAGE_PATH_BYTES
+                || state.pending_image_paths.len() >= MAXIMUM_PROVIDER_IMAGE_INPUTS
+            {
+                return Err(CliError::Protocol(
+                    "attach one image path at a time, up to four images".to_owned(),
+                ));
+            }
+            let path = PathBuf::from(path);
+            prepare_local_image_attachment(home, &path)?;
+            if state.pending_image_paths.contains(&path) {
+                return Err(CliError::Protocol(
+                    "the selected image is already attached to this turn".to_owned(),
+                ));
+            }
+            state.pending_image_paths.push(path);
+            state.set_notice(
+                format!(
+                    "Attached {} image(s); F9 adds another and Esc clears the draft.",
+                    state.pending_image_paths.len()
+                ),
+                false,
+            );
+            Ok(())
         }
         Action::Search(query) => {
             if query.is_empty() {
@@ -952,7 +1028,52 @@ async fn refresh_all(
     state.admin = Some(fetch_admin_status(client, &connection).await?);
     state.provider_catalog = Some(fetch_provider_catalog(client, &connection).await?);
     state.approvals = fetch_approvals(client, &connection).await?;
+    state.delegations = fetch_delegations(client, &connection).await?;
     refresh_selected(client, home, state, force_selected).await
+}
+
+async fn submit_workbench_images(
+    client: &Client,
+    home: &Path,
+    connection: &LocalConnectionInfo,
+    session_id: &str,
+    content: String,
+    provider_selection: ProviderSelectionCommand,
+    paths: &[PathBuf],
+) -> Result<mealy_protocol::InputAdmissionResponse, CliError> {
+    if !matches!(provider_selection, ProviderSelectionCommand::Exact { .. })
+        || paths.is_empty()
+        || paths.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+    {
+        return Err(CliError::Protocol(
+            "image input requires one to four images and an exact provider/model route".to_owned(),
+        ));
+    }
+    let mut total_source_bytes = 0_u64;
+    let mut images = Vec::with_capacity(paths.len());
+    for path in paths {
+        let (media_type, bytes) = prepare_local_image_attachment(home, path)?;
+        total_source_bytes = total_source_bytes
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(CliError::InvalidLocalAttachment)?;
+        if total_source_bytes > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES {
+            return Err(CliError::InvalidLocalAttachment);
+        }
+        images.push(SubmittedImageInput {
+            artifact_id: ArtifactId::new().to_string(),
+            media_type: media_type.to_owned(),
+            data_base64: BASE64_STANDARD.encode(bytes),
+        });
+    }
+    let request = SubmitImageInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: generate_idempotency_key()?,
+        delivery_mode: DeliveryMode::Queue,
+        content,
+        provider_selection,
+        images,
+    };
+    submit_image_input_with_retry(client, home, connection, session_id, &request).await
 }
 
 async fn refresh_selected(
@@ -1241,6 +1362,46 @@ async fn fetch_approvals(
     Ok(pending.approvals)
 }
 
+async fn fetch_delegations(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+) -> Result<Vec<DelegationResponse>, CliError> {
+    let response = authorized(
+        client.get(format!(
+            "{}/v1/delegations?limit={MAXIMUM_DELEGATIONS}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .send()
+    .await?;
+    let response = decode::<DelegationsResponse>(response).await?;
+    if !valid_delegations(&response) {
+        return Err(CliError::Protocol(
+            "terminal workbench received an invalid delegation projection".to_owned(),
+        ));
+    }
+    Ok(response.delegations)
+}
+
+fn valid_delegations(response: &DelegationsResponse) -> bool {
+    let mut ids = BTreeSet::new();
+    response.api_version == API_VERSION
+        && response.delegations.len() <= MAXIMUM_DELEGATIONS
+        && response.delegations.iter().all(|delegation| {
+            delegation.api_version == API_VERSION
+                && delegation.delegation_id.parse::<DelegationId>().is_ok()
+                && delegation.parent_run_id.parse::<RunId>().is_ok()
+                && delegation.child_task_id.parse::<TaskId>().is_ok()
+                && delegation.child_run_id.parse::<RunId>().is_ok()
+                && ids.insert(delegation.delegation_id.as_str())
+                && matches!(
+                    delegation.state.as_str(),
+                    "queued" | "running" | "succeeded" | "failed" | "cancelled"
+                )
+        })
+}
+
 fn valid_approval(approval: &ApprovalResponse) -> bool {
     let Ok(approval_id) = approval.approval_id.parse::<ApprovalId>() else {
         return false;
@@ -1484,14 +1645,26 @@ fn handle_key(state: &mut Workbench, key: KeyEvent) -> Action {
                 index: current_provider_index(state),
             });
         }
+        KeyCode::F(9)
+            if state.selected_id().is_some()
+                && state.pending_image_paths.len() < MAXIMUM_PROVIDER_IMAGE_INPUTS =>
+        {
+            state.overlay = Some(Overlay::Input {
+                purpose: InputPurpose::ImagePath,
+                editor: Editor::default(),
+            });
+        }
         KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
             state.focus = state.focus.previous();
         }
         KeyCode::BackTab => state.focus = state.focus.previous(),
         KeyCode::Tab => state.focus = state.focus.next(),
         KeyCode::Esc => {
-            if state.focus == Focus::Composer && !state.composer.content.is_empty() {
+            if state.focus == Focus::Composer
+                && (!state.composer.content.is_empty() || !state.pending_image_paths.is_empty())
+            {
                 state.composer.clear();
+                state.pending_image_paths.clear();
                 state.set_notice("Composer cleared.", false);
             } else {
                 state.focus = Focus::Sessions;
@@ -1558,10 +1731,9 @@ fn handle_overlay_key(state: &mut Workbench, mut overlay: Overlay, key: KeyEvent
             }
         }
         Overlay::Input { purpose, editor } => {
-            let maximum = if *purpose == InputPurpose::Search {
-                4_096
-            } else {
-                160
+            let maximum = match purpose {
+                InputPurpose::Search | InputPurpose::ImagePath => 4_096,
+                InputPurpose::Rename => 160,
             };
             match key.code {
                 KeyCode::Esc => return Action::None,
@@ -1570,6 +1742,7 @@ fn handle_overlay_key(state: &mut Workbench, mut overlay: Overlay, key: KeyEvent
                     return match purpose {
                         InputPurpose::Search => Action::Search(value),
                         InputPurpose::Rename => Action::Rename(value),
+                        InputPurpose::ImagePath => Action::AttachImage(value),
                     };
                 }
                 KeyCode::Char(character)
@@ -1648,7 +1821,10 @@ fn handle_focused_key(state: &mut Workbench, key: KeyEvent) -> Action {
                     state.composer.insert_character('\n', maximum);
                     None
                 }
-                KeyCode::Enter if !state.composer.content.trim().is_empty() => {
+                KeyCode::Enter
+                    if !state.composer.content.trim().is_empty()
+                        || !state.pending_image_paths.is_empty() =>
+                {
                     Some(Action::Send(state.composer.content.clone()))
                 }
                 KeyCode::Char(character)
@@ -1713,6 +1889,7 @@ fn action_label(action: &Action) -> &'static str {
         Action::SelectSession => "Loading conversation",
         Action::CreateSession => "Creating conversation",
         Action::Send(_) => "Admitting input",
+        Action::AttachImage(_) => "Attaching image",
         Action::Search(_) => "Searching transcripts",
         Action::Rename(_) => "Updating title",
         Action::Checkpoint => "Creating checkpoint",
@@ -1956,6 +2133,20 @@ fn transcript_lines(transcript: Option<&SessionTranscriptExport>) -> Vec<Line<'s
                 .add_modifier(Modifier::BOLD),
         ));
         extend_safe_text_lines(&mut lines, &turn.user.content, Style::default());
+        for image in &turn.user.images {
+            lines.push(Line::styled(
+                format!(
+                    "IMAGE · {} · {}×{} · {} bytes · sha256:{} · artifact {}",
+                    bounded_single_line(&image.media_type, 32),
+                    image.width,
+                    image.height,
+                    image.size_bytes,
+                    bounded_single_line(&image.sha256_digest, 16),
+                    bounded_single_line(&image.artifact_id, 36),
+                ),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         lines.push(Line::raw(""));
         lines.push(Line::styled(
             format!(
@@ -1968,6 +2159,18 @@ fn transcript_lines(transcript: Option<&SessionTranscriptExport>) -> Vec<Line<'s
                 .add_modifier(Modifier::BOLD),
         ));
         extend_safe_text_lines(&mut lines, &turn.assistant.content, Style::default());
+        if let Some(artifact_id) = &turn.assistant.artifact_id {
+            lines.push(Line::styled(
+                format!(
+                    "ARTIFACT · {} · {} bytes · sha256:{} · {}",
+                    bounded_single_line(&turn.assistant.media_type, 48),
+                    turn.assistant.byte_length,
+                    bounded_single_line(&turn.assistant.content_digest, 16),
+                    bounded_single_line(artifact_id, 36),
+                ),
+                Style::default().fg(Color::Magenta),
+            ));
+        }
         lines.push(Line::raw(""));
     }
     lines
@@ -1981,9 +2184,10 @@ fn extend_safe_text_lines(lines: &mut Vec<Line<'static>>, value: &str, style: St
 
 fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
     let sections = Layout::vertical([
-        Constraint::Percentage(48),
-        Constraint::Percentage(32),
-        Constraint::Percentage(20),
+        Constraint::Percentage(38),
+        Constraint::Percentage(25),
+        Constraint::Percentage(21),
+        Constraint::Percentage(16),
     ])
     .split(area);
     let start = state.timeline.len().saturating_sub(20);
@@ -2039,6 +2243,17 @@ fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
         sections[1],
     );
 
+    frame.render_widget(
+        Paragraph::new(delegation_summary(&state.delegations))
+            .block(
+                Block::default()
+                    .title(format!(" Delegated work ({}) ", state.delegations.len()))
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: true }),
+        sections[2],
+    );
+
     let approval_text = if let Some(approval) = state.approvals.first() {
         format!(
             "{} pending\n{} · {}\nF7 to review exact subject",
@@ -2053,8 +2268,28 @@ fn render_activity(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
         Paragraph::new(approval_text)
             .block(Block::default().title(" Approvals ").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
-        sections[2],
+        sections[3],
     );
+}
+
+fn delegation_summary(delegations: &[DelegationResponse]) -> String {
+    if delegations.is_empty() {
+        return "No recent delegated child runs.".to_owned();
+    }
+    delegations
+        .iter()
+        .take(3)
+        .map(|delegation| {
+            format!(
+                "{} · child {}\n  delegation {} · parent {}",
+                bounded_single_line(&delegation.state, 16).to_ascii_uppercase(),
+                short_id(&delegation.child_task_id),
+                short_id(&delegation.delegation_id),
+                short_id(&delegation.parent_run_id),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn event_detail(event: &TimelineEvent) -> String {
@@ -2086,17 +2321,28 @@ fn render_composer(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
         format!(" {busy}… ")
     } else {
         format!(
-            " Composer · {} / {} bytes · {} ",
+            " Composer · {} / {} bytes · {} image(s) · {} ",
             state.composer.content.len(),
             InputAdmissionLimits::default().maximum_content_bytes(),
+            state.pending_image_paths.len(),
             route,
         )
     };
     let text = if state.composer.content.is_empty() {
-        Line::styled(
-            "Type a request. Enter sends; Shift-Enter adds a line.",
-            Style::default().fg(Color::DarkGray),
-        )
+        if state.pending_image_paths.is_empty() {
+            Line::styled(
+                "Type a request. Enter sends; Shift-Enter adds a line; F9 attaches an image.",
+                Style::default().fg(Color::DarkGray),
+            )
+        } else {
+            Line::styled(
+                format!(
+                    "{} image(s) attached. Enter sends with the default image prompt.",
+                    state.pending_image_paths.len()
+                ),
+                Style::default().fg(Color::Magenta),
+            )
+        }
     } else {
         Line::raw(state.composer.rendered_with_cursor())
     };
@@ -2122,7 +2368,7 @@ fn render_footer(frame: &mut Frame<'_>, state: &Workbench, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                " F1 help · F2 rename · F3 checkpoint · F4 fork · F6 export · F8 model · ",
+                " F1 help · F2 rename · F3 checkpoint · F4 fork · F6 export · F8 model · F9 image · ",
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(bounded_single_line(&state.notice, 180), style),
@@ -2152,6 +2398,8 @@ fn render_overlay(frame: &mut Frame<'_>, state: &Workbench, overlay: &Overlay) {
                 "  F4                  checkpoint then fork into fresh operational state",
                 "  F6 / Shift-F6       verified private JSON / inert HTML export",
                 "  F8                  choose default model; t applies only to next turn",
+                "  F9                  attach one PNG/JPEG/WebP path (up to four)",
+                "  Esc                 clear composer text and pending images",
                 "",
                 "Governance",
                 "  F7                  review exact pending approval; a=approve, d=deny",
@@ -2174,42 +2422,7 @@ fn render_overlay(frame: &mut Frame<'_>, state: &Workbench, overlay: &Overlay) {
                 area,
             );
         }
-        Overlay::Input { purpose, editor } => {
-            let (title, hint) = match purpose {
-                InputPurpose::Search => (
-                    " Search canonical transcripts ",
-                    "Enter searches user/final-assistant text; empty Enter clears; Esc cancels.",
-                ),
-                InputPurpose::Rename => (
-                    " Rename conversation ",
-                    "Enter commits with revision fencing; Esc cancels.",
-                ),
-            };
-            let rows = Layout::vertical([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(2),
-            ])
-            .split(area);
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(editor.rendered_with_cursor())
-                    .block(
-                        Block::default()
-                            .title(title)
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Cyan)),
-                    )
-                    .wrap(Wrap { trim: false }),
-                rows[0],
-            );
-            frame.render_widget(
-                Paragraph::new(hint)
-                    .alignment(Alignment::Center)
-                    .style(Style::default().fg(Color::DarkGray)),
-                rows[2],
-            );
-        }
+        Overlay::Input { purpose, editor } => render_input_overlay(frame, area, *purpose, editor),
         Overlay::Approval { index } => {
             let text = state.approvals.get(*index).map_or_else(
                 || "This approval is no longer pending.".to_owned(),
@@ -2231,6 +2444,47 @@ fn render_overlay(frame: &mut Frame<'_>, state: &Workbench, overlay: &Overlay) {
             render_provider_overlay(frame, state, area, *index);
         }
     }
+}
+
+fn render_input_overlay(frame: &mut Frame<'_>, area: Rect, purpose: InputPurpose, editor: &Editor) {
+    let (title, hint) = match purpose {
+        InputPurpose::Search => (
+            " Search canonical transcripts ",
+            "Enter searches user/final-assistant text; empty Enter clears; Esc cancels.",
+        ),
+        InputPurpose::Rename => (
+            " Rename conversation ",
+            "Enter commits with revision fencing; Esc cancels.",
+        ),
+        InputPurpose::ImagePath => (
+            " Attach local image ",
+            "Enter validates one no-follow PNG/JPEG/WebP path; F9 repeats up to four.",
+        ),
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(editor.rendered_with_cursor())
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray)),
+        rows[2],
+    );
 }
 
 fn render_provider_overlay(frame: &mut Frame<'_>, state: &Workbench, area: Rect, index: usize) {
@@ -2456,7 +2710,11 @@ fn bounded_single_line(value: &str, maximum_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Editor, Workbench, bounded_single_line};
+    use super::{
+        API_VERSION, DelegationResponse, DelegationsResponse, Editor, Workbench,
+        bounded_single_line, delegation_summary, valid_delegations,
+    };
+    use mealy_domain::{DelegationId, RunId, TaskId};
 
     #[test]
     fn editor_keeps_utf8_cursor_on_boundaries_and_enforces_bytes() {
@@ -2486,5 +2744,33 @@ mod tests {
         assert!(!state.select_index(100));
         state.next_activity(1);
         assert_eq!(state.activity_selected, 0);
+    }
+
+    #[test]
+    fn delegation_cards_accept_only_canonical_bounded_child_evidence() {
+        let delegation = DelegationResponse {
+            api_version: API_VERSION.to_owned(),
+            delegation_id: DelegationId::new().to_string(),
+            parent_run_id: RunId::new().to_string(),
+            child_task_id: TaskId::new().to_string(),
+            child_run_id: RunId::new().to_string(),
+            effective_capabilities: serde_json::json!({"enabledReadTools": ["workspace.read"]}),
+            child_budget: serde_json::json!({"maximumModelCalls": 2}),
+            state: "running".to_owned(),
+            result: None,
+        };
+        let response = DelegationsResponse {
+            api_version: API_VERSION.to_owned(),
+            delegations: vec![delegation.clone()],
+        };
+        assert!(valid_delegations(&response));
+        let rendered = delegation_summary(&response.delegations);
+        assert!(rendered.contains("RUNNING · child"));
+        assert!(rendered.contains("delegation"));
+        assert!(!rendered.contains("workspace.read"));
+
+        let mut malformed = response;
+        malformed.delegations.push(delegation);
+        assert!(!valid_delegations(&malformed));
     }
 }

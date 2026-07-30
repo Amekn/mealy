@@ -6,34 +6,44 @@ mod lifecycle;
 mod provider_switch;
 mod tui;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, MAXIMUM_PROVIDER_CREDENTIAL_BYTES, McpServerConfig,
-    McpServerDiscovery, McpToolGrant, MessageRole, ModelProvider, NormalizedMessage,
-    ProviderConfig, ProviderCredentialReference, ProviderRequest, ProviderResponse,
+    BrowserConfig, CancellationProbe, ImageGenerationConfig, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
+    McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
+    McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
+    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
+    ProviderCredentialReference, ProviderRequest, ProviderResponse,
     SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
     SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
     is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_server_set, validate_provider_base_url,
-    validate_provider_chain,
+    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
+    validate_provider_base_url, validate_provider_chain,
 };
 use mealy_domain::{
-    AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset, SkillToolRequirement,
+    ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
+    SkillToolRequirement,
 };
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileProviderSecretStore, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
-    MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError, ProviderSecretStoreError,
-    SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
-    browser_worker_main, discover_mcp_stdio_server, inspect_browser_bundle, inspect_skill_package,
+    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage,
+    MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
+    McpOAuthTokenError, ProviderSecretStoreError, SubscriptionCliProvider, SubscriptionCliSettings,
+    activate_backup, activate_migration_backup, browser_worker_main, discover_mcp_http_server,
+    discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
+    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
     inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
-    probe_browser_bundle_product, publish_browser_bundle, publish_skill_package,
-    verify_browser_runtime_installation,
+    media_worker_main, prepare_mcp_oauth_authorization, probe_browser_bundle_product,
+    publish_browser_bundle, publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
@@ -42,29 +52,31 @@ use mealy_protocol::{
     CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
     CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DelegationResponse, DelegationsResponse, DeliveryMode,
-    DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
-    DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
-    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
-    ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
-    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
-    InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse,
-    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
-    MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
-    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
-    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
+    DelegationsResponse, DeliveryMode, DiscordChannelResponse, DiscordChannelsResponse,
+    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse,
+    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportKindRequest,
+    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
+    ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
+    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
+    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
+    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
+    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
+    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
     RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
     ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
     SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
-    StageExtensionManifestRequest, SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt,
-    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
-    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
+    SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage,
+    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
+    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
     UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
     WebhookChannelResponse, WebhookChannelsResponse,
 };
@@ -77,10 +89,10 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{BufRead, IsTerminal as _, Read, Write},
-    net::IpAddr,
+    net::{IpAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, ExitCode, Stdio},
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(unix)]
@@ -88,6 +100,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::io::AsFd as _;
 use thiserror::Error;
+use url::Url;
 use zeroize::{Zeroize as _, Zeroizing};
 
 const DAEMON_CONFIG_KEYS: [&str; 9] = [
@@ -101,9 +114,12 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 7] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 10] = [
     "browser",
     "commandTools",
+    "imageGeneration",
+    "imageInputEnabled",
+    "mcpHttpServers",
     "mcpServers",
     "providerFallbacks",
     "skills",
@@ -152,6 +168,8 @@ const DISCORD_PAIR_MINIMUM_TIMEOUT_SECONDS: u64 = 30;
 const DISCORD_PAIR_MAXIMUM_TIMEOUT_SECONDS: u64 = 300;
 const USAGE_DAY_MS: i64 = 86_400_000;
 const MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES: u64 = 256 * 1024;
+const MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES: u64 = 2 * 1024 * 1024;
+const MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_LOCAL_ATTACHMENT_PROMPT_BYTES: usize = 16 * 1024;
 const MAXIMUM_LOCAL_ATTACHMENT_NAME_BYTES: usize = 255;
 const MAXIMUM_LOCAL_ATTACHMENT_INPUT_BYTES: usize = 1024 * 1024;
@@ -178,6 +196,147 @@ struct LifecycleArguments {
     /// Installed-program lifecycle operation to execute.
     #[command(subcommand)]
     command: LifecycleCommand,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed Streamable HTTP MCP administration")]
+struct McpHttpArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Streamable HTTP MCP namespace.
+    #[command(subcommand)]
+    command: McpHttpNamespace,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed local media administration")]
+struct MediaArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Media configuration namespace.
+    #[command(subcommand)]
+    command: MediaNamespace,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Governed rendered-browser administration")]
+struct BrowserArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Browser configuration namespace.
+    #[command(subcommand)]
+    command: BrowserNamespace,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpHttpNamespace {
+    /// Inspect or change governed Streamable HTTP MCP authority.
+    McpHttp(Box<McpHttpOptions>),
+}
+
+#[derive(Debug, Subcommand)]
+enum MediaNamespace {
+    /// Inspect or change bounded media capabilities.
+    Media(MediaOptions),
+}
+
+#[derive(Debug, Subcommand)]
+enum BrowserNamespace {
+    /// Inspect or change separately governed transactional browser authority.
+    Browser(BrowserOptions),
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("transaction_mode")
+        .required(true)
+        .args(["enable_transactions", "disable_transactions"])
+))]
+struct BrowserOptions {
+    /// Activate one-shot high-risk POST form authority.
+    #[arg(long)]
+    enable_transactions: bool,
+    /// Remove POST authority while retaining the read-only research browser.
+    #[arg(long)]
+    disable_transactions: bool,
+    /// Confirm this stopped-daemon authority change.
+    #[arg(long)]
+    approve: bool,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    clap::ArgGroup::new("image_input_mode")
+        .required(true)
+        .args(["enable", "disable"])
+))]
+struct MediaOptions {
+    /// Capability to configure.
+    action: MediaAction,
+    /// Activate image input for all configured direct OpenAI/Anthropic routes.
+    #[arg(long)]
+    enable: bool,
+    /// Disable image input and return every route to text-only operation.
+    #[arg(long)]
+    disable: bool,
+    /// Confirm this stopped-daemon configuration change.
+    #[arg(long)]
+    approve: bool,
+    /// Exact image API protocol for image-generation enablement.
+    #[arg(long, value_enum)]
+    protocol: Option<ImageGenerationProtocolArgument>,
+    /// Stable image provider identity.
+    #[arg(long)]
+    provider_id: Option<String>,
+    /// Canonical API base ending at the version prefix.
+    #[arg(long)]
+    base_url: Option<String>,
+    /// Exact image-generation model.
+    #[arg(long)]
+    model: Option<String>,
+    /// Owner-declared provider residency label.
+    #[arg(long)]
+    residency: Option<String>,
+    /// Broker identity for a remote credential; optional on literal loopback.
+    #[arg(long)]
+    secret_id: Option<String>,
+    /// One-shot environment variable imported into the provider-secret broker.
+    #[arg(long)]
+    credential_env: Option<String>,
+    /// Pinned generated-image dimensions.
+    #[arg(long)]
+    size: Option<String>,
+    /// Pinned generated-image quality.
+    #[arg(long)]
+    quality: Option<String>,
+    /// Maximum approved provider charge reserved for one generation.
+    #[arg(long)]
+    maximum_cost_microunits: Option<u64>,
+    /// Maximum canonical JPEG bytes admitted to private artifact storage.
+    #[arg(long)]
+    maximum_output_bytes: Option<u64>,
+    /// Exact provider request deadline.
+    #[arg(long)]
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MediaAction {
+    /// Bounded owner-supplied image input.
+    ImageInput,
+    /// Exact-approved, non-idempotent provider image generation.
+    ImageGeneration,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ImageGenerationProtocolArgument {
+    /// OpenAI-compatible `POST /images/generations`.
+    OpenAiImages,
+    /// `OpenRouter` dedicated `POST /images`.
+    OpenRouterImages,
 }
 
 #[derive(Debug, Subcommand)]
@@ -433,7 +592,7 @@ enum Command {
     Config {
         /// Configuration operation.
         #[command(subcommand)]
-        command: ConfigCommand,
+        command: Box<ConfigCommand>,
     },
 }
 
@@ -1168,7 +1327,7 @@ enum ConfigCommand {
         #[arg(long = "argument")]
         arguments: Vec<String>,
     },
-    /// Install and enable selected read-only tools from one inspected local MCP stdio server.
+    /// Install and enable explicitly classified tools from one inspected local MCP stdio server.
     McpAdd {
         /// Stable logical server identity used in model-visible tool names.
         server_id: String,
@@ -1177,9 +1336,9 @@ enum ConfigCommand {
         /// Direct non-secret process argument; repeat in server order.
         #[arg(long = "argument")]
         arguments: Vec<String>,
-        /// Exact remote tool name reviewed by the owner; repeat to expose more than one.
-        #[arg(long = "allow-tool", required = true)]
-        allow_tools: Vec<String>,
+        /// Exact remote tool: NAME for read-only, idempotent:NAME, or non-idempotent:NAME; repeat as needed.
+        #[arg(long = "allow-tool", required = true, value_parser = parse_mcp_tool_selection)]
+        allow_tools: Vec<McpToolSelectionArgument>,
         /// Hard total timeout for initialization, re-discovery, and one call.
         #[arg(long, default_value_t = 30_000)]
         timeout_ms: u64,
@@ -1190,7 +1349,7 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
-    /// List configured MCP servers and exact reviewed tool definitions.
+    /// List configured MCP servers and exact reviewed tool definitions across both transports.
     McpList,
     /// Re-enable one configured MCP server after exact live toolset verification.
     McpEnable {
@@ -1224,6 +1383,95 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum McpHttpAction {
+    Inspect,
+    OauthInspect,
+    OauthLogin,
+    OauthAdd,
+    OauthRevoke,
+    Add,
+    Enable,
+    Disable,
+    Revoke,
+}
+
+#[derive(Debug, clap::Args)]
+struct McpHttpOptions {
+    /// Lifecycle operation.
+    action: McpHttpAction,
+    /// Stable logical server identity.
+    server_id: String,
+    /// Exact HTTPS endpoint, or literal-loopback HTTP endpoint; required for inspect/add.
+    endpoint: Option<String>,
+    /// Opaque broker identity for bearer-token inspection/import.
+    #[arg(long)]
+    bearer_secret_id: Option<String>,
+    /// Environment variable holding the bearer token for inspection/import.
+    #[arg(long)]
+    bearer_credential_env: Option<String>,
+    /// Exact issuer to select when protected-resource metadata advertises more than one.
+    #[arg(long)]
+    authorization_server: Option<String>,
+    /// Preregistered public OAuth client identity; required for oauth-login.
+    #[arg(long)]
+    oauth_client_id: Option<String>,
+    /// Portable owner-private rotating token-family identity; required for oauth-login.
+    #[arg(long)]
+    oauth_token_set_id: Option<String>,
+    /// Maximum time to wait for the exact loopback OAuth callback.
+    #[arg(long)]
+    oauth_timeout_seconds: Option<u64>,
+    /// Exact tool: NAME for read-only, idempotent:NAME, or non-idempotent:NAME; repeat for add.
+    #[arg(long = "allow-tool", value_parser = parse_mcp_tool_selection)]
+    allow_tools: Vec<McpToolSelectionArgument>,
+    /// Exact reviewed remote resource URI; repeat for add.
+    #[arg(long = "allow-resource")]
+    allow_resources: Vec<String>,
+    /// Exact reviewed remote prompt name; repeat for add.
+    #[arg(long = "allow-prompt")]
+    allow_prompts: Vec<String>,
+    /// Hard total timeout for initialization, re-discovery, and one call.
+    #[arg(long)]
+    timeout_ms: Option<u64>,
+    /// Hard normalized result bound per call.
+    #[arg(long)]
+    maximum_output_bytes: Option<u64>,
+    /// Confirm an authority-changing operation.
+    #[arg(long)]
+    approve: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct McpToolSelectionArgument {
+    name: String,
+    effect: McpToolEffect,
+}
+
+fn parse_mcp_tool_selection(value: &str) -> Result<McpToolSelectionArgument, String> {
+    let (effect, name) = if let Some(name) = value.strip_prefix("idempotent:") {
+        (McpToolEffect::Idempotent, name)
+    } else if let Some(name) = value.strip_prefix("non-idempotent:") {
+        (McpToolEffect::NonIdempotent, name)
+    } else {
+        (McpToolEffect::ReadOnly, value)
+    };
+    if name.is_empty()
+        || name.len() > 96
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        return Err(
+            "tool selection must be NAME, idempotent:NAME, or non-idempotent:NAME".to_owned(),
+        );
+    }
+    Ok(McpToolSelectionArgument {
+        name: name.to_owned(),
+        effect,
+    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -1821,6 +2069,39 @@ enum ChannelCommand {
         #[arg(long)]
         expected_revision: u64,
     },
+    /// Verify Socket Mode and bot tokens, then bind one exact Slack member/conversation.
+    SlackCreate {
+        /// Exact Slack member allowed to submit messages.
+        #[arg(long)]
+        user_id: String,
+        /// Exact Slack conversation used for inbound and outbound messages.
+        #[arg(long)]
+        channel_id: String,
+        /// One-shot environment variable containing the Socket Mode app token.
+        #[arg(long, default_value = "SLACK_APP_TOKEN")]
+        app_token_env: String,
+        /// One-shot environment variable containing the Web API bot token.
+        #[arg(long, default_value = "SLACK_BOT_TOKEN")]
+        bot_token_env: String,
+        /// Permit messages in non-DM conversations without an explicit bot mention.
+        #[arg(long)]
+        allow_unmentioned: bool,
+    },
+    /// List owner-authorized Slack bindings.
+    SlackList,
+    /// Inspect one Slack binding without exposing either token.
+    SlackStatus {
+        /// Stable binding ID returned by `slack-create`.
+        binding_id: String,
+    },
+    /// Terminally revoke one Slack binding and remove unshared brokered tokens.
+    SlackRevoke {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Optimistic-concurrency revision returned by `slack-status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2260,6 +2541,29 @@ enum SessionCommand {
         #[command(flatten)]
         selection: ProviderSelectionArguments,
     },
+    /// Normalize and durably submit one to four owner-selected local images.
+    SendImage {
+        /// Opaque session ID returned by `session create`.
+        session_id: String,
+        /// One to four existing PNG, JPEG, or WebP files; symlinks are rejected.
+        #[arg(required = true, num_args = 1..=4)]
+        paths: Vec<PathBuf>,
+        /// Instruction accompanying the ordered images.
+        #[arg(long, default_value = "Describe the attached image or images.")]
+        prompt: String,
+        /// Stable delivery key; generated and printed when omitted.
+        #[arg(long)]
+        idempotency_key: Option<String>,
+        /// Retry-stable `UUIDv7` artifact IDs, one per path; generated and printed when omitted.
+        #[arg(long = "artifact-id")]
+        artifact_ids: Vec<String>,
+        /// Delivery behavior.
+        #[arg(long, value_enum, default_value_t = DeliveryArgument::Queue)]
+        delivery: DeliveryArgument,
+        /// Required exact image-capable provider/model route.
+        #[command(flatten)]
+        selection: ProviderSelectionArguments,
+    },
     /// Read current session queue/turn status.
     Status {
         /// Opaque session ID.
@@ -2348,6 +2652,9 @@ impl From<DeliveryArgument> for DeliveryMode {
 }
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("--media-worker") {
+        return media_worker_main();
+    }
     if std::env::args().nth(1).as_deref() == Some("--browser-worker") {
         return browser_worker_main();
     }
@@ -2380,13 +2687,19 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command())
-        .subcommand_required(false)
-        .after_help(
-            "On an interactive terminal, run without a subcommand to onboard an unconfigured \
+    <BrowserNamespace as clap::Subcommand>::augment_subcommands(
+        <MediaNamespace as clap::Subcommand>::augment_subcommands(
+            <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+                <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+            ),
+        ),
+    )
+    .subcommand_required(false)
+    .after_help(
+        "On an interactive terminal, run without a subcommand to onboard an unconfigured \
              home or open a new chat for a configured home. Automation must name an explicit \
              subcommand.",
-        )
+    )
 }
 
 fn stable_default_mealy_home(user_home: Option<OsString>) -> Option<PathBuf> {
@@ -2449,6 +2762,63 @@ fn lifecycle_invocation(arguments: &[OsString]) -> bool {
                     | "update-transaction"
             )
         });
+    }
+    false
+}
+
+fn mcp_http_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "mcp-http";
+    }
+    false
+}
+
+fn media_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "media";
+    }
+    false
+}
+
+fn browser_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "browser";
     }
     false
 }
@@ -3429,6 +3799,42 @@ fn remove_verified_owner_service_if_present(_home: &Path) -> Result<(), CliError
 async fn run() -> Result<(), CliError> {
     let raw_arguments = apply_default_operational_subcommand(std::env::args_os().collect())?;
     let home_override_supplied = cli_home_override_supplied(&raw_arguments);
+    if browser_invocation(&raw_arguments) {
+        let mut arguments = BrowserArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let BrowserNamespace::Browser(options) = arguments.command;
+        return tokio::task::block_in_place(|| {
+            configure_browser_transaction_enabled(
+                &arguments.home,
+                options.enable_transactions,
+                options.approve,
+            )
+        });
+    }
+    if media_invocation(&raw_arguments) {
+        let mut arguments = MediaArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let MediaNamespace::Media(options) = arguments.command;
+        return tokio::task::block_in_place(|| match options.action {
+            MediaAction::ImageInput => {
+                if image_generation_options_present(&options) {
+                    return Err(CliError::InvalidProviderConfiguration);
+                }
+                configure_provider_image_input(&arguments.home, options.enable, options.approve)
+            }
+            MediaAction::ImageGeneration => {
+                configure_provider_image_generation(&arguments.home, &options)
+            }
+        });
+    }
+    if mcp_http_invocation(&raw_arguments) {
+        let mut arguments = McpHttpArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let McpHttpNamespace::McpHttp(options) = arguments.command;
+        return tokio::task::block_in_place(|| {
+            run_mcp_http_config_operation(&arguments.home, &options)
+        });
+    }
     if lifecycle_invocation(&raw_arguments) {
         let mut arguments = LifecycleArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
@@ -3447,7 +3853,7 @@ async fn run() -> Result<(), CliError> {
         return run_service_installation(&arguments.home, command);
     }
     if let Command::Config { command } = &arguments.command {
-        return run_config_operation(&arguments.home, command);
+        return tokio::task::block_in_place(|| run_config_operation(&arguments.home, command));
     }
     if let Command::Skill { command } = &arguments.command {
         return run_skill_operation(&arguments.home, command);
@@ -6356,6 +6762,12 @@ async fn run_channel(
         | ChannelCommand::DiscordRevoke { .. }) => {
             return run_discord_channel(client, connection, discord_command).await;
         }
+        slack_command @ (ChannelCommand::SlackCreate { .. }
+        | ChannelCommand::SlackList
+        | ChannelCommand::SlackStatus { .. }
+        | ChannelCommand::SlackRevoke { .. }) => {
+            return run_slack_channel(client, connection, slack_command).await;
+        }
         ChannelCommand::Create {
             external_subject,
             callback_url,
@@ -6959,6 +7371,103 @@ async fn submit_discord_channel_secret(
         connection,
     )
     .json(&command);
+    command.bot_token.zeroize();
+    request.send().await.map_err(CliError::Http)
+}
+
+async fn run_slack_channel(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: ChannelCommand,
+) -> Result<(), CliError> {
+    let response = match command {
+        ChannelCommand::SlackCreate {
+            user_id,
+            channel_id,
+            app_token_env,
+            bot_token_env,
+            allow_unmentioned,
+        } => {
+            if app_token_env == bot_token_env {
+                return Err(CliError::Protocol(
+                    "Slack app and bot tokens must use different environment variables".to_owned(),
+                ));
+            }
+            let app_token = read_channel_credential_environment(&app_token_env)?;
+            let bot_token = read_channel_credential_environment(&bot_token_env)?;
+            let require_mention = !channel_id.starts_with('D') && !allow_unmentioned;
+            submit_slack_channel_secrets(
+                client,
+                connection,
+                CreateSlackChannelRequest {
+                    api_version: API_VERSION.to_owned(),
+                    app_token: app_token.to_string(),
+                    bot_token: bot_token.to_string(),
+                    slack_user_id: user_id,
+                    slack_channel_id: channel_id,
+                    require_mention,
+                },
+            )
+            .await?
+        }
+        ChannelCommand::SlackList => {
+            let response = authorized(
+                client.get(format!("{}/v1/channels/slack", connection.base_url)),
+                connection,
+            )
+            .send()
+            .await?;
+            return print_json(decode::<SlackChannelsResponse>(response).await?);
+        }
+        ChannelCommand::SlackStatus { binding_id } => {
+            authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?
+        }
+        ChannelCommand::SlackRevoke {
+            binding_id,
+            expected_revision,
+        } => {
+            authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/revoke",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&RevokeSlackChannelRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+            })
+            .send()
+            .await?
+        }
+        _ => {
+            return Err(CliError::Protocol(
+                "non-Slack command reached Slack dispatcher".to_owned(),
+            ));
+        }
+    };
+    print_json(decode::<SlackChannelResponse>(response).await?)
+}
+
+async fn submit_slack_channel_secrets(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    mut command: CreateSlackChannelRequest,
+) -> Result<Response, CliError> {
+    let request = authorized(
+        client.post(format!("{}/v1/channels/slack", connection.base_url)),
+        connection,
+    )
+    .json(&command);
+    command.app_token.zeroize();
     command.bot_token.zeroize();
     request.send().await.map_err(CliError::Http)
 }
@@ -7762,6 +8271,37 @@ fn prepare_local_text_attachment(
     Ok(content)
 }
 
+fn prepare_local_image_attachment(
+    home: &Path,
+    path: &Path,
+) -> Result<(&'static str, Vec<u8>), CliError> {
+    let media_type = local_image_attachment_media_type(path)?;
+    let file = open_local_attachment(path)?;
+    let metadata = file.metadata()?;
+    let canonical_path = fs::canonicalize(path)?;
+    let canonical_metadata = fs::metadata(&canonical_path)?;
+    let canonical_home = fs::canonicalize(home)?;
+    if !metadata.is_file()
+        || !same_file_identity(&metadata, &canonical_metadata)
+        || paths_overlap(&canonical_path, &canonical_home)
+        || metadata.len() == 0
+        || metadata.len() > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| CliError::InvalidLocalAttachment)?,
+    );
+    file.take(MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty()
+        || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    Ok((media_type, bytes))
+}
+
 #[cfg(unix)]
 fn same_file_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt as _;
@@ -7789,6 +8329,20 @@ fn local_text_attachment_media_type(path: &Path) -> Result<&'static str, CliErro
         "txt" | "text" | "log" | "rs" | "py" | "js" | "ts" | "html" | "css" | "sh" | "sql" => {
             Ok("text/plain; charset=utf-8")
         }
+        _ => Err(CliError::InvalidLocalAttachment),
+    }
+}
+
+fn local_image_attachment_media_type(path: &Path) -> Result<&'static str, CliError> {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or(CliError::InvalidLocalAttachment)?;
+    match extension.as_str() {
+        "png" => Ok("image/png"),
+        "jpg" | "jpeg" => Ok("image/jpeg"),
+        "webp" => Ok("image/webp"),
         _ => Err(CliError::InvalidLocalAttachment),
     }
 }
@@ -7865,6 +8419,29 @@ async fn run_session(
         command @ (SessionCommand::Send { .. } | SessionCommand::SendFile { .. }) => {
             run_session_submission(client, home, connection, command).await?;
         }
+        SessionCommand::SendImage {
+            session_id,
+            paths,
+            prompt,
+            idempotency_key,
+            artifact_ids,
+            delivery,
+            selection,
+        } => {
+            run_session_image_submission(
+                client,
+                home,
+                connection,
+                session_id,
+                paths,
+                prompt,
+                idempotency_key,
+                artifact_ids,
+                delivery,
+                selection,
+            )
+            .await?;
+        }
         SessionCommand::Status { session_id } => {
             let response = authorized(
                 client.get(format!(
@@ -7939,6 +8516,93 @@ async fn run_session_submission(
         content,
     };
     print_json(submit_input_with_retry(client, home, connection, &session_id, &request).await?)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_session_image_submission(
+    client: &Client,
+    home: &Path,
+    connection: &LocalConnectionInfo,
+    session_id: String,
+    paths: Vec<PathBuf>,
+    prompt: String,
+    idempotency_key: Option<String>,
+    mut artifact_ids: Vec<String>,
+    delivery: DeliveryArgument,
+    selection: ProviderSelectionArguments,
+) -> Result<(), CliError> {
+    if paths.is_empty()
+        || paths.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+        || prompt.is_empty()
+        || prompt.len() > MAXIMUM_LOCAL_ATTACHMENT_PROMPT_BYTES
+        || prompt.trim() != prompt
+        || prompt.chars().any(char::is_control)
+    {
+        return Err(CliError::InvalidLocalAttachment);
+    }
+    let Some(provider_selection @ ProviderSelectionCommand::Exact { .. }) =
+        selection.into_selection()?
+    else {
+        return Err(CliError::Protocol(
+            "image input requires --provider-id and --model-id for an exact activated route"
+                .to_owned(),
+        ));
+    };
+    let generated_key = idempotency_key.is_none();
+    let key = idempotency_key.map_or_else(generate_idempotency_key, Ok)?;
+    if generated_key {
+        eprintln!("MEALY_IDEMPOTENCY_KEY {key}");
+    }
+    let generated_artifact_ids = artifact_ids.is_empty();
+    if generated_artifact_ids {
+        artifact_ids = paths
+            .iter()
+            .map(|_| ArtifactId::new().to_string())
+            .collect();
+    }
+    if artifact_ids.len() != paths.len() {
+        return Err(CliError::Protocol(
+            "provide either no --artifact-id values or exactly one UUIDv7 per image path"
+                .to_owned(),
+        ));
+    }
+    let mut seen_artifacts = BTreeSet::new();
+    let mut total_source_bytes = 0_u64;
+    let mut images = Vec::with_capacity(paths.len());
+    for (index, (path, artifact_id)) in paths.iter().zip(&artifact_ids).enumerate() {
+        let parsed = artifact_id
+            .parse::<ArtifactId>()
+            .map_err(|_| CliError::InvalidLocalAttachment)?;
+        if parsed.as_uuid().get_version_num() != 7 || !seen_artifacts.insert(parsed) {
+            return Err(CliError::InvalidLocalAttachment);
+        }
+        let (media_type, bytes) = prepare_local_image_attachment(home, path)?;
+        total_source_bytes = total_source_bytes
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or(CliError::InvalidLocalAttachment)?;
+        if total_source_bytes > MAXIMUM_LOCAL_IMAGE_ATTACHMENT_TOTAL_BYTES {
+            return Err(CliError::InvalidLocalAttachment);
+        }
+        if generated_artifact_ids {
+            eprintln!("MEALY_IMAGE_ARTIFACT_ID {} {artifact_id}", index + 1);
+        }
+        images.push(SubmittedImageInput {
+            artifact_id: artifact_id.clone(),
+            media_type: media_type.to_owned(),
+            data_base64: BASE64_STANDARD.encode(bytes),
+        });
+    }
+    let request = SubmitImageInputRequest {
+        api_version: API_VERSION.to_owned(),
+        idempotency_key: key,
+        delivery_mode: delivery.into(),
+        content: prompt,
+        provider_selection,
+        images,
+    };
+    print_json(
+        submit_image_input_with_retry(client, home, connection, &session_id, &request).await?,
+    )
 }
 
 async fn create_cli_session(
@@ -9017,6 +9681,7 @@ async fn read_bounded_success_body(
     Ok(body)
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_session_transcript_json(
     bytes: &[u8],
     expected_session_id: &str,
@@ -9027,7 +9692,10 @@ fn validate_session_transcript_json(
     let expected_maximum_turns = u64::try_from(SESSION_TRANSCRIPT_MAXIMUM_TURNS)
         .map_err(|_| CliError::Protocol("session export turn bound exceeds u64".to_owned()))?;
     if export.api_version != API_VERSION
-        || export.schema_version != "mealy.session-transcript.v1"
+        || !matches!(
+            export.schema_version.as_str(),
+            "mealy.session-transcript.v1" | "mealy.session-transcript.v2"
+        )
         || export.session_id != expected_session_id
         || export.session_id.parse::<SessionId>().is_err()
         || !valid_session_metadata(&export.title)
@@ -9076,6 +9744,26 @@ fn validate_session_transcript_json(
     let mut content_bytes = 0_u64;
     let mut previous_sequence = None;
     for turn in &export.turns {
+        let image_bytes = turn.user.images.iter().try_fold(0_u64, |total, image| {
+            if image.artifact_id.parse::<ArtifactId>().is_err()
+                || !matches!(image.media_type.as_str(), "image/png" | "image/jpeg")
+                || !is_sha256_digest(&image.sha256_digest)
+                || image.size_bytes == 0
+                || image.size_bytes
+                    > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+                || image.width == 0
+                || image.height == 0
+                || image.width > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+                || image.height > MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            {
+                return Err(CliError::Protocol(
+                    "session JSON export contains invalid image evidence".to_owned(),
+                ));
+            }
+            total
+                .checked_add(image.size_bytes)
+                .ok_or_else(|| CliError::Protocol("session image size overflowed".to_owned()))
+        })?;
         let storage_shape_valid = match turn.assistant.storage.as_str() {
             "inline" => turn.assistant.artifact_id.is_none(),
             "artifact" => turn.assistant.artifact_id.is_some(),
@@ -9094,6 +9782,9 @@ fn validate_session_transcript_json(
             || turn.assistant.media_type != "text/plain; charset=utf-8"
             || turn.assistant.sensitivity != "internal"
             || !storage_shape_valid
+            || turn.user.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS
+            || image_bytes
+                > u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES).unwrap_or(u64::MAX)
         {
             return Err(CliError::Protocol(
                 "session JSON export contains inconsistent turn evidence".to_owned(),
@@ -9128,7 +9819,8 @@ fn validate_session_transcript_html(
     let lowercase = html.to_ascii_lowercase();
     if !html.starts_with("<!doctype html>")
         || !html.ends_with("</html>\n")
-        || !html.contains("mealy.session-transcript.v1")
+        || !(html.contains("mealy.session-transcript.v1")
+            || html.contains("mealy.session-transcript.v2"))
         || !html.contains(expected_session_id)
         || !html.contains(INERT_CSP_META)
         || [
@@ -9477,6 +10169,54 @@ async fn submit_input_with_retry(
             Err(_) if attempt < 4 => {
                 eprintln!(
                     "input admission response was unavailable; retrying with idempotency key {}",
+                    request.idempotency_key
+                );
+            }
+            Err(error) => return Err(CliError::Http(error)),
+        }
+        tokio::time::sleep(Duration::from_millis(100_u64 << attempt)).await;
+        if let Ok(reloaded) = load_connection(home) {
+            connection = reloaded;
+        }
+    }
+    unreachable!("bounded retry loop always returns on its final attempt")
+}
+
+async fn submit_image_input_with_retry(
+    client: &Client,
+    home: &Path,
+    initial_connection: &LocalConnectionInfo,
+    session_id: &str,
+    request: &SubmitImageInputRequest,
+) -> Result<InputAdmissionResponse, CliError> {
+    let mut connection = initial_connection.clone();
+    for attempt in 0_u32..5 {
+        let result = authorized(
+            client.post(format!(
+                "{}/v1/sessions/{session_id}/image-inputs",
+                connection.base_url
+            )),
+            &connection,
+        )
+        .timeout(Duration::from_secs(90))
+        .json(request)
+        .send()
+        .await;
+        match result {
+            Ok(response) if response.status().is_success() => {
+                return decode::<InputAdmissionResponse>(response).await;
+            }
+            Ok(response) if retryable_status(response.status()) && attempt < 4 => {
+                eprintln!(
+                    "image admission returned {}; retrying exact identities with idempotency key {}",
+                    response.status(),
+                    request.idempotency_key
+                );
+            }
+            Ok(response) => return Err(server_error(response).await),
+            Err(_) if attempt < 4 => {
+                eprintln!(
+                    "image admission response was unavailable; retrying exact artifact identities with idempotency key {}",
                     request.idempotency_key
                 );
             }
@@ -11203,6 +11943,32 @@ struct ProviderChainConfigurationResponse {
     configuration_path: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderImageInputConfigurationResponse {
+    enabled: bool,
+    provider_ids: Vec<String>,
+    configuration_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    restart_required: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderImageGenerationConfigurationResponse {
+    enabled: bool,
+    protocol: Option<String>,
+    provider_id: Option<String>,
+    model: Option<String>,
+    secret_id: Option<String>,
+    configuration_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    connectivity_tested: bool,
+    restart_required: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ProviderCredentialImport<'a> {
     secret_id: &'a str,
@@ -11471,7 +12237,72 @@ struct McpInspectionResponse {
 #[serde(rename_all = "camelCase")]
 struct McpServersConfigurationResponse {
     servers: Vec<McpServerConfig>,
+    http_servers: Vec<McpHttpServerConfig>,
     activation_note: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpHttpInspectionResponse {
+    server_id: String,
+    endpoint: String,
+    authentication: McpHttpAuthentication,
+    transport: &'static str,
+    discovery: McpHttpCatalogDiscovery,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpOAuthInspectionResponse {
+    server_id: String,
+    endpoint: String,
+    transport: &'static str,
+    mutation: &'static str,
+    discovery: McpOAuthMetadataDiscovery,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpOAuthLoginResponse {
+    server_id: String,
+    token_set_id: String,
+    resource: String,
+    authorization_server: String,
+    scopes: Vec<String>,
+    generation: u64,
+    expires_at_ms: Option<i64>,
+    configuration_changed: bool,
+    authority_exposed: bool,
+    next_step: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpOAuthRevokeResponse {
+    token_set_id: String,
+    resource: String,
+    authorization_server: String,
+    revoked_generation: u64,
+    local_broker_record_removed: bool,
+    remote_revocation: &'static str,
+    configuration_changed: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpHttpConfigurationResponse {
+    server_id: String,
+    operation: String,
+    enabled: bool,
+    endpoint: String,
+    authentication: McpHttpAuthentication,
+    exposed_tool_ids: Vec<String>,
+    exposed_resource_tool_ids: Vec<String>,
+    exposed_prompt_tool_ids: Vec<String>,
+    catalog_digest: String,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    restart_required: bool,
 }
 
 #[derive(Serialize)]
@@ -11880,6 +12711,173 @@ fn run_config_operation(home: &Path, command: &ConfigCommand) -> Result<(), CliE
             rollback_configuration(home, digest, *approve)
         }
     }
+}
+
+fn run_mcp_http_config_operation(home: &Path, options: &McpHttpOptions) -> Result<(), CliError> {
+    let credential_environment = options
+        .bearer_credential_env
+        .as_deref()
+        .unwrap_or("MCP_HTTP_BEARER_TOKEN");
+    match options.action {
+        McpHttpAction::Inspect
+            if options.endpoint.is_some()
+                && options.authorization_server.is_none()
+                && mcp_http_has_no_oauth_client_options(options)
+                && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none()
+                && !options.approve =>
+        {
+            inspect_mcp_http_server(
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.bearer_secret_id.as_deref(),
+                credential_environment,
+            )
+        }
+        McpHttpAction::OauthInspect
+            if options.endpoint.is_some()
+                && options.bearer_secret_id.is_none()
+                && options.bearer_credential_env.is_none()
+                && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none()
+                && options.oauth_client_id.is_none()
+                && options.oauth_token_set_id.is_none()
+                && options.oauth_timeout_seconds.is_none()
+                && !options.approve =>
+        {
+            inspect_mcp_oauth_server(
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.authorization_server.as_deref(),
+            )
+        }
+        McpHttpAction::OauthLogin
+            if options.endpoint.is_some()
+                && options.oauth_client_id.is_some()
+                && options.oauth_token_set_id.is_some()
+                && options.bearer_secret_id.is_none()
+                && options.bearer_credential_env.is_none()
+                && options.allow_tools.is_empty()
+                && options.allow_resources.is_empty()
+                && options.allow_prompts.is_empty()
+                && options.timeout_ms.is_none()
+                && options.maximum_output_bytes.is_none() =>
+        {
+            configure_mcp_oauth_login(
+                home,
+                &options.server_id,
+                options.endpoint.as_deref().expect("guarded endpoint"),
+                options.authorization_server.as_deref(),
+                options.oauth_client_id.as_deref().expect("guarded client"),
+                options
+                    .oauth_token_set_id
+                    .as_deref()
+                    .expect("guarded token identity"),
+                options.oauth_timeout_seconds.unwrap_or(300),
+                options.approve,
+            )
+        }
+        McpHttpAction::OauthAdd => run_mcp_http_oauth_add(home, options, credential_environment),
+        McpHttpAction::OauthRevoke if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_oauth_revoke(home, &options.server_id, options.approve)
+        }
+        McpHttpAction::Add => run_mcp_http_standard_add(home, options, credential_environment),
+        McpHttpAction::Enable if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_enabled(home, &options.server_id, true, options.approve)
+        }
+        McpHttpAction::Disable if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_enabled(home, &options.server_id, false, options.approve)
+        }
+        McpHttpAction::Revoke if valid_mcp_http_lifecycle_options(options) => {
+            configure_mcp_http_revoke(home, &options.server_id, options.approve)
+        }
+        _ => Err(CliError::InvalidMcpConfiguration),
+    }
+}
+
+fn run_mcp_http_standard_add(
+    home: &Path,
+    options: &McpHttpOptions,
+    credential_environment: &str,
+) -> Result<(), CliError> {
+    if options.endpoint.is_none()
+        || options.authorization_server.is_some()
+        || !mcp_http_has_no_oauth_client_options(options)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    configure_mcp_http_add(
+        home,
+        &options.server_id,
+        options.endpoint.as_deref().expect("guarded endpoint"),
+        options.bearer_secret_id.as_deref(),
+        credential_environment,
+        None,
+        &options.allow_tools,
+        &options.allow_resources,
+        &options.allow_prompts,
+        options.timeout_ms.unwrap_or(30_000),
+        options.maximum_output_bytes.unwrap_or(262_144),
+        options.approve,
+    )
+}
+
+fn run_mcp_http_oauth_add(
+    home: &Path,
+    options: &McpHttpOptions,
+    credential_environment: &str,
+) -> Result<(), CliError> {
+    if options.endpoint.is_none()
+        || options.oauth_token_set_id.is_none()
+        || options.bearer_secret_id.is_some()
+        || options.bearer_credential_env.is_some()
+        || options.authorization_server.is_some()
+        || options.oauth_client_id.is_some()
+        || options.oauth_timeout_seconds.is_some()
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    configure_mcp_http_add(
+        home,
+        &options.server_id,
+        options.endpoint.as_deref().expect("guarded endpoint"),
+        None,
+        credential_environment,
+        options.oauth_token_set_id.as_deref(),
+        &options.allow_tools,
+        &options.allow_resources,
+        &options.allow_prompts,
+        options.timeout_ms.unwrap_or(30_000),
+        options.maximum_output_bytes.unwrap_or(262_144),
+        options.approve,
+    )
+}
+
+fn mcp_http_has_no_oauth_client_options(options: &McpHttpOptions) -> bool {
+    options.oauth_client_id.is_none()
+        && options.oauth_token_set_id.is_none()
+        && options.oauth_timeout_seconds.is_none()
+}
+
+fn valid_mcp_http_lifecycle_options(options: &McpHttpOptions) -> bool {
+    options.endpoint.is_none()
+        && options.bearer_secret_id.is_none()
+        && options.bearer_credential_env.is_none()
+        && options.authorization_server.is_none()
+        && options.oauth_client_id.is_none()
+        && options.oauth_token_set_id.is_none()
+        && options.oauth_timeout_seconds.is_none()
+        && options.allow_tools.is_empty()
+        && options.allow_resources.is_empty()
+        && options.allow_prompts.is_empty()
+        && options.timeout_ms.is_none()
+        && options.maximum_output_bytes.is_none()
 }
 
 fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliError> {
@@ -13110,6 +14108,289 @@ fn list_provider_chain(home: &Path) -> Result<(), CliError> {
     })
 }
 
+fn image_generation_options_present(options: &MediaOptions) -> bool {
+    options.protocol.is_some()
+        || options.provider_id.is_some()
+        || options.base_url.is_some()
+        || options.model.is_some()
+        || options.residency.is_some()
+        || options.secret_id.is_some()
+        || options.credential_env.is_some()
+        || options.size.is_some()
+        || options.quality.is_some()
+        || options.maximum_cost_microunits.is_some()
+        || options.maximum_output_bytes.is_some()
+        || options.timeout_ms.is_some()
+}
+
+#[allow(clippy::too_many_lines)]
+fn configure_provider_image_generation(
+    home: &Path,
+    options: &MediaOptions,
+) -> Result<(), CliError> {
+    if !options.approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if options.enable == options.disable {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if options.disable {
+        if image_generation_options_present(options) {
+            return Err(CliError::InvalidProviderConfiguration);
+        }
+        return publish_provider_image_generation(home, None, None);
+    }
+
+    let protocol = options
+        .protocol
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let protocol_name = match protocol {
+        ImageGenerationProtocolArgument::OpenAiImages => "open_ai_images",
+        ImageGenerationProtocolArgument::OpenRouterImages => "open_router_images",
+    };
+    let provider_id = options
+        .provider_id
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let base_url = options
+        .base_url
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let model = options
+        .model
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let residency = options
+        .residency
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let size = options
+        .size
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let quality = options
+        .quality
+        .as_deref()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let maximum_cost_microunits = options
+        .maximum_cost_microunits
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let maximum_output_bytes = options
+        .maximum_output_bytes
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let timeout_ms = options
+        .timeout_ms
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if options.credential_env.is_some() && options.secret_id.is_none() {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    let credential_reference = options.secret_id.as_deref().map(|secret_id| {
+        json!({
+            "source": "broker",
+            "secretId": secret_id,
+        })
+    });
+    let configuration = serde_json::from_value::<ImageGenerationConfig>(json!({
+        "providerId": provider_id,
+        "protocol": protocol_name,
+        "baseUrl": base_url,
+        "model": model,
+        "credential": credential_reference,
+        "residency": residency,
+        "size": size,
+        "quality": quality,
+        "maximumCostMicrounits": maximum_cost_microunits,
+        "maximumOutputBytes": maximum_output_bytes,
+        "timeoutMs": timeout_ms,
+    }))?;
+    configuration
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let credential = options
+        .credential_env
+        .as_deref()
+        .map(read_provider_credential_environment)
+        .transpose()?;
+    publish_provider_image_generation(
+        home,
+        Some(&configuration),
+        credential.as_deref().map(String::as_str),
+    )
+}
+
+fn publish_provider_image_generation(
+    home: &Path,
+    configuration: Option<&ImageGenerationConfig>,
+    imported_credential: Option<&str>,
+) -> Result<(), CliError> {
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+
+    let secret_id = configuration.and_then(|config| {
+        config
+            .credential()
+            .and_then(provider_credential_broker_secret_id)
+    });
+    if imported_credential.is_some() && secret_id.is_none() {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if let Some(secret_id) = secret_id {
+        let store = FileProviderSecretStore::new(home.join("provider-secrets"))?;
+        if let Some(credential) = imported_credential {
+            verify_provider_secret_preflight(&store, secret_id, credential)?;
+            store.put(secret_id, credential)?;
+        } else {
+            store.read(secret_id)?;
+        }
+    }
+
+    let prior = object.get("imageGeneration").cloned();
+    match configuration {
+        Some(configuration) => {
+            object.insert(
+                "imageGeneration".to_owned(),
+                serde_json::to_value(configuration)?,
+            );
+        }
+        None => {
+            if object.remove("imageGeneration").is_none() {
+                return Err(CliError::InvalidProviderConfiguration);
+            }
+        }
+    }
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let timestamp = unix_timestamp_millis()?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-provider-image-generation-{timestamp}-{}.json",
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    let prior_config = prior
+        .map(serde_json::from_value::<ImageGenerationConfig>)
+        .transpose()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let report_config = configuration.or(prior_config.as_ref());
+    let report_protocol = report_config.map(|config| match config.protocol() {
+        mealy_application::ImageGenerationProtocol::OpenAiImages => "open_ai_images".to_owned(),
+        mealy_application::ImageGenerationProtocol::OpenRouterImages => {
+            "open_router_images".to_owned()
+        }
+    });
+    print_json(ProviderImageGenerationConfigurationResponse {
+        enabled: configuration.is_some(),
+        protocol: report_protocol,
+        provider_id: report_config.map(|config| config.provider_id().to_owned()),
+        model: report_config.map(|config| config.model().to_owned()),
+        secret_id: report_config.and_then(|config| {
+            config
+                .credential()
+                .and_then(provider_credential_broker_secret_id)
+                .map(str::to_owned)
+        }),
+        configuration_digest: sha256_digest(&updated),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: false,
+        restart_required: true,
+    })
+}
+
+fn provider_credential_broker_secret_id(credential: &ProviderCredentialReference) -> Option<&str> {
+    match credential {
+        ProviderCredentialReference::Broker { secret_id } => Some(secret_id),
+        ProviderCredentialReference::Environment { .. } => None,
+    }
+}
+
+fn configure_provider_image_input(
+    home: &Path,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if !valid_daemon_config_keys(object)
+        || DAEMON_CONFIG_KEYS
+            .iter()
+            .any(|key| !object.contains_key(*key))
+        || object.get("formatVersion").and_then(Value::as_u64) != Some(1)
+    {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    let primary = serde_json::from_value::<ProviderConfig>(
+        object
+            .get("provider")
+            .cloned()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    let fallbacks = object
+        .get("providerFallbacks")
+        .cloned()
+        .map(serde_json::from_value::<Vec<ProviderConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_provider_chain(&primary, &fallbacks)
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let routes = std::iter::once(&primary)
+        .chain(&fallbacks)
+        .collect::<Vec<_>>();
+    if enabled
+        && !routes.iter().all(|provider| {
+            matches!(
+                provider,
+                ProviderConfig::OpenAiResponses { .. } | ProviderConfig::AnthropicMessages { .. }
+            )
+        })
+    {
+        return Err(CliError::InvalidProviderConfiguration);
+    }
+    if enabled {
+        object.insert("imageInputEnabled".to_owned(), Value::Bool(true));
+    } else {
+        object.remove("imageInputEnabled");
+    }
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let timestamp = unix_timestamp_millis()?;
+    let replaced = home
+        .join("config-history")
+        .join(format!("pre-provider-image-input-{timestamp}.json"));
+    atomic_write_service(&replaced, &current_body)?;
+    atomic_write_service(&current, &updated)?;
+    let provider_ids = routes
+        .into_iter()
+        .filter_map(ProviderConfig::provider_id)
+        .map(str::to_owned)
+        .collect();
+    print_json(ProviderImageInputConfigurationResponse {
+        enabled,
+        provider_ids,
+        configuration_digest: sha256_digest(&updated),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        restart_required: true,
+    })
+}
+
 fn configure_provider_fallback(
     home: &Path,
     provider: ProviderConfig,
@@ -13614,6 +14895,7 @@ fn probe_subscription_connectivity_blocking(
             role: MessageRole::User,
             content: "Reply with the single word OK. This is a bounded connectivity test."
                 .to_owned(),
+            images: Vec::new(),
             tool_call_id: None,
         }],
         tools: Vec::new(),
@@ -14872,6 +16154,9 @@ fn configure_browser_enabled(home: &Path, enabled: bool, approve: bool) -> Resul
     if browser.enabled() == enabled {
         return Err(CliError::InvalidBrowserConfiguration);
     }
+    if !enabled && browser.transactional_enabled() {
+        return Err(CliError::BrowserTransactionsRequireBrowser);
+    }
     if enabled {
         require_enabled_web_for_browser(object)?;
         verify_configured_browser(&home, &browser)?;
@@ -14884,6 +16169,52 @@ fn configure_browser_enabled(home: &Path, enabled: bool, approve: bool) -> Resul
         &current_body,
         &value,
         if enabled { "enabled" } else { "disabled" },
+        Some(browser),
+        true,
+    )
+}
+
+fn configure_browser_transaction_enabled(
+    home: &Path,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home =
+        exact_canonical_directory(&home).map_err(|_| CliError::InvalidBrowserConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidBrowserConfiguration)?;
+    let mut browser = configured_browser(object)?.ok_or(CliError::BrowserNotFound)?;
+    if browser.transactional_enabled() == enabled || enabled && !browser.enabled() {
+        return Err(CliError::InvalidBrowserConfiguration);
+    }
+    if enabled {
+        require_enabled_web_for_browser(object)?;
+        verify_configured_browser(&home, &browser)?;
+    }
+    browser = browser.with_transactional_enabled(enabled);
+    browser
+        .validate()
+        .map_err(|_| CliError::InvalidBrowserConfiguration)?;
+    object.insert("browser".to_owned(), serde_json::to_value(&browser)?);
+    publish_browser_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        if enabled {
+            "transactional_enabled"
+        } else {
+            "transactional_disabled"
+        },
         Some(browser),
         true,
     )
@@ -15017,13 +16348,31 @@ fn inspect_mcp_server(
     })
 }
 
+fn classified_mcp_tool_selections(
+    selections: &[McpToolSelectionArgument],
+) -> Result<Vec<(String, McpToolEffect)>, CliError> {
+    if selections.is_empty() || selections.len() > 64 {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let mut selected = BTreeMap::new();
+    for selection in selections {
+        if selected
+            .insert(selection.name.clone(), selection.effect)
+            .is_some()
+        {
+            return Err(CliError::InvalidMcpConfiguration);
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn configure_mcp_add(
     home: &Path,
     server_id: &str,
     executable: &Path,
     arguments: &[String],
-    allow_tools: &[String],
+    allow_tools: &[McpToolSelectionArgument],
     timeout_ms: u64,
     maximum_output_bytes: u64,
     approve: bool,
@@ -15031,14 +16380,7 @@ fn configure_mcp_add(
     if !approve {
         return Err(CliError::ApprovalRequired);
     }
-    if allow_tools.is_empty() || allow_tools.len() > 64 {
-        return Err(CliError::InvalidMcpConfiguration);
-    }
-    let mut selected = allow_tools.to_vec();
-    selected.sort();
-    if selected.windows(2).any(|window| window[0] == window[1]) {
-        return Err(CliError::InvalidMcpConfiguration);
-    }
+    let selected = classified_mcp_tool_selections(allow_tools)?;
     let (home, _instance_lock) = lock_stopped_home(home)?;
     let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
     let current = home.join("config.json");
@@ -15049,6 +16391,7 @@ fn configure_mcp_add(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     if servers.iter().any(|server| server.server_id() == server_id) {
         return Err(CliError::InvalidMcpConfiguration);
     }
@@ -15064,12 +16407,17 @@ fn configure_mcp_add(
     )?;
     let grants = selected
         .iter()
-        .map(|name| {
+        .map(|(name, effect)| {
             let tool = discovery
                 .tool(name)
                 .ok_or(CliError::InvalidMcpConfiguration)?;
-            McpToolGrant::new(tool.definition.clone(), timeout_ms, maximum_output_bytes)
-                .map_err(|_| CliError::InvalidMcpConfiguration)
+            McpToolGrant::new_with_effect(
+                tool.definition.clone(),
+                *effect,
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let relative_path = format!("mcp-servers/{executable_digest}/server");
@@ -15088,7 +16436,8 @@ fn configure_mcp_add(
     install_mcp_executable(&home, &relative_path, &executable_bytes)?;
     servers.push(server.clone());
     servers.sort_by(|left, right| left.server_id().cmp(right.server_id()));
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     object.insert("mcpServers".to_owned(), serde_json::to_value(&servers)?);
     publish_mcp_configuration(
         &home,
@@ -15101,6 +16450,592 @@ fn configure_mcp_add(
     )
 }
 
+fn inspect_mcp_http_server(
+    server_id: &str,
+    endpoint: &str,
+    bearer_secret_id: Option<&str>,
+    bearer_credential_env: &str,
+) -> Result<(), CliError> {
+    let authentication = mcp_http_authentication(bearer_secret_id);
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication.clone(),
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let credential = bearer_secret_id
+        .map(|_| read_provider_credential_environment(bearer_credential_env))
+        .transpose()?;
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential, None)?;
+    print_json(McpHttpInspectionResponse {
+        server_id: proposal.server_id().to_owned(),
+        endpoint: proposal.endpoint().to_owned(),
+        authentication,
+        transport: "streamable_http_2025_11_25_fresh_session_redirect_free_dns_pinned",
+        discovery,
+    })
+}
+
+fn inspect_mcp_oauth_server(
+    server_id: &str,
+    endpoint: &str,
+    authorization_server: Option<&str>,
+) -> Result<(), CliError> {
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        McpHttpAuthentication::None,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let discovery = discover_mcp_oauth_metadata(&proposal, authorization_server)?;
+    print_json(McpOAuthInspectionResponse {
+        server_id: proposal.server_id().to_owned(),
+        endpoint: proposal.endpoint().to_owned(),
+        transport: "streamable_http_oauth_2025_11_25_redirect_free_dns_pinned",
+        mutation: "none_metadata_discovery_only",
+        discovery,
+    })
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn configure_mcp_oauth_login(
+    home: &Path,
+    server_id: &str,
+    endpoint: &str,
+    authorization_server: Option<&str>,
+    client_id: &str,
+    token_set_id: &str,
+    timeout_seconds: u64,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if !(30..=600).contains(&timeout_seconds) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        McpHttpAuthentication::None,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let token_root = home.join("mcp-oauth-tokens");
+    if !valid_provider_secret_id(token_set_id) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let token_store = FileMcpOAuthTokenStore::new(token_root)?;
+    match token_store.read(token_set_id) {
+        Ok(_) => {
+            return Err(CliError::McpOAuthTokenIdentityInUse(
+                token_set_id.to_owned(),
+            ));
+        }
+        Err(McpOAuthTokenError::NotFound) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let discovery = discover_mcp_oauth_metadata(&proposal, authorization_server)?;
+    let listener = TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    let callback_address = listener.local_addr()?;
+    let redirect_uri = format!("http://127.0.0.1:{}/callback", callback_address.port());
+    let transaction =
+        prepare_mcp_oauth_authorization(&discovery, token_set_id, client_id, &redirect_uri)?;
+    eprintln!(
+        "{}",
+        terminal_safe_pretty_json(&json!({
+            "action": "open_authorization_url",
+            "authorizationUrl": transaction.authorization_url(),
+            "redirectUri": transaction.redirect_uri(),
+            "timeoutSeconds": timeout_seconds,
+            "notice": "This one-time URL contains OAuth state. Open it only in your trusted browser."
+        }))?
+    );
+    let callback = wait_for_mcp_oauth_callback(
+        &listener,
+        callback_address.port(),
+        Duration::from_secs(timeout_seconds),
+    )?;
+    let McpOAuthCallback {
+        state,
+        code,
+        authorization_error,
+        stream,
+    } = callback;
+    if authorization_error {
+        let state_result = transaction.verify_returned_state(&state);
+        write_mcp_oauth_callback_response(
+            stream,
+            false,
+            "Mealy authorization was denied or failed. Return to the terminal.",
+        );
+        state_result?;
+        return Err(CliError::McpOAuthAuthorizationDenied);
+    }
+    let token_result = exchange_mcp_oauth_authorization_code(
+        transaction,
+        state,
+        code.ok_or(CliError::InvalidMcpOAuthCallback)?,
+        SystemTime::now(),
+    );
+    match token_result {
+        Ok(token_set) => {
+            if let Err(error) = token_store.create(&token_set) {
+                write_mcp_oauth_callback_response(
+                    stream,
+                    false,
+                    "Mealy authorization could not be persisted safely. Return to the terminal.",
+                );
+                return Err(error.into());
+            }
+            write_mcp_oauth_callback_response(
+                stream,
+                true,
+                "Mealy authorization completed. You may close this page.",
+            );
+            print_json(McpOAuthLoginResponse {
+                server_id: server_id.to_owned(),
+                token_set_id: token_set.grant().token_set_id().to_owned(),
+                resource: token_set.grant().resource().to_owned(),
+                authorization_server: token_set.grant().authorization_server().to_owned(),
+                scopes: token_set.grant().scopes().to_vec(),
+                generation: token_set.generation(),
+                expires_at_ms: token_set.expires_at_ms(),
+                configuration_changed: false,
+                authority_exposed: false,
+                next_step: "Review the live catalog, then run `mealyctl mcp-http oauth-add SERVER_ID ENDPOINT --oauth-token-set-id TOKEN_SET_ID ... --approve` while the daemon is stopped.",
+            })
+        }
+        Err(error) => {
+            write_mcp_oauth_callback_response(
+                stream,
+                false,
+                "Mealy authorization failed closed. Return to the terminal for safe diagnostics.",
+            );
+            Err(error.into())
+        }
+    }
+}
+
+fn configure_mcp_oauth_revoke(
+    home: &Path,
+    token_set_id: &str,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if !valid_provider_secret_id(token_set_id) {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let value = serde_json::from_slice::<Value>(&fs::read(home.join("config.json"))?)?;
+    let object = value
+        .as_object()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let servers = configured_mcp_http_servers(object)?;
+    if servers.iter().any(|server| {
+        server
+            .authentication()
+            .oauth_grant()
+            .is_some_and(|grant| grant.token_set_id() == token_set_id)
+    }) {
+        return Err(CliError::McpOAuthTokenIdentityInUse(
+            token_set_id.to_owned(),
+        ));
+    }
+    let token_store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+    let revoked = token_store.revoke(token_set_id)?;
+    print_json(McpOAuthRevokeResponse {
+        token_set_id: revoked.grant().token_set_id().to_owned(),
+        resource: revoked.grant().resource().to_owned(),
+        authorization_server: revoked.grant().authorization_server().to_owned(),
+        revoked_generation: revoked.generation(),
+        local_broker_record_removed: true,
+        remote_revocation: "not_attempted_remove_or_revoke_the_authorization_at_the_issuer_when_required",
+        configuration_changed: false,
+    })
+}
+
+struct McpOAuthCallback {
+    state: Zeroizing<String>,
+    code: Option<Zeroizing<String>>,
+    authorization_error: bool,
+    stream: TcpStream,
+}
+
+fn wait_for_mcp_oauth_callback(
+    listener: &TcpListener,
+    expected_port: u16,
+    timeout: Duration,
+) -> Result<McpOAuthCallback, CliError> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    loop {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                if !peer.ip().is_loopback() {
+                    continue;
+                }
+                stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+                return parse_mcp_oauth_callback(stream, expected_port);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(CliError::McpOAuthCallbackTimedOut);
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(CliError::Io(error)),
+        }
+    }
+}
+
+fn parse_mcp_oauth_callback(
+    mut stream: TcpStream,
+    expected_port: u16,
+) -> Result<McpOAuthCallback, CliError> {
+    const MAXIMUM_CALLBACK_BYTES: usize = 16 * 1024;
+    let mut request = Zeroizing::new(Vec::new());
+    let mut buffer = [0_u8; 2_048];
+    let header_end = loop {
+        let count = stream.read(&mut buffer)?;
+        if count == 0 || request.len().saturating_add(count) > MAXIMUM_CALLBACK_BYTES {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+        request.extend_from_slice(&buffer[..count]);
+        if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position.saturating_add(4);
+        }
+    };
+    if request.len() != header_end {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let parameters = parse_mcp_oauth_callback_request(&request, expected_port)?;
+    let state = bounded_mcp_oauth_callback_value(parameters.state, 1_024)?;
+    let code = parameters
+        .code
+        .map(|code| bounded_mcp_oauth_callback_value(Some(code), 8 * 1_024))
+        .transpose()?;
+    if !parameters.authorization_error && code.is_none() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    Ok(McpOAuthCallback {
+        state,
+        code,
+        authorization_error: parameters.authorization_error,
+        stream,
+    })
+}
+
+struct McpOAuthCallbackParameters {
+    state: Option<String>,
+    code: Option<String>,
+    authorization_error: bool,
+}
+
+fn parse_mcp_oauth_callback_request(
+    request: &[u8],
+    expected_port: u16,
+) -> Result<McpOAuthCallbackParameters, CliError> {
+    if !request.ends_with(b"\r\n\r\n") {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let text = std::str::from_utf8(request).map_err(|_| CliError::InvalidMcpOAuthCallback)?;
+    let mut lines = text[..text.len() - 2].split("\r\n");
+    let request_line = lines.next().ok_or(CliError::InvalidMcpOAuthCallback)?;
+    let mut parts = request_line.split(' ');
+    let method = parts.next();
+    let target = parts.next();
+    let version = parts.next();
+    if method != Some("GET")
+        || version != Some("HTTP/1.1")
+        || parts.next().is_some()
+        || !target.is_some_and(|target| target.starts_with('/') && !target.starts_with("//"))
+    {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let expected_host = format!("127.0.0.1:{expected_port}");
+    let mut host = None;
+    let mut content_length_seen = false;
+    for line in lines.filter(|line| !line.is_empty()) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(CliError::InvalidMcpOAuthCallback)?;
+        let invalid_header = name.len() > 128
+            || name
+                .bytes()
+                .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_'))
+            || value.chars().any(char::is_control)
+            || name.eq_ignore_ascii_case("transfer-encoding")
+            || (name.eq_ignore_ascii_case("content-length")
+                && (value.trim() != "0" || std::mem::replace(&mut content_length_seen, true)));
+        if invalid_header {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+        if name.eq_ignore_ascii_case("host") && host.replace(value.trim()).is_some() {
+            return Err(CliError::InvalidMcpOAuthCallback);
+        }
+    }
+    if host != Some(expected_host.as_str()) {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let callback_url = Url::parse(&format!(
+        "http://{expected_host}{}",
+        target.expect("guarded target")
+    ))
+    .map_err(|_| CliError::InvalidMcpOAuthCallback)?;
+    if callback_url.path() != "/callback" || callback_url.fragment().is_some() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    let mut state = None;
+    let mut code = None;
+    let mut authorization_error = None;
+    for (name, value) in callback_url.query_pairs() {
+        match name.as_ref() {
+            "state" => insert_unique_mcp_oauth_callback_value(&mut state, value.into_owned())?,
+            "code" => insert_unique_mcp_oauth_callback_value(&mut code, value.into_owned())?,
+            "error" => insert_unique_mcp_oauth_callback_value(
+                &mut authorization_error,
+                value.into_owned(),
+            )?,
+            _ => {}
+        }
+    }
+    if authorization_error.is_some() && code.is_some() {
+        return Err(CliError::InvalidMcpOAuthCallback);
+    }
+    Ok(McpOAuthCallbackParameters {
+        state,
+        code,
+        authorization_error: authorization_error.is_some(),
+    })
+}
+
+fn insert_unique_mcp_oauth_callback_value(
+    slot: &mut Option<String>,
+    value: String,
+) -> Result<(), CliError> {
+    if slot.replace(value).is_some() {
+        Err(CliError::InvalidMcpOAuthCallback)
+    } else {
+        Ok(())
+    }
+}
+
+fn bounded_mcp_oauth_callback_value(
+    value: Option<String>,
+    maximum_bytes: usize,
+) -> Result<Zeroizing<String>, CliError> {
+    value
+        .filter(|value| !value.is_empty() && value.len() <= maximum_bytes)
+        .map(Zeroizing::new)
+        .ok_or(CliError::InvalidMcpOAuthCallback)
+}
+
+fn write_mcp_oauth_callback_response(mut stream: TcpStream, success: bool, message: &str) {
+    let status = if success { "200 OK" } else { "400 Bad Request" };
+    let body = format!("{message}\n");
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\n\
+         Cache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors \
+         'none'; base-uri 'none'; form-action 'none'\r\nX-Content-Type-Options: nosniff\r\n\
+         Referrer-Policy: no-referrer\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn configure_mcp_http_add(
+    home: &Path,
+    server_id: &str,
+    endpoint: &str,
+    bearer_secret_id: Option<&str>,
+    bearer_credential_env: &str,
+    oauth_token_set_id: Option<&str>,
+    allow_tools: &[McpToolSelectionArgument],
+    allow_resources: &[String],
+    allow_prompts: &[String],
+    timeout_ms: u64,
+    maximum_output_bytes: u64,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    if bearer_secret_id.is_some() && oauth_token_set_id.is_some() {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let selected_tools = classified_mcp_tool_selections(allow_tools).or_else(|error| {
+        if allow_tools.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(error)
+        }
+    })?;
+    if selected_tools
+        .len()
+        .saturating_add(allow_resources.len())
+        .saturating_add(allow_prompts.len())
+        == 0
+        || selected_tools
+            .len()
+            .saturating_add(allow_resources.len())
+            .saturating_add(allow_prompts.len())
+            > 64
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let mut selected_resources = allow_resources.to_vec();
+    let mut selected_prompts = allow_prompts.to_vec();
+    selected_resources.sort();
+    selected_prompts.sort();
+    if [&selected_resources, &selected_prompts]
+        .into_iter()
+        .any(|selected| selected.windows(2).any(|window| window[0] == window[1]))
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let (authentication, oauth_store) = if let Some(token_set_id) = oauth_token_set_id {
+        let store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+        let token_set = store.read(token_set_id)?;
+        (
+            McpHttpAuthentication::OAuth {
+                grant: token_set.grant().clone(),
+            },
+            Some(store),
+        )
+    } else {
+        (mcp_http_authentication(bearer_secret_id), None)
+    };
+    let proposal = McpHttpEndpointConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication.clone(),
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut http_servers = configured_mcp_http_servers(object)?;
+    if stdio_servers
+        .iter()
+        .any(|server| server.server_id() == server_id)
+        || http_servers
+            .iter()
+            .any(|server| server.server_id() == server_id)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    let imported_credential = bearer_secret_id
+        .map(|_| read_provider_credential_environment(bearer_credential_env))
+        .transpose()?;
+    let secret_store = bearer_secret_id
+        .map(|_| FileProviderSecretStore::new(home.join("provider-secrets")))
+        .transpose()?;
+    if let (Some(secret_id), Some(secret_store), Some(credential)) = (
+        bearer_secret_id,
+        secret_store.as_ref(),
+        imported_credential.as_ref(),
+    ) {
+        verify_provider_secret_preflight(secret_store, secret_id, credential.as_str())?;
+    }
+    let credential = imported_credential
+        .as_ref()
+        .map(|credential| Zeroizing::new(credential.as_str().to_owned()));
+    let discovery = inspect_mcp_http_endpoint(&proposal, credential, oauth_store)?;
+    let grants = selected_tools
+        .iter()
+        .map(|(name, effect)| {
+            let tool = discovery
+                .tool(name)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpToolGrant::new_with_effect(
+                tool.definition.clone(),
+                *effect,
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let resource_grants = selected_resources
+        .iter()
+        .map(|uri| {
+            let resource = discovery
+                .resource(uri)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpResourceGrant::new(
+                resource.definition.clone(),
+                timeout_ms,
+                maximum_output_bytes,
+            )
+            .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let prompt_grants = selected_prompts
+        .iter()
+        .map(|name| {
+            let prompt = discovery
+                .prompt(name)
+                .ok_or(CliError::InvalidMcpConfiguration)?;
+            McpPromptGrant::new(prompt.definition.clone(), timeout_ms, maximum_output_bytes)
+                .map_err(|_| CliError::InvalidMcpConfiguration)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let server = McpHttpServerConfig::new(
+        server_id.to_owned(),
+        endpoint.to_owned(),
+        authentication,
+        discovery
+            .catalog_digest()
+            .map_err(|_| CliError::InvalidMcpConfiguration)?,
+        true,
+        grants,
+        resource_grants,
+        prompt_grants,
+    )
+    .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    http_servers.push(server.clone());
+    http_servers.sort_by(|left, right| left.server_id().cmp(right.server_id()));
+    validate_mcp_http_server_set(&stdio_servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    if let (Some(secret_id), Some(secret_store), Some(credential)) = (
+        bearer_secret_id,
+        secret_store.as_ref(),
+        imported_credential.as_ref(),
+    ) {
+        secret_store.put(secret_id, credential.as_str())?;
+    }
+    object.insert(
+        "mcpHttpServers".to_owned(),
+        serde_json::to_value(&http_servers)?,
+    );
+    publish_mcp_http_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        &server,
+        "installed_and_enabled",
+    )
+}
+
 fn list_mcp_servers(home: &Path) -> Result<(), CliError> {
     let home = fs::canonicalize(home)?;
     let value = serde_json::from_slice::<Value>(&fs::read(home.join("config.json"))?)?;
@@ -15109,10 +17044,89 @@ fn list_mcp_servers(home: &Path) -> Result<(), CliError> {
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     print_json(McpServersConfigurationResponse {
         servers,
-        activation_note: "Only enabled servers whose executable and complete live toolset reproduce every pin are exposed after daemon restart.",
+        http_servers,
+        activation_note: "Only enabled servers whose endpoint/executable and complete live tool or catalog evidence reproduce every pin are exposed after daemon restart.",
     })
+}
+
+fn configure_mcp_http_enabled(
+    home: &Path,
+    server_id: &str,
+    enabled: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut servers = configured_mcp_http_servers(object)?;
+    let position = servers
+        .iter()
+        .position(|server| server.server_id() == server_id)
+        .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
+    if servers[position].enabled() == enabled {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    if enabled {
+        let (credential, oauth_store) =
+            resolve_mcp_http_credential(&home, servers[position].authentication())?;
+        discover_mcp_http_server(&servers[position], credential, oauth_store)?;
+    }
+    servers[position] = servers[position].with_enabled(enabled);
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let server = servers[position].clone();
+    object.insert("mcpHttpServers".to_owned(), serde_json::to_value(&servers)?);
+    publish_mcp_http_configuration(
+        &home,
+        &current,
+        &current_body,
+        &value,
+        &server,
+        if enabled { "enabled" } else { "disabled" },
+    )
+}
+
+fn configure_mcp_http_revoke(home: &Path, server_id: &str, approve: bool) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = exact_canonical_directory(&home).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidMcpConfiguration)?;
+    let stdio_servers = configured_mcp_servers(object)?;
+    let mut servers = configured_mcp_http_servers(object)?;
+    let position = servers
+        .iter()
+        .position(|server| server.server_id() == server_id)
+        .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
+    let server = servers.remove(position).with_enabled(false);
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    if servers.is_empty() {
+        object.remove("mcpHttpServers");
+    } else {
+        object.insert("mcpHttpServers".to_owned(), serde_json::to_value(&servers)?);
+    }
+    publish_mcp_http_configuration(&home, &current, &current_body, &value, &server, "revoked")
 }
 
 fn configure_mcp_enabled(
@@ -15134,6 +17148,7 @@ fn configure_mcp_enabled(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     let position = servers
         .iter()
         .position(|server| server.server_id() == server_id)
@@ -15145,7 +17160,8 @@ fn configure_mcp_enabled(
         verify_configured_mcp_server(&home, &servers[position])?;
     }
     servers[position] = servers[position].with_enabled(enabled);
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     let server = servers[position].clone();
     object.insert("mcpServers".to_owned(), serde_json::to_value(&servers)?);
     publish_mcp_configuration(
@@ -15173,12 +17189,14 @@ fn configure_mcp_revoke(home: &Path, server_id: &str, approve: bool) -> Result<(
         .filter(|object| valid_daemon_config_keys(object))
         .ok_or(CliError::InvalidMcpConfiguration)?;
     let mut servers = configured_mcp_servers(object)?;
+    let http_servers = configured_mcp_http_servers(object)?;
     let position = servers
         .iter()
         .position(|server| server.server_id() == server_id)
         .ok_or_else(|| CliError::McpServerNotFound(server_id.to_owned()))?;
     let server = servers.remove(position).with_enabled(false);
-    validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     if servers.is_empty() {
         object.remove("mcpServers");
     } else {
@@ -15205,7 +17223,77 @@ fn configured_mcp_servers(
         .transpose()?
         .unwrap_or_default();
     validate_mcp_server_set(&servers).map_err(|_| CliError::InvalidMcpConfiguration)?;
+    let http_servers = object
+        .get("mcpHttpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpHttpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_mcp_http_server_set(&servers, &http_servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
     Ok(servers)
+}
+
+fn configured_mcp_http_servers(
+    object: &serde_json::Map<String, Value>,
+) -> Result<Vec<McpHttpServerConfig>, CliError> {
+    let servers = object
+        .get("mcpHttpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpHttpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    let stdio_servers = object
+        .get("mcpServers")
+        .cloned()
+        .map(serde_json::from_value::<Vec<McpServerConfig>>)
+        .transpose()?
+        .unwrap_or_default();
+    validate_mcp_http_server_set(&stdio_servers, &servers)
+        .map_err(|_| CliError::InvalidMcpConfiguration)?;
+    Ok(servers)
+}
+
+fn mcp_http_authentication(bearer_secret_id: Option<&str>) -> McpHttpAuthentication {
+    bearer_secret_id.map_or(McpHttpAuthentication::None, |secret_id| {
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Broker {
+                secret_id: secret_id.to_owned(),
+            },
+        }
+    })
+}
+
+fn resolve_mcp_http_credential(
+    home: &Path,
+    authentication: &McpHttpAuthentication,
+) -> Result<(Option<Zeroizing<String>>, Option<FileMcpOAuthTokenStore>), CliError> {
+    let credential = match authentication {
+        McpHttpAuthentication::None => return Ok((None, None)),
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Broker { secret_id },
+        } => FileProviderSecretStore::new(home.join("provider-secrets"))?.read(secret_id)?,
+        McpHttpAuthentication::Bearer {
+            credential: ProviderCredentialReference::Environment { variable },
+        } => {
+            Zeroizing::new(std::env::var(variable).map_err(|_| CliError::InvalidMcpConfiguration)?)
+        }
+        McpHttpAuthentication::OAuth { grant } => {
+            let store = FileMcpOAuthTokenStore::new(home.join("mcp-oauth-tokens"))?;
+            let token_set = store.read(grant.token_set_id())?;
+            if token_set.grant() != grant {
+                return Err(CliError::InvalidMcpConfiguration);
+            }
+            return Ok((None, Some(store)));
+        }
+    };
+    if credential.is_empty()
+        || credential.len() > MAXIMUM_PROVIDER_CREDENTIAL_BYTES
+        || credential.chars().any(char::is_control)
+    {
+        return Err(CliError::InvalidMcpConfiguration);
+    }
+    Ok((Some(credential), None))
 }
 
 fn verify_configured_mcp_server(home: &Path, server: &McpServerConfig) -> Result<(), CliError> {
@@ -15372,6 +17460,48 @@ fn publish_mcp_configuration(
         executable_digest: server.executable_digest().to_owned(),
         toolset_digest: server.toolset_digest().to_owned(),
         executable_retained_for_rollback,
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        restart_required: true,
+    })
+}
+
+fn publish_mcp_http_configuration(
+    home: &Path,
+    current: &Path,
+    current_body: &[u8],
+    value: &Value,
+    server: &McpHttpServerConfig,
+    operation: &str,
+) -> Result<(), CliError> {
+    let timestamp = unix_timestamp_millis()?;
+    let history = home.join("config-history");
+    create_private_service_directory(&history)?;
+    let replaced = history.join(format!("pre-mcp-http-{timestamp}.json"));
+    atomic_write_service(&replaced, current_body)?;
+    atomic_write_service(current, &serde_json::to_vec_pretty(value)?)?;
+    print_json(McpHttpConfigurationResponse {
+        server_id: server.server_id().to_owned(),
+        operation: operation.to_owned(),
+        enabled: server.enabled(),
+        endpoint: server.endpoint().to_owned(),
+        authentication: server.authentication().clone(),
+        exposed_tool_ids: server
+            .tools()
+            .iter()
+            .map(|tool| server.exposed_tool_id(tool.remote_name()))
+            .collect(),
+        exposed_resource_tool_ids: server
+            .resources()
+            .iter()
+            .map(|resource| server.exposed_resource_tool_id(resource.definition_digest()))
+            .collect(),
+        exposed_prompt_tool_ids: server
+            .prompts()
+            .iter()
+            .map(|prompt| server.exposed_prompt_tool_id(prompt.remote_name()))
+            .collect(),
+        catalog_digest: server.catalog_digest().to_owned(),
         configuration_path: current.display().to_string(),
         replaced_configuration_copy: replaced.display().to_string(),
         restart_required: true,
@@ -16901,6 +19031,21 @@ enum CliError {
     /// Sandboxed MCP discovery or live verification failed closed.
     #[error(transparent)]
     McpHost(#[from] McpHostError),
+    /// Owner-private MCP OAuth authorization, exchange, or token storage failed closed.
+    #[error(transparent)]
+    McpOAuthToken(#[from] McpOAuthTokenError),
+    /// The proposed broker identity is already occupied by an OAuth token family.
+    #[error("MCP OAuth token identity {0} is already in use")]
+    McpOAuthTokenIdentityInUse(String),
+    /// The bounded loopback authorization callback did not arrive in time.
+    #[error("MCP OAuth authorization callback timed out")]
+    McpOAuthCallbackTimedOut,
+    /// The loopback authorization callback was malformed or outside its exact origin boundary.
+    #[error("MCP OAuth authorization callback was invalid")]
+    InvalidMcpOAuthCallback,
+    /// The authorization server returned an OAuth denial to the loopback callback.
+    #[error("MCP OAuth authorization was denied")]
+    McpOAuthAuthorizationDenied,
     /// Browser bundle, content pin, runtime identity, or current config is invalid.
     #[error("browser runtime configuration is invalid")]
     InvalidBrowserConfiguration,
@@ -16910,6 +19055,11 @@ enum CliError {
     /// Browser authority cannot be activated without an explicit web destination grant.
     #[error("browser authority requires enabled web access configuration")]
     BrowserRequiresWeb,
+    /// Read-only browser authority cannot be removed while the transaction profile is active.
+    #[error(
+        "transactional browser authority must be disabled before disabling the rendered browser"
+    )]
+    BrowserTransactionsRequireBrowser,
     /// Browser bundle inspection or immutable publication failed closed.
     #[error(transparent)]
     BrowserBundle(#[from] BrowserBundleError),
@@ -16988,24 +19138,29 @@ enum CliError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCommand, Arguments, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
-        CompactionCommand, ConfigCommand, DelegationCommand, DiscordPairMessage, DiscordPairUser,
-        EffectCommand, ExtensionCommand, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MemoryCommand,
-        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
-        ProviderSwitchRecoveryRoute, ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS,
-        ScheduleCommand, ServiceCommand, SessionCommand, SessionExportFormatArgument,
-        SessionProviderCommand, SetupProviderArgument, SkillCommand, TelegramPairChat,
-        TelegramPairMessage, TelegramPairUpdate, TelegramPairUser, UpdateRecoveryRoute,
-        chat_usage_line, configure_workspace_grant, decode, generate_discord_pair_challenge,
-        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
-        lifecycle_invocation, load_connection, normalize_openrouter_display_name,
-        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
-        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
-        parse_chat_line, prepare_local_text_attachment, provider_switch_recovery_route,
-        resolve_default_operational_subcommand, resolve_setup, select_codex_subscription_model,
-        setup_provider_config, should_open_onboard_chat, stable_default_mealy_home,
-        telegram_pair_api_url, update_recovery_route, validate_anthropic_probe_envelope,
+        ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
+        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigCommand, DelegationCommand,
+        DiscordPairMessage, DiscordPairUser, EffectCommand, ExtensionCommand,
+        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
+        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
+        MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
+        MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
+        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
+        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
+        SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
+        TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
+        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
+        configure_provider_image_generation, configure_workspace_grant, decode,
+        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
+        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
+        normalize_openrouter_display_name, observe_discord_pair_messages,
+        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
+        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
+        prepare_local_image_attachment, prepare_local_text_attachment,
+        provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
+        select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
+        stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
+        valid_daemon_config_keys, validate_anthropic_probe_envelope,
         validate_anthropic_probe_stream, validate_connection, validate_discord_pair_base_url,
         validate_provider_probe_envelope, validate_provider_probe_stream,
         validate_session_transcript_html, validate_session_transcript_json, write_private_new_file,
@@ -17019,18 +19174,18 @@ mod tests {
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
-    use mealy_application::{AgentLoopLimits, ProviderConfig};
+    use mealy_application::{AgentLoopLimits, ProviderConfig, default_daemon_config_document};
     use mealy_infrastructure::CodexSubscriptionModel;
     use mealy_protocol::{
         API_VERSION, DeliveryMode, LocalConnectionInfo, TaskBudgetUsage, TimelineCursor,
         TimelineEvent,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
     #[cfg(target_os = "linux")]
     use std::path::Path;
-    use std::{collections::BTreeMap, ffi::OsString, io::Cursor, path::PathBuf};
+    use std::{collections::BTreeMap, ffi::OsString, fs, io::Cursor, path::PathBuf};
 
     fn connection(base_url: &str) -> LocalConnectionInfo {
         LocalConnectionInfo {
@@ -17668,6 +19823,229 @@ mod tests {
     }
 
     #[test]
+    fn media_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("media"),
+            OsString::from("image-input"),
+            OsString::from("--enable"),
+            OsString::from("--approve"),
+        ];
+        assert!(media_invocation(&arguments));
+        assert!(!media_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            MediaArguments::try_parse_from(arguments).expect("separate media command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            MediaNamespace::Media(options)
+                if matches!(options.action, MediaAction::ImageInput)
+                    && options.enable
+                    && !options.disable
+                    && options.approve
+        ));
+
+        let generation = MediaArguments::try_parse_from([
+            "mealyctl",
+            "--home",
+            "/srv/mealy",
+            "media",
+            "image-generation",
+            "--enable",
+            "--protocol",
+            "open-router-images",
+            "--provider-id",
+            "openrouter.images",
+            "--base-url",
+            "https://openrouter.ai/api/v1",
+            "--model",
+            "owner-selected-image-model:free",
+            "--residency",
+            "openrouter",
+            "--secret-id",
+            "openrouter-primary",
+            "--size",
+            "1024x1024",
+            "--quality",
+            "low",
+            "--maximum-cost-microunits",
+            "50000",
+            "--maximum-output-bytes",
+            "2097152",
+            "--timeout-ms",
+            "120000",
+            "--approve",
+        ])
+        .expect("image-generation media command");
+        assert!(matches!(
+            generation.command,
+            MediaNamespace::Media(options)
+                if matches!(options.action, MediaAction::ImageGeneration)
+                    && matches!(
+                        options.protocol,
+                        Some(ImageGenerationProtocolArgument::OpenRouterImages)
+                    )
+                    && options.secret_id.as_deref() == Some("openrouter-primary")
+                    && options.approve
+        ));
+    }
+
+    #[test]
+    fn browser_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("browser"),
+            OsString::from("--enable-transactions"),
+            OsString::from("--approve"),
+        ];
+        assert!(browser_invocation(&arguments));
+        assert!(!browser_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            BrowserArguments::try_parse_from(arguments).expect("separate browser command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            BrowserNamespace::Browser(options)
+                if options.enable_transactions
+                    && !options.disable_transactions
+                    && options.approve
+        ));
+        assert!(BrowserArguments::try_parse_from(["mealyctl", "browser", "--approve"]).is_err());
+        assert!(
+            BrowserArguments::try_parse_from([
+                "mealyctl",
+                "browser",
+                "--enable-transactions",
+                "--disable-transactions",
+                "--approve"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stopped_home_configuration_commands_preserve_image_generation_authority() {
+        let mut config = serde_json::json!({
+            "agentLoopLimits": {},
+            "artifactGcMinimumAgeHours": 24,
+            "concurrencyLimits": {},
+            "drainDeadlineMs": 10_000,
+            "forensicBackupOnOpenFailure": true,
+            "formatVersion": 1,
+            "maximumPendingInputsPerSession": 64,
+            "provider": {"kind": "builtin_fixture"},
+            "retentionPolicy": {},
+            "imageGeneration": {
+                "providerId": "local.images",
+                "protocol": "open_ai_images",
+                "baseUrl": "http://127.0.0.1:11434/v1",
+                "model": "local-image-model",
+                "residency": "local",
+                "size": "1024x1024",
+                "quality": "low",
+                "maximumCostMicrounits": 50_000,
+                "maximumOutputBytes": 2_097_152,
+                "timeoutMs": 120_000
+            }
+        });
+        assert!(valid_daemon_config_keys(
+            config.as_object().expect("configuration object")
+        ));
+        config
+            .as_object_mut()
+            .expect("configuration object")
+            .insert("ambientImageCredential".to_owned(), Value::Bool(true));
+        assert!(!valid_daemon_config_keys(
+            config.as_object().expect("configuration object")
+        ));
+    }
+
+    #[test]
+    fn image_generation_configuration_is_approved_archived_and_reversible() {
+        let home = tempfile::tempdir().expect("daemon home");
+        fs::create_dir(home.path().join("config-history")).expect("configuration history");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let enable = MediaOptions {
+            action: MediaAction::ImageGeneration,
+            enable: true,
+            disable: false,
+            approve: true,
+            protocol: Some(ImageGenerationProtocolArgument::OpenAiImages),
+            provider_id: Some("local.images".to_owned()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_owned()),
+            model: Some("local-image-model".to_owned()),
+            residency: Some("local".to_owned()),
+            secret_id: None,
+            credential_env: None,
+            size: Some("1024x1024".to_owned()),
+            quality: Some("low".to_owned()),
+            maximum_cost_microunits: Some(50_000),
+            maximum_output_bytes: Some(2_097_152),
+            timeout_ms: Some(120_000),
+        };
+        configure_provider_image_generation(home.path(), &enable).expect("enable image generation");
+        let configured: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("configured bytes"),
+        )
+        .expect("configured JSON");
+        assert_eq!(
+            configured.pointer("/imageGeneration/providerId"),
+            Some(&Value::String("local.images".to_owned()))
+        );
+        assert_eq!(
+            configured.pointer("/imageGeneration/protocol"),
+            Some(&Value::String("open_ai_images".to_owned()))
+        );
+
+        let disable = MediaOptions {
+            action: MediaAction::ImageGeneration,
+            enable: false,
+            disable: true,
+            approve: true,
+            protocol: None,
+            provider_id: None,
+            base_url: None,
+            model: None,
+            residency: None,
+            secret_id: None,
+            credential_env: None,
+            size: None,
+            quality: None,
+            maximum_cost_microunits: None,
+            maximum_output_bytes: None,
+            timeout_ms: None,
+        };
+        configure_provider_image_generation(home.path(), &disable)
+            .expect("disable image generation");
+        let disabled: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("disabled bytes"),
+        )
+        .expect("disabled JSON");
+        assert!(disabled.get("imageGeneration").is_none());
+        assert_eq!(
+            fs::read_dir(home.path().join("config-history"))
+                .expect("history")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn local_text_attachment_is_bounded_digest_framed_path_free_and_no_follow() {
         let home = tempfile::tempdir().expect("daemon home");
         let directory = tempfile::tempdir().expect("attachment directory");
@@ -17717,6 +20095,39 @@ mod tests {
                 )
                 .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn local_image_attachment_is_bounded_allowlisted_path_private_and_no_follow() {
+        let home = tempfile::tempdir().expect("daemon home");
+        let directory = tempfile::tempdir().expect("image directory");
+        let image = directory.path().join("source.webp");
+        let source = b"hostile bytes are normalized only by the daemon worker";
+        std::fs::write(&image, source).expect("image fixture");
+        let (media_type, bytes) =
+            prepare_local_image_attachment(home.path(), &image).expect("read bounded source");
+        assert_eq!(media_type, "image/webp");
+        assert_eq!(bytes, source);
+
+        let unsupported = directory.path().join("source.svg");
+        std::fs::write(&unsupported, b"<svg/>").expect("unsupported image");
+        assert!(prepare_local_image_attachment(home.path(), &unsupported).is_err());
+        let oversized = directory.path().join("large.png");
+        std::fs::File::create(&oversized)
+            .expect("oversized image")
+            .set_len(MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES + 1)
+            .expect("oversized length");
+        assert!(prepare_local_image_attachment(home.path(), &oversized).is_err());
+        let private_image = home.path().join("private.png");
+        std::fs::write(&private_image, b"daemon private state").expect("private image");
+        assert!(prepare_local_image_attachment(home.path(), &private_image).is_err());
+
+        #[cfg(unix)]
+        {
+            let redirected = directory.path().join("redirect.png");
+            std::os::unix::fs::symlink(&image, &redirected).expect("image symlink");
+            assert!(prepare_local_image_attachment(home.path(), &redirected).is_err());
         }
     }
 
@@ -18240,15 +20651,18 @@ mod tests {
         assert!(matches!(
             discovery.command,
             Command::Config {
-                command: ConfigCommand::ProviderModelsOpenrouter {
+                command
+            } if matches!(
+                command.as_ref(),
+                ConfigCommand::ProviderModelsOpenrouter {
                     base_url,
                     credential_env,
                     contains: Some(contains),
                     ..
-                }
-            } if base_url == "https://openrouter.ai/api/v1"
+                } if base_url == "https://openrouter.ai/api/v1"
                 && credential_env == "OPENROUTER_API_KEY"
                 && contains == "claude"
+            )
         ));
         let activation = Arguments::try_parse_from([
             "mealyctl",
@@ -18268,18 +20682,21 @@ mod tests {
         assert!(matches!(
             activation.command,
             Command::Config {
-                command: ConfigCommand::ProviderOpenrouter {
+                command
+            } if matches!(
+                command.as_ref(),
+                ConfigCommand::ProviderOpenrouter {
                     provider_id,
                     base_url,
                     secret_id,
                     credential_env,
                     approve: true,
                     ..
-                }
-            } if provider_id == "openrouter.responses"
+                } if provider_id == "openrouter.responses"
                 && base_url == "https://openrouter.ai/api/v1"
                 && secret_id == "openrouter-primary"
                 && credential_env == "OPENROUTER_API_KEY"
+            )
         ));
     }
 
@@ -19387,9 +21804,8 @@ mod tests {
         .expect("config rollback command");
         assert!(matches!(
             parsed.command,
-            Command::Config {
-                command: ConfigCommand::Rollback { approve: true, .. }
-            }
+            Command::Config { command }
+                if matches!(command.as_ref(), ConfigCommand::Rollback { approve: true, .. })
         ));
     }
 

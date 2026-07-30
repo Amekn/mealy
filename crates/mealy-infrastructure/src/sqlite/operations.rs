@@ -924,6 +924,16 @@ mod tests {
             store
                 .connection
                 .execute(
+                    "INSERT INTO delegation_group(\
+                        id, parent_run_id, mode, completion_policy, child_count, state, \
+                        created_at_ms\
+                     ) VALUES (?1, ?2, 'serial', 'all_terminal', 1, 'active', ?3)",
+                    params![delegation_id, parent_run_id, completed_at_ms - 100],
+                )
+                .expect("seed delegation group");
+            store
+                .connection
+                .execute(
                     "INSERT INTO delegation(\
                         id, parent_run_id, child_task_id, child_run_id, ordinal, \
                         parent_fencing_token, work_order_json, work_order_digest, \
@@ -931,9 +941,9 @@ mod tests {
                         context_package_digest, requested_capabilities_json, \
                         effective_capabilities_json, effective_capabilities_digest, budget_json, \
                         budget_digest, state, result_json, result_digest, result_fencing_token, \
-                        created_at_ms, completed_at_ms\
+                        created_at_ms, completed_at_ms, group_id, group_ordinal, child_key\
                      ) VALUES (?1, ?2, ?3, ?4, 1, 1, '{}', ?5, '{}', ?5, '{}', ?5, '{}', \
-                        '{}', ?5, '{}', ?5, ?6, '{}', ?5, 1, ?7, ?8)",
+                        '{}', ?5, '{}', ?5, ?6, '{}', ?5, 1, ?7, ?8, ?1, 1, 'result')",
                     params![
                         delegation_id,
                         parent_run_id,
@@ -946,6 +956,14 @@ mod tests {
                     ],
                 )
                 .expect("seed delegation");
+            store
+                .connection
+                .execute(
+                    "UPDATE delegation_group \
+                     SET state = 'settled', completed_at_ms = ?1 WHERE id = ?2",
+                    params![completed_at_ms, delegation_id],
+                )
+                .expect("settle delegation group");
             store
                 .connection
                 .execute(

@@ -1,8 +1,9 @@
 # Production readiness
 
-- Status: v0.2.1 is the qualified public Linux release; v0.3.0 daily-use candidate
-  implementation is complete and release qualification is active; broader
-  competitive-personal-agent breadth remains incomplete
+- Status: v0.2.1 is the qualified public Linux release; v0.3.0 daily-use release
+  qualification is active; the v0.4.0 governed-capability implementation is
+  complete but cannot begin sequential release qualification until v0.3.0 is
+  published; broader competitive-personal-agent breadth remains incomplete
 - Reviewed: 2026-07-29
 - Target: one-owner Linux production release across Ubuntu, Debian, Fedora, Arch, and compatible
   derivatives; macOS and Windows are outside the active production contract
@@ -119,6 +120,16 @@ invocation. The direct Anthropic Messages API adapter remains supported.
 | Configuration lifecycle | Setup and edits validate before activation, high-risk changes are approved, activation cannot split an in-flight turn, and rollback/backup behavior is tested. | Configuration mutation is deliberately a stopped-daemon transaction: every command holds the real home lock, validates the complete candidate before atomic publication, archives the prior bytes, and cannot coexist with an in-flight turn. The next start records the exact effective digest and rotates affected context epochs before dispatch. Startup validation, digest history, approved rollback, isolated backup verification, exact-digest encrypted backup activation, and exact-transition pre-migration snapshot activation through stopped-home atomic directory exchanges with untouched prior homes retained are implemented and process-tested. Complete archives and migration reconstruction also carry exact configured skill packages, content-addressed MCP executables, and every file/executable-mode bit in the configured browser bundle. Browser inspect/add/enable performs sandboxed product/CDP/render verification; disable/revoke preserves rollback bytes and web authority cannot be removed underneath an enabled browser. | P0 acceptance is complete under the stopped-daemon activation boundary. Hot reload, guided general mutation, and a visual diff remain future convenience rather than weaker alternate mutation paths. |
 | Release quality | Public-API smoke, upgrade/downgrade, clean-install, backup/restore, adversarial tool, load, cancellation, soak, and optional live-provider suites pass with published measurements. | Tag-driven Linux x86-64/ARM64 jobs re-run strict, RustSec, auditable-binary, sandbox, systemd, browser, package lifecycle, SBOM, and provenance gates. Publication requires a clean retained-disk external-binary report of at least 86,400 seconds for the exact promoted daemon and tag ancestry (or a generated, checked identical-tree GitHub-rebase lineage proof), with complete recovery accounting, SQLite integrity, ordered latency evidence, and zero residue. The publisher revalidates the remote tag, exact protected-main CI, and owner-reviewed exact-commit strict-free OpenRouter plus pinned private-provider runs immediately before creating the immutable release. Dependent delivery jobs download only public assets, verify release/asset integrity, provenance, checksums, and exact inventory, then repeat tokenless bootstrap and native package lifecycles on Ubuntu 24.04/26.04, Debian 13, Fedora 44, and Arch Linux. Pinned dependency, workflow, shell, browser, load/recovery, and all-feature gates remain mandatory. The exact v0.2.1 schema-16 [release soak](benchmarks/release-soak.json) ran 86,425.487 seconds, completed 19,248 turns across eight sessions, survived 48 hard restarts, recovered 53 interrupted-provider turns, retained complete recorded-only replay and SQLite integrity `ok`, drained cleanly, and left zero residual work. Exact report promotion, [protected release-commit CI 30312296096](https://github.com/Amekn/mealy/actions/runs/30312296096), [owner-reviewed live acceptance 30314579973](https://github.com/Amekn/mealy/actions/runs/30314579973), [attested release run 30315187057](https://github.com/Amekn/mealy/actions/runs/30315187057), [remediation CI 30324063774](https://github.com/Amekn/mealy/actions/runs/30324063774), and [public repository acceptance 30324688498](https://github.com/Amekn/mealy/actions/runs/30324688498) bind the complete evidence chain. | P0 acceptance is complete for v0.2.1 under the documented Linux production contract. The original release workflow retains its verifier-only failure as negative evidence; every shipped-content gate and the protected replacement verifier passed. |
 | Documentation/support | Install, setup, first task, approvals, backup/restore, upgrades, incident recovery, limits, costs, security boundary, and troubleshooting are verified from a clean machine. | Quickstart, local HTTP/SSE API, developer-to-production delivery, operations, and attested package install/upgrade/same-schema/cross-schema rollback/uninstall runbooks exist; public Rust APIs are documented under a warnings-denied CI gate, and credential-scoped provider discovery, encrypted backup, and migration-snapshot activation have executable offline process proofs. The v0.2.1 public artifact and repository acceptance exercises the installed onboarding, first durable chat, continuation, service restart, diagnostics, lifecycle, and clean package-manager install paths. | P0 acceptance is complete for v0.2.1 on the supported Linux distributions. |
+
+The active v0.4 branch now adds a third first-party work-channel path without changing the
+published v0.2.1 acceptance claim. Slack setup live-verifies separate Socket Mode and bot tokens,
+pins the exact app/workspace/bot/human/conversation, and brokers both secrets outside SQLite.
+One connection serves only identical installation pins. A real HTTP/WebSocket public-process test
+kills the daemon after Slack observes an acknowledgement and before local admission; restart
+completes the persisted normalized disposition once, returns output to the exact thread, honors a
+429, reuses `client_msg_id`, rejects a wrong member, and deletes both final-route credentials on
+revocation. This is implementation evidence for the v0.4 gate, not a declaration that v0.4 is
+released or production-qualified.
 
 The v0.2.0 source adds `mealyctl onboard` as the single-command composition missing from the
 onboarding row above. It exposes named free/custom/local/subscription/API routes, uses live model
@@ -403,15 +414,15 @@ until they are usable.
 
 | Area | Acceptance |
 |---|---|
-| Browser | A dedicated agent-only browser profile supports navigate, snapshot, click, type, download, screenshot, and bounded cleanup through an isolated worker; attaching a personal profile is an explicit higher-trust mode. |
+| Browser | The isolated fresh-profile research browser supports bounded navigation, snapshots, exact safe activation/fill/GET, downloads, screenshots, and cleanup. The v0.4 branch adds separately enabled, exact-owner-approved one-shot same-origin POST effects with private artifact uploads, bounded response downloads, `NeverRetry` recovery, and execution-free replay. General clicking/JavaScript, payments, ambient-login/personal profiles, and unattended transactions remain outside the contract. |
 | Skills | Versioned instruction/resource bundles have discovery, install, inspect, update, disable, provenance, and approval-aware tool references; skills never grant executable authority by themselves. |
 | MCP | Stdio/HTTP MCP servers run out of process with reviewed tool/resource grants, secret scoping, output limits, health, revocation, and crash isolation. |
 | Delegation | An agent-facing operation creates durable child runs with explicit context, model/tool/budget scopes, bounded parallelism/depth, cancellation propagation, deterministic result ordering, and owner inspection. |
 | Memory UX | The assistant can propose memories, owners can approve/correct them inline, retrieval is cited, session search is usable, and background maintenance cannot silently widen trust. |
-| Channels | Telegram and an explicit one-human Discord DM are production supported through the same semantic API and outbox; Slack or another work channel remains the next breadth target. |
+| Channels | Telegram and an explicit one-human Discord DM are production supported through the same semantic API and outbox. The v0.4 branch implements a reusable channel boundary plus exact-member/conversation Slack Socket Mode with reserve-before-ack recovery, thread-safe output, rate/dedupe controls, brokered dual credentials, and real-process crash/revocation evidence; it remains unreleased until the complete v0.4 gate passes. |
 | Providers | Provider presets cover OpenAI, Anthropic, OpenRouter, and a local OpenAI-compatible endpoint; fallback policy is owner-visible and never weakens residency/tool semantics. |
 | Multimodal/media | Image/file input and image generation are separately permissioned, size bounded, artifact backed, and rendered safely across supported clients. |
-| Web/dashboard | A loopback authenticated UI exposes chat, task timelines, approvals, effects, schedules, memory, extensions, provider health, costs, and recovery without creating alternate state. The conversation/control, exact 30-day and per-task usage/cost, unknown-effect recovery, keyed schedule-creation/lifecycle, governed-memory, and extension-lifecycle subsets are complete: a foreground `mealyctl` adapter aggregates canonical projections, admits durable input, renders timelines and exact approvals, cooperatively cancels tasks, and reconciles only linked `outcome_unknown` evidence. The history report binds root/delegated/validation runs to the exact owner through durable lineage, groups zero-reservation terminal settlement by UTC completion day, and validates exact browser integers; per-task usage preserves settled versus reserved provider-neutral microunits. Neither infers an invoice. Schedule creation retains a client-proposed canonical UUIDv7 across ambiguity; exact replay returns canonical state without another event and semantic drift conflicts. Lifecycle transitions remain revision fenced. The adapter also provides bounded governed-memory administration and validated extension inventory/detail plus manifest-derived health-gated enable/disable/revoke. Stable provenance/state preflights reconcile identical completed delivery without blind retry. The daemon bearer remains outside the browser behind a separate 256-bit capability, exact Host/Origin checks, strict typed/body/concurrency bounds, an 8 MiB streamed daemon-response ceiling, DNS-rebinding/CSP/no-store controls, and no arbitrary proxy. Extension install/stage/invoke, provider-invoice reconciliation, and general recovery actions remain open. |
+| Web/dashboard | A loopback authenticated UI exposes chat, task timelines, delegated-child evidence, approvals, effects, schedules, memory, extensions, provider health, costs, and recovery without creating alternate state. The conversation/control, bounded recent-delegation inspection, exact 30-day and per-task usage/cost, unknown-effect recovery, keyed schedule-creation/lifecycle, governed-memory, and extension-lifecycle subsets are complete: a foreground `mealyctl` adapter aggregates canonical projections, admits durable input, renders timelines and exact approvals, cooperatively cancels tasks, and reconciles only linked `outcome_unknown` evidence. Delegation cards expose only canonical lineage, effective authority, separate budget, state, and result for at most 20 exact-owner children; they create no control or alternate group state. The history report binds root/delegated/validation runs to the exact owner through durable lineage, groups zero-reservation terminal settlement by UTC completion day, and validates exact browser integers; per-task usage preserves settled versus reserved provider-neutral microunits. Neither infers an invoice. Schedule creation retains a client-proposed canonical UUIDv7 across ambiguity; exact replay returns canonical state without another event and semantic drift conflicts. Lifecycle transitions remain revision fenced. The adapter also provides bounded governed-memory administration and validated extension inventory/detail plus manifest-derived health-gated enable/disable/revoke. Stable provenance/state preflights reconcile identical completed delivery without blind retry. The daemon bearer remains outside the browser behind a separate 256-bit capability, exact Host/Origin checks, strict typed/body/concurrency bounds, an 8 MiB streamed daemon-response ceiling, DNS-rebinding/CSP/no-store controls, and no arbitrary proxy. Extension install/stage/invoke, provider-invoice reconciliation, and general recovery actions remain open. |
 
 Memory UX acceptance is complete: the REPL derives and prints the ordinary agent memory
 namespace, and exposes explicit remember/list/search/status/activate/correct/expire/reject/delete
@@ -436,8 +447,9 @@ normal tool policy. Complete backup/restore/export and migration rollback retain
 package bytes. Network marketplaces, signatures beyond owner-pinned SHA-256, and executable helpers
 remain extension concerns rather than hidden skill authority.
 
-Browser acceptance is complete for the read-only research subset, but not yet for the full
-competitive row. Linux x86_64 can fetch a repository size/SHA-pinned Chrome Headless Shell,
+Browser acceptance is complete for the read-only research subset and the first separately
+approved transaction effect, but not yet for the full competitive row. Linux x86_64 can fetch a
+repository size/SHA-pinned Chrome Headless Shell,
 inspect it without host network/home authority, publish the complete content-addressed inventory,
 and activate it only after a live isolated CDP/navigation/render test. `browser.snapshot` uses a
 new agent-only profile and private network namespace per call, a Unix-socket host proxy restricted
@@ -453,24 +465,61 @@ during the call so same-origin connection churn cannot retain thread resources u
 download adapter normalizes integral CDP JSON number encodings but rejects fractional, negative,
 or inexact progress values, and its protocol failure is independently classified. Three
 consecutive fresh-process conformance runs pass after that regression fix. The
-systemd unit supplies the physical-memory/swap/task cgroup boundary V8 needs. CLI lifecycle,
-real-browser, real-provider, backup, migration, tamper, non-read, WebSocket, and replay tests are
-mandatory in CI and release. Arbitrary clicking/keyboard events, POST or multi-control form
-submission, uploads, unbounded/owner-path downloads, persistent sessions, a personal-profile trust
-mode, non-x86 release evidence, and effect/approval semantics remain open; Mealy does not describe
-this subset as arbitrary browser control.
+systemd unit supplies the physical-memory/swap/task cgroup boundary V8 needs.
 
-MCP acceptance is complete for the first least-authority local tool subset, but not for the full
-competitive row. Linux can inspect and activate native ELF stdio servers speaking exact revision
+The v0.4 branch additionally implements `browser.transact` behind an independent stopped-home flag.
+Each model proposal binds a canonical initial URL, one inert-catalog form digest, exact public
+fields/submitter, ordered owner-private upload artifact identities/digests, the pinned browser
+identity, one origin, ceilings, and deadline. Policy always requires authenticated exact-subject
+approval. Dispatch reloads and revalidates the form in a fresh profile, closes the hostile source
+target, reconstructs only approved controls in a clean target, and permits exactly one matching
+same-origin POST. A bounded same-origin response may publish one private download artifact. The
+effect is non-idempotent and `NeverRetry`: crash-after-dispatch parks `outcome_unknown`, restart
+does not resubmit, owner reconciliation is revision fenced, and schema-23 recorded replay remains
+complete after the live browser bundle is removed. Low-level real-browser tests cover hidden/form
+drift, controlled submission, cross-origin/second-write denial and bounded response evidence; a
+real daemon process test proves approval, one POST, hard crash, restart/no-redispatch,
+reconciliation, terminal continuation, and zero-execution replay.
+
+CLI lifecycle, real-browser, real-provider, backup, migration, tamper, non-read, WebSocket, and
+replay tests are mandatory in CI and release. Arbitrary clicking/keyboard events, general
+JavaScript automation, payments, cross-origin transactions, persistent sessions, a
+personal-profile trust mode, non-x86 browser release evidence, and unattended batches remain open;
+Mealy does not describe these bounded contracts as arbitrary browser control. The transaction
+slice is implementation evidence for v0.4, not a production-qualified v0.4 release.
+
+MCP acceptance is complete for the least-authority local tool subset and the first two governed
+Streamable HTTP slices, but not for the full competitive row. Linux can inspect and activate
+native ELF stdio servers speaking exact revision
 `2025-11-25`; it pins executable bytes, direct non-secret arguments, the complete paginated tool
 set, and each selected full definition/schema. Startup and every call repeat discovery in a fresh
 empty-environment, no-network Bubblewrap process with no home/workspace/secrets and hard protocol,
 resource, time, cancellation, and output bounds. Model-visible calls are cited and durable;
 recorded replay remains complete after executable removal. Stopped-daemon list/enable/disable/revoke,
 safe mode, configuration history, complete backup/restore, and cross-schema rollback are
-process-tested. HTTP transport, resources/prompts, server credential delegation/OAuth, intentional
-workspace mounts, effectful MCP tools, long-lived session health, and non-Linux enforcement remain
-open before the broader MCP gate is passed.
+process-tested. Streamable HTTP now adds canonical endpoint and bearer-reference authority,
+redirect/proxy-free DNS-pinned fresh sessions, complete tool/resource/resource-template/prompt
+catalog pinning, exact selected static-resource reads, and prompt retrieval normalized as cited
+untrusted evidence. Process fixtures cover selection, per-call revalidation, drift, revocation, and
+execution-free replay. Resource-template expansion/subscriptions, dynamic OAuth client onboarding,
+intentional workspace mounts, resumable GET, long-lived session health, and
+non-Linux enforcement remain open before the broader MCP gate is passed. OAuth metadata inspection and an explicitly
+approved pre-registered-public-client login now validate state/PKCE/resource and create one private
+initial token-family record; login alone grants no model-visible authority. Separately approved
+OAuth activation now revalidates metadata/catalog pins, and runtime access provides proactive
+refresh, exact-scope and rotated-refresh enforcement, cross-process generation fencing, one
+`401`-triggered refresh/retry, reference-safe local revocation, and encrypted backup/migration
+recovery. Dynamic registration/CIMD, issuer-side revocation, and scope-challenge parking remain
+open.
+
+Owner-classified effectful MCP is now implemented for both stdio and HTTP/OAuth tools. Selection
+uses mutually exclusive read-only, idempotent, or non-idempotent flags; annotations never grant
+authority. The complete descriptor, immutable run ceiling, deterministic policy, exact approval,
+fresh catalog revalidation, fenced attempt, durable outcome, validation, reconciliation, and
+recorded replay reuse the existing effect ledger. A real-process happy path proves approval and
+single dispatch. Crash tests prove an interrupted idempotent call creates a visible bounded retry,
+while an interrupted non-idempotent call remains parked after exactly one dispatch until explicit
+owner evidence reconciles it. Replay produces zero live provider or MCP calls.
 
 Delegation acceptance is complete for bounded serial child work. The provider-visible
 `agent.delegate` operation validates a self-contained objective, instructions, one-to-eight
@@ -482,10 +531,19 @@ further delegation. Its effective tools are the exact read-only intersection of 
 authority and policy, with a separately capped three-model/two-tool/90-second budget. Terminal
 child settlement records a structured `delegation://result`, releases reservations, and requeues
 the parent atomically. Parent cancellation propagates to queued/in-flight children. Owner-bound
-list/status API and CLI views expose lineage, authority, budget, state, and result; public-process
+list/status API and CLI views expose lineage, authority, budget, state, and result; the TUI and
+dashboard add bounded read-only child cards over those same canonical projections; public-process
 tests prove success, isolation, parent resume, in-flight cancellation, root/child recorded-only
 replay, and context-epoch revocation. Per-parent parallelism is deliberately one and child depth is
-zero; broader fan-out is not implied by the current claim.
+zero in the baseline serial contract.
+
+The v0.4 candidate additionally implements atomic ordered `agent.delegate_parallel` groups with
+one to four children. It validates the complete group’s fan-out, depth, parent reservations,
+resource claims, authority intersections, and separate child budgets before any child is
+published; resumes the parent only after deterministic ordinal settlement; and propagates
+cancellation to queued/running children. Abrupt-restart, partial-completion, budget-rejection,
+parallel-cancellation, individual-child replay, and zero-provider group replay tests cover the
+expanded contract. Deeper recursive trees and client-authored child creation remain outside v0.4.
 
 Local text attachment acceptance is complete as a narrow input subset: chat-native `/attach PATH`
 and scriptable `session send-file` open
@@ -493,9 +551,59 @@ one owner-selected no-follow regular file, allowlists UTF-8 text/source extensio
 256 KiB, binds basename/media/size/SHA-256 inside an untrusted frame, withholds the host path, and
 uses ordinary durable delivery/idempotency. Unit, pseudo-terminal, and real-daemon smoke evidence cover symlink,
 invalid UTF-8/NUL, unsupported type, oversize, prompt-shape, and admission boundaries. The broader
-multimodal/media row is still open: image/audio/video input, provider modality negotiation,
-artifact-backed binary transport, image generation, and safe channel/dashboard rendering are not
-implemented or claimed.
+multimodal/media row is still open, but the first v0.4 image-input slice is now active through the
+authenticated API and scriptable CLI. It defines digest-bound PNG/JPEG/WebP envelopes, strict
+count/byte/token bounds, text-only route rejection, low-detail OpenAI Responses translation,
+Anthropic image-block translation, and restart-sized durable request evidence. Its Linux
+normalizer performs PNG/JPEG/WebP validation and metadata-stripping re-encoding in a fresh
+identity-pinned, empty-environment, no-network Bubblewrap worker with no home/workspace/secret
+mount, bounded protocol, OS resource limits, panic containment, animation rejection,
+dimension/pixel caps, deterministic downscaling, and independent daemon-side
+signature/header/size/digest verification. Unit and real-namespace tests cover malformed data,
+media mismatch, APNG/animated WebP rejection, metadata removal, oversize denial, deterministic
+output, and successful normalization.
+
+Schema 21 provides commit-before-link admission: canonical bytes are published to the private
+content-addressed store first, then an atomic SQLite transaction links at most four ordered
+owner/session-scoped artifacts to the durable inbox, journal, and acknowledgement. Exact retries
+bind artifact identity, digest, size, media type, and dimensions; late transaction failure rolls
+back every metadata/reference row while a fresh unlinked blob remains protected for age-gated
+collection. Context-manifest v3 reserves 8,192 tokens per image, emits one sparse artifact link per
+included image, and requires image-capable routing before reservation. Trusted hydration rechecks
+artifact ownership, metadata, digest, and bytes immediately before serialization. Transcript v2
+exports path-free image evidence without binary content, and recorded-only replay reconstructs and
+validates the exact normalized request without a live provider call.
+
+Public activation is fail-closed: an approved stopped-daemon transaction enables image input only
+when all configured routes are direct OpenAI Responses or Anthropic Messages; each admission still
+requires one exact advertised image-capable provider/model. The route-specific 6 MiB API boundary
+and `session send-image` preserve retry-stable delivery/artifact identities. One real
+daemon/provider process proof covers isolated normalization, duplicate admission, provider
+serialization, schema-v3 context evidence, transcript-v2 export, and zero-redispatch replay.
+Upgrade, reopen, owner-denial, mutation, rollback, corrupt/dangling evidence, local-file, body-limit,
+and configuration-activation tests cover the supporting boundaries.
+
+The separately permissioned image-generation backend is implemented behind one exact configured
+OpenAI Images or OpenRouter Images adapter. The high-risk `image.generate` effect binds a
+prompt-only model proposal to operator-injected provider/model/JPEG/size/quality/cost/output
+constraints, an exact owner approval, and a schema-22 immutable reservation. Denial crosses no
+provider boundary. Dispatch is non-idempotent and never retried: an interrupted running request
+parks `outcome_unknown`, conservatively charges the complete approved cost reservation, and
+requires authenticated revision-fenced owner reconciliation. Confirmed bytes pass through the
+isolated media normalizer before an atomic effect/outcome/usage/artifact/reference/event commit.
+Real daemon/provider tests cover success and authenticated retrieval, denial, crash/restart,
+no-redispatch reconciliation, exact request bounds, immutable reservation, zero-live-call replay,
+and missing-blob corruption. [ADR 0018](decisions/0018-governed-image-generation-effect.md)
+defines the boundary.
+
+The interactive v0.4 image gate is implemented: the TUI submits no-follow local images to one exact
+route and renders path-free canonical evidence, while the temporary dashboard uses browser-selected
+bytes and rechecks owner-scoped media type, length, and SHA-256 before PNG/JPEG preview or download.
+Public-process pseudo-terminal and loopback-adapter tests cover both paths. Line-chat/channel image
+UX, terminal pixel protocols, fork-lineage image projection, reference/edit workflows, audio, and
+video remain later scope. The v0.4 branch remains a release candidate until its inherited v0.3
+publication, exact v0.4 qualification, protected CI, provider acceptance, and attested publication
+gates complete.
 
 ## Required evidence per implementation slice
 
@@ -521,7 +629,7 @@ The critical path is:
 5. Telegram or Discord plus durable schedules;
 6. packaged install/upgrade/release pipeline;
 7. load, soak, live-provider, clean-machine, and recovery acceptance;
-8. effectful browser interaction, broader HTTP/resource/credential-bearing MCP, additional providers/channels,
+8. broader/persistent browser interaction, additional HTTP MCP lifecycle breadth, additional providers/channels,
    multimodal input, and broader dashboard administration beyond its completed
    conversation/control, task-usage/cost, unknown-effect, schedule-creation/lifecycle, governed-memory, and
    extension-lifecycle subsets.

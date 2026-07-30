@@ -2,7 +2,10 @@ use crate::{
     agent::RuntimeModelProvider,
     store_runtime::{RuntimeStore, RuntimeStoreReadGuard},
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use mealy_api::{
     ApiBackend, ArtifactContent, AuthenticatedIdentity, BackendError, SessionTranscriptContent,
     SessionTranscriptFormat, SignedWebhookEnvelope,
@@ -23,26 +26,30 @@ use mealy_application::{
     ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
     ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
     ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
-    InputAdmissionOutcome, InputAdmissionReceipt, InstallExtensionCommit, MEMORY_POLICY_VERSION,
-    MemorySearchQuery, MemorySource, MemoryStore, MemoryStoreError, MemoryView, ModelProvider,
-    OperationalSnapshot, OperationalStore, OperationalStoreError, OwnershipContext,
-    ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality, ProviderPricing,
-    ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
+    InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit, InstallExtensionCommit,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchQuery, MemorySource,
+    MemoryStore, MemoryStoreError, MemoryView, ModelProvider, OperationalSnapshot,
+    OperationalStore, OperationalStoreError, OwnershipContext, ProviderCapabilities,
+    ProviderFallbackPolicy, ProviderLocality, ProviderPricing, ProviderRouteCandidate,
+    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
     ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
-    RegisterDiscordChannelCommit, RegisterTelegramChannelCommit, RegisterWebhookChannelCommit,
-    RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit, ResolveApprovalCommit,
-    RevokeDiscordChannelCommit, RevokeExtensionCommit, RevokeTelegramChannelCommit,
-    RevokeWebhookChannelCommit, ScheduleDefinition, ScheduleRunStatus, ScheduleRunView,
-    ScheduleStatus, ScheduleStore, ScheduleStoreError, ScheduleTransition, ScheduleView,
-    SessionCheckpointView, SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot,
-    SessionTranscriptStoreError, SessionTranscriptTurn, SessionUseCaseError,
-    SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, StageExtensionManifestCommit,
-    TaskControlAction, TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus,
-    TelegramChannelStore, TelegramChannelStoreError, TimelineQuery, TimelineStoreError,
-    TimelineUseCaseError, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
-    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
-    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
-    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
+    RegisterWebhookChannelCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
+    ResolveApprovalCommit, RevokeDiscordChannelCommit, RevokeExtensionCommit,
+    RevokeSlackChannelCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
+    ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
+    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionCheckpointView,
+    SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot, SessionTranscriptStoreError,
+    SessionTranscriptTurn, SessionUseCaseError, SessionWorkbenchStoreError,
+    SessionWorkbenchUseCaseError, SlackChannelBindingView, SlackChannelStatus, SlackChannelStore,
+    SlackChannelStoreError, StageExtensionManifestCommit, TaskControlAction, TaskControlCommit,
+    TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
+    TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
+    TransitionScheduleCommit, UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand,
+    ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM,
+    WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView, WebhookChannelStatus,
+    WebhookChannelStore, WebhookChannelStoreError, admit_input, admit_input_with_images,
     canonical_arguments_digest, compaction_source_event_digest, create_session,
     create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
     inspect_extension_manifest, next_schedule_occurrence_ms, query_session_checkpoints,
@@ -65,13 +72,14 @@ use mealy_domain::{
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
     FileProviderSecretStore, InstalledExtensionPackage, LinuxBubblewrapExtensionHost,
-    MaintenanceError, ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
+    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError,
+    ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
     create_backup as create_complete_backup, create_complete_export, inspect_extension_package,
     publish_export, verify_backup as verify_complete_backup,
 };
 
 const BUBBLEWRAP_PATH: &str = "/usr/bin/bwrap";
-const SESSION_TRANSCRIPT_SCHEMA_VERSION: &str = "mealy.session-transcript.v1";
+const SESSION_TRANSCRIPT_SCHEMA_VERSION: &str = "mealy.session-transcript.v2";
 const SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES: usize = 32 * 1024 * 1024;
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageBucketResponse,
@@ -83,10 +91,10 @@ use mealy_protocol::{
     CorrectMemoryRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
-    DaemonRunStatusResponse, DelegationResponse, DelegationsResponse, DiscordChannelResponse,
-    DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest,
-    DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
+    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
+    CreateWebhookChannelResponse, DaemonRunStatusResponse, DelegationResponse, DelegationsResponse,
+    DiscordChannelResponse, DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse,
+    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
     EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
     EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
     ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
@@ -102,18 +110,20 @@ use mealy_protocol::{
     ProposeMemoryRequest, ProviderCatalogResponse, ProviderCatalogRouteResponse,
     ProviderEndpointStatusResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
     ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeTelegramChannelRequest, RevokeWebhookChannelRequest,
-    RunGarbageCollectionRequest, SandboxProfileResponse, SandboxProfileStatusResponse,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse,
-    ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
+    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, SandboxProfileResponse,
+    SandboxProfileStatusResponse, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
+    ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
     ScheduleRunsResponse, ScheduleStatusResponse, SchedulesResponse, SessionCheckpointResponse,
     SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchHitResponse, SessionSearchResponse, SessionStatusResponse, SessionSummaryResponse,
     SessionTitleResponse, SessionTranscriptAssistantMessageResponse,
     SessionTranscriptBoundsResponse, SessionTranscriptCitationResponse, SessionTranscriptExport,
-    SessionTranscriptLineageResponse, SessionTranscriptRedactionResponse,
-    SessionTranscriptTurnResponse, SessionTranscriptUserMessageResponse, SessionsResponse,
-    SetMemoryPinRequest, SignedWebhookInputRequest, StageExtensionManifestRequest,
+    SessionTranscriptImageResponse, SessionTranscriptLineageResponse,
+    SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
+    SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
+    SignedWebhookInputRequest, SlackChannelResponse, SlackChannelStatusResponse,
+    SlackChannelsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
     SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
     TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
     TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
@@ -144,9 +154,11 @@ use zeroize::Zeroizing;
 pub struct RuntimeBackend {
     store: Arc<RuntimeStore>,
     artifacts: Arc<FileArtifactBlobStore>,
+    media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
     channel_secrets: Arc<FileChannelSecretStore>,
     telegram: RuntimeTelegramConfig,
     discord: RuntimeDiscordConfig,
+    slack: RuntimeSlackConfig,
     home: PathBuf,
     artifact_gc_minimum_age_hours: u64,
     maximum_pending_inputs_per_session: u64,
@@ -167,6 +179,8 @@ pub struct RuntimeOperationalConfig {
     pub home: PathBuf,
     /// Minimum physical-erasure age for unreferenced artifacts.
     pub artifact_gc_minimum_age_hours: u64,
+    /// Isolated hostile-image boundary, present only for activated image-capable routes.
+    pub media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
     /// Maximum durable pending input records admitted to one session.
     pub maximum_pending_inputs_per_session: u64,
     /// Maximum simultaneous invocations for one extension identity.
@@ -197,12 +211,22 @@ pub struct RuntimeDiscordConfig {
     pub api_base_url: String,
 }
 
+/// Process-local Slack credential and Web API transport dependencies.
+pub struct RuntimeSlackConfig {
+    /// Credential broker is absent only in query-only safe mode.
+    pub credentials: Option<Arc<FileProviderSecretStore>>,
+    /// Validated Slack Web API base, or literal-loopback test endpoint.
+    pub api_base_url: String,
+}
+
 /// Process-local dependencies for all first-party remote channel drivers.
 pub struct RuntimeChannelConfig {
     /// Telegram Bot API dependencies.
     pub telegram: RuntimeTelegramConfig,
     /// Discord REST API dependencies.
     pub discord: RuntimeDiscordConfig,
+    /// Slack Socket Mode and Web API dependencies.
+    pub slack: RuntimeSlackConfig,
 }
 
 /// Idempotent bridge from an authenticated admin command to daemon graceful shutdown.
@@ -251,9 +275,11 @@ impl RuntimeBackend {
         Self {
             store,
             artifacts,
+            media_normalizer: operations.media_normalizer,
             channel_secrets,
             telegram: channels.telegram,
             discord: channels.discord,
+            slack: channels.slack,
             home: operations.home,
             artifact_gc_minimum_age_hours: operations.artifact_gc_minimum_age_hours,
             maximum_pending_inputs_per_session: operations.maximum_pending_inputs_per_session,
@@ -1418,6 +1444,11 @@ impl ApiBackend for RuntimeBackend {
             api_version: API_VERSION.to_owned(),
             session_id: receipt.session_id.to_string(),
             inbox_entry_id: receipt.inbox_entry_id.to_string(),
+            image_artifact_ids: receipt
+                .image_artifact_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             inbox_sequence: receipt.inbox_sequence,
             delivery_mode: receipt.delivery_mode.into(),
             provider_selection: receipt.provider_selection.clone().map_or(
@@ -1434,6 +1465,159 @@ impl ApiBackend for RuntimeBackend {
             duplicate: matches!(outcome, InputAdmissionOutcome::Duplicate(_)),
             cursor: TimelineCursor(receipt.timeline_cursor),
         })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn submit_image_input(
+        &self,
+        identity: AuthenticatedIdentity,
+        session_id: String,
+        request: SubmitImageInputRequest,
+    ) -> Result<InputAdmissionResponse, BackendError> {
+        if self.safe_mode || !self.admission_open() {
+            return Err(BackendError::Unavailable);
+        }
+        let ownership = parse_ownership(&identity)?;
+        let session_id = parse_session(&session_id)?;
+        let ProviderSelectionCommand::Exact {
+            provider_id,
+            model_id,
+        } = request.provider_selection
+        else {
+            return Err(BackendError::InvalidRequest(
+                "image input requires an exact configured provider/model route".to_owned(),
+            ));
+        };
+        let selection = self
+            .checked_provider_selection(ProviderSelectionCommand::Exact {
+                provider_id,
+                model_id,
+            })?
+            .ok_or(BackendError::Internal)?;
+        if !self
+            .provider
+            .policy_capabilities()
+            .iter()
+            .any(|capabilities| {
+                capabilities.provider_id == selection.provider_id
+                    && capabilities.model_id == selection.model_id
+                    && capabilities.input_modalities.contains("image")
+            })
+        {
+            return Err(BackendError::InvalidRequest(
+                "image input requires an explicitly image-capable provider route".to_owned(),
+            ));
+        }
+        let normalizer = self
+            .media_normalizer
+            .as_ref()
+            .ok_or(BackendError::Unavailable)?;
+        if request.images.is_empty() || request.images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+            return Err(BackendError::InvalidRequest(
+                "image input count is outside the supported bound".to_owned(),
+            ));
+        }
+        let maximum_encoded_image_bytes =
+            4_usize.saturating_mul(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES.div_ceil(3));
+        let maximum_encoded_total_bytes =
+            4_usize.saturating_mul(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES.div_ceil(3));
+        let mut encoded_total = 0_usize;
+        let mut source_total = 0_usize;
+        let mut canonical_total = 0_usize;
+        let mut artifact_ids = BTreeSet::new();
+        let mut images = Vec::with_capacity(request.images.len());
+        for submitted in request.images {
+            encoded_total = encoded_total
+                .checked_add(submitted.data_base64.len())
+                .ok_or_else(|| {
+                    BackendError::InvalidRequest("encoded image input is too large".to_owned())
+                })?;
+            let artifact_id = ArtifactId::from_str(&submitted.artifact_id).map_err(|_| {
+                BackendError::InvalidRequest(
+                    "image artifact identity must be a canonical UUIDv7".to_owned(),
+                )
+            })?;
+            if artifact_id.as_uuid().get_version_num() != 7
+                || !artifact_ids.insert(artifact_id)
+                || submitted.data_base64.is_empty()
+                || submitted.data_base64.len() > maximum_encoded_image_bytes
+                || encoded_total > maximum_encoded_total_bytes
+            {
+                return Err(BackendError::InvalidRequest(
+                    "image identity or encoded byte bounds are invalid".to_owned(),
+                ));
+            }
+            let source = BASE64_STANDARD
+                .decode(&submitted.data_base64)
+                .map_err(|_| {
+                    BackendError::InvalidRequest(
+                        "image data must use canonical padded base64".to_owned(),
+                    )
+                })?;
+            if BASE64_STANDARD.encode(&source) != submitted.data_base64
+                || source.is_empty()
+                || source.len() > MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES
+            {
+                return Err(BackendError::InvalidRequest(
+                    "image data must use canonical padded base64 within bounds".to_owned(),
+                ));
+            }
+            source_total = source_total.checked_add(source.len()).ok_or_else(|| {
+                BackendError::InvalidRequest("decoded image input is too large".to_owned())
+            })?;
+            if source_total > MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES {
+                return Err(BackendError::InvalidRequest(
+                    "decoded image input aggregate exceeds its bound".to_owned(),
+                ));
+            }
+            let canonical = normalizer
+                .normalize(&submitted.media_type, &source)
+                .map_err(|error| map_media_normalizer_error(&error))?;
+            canonical_total = canonical_total
+                .checked_add(canonical.bytes().len())
+                .ok_or_else(|| {
+                    BackendError::InvalidRequest(
+                        "canonical image input aggregate is too large".to_owned(),
+                    )
+                })?;
+            if canonical_total > MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES {
+                return Err(BackendError::InvalidRequest(
+                    "canonical image input aggregate exceeds its bound".to_owned(),
+                ));
+            }
+            let blob = self
+                .artifacts
+                .commit(canonical.bytes())
+                .map_err(|error| map_artifact_blob_error(&error))?;
+            images.push(InputImageArtifactCommit {
+                artifact_id,
+                blob,
+                committed_at: self.clock.now(),
+                media_type: canonical.media_type().to_owned(),
+                width: canonical.width(),
+                height: canonical.height(),
+            });
+        }
+        let outcome = admit_input_with_images(
+            &mut *self.lock()?,
+            &self.clock,
+            &self.ids,
+            InputAdmissionLimits::new(256, 1024 * 1024, self.maximum_pending_inputs_per_session),
+            AdmitInputCommand {
+                session_id,
+                ownership,
+                dedupe_key: request.idempotency_key,
+                delivery_mode: request.delivery_mode.into(),
+                content: request.content,
+                provider_selection: ProviderSelectionPreference::Exact(selection),
+            },
+            images,
+        )
+        .map_err(map_session_error)?;
+        input_admission_response(
+            outcome.receipt(),
+            matches!(outcome, InputAdmissionOutcome::Duplicate(_)),
+        )
     }
 
     fn session_status(
@@ -2770,6 +2954,214 @@ impl ApiBackend for RuntimeBackend {
         Ok(discord_channel_response(revoked))
     }
 
+    fn create_slack_channel(
+        &self,
+        identity: AuthenticatedIdentity,
+        request: CreateSlackChannelRequest,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let credentials = self
+            .slack
+            .credentials
+            .as_ref()
+            .ok_or(BackendError::Unavailable)?;
+        let app_token = Zeroizing::new(request.app_token);
+        let bot_token = Zeroizing::new(request.bot_token);
+        validate_slack_app_token(&app_token)?;
+        validate_slack_bot_token(&bot_token)?;
+        let setup_client = slack_setup_client()?;
+        let verified = verify_slack_channel(
+            &setup_client,
+            &self.slack.api_base_url,
+            &app_token,
+            &bot_token,
+            &request.slack_user_id,
+            &request.slack_channel_id,
+        )?;
+        let binding_id = self.ids.generate_channel_binding_id();
+        let session_id = self.ids.generate_session_id();
+        let app_token_digest = sha256_digest(app_token.as_bytes());
+        let bot_token_digest = sha256_digest(bot_token.as_bytes());
+        let existing = self
+            .read()?
+            .slack_channels(ownership)
+            .map_err(map_slack_store_error)?;
+        let secret_binding = resolve_slack_secret_binding(
+            &existing,
+            &verified,
+            &app_token_digest,
+            &bot_token_digest,
+            binding_id,
+        )?;
+        let app_token_secret_id = secret_binding.app_token_secret_id;
+        let bot_token_secret_id = secret_binding.bot_token_secret_id;
+        let secrets_created = secret_binding.created;
+        mealy_application::validate_slack_binding(
+            &verified.team_id,
+            &verified.team_name,
+            &verified.app_id,
+            &request.slack_user_id,
+            &request.slack_channel_id,
+            &verified.bot_user_id,
+            &verified.bot_name,
+            request.require_mention,
+            &app_token_secret_id,
+            &app_token_digest,
+            &bot_token_secret_id,
+            &bot_token_digest,
+        )
+        .map_err(map_slack_store_error)?;
+        if secrets_created {
+            credentials
+                .put(&app_token_secret_id, &app_token)
+                .map_err(|error| map_slack_secret_error(&error))?;
+            if let Err(error) = credentials.put(&bot_token_secret_id, &bot_token) {
+                let _ = credentials.remove(&app_token_secret_id);
+                return Err(map_slack_secret_error(&error));
+            }
+        }
+        let commit = RegisterSlackChannelCommit {
+            administrative_ownership: ownership,
+            binding_id,
+            session_id,
+            team_id: verified.team_id,
+            team_name: verified.team_name,
+            app_id: verified.app_id,
+            slack_user_id: request.slack_user_id,
+            slack_channel_id: request.slack_channel_id,
+            bot_user_id: verified.bot_user_id,
+            bot_name: verified.bot_name,
+            require_mention: request.require_mention,
+            app_token_secret_id: app_token_secret_id.clone(),
+            app_token_digest,
+            bot_token_secret_id: bot_token_secret_id.clone(),
+            bot_token_digest,
+            session_event_id: self.ids.generate_event_id(),
+            binding_event_id: self.ids.generate_event_id(),
+            correlation_id: self.ids.generate_correlation_id(),
+            created_at: self.clock.now(),
+        };
+        let view = match self.lock()?.register_slack_channel(commit) {
+            Ok(view) => view,
+            Err(error) => {
+                if secrets_created {
+                    let _ = credentials.remove(&bot_token_secret_id);
+                    let _ = credentials.remove(&app_token_secret_id);
+                }
+                return Err(map_slack_store_error(error));
+            }
+        };
+        Ok(slack_channel_response(view))
+    }
+
+    fn slack_channels(
+        &self,
+        identity: AuthenticatedIdentity,
+    ) -> Result<SlackChannelsResponse, BackendError> {
+        let channels = self
+            .read()?
+            .slack_channels(parse_ownership(&identity)?)
+            .map_err(map_slack_store_error)?
+            .into_iter()
+            .map(slack_channel_response)
+            .collect();
+        Ok(SlackChannelsResponse {
+            api_version: API_VERSION.to_owned(),
+            channels,
+        })
+    }
+
+    fn slack_channel(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        let view = self
+            .read()?
+            .slack_channel(
+                parse_ownership(&identity)?,
+                parse_channel_binding(&binding_id)?,
+            )
+            .map_err(map_slack_store_error)?;
+        Ok(slack_channel_response(view))
+    }
+
+    fn revoke_slack_channel(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        request: RevokeSlackChannelRequest,
+    ) -> Result<SlackChannelResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let binding_id = parse_channel_binding(&binding_id)?;
+        let channels = self
+            .read()?
+            .slack_channels(ownership)
+            .map_err(map_slack_store_error)?;
+        let current = channels
+            .iter()
+            .find(|view| view.binding_id == binding_id)
+            .cloned()
+            .ok_or(BackendError::NotFound)?;
+        if current.status != SlackChannelStatus::Active
+            || current.revision != request.expected_revision
+        {
+            return Err(BackendError::Conflict);
+        }
+        let shared = channels.iter().any(|view| {
+            view.binding_id != binding_id
+                && view.status == SlackChannelStatus::Active
+                && view.app_token_secret_id == current.app_token_secret_id
+                && view.bot_token_secret_id == current.bot_token_secret_id
+        });
+        let credentials = self
+            .slack
+            .credentials
+            .as_ref()
+            .ok_or(BackendError::Unavailable)?;
+        let retained_tokens = if shared {
+            None
+        } else {
+            Some((
+                credentials
+                    .read(&current.app_token_secret_id)
+                    .map_err(|error| map_slack_secret_error(&error))?,
+                credentials
+                    .read(&current.bot_token_secret_id)
+                    .map_err(|error| map_slack_secret_error(&error))?,
+            ))
+        };
+        if retained_tokens.is_some() {
+            credentials
+                .remove(&current.bot_token_secret_id)
+                .map_err(|error| map_slack_secret_error(&error))?;
+            if let Err(error) = credentials.remove(&current.app_token_secret_id) {
+                if let Some((_, bot_token)) = retained_tokens.as_ref() {
+                    let _ = credentials.put(&current.bot_token_secret_id, bot_token);
+                }
+                return Err(map_slack_secret_error(&error));
+            }
+        }
+        let revoked = match self.lock()?.revoke_slack_channel(RevokeSlackChannelCommit {
+            administrative_ownership: ownership,
+            binding_id,
+            expected_revision: request.expected_revision,
+            event_id: self.ids.generate_event_id(),
+            correlation_id: self.ids.generate_correlation_id(),
+            revoked_at: self.clock.now(),
+        }) {
+            Ok(view) => view,
+            Err(error) => {
+                if let Some((app_token, bot_token)) = retained_tokens.as_ref() {
+                    let _ = credentials.put(&current.app_token_secret_id, app_token);
+                    let _ = credentials.put(&current.bot_token_secret_id, bot_token);
+                }
+                return Err(map_slack_store_error(error));
+            }
+        };
+        Ok(slack_channel_response(revoked))
+    }
+
     fn receive_signed_webhook(
         &self,
         binding_id: String,
@@ -3224,6 +3616,11 @@ fn input_admission_response(
         api_version: API_VERSION.to_owned(),
         session_id: receipt.session_id.to_string(),
         inbox_entry_id: receipt.inbox_entry_id.to_string(),
+        image_artifact_ids: receipt
+            .image_artifact_ids
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         inbox_sequence: receipt.inbox_sequence,
         delivery_mode: receipt.delivery_mode.into(),
         provider_selection: receipt.provider_selection.clone().map_or(
@@ -3315,6 +3712,33 @@ fn discord_channel_response(view: DiscordChannelBindingView) -> DiscordChannelRe
             DiscordChannelStatus::Revoked => DiscordChannelStatusResponse::Revoked,
         },
         after_message_id: view.after_message_id,
+        revision: view.revision,
+        last_success_at_ms: view.last_success_at_ms,
+        last_failure_at_ms: view.last_failure_at_ms,
+        consecutive_failures: view.consecutive_failures,
+        last_error_code: view.last_error_code,
+        created_at_ms: view.created_at_ms,
+        updated_at_ms: view.updated_at_ms,
+    }
+}
+
+fn slack_channel_response(view: SlackChannelBindingView) -> SlackChannelResponse {
+    SlackChannelResponse {
+        api_version: API_VERSION.to_owned(),
+        binding_id: view.binding_id.to_string(),
+        session_id: view.session_id.to_string(),
+        team_id: view.team_id,
+        team_name: view.team_name,
+        app_id: view.app_id,
+        slack_user_id: view.slack_user_id,
+        slack_channel_id: view.slack_channel_id,
+        bot_user_id: view.bot_user_id,
+        bot_name: view.bot_name,
+        require_mention: view.require_mention,
+        status: match view.status {
+            SlackChannelStatus::Active => SlackChannelStatusResponse::Active,
+            SlackChannelStatus::Revoked => SlackChannelStatusResponse::Revoked,
+        },
         revision: view.revision,
         last_success_at_ms: view.last_success_at_ms,
         last_failure_at_ms: view.last_failure_at_ms,
@@ -3618,6 +4042,362 @@ fn invalid_discord_binding() -> BackendError {
     BackendError::InvalidRequest(
         "Discord token, bot identity, human recipient, or one-to-one DM channel did not verify"
             .to_owned(),
+    )
+}
+
+#[derive(Deserialize)]
+struct SlackAuthTestResponse {
+    ok: bool,
+    team: Option<String>,
+    team_id: Option<String>,
+    user: Option<String>,
+    user_id: Option<String>,
+    app_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SlackUserInfoResponse {
+    ok: bool,
+    user: Option<SlackApiUser>,
+}
+
+#[derive(Deserialize)]
+struct SlackApiUser {
+    id: String,
+    team_id: Option<String>,
+    name: String,
+    #[serde(default)]
+    deleted: bool,
+    #[serde(default)]
+    is_bot: bool,
+}
+
+#[derive(Deserialize)]
+struct SlackConversationInfoResponse {
+    ok: bool,
+    channel: Option<SlackApiConversation>,
+}
+
+#[derive(Deserialize)]
+struct SlackApiConversation {
+    id: String,
+    #[serde(default)]
+    is_archived: bool,
+    #[serde(default)]
+    is_member: bool,
+    #[serde(default)]
+    is_im: bool,
+    user: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SlackSocketOpenResponse {
+    ok: bool,
+    url: Option<String>,
+}
+
+struct VerifiedSlackChannel {
+    team_id: String,
+    team_name: String,
+    app_id: String,
+    bot_user_id: String,
+    bot_name: String,
+}
+
+struct SlackSecretBinding {
+    app_token_secret_id: String,
+    bot_token_secret_id: String,
+    created: bool,
+}
+
+fn slack_setup_client() -> Result<reqwest::blocking::Client, BackendError> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|_| BackendError::Unavailable)
+}
+
+fn resolve_slack_secret_binding(
+    existing: &[SlackChannelBindingView],
+    verified: &VerifiedSlackChannel,
+    app_token_digest: &str,
+    bot_token_digest: &str,
+    binding_id: ChannelBindingId,
+) -> Result<SlackSecretBinding, BackendError> {
+    let overlapping = existing.iter().find(|view| {
+        view.status == SlackChannelStatus::Active
+            && (view.app_token_digest == app_token_digest
+                || view.bot_token_digest == bot_token_digest)
+    });
+    let Some(view) = overlapping else {
+        return Ok(SlackSecretBinding {
+            app_token_secret_id: format!("slack.app.{binding_id}"),
+            bot_token_secret_id: format!("slack.bot.{binding_id}"),
+            created: true,
+        });
+    };
+    if view.app_token_digest != app_token_digest
+        || view.bot_token_digest != bot_token_digest
+        || view.team_id != verified.team_id
+        || view.app_id != verified.app_id
+        || view.bot_user_id != verified.bot_user_id
+    {
+        return Err(BackendError::Conflict);
+    }
+    Ok(SlackSecretBinding {
+        app_token_secret_id: view.app_token_secret_id.clone(),
+        bot_token_secret_id: view.bot_token_secret_id.clone(),
+        created: false,
+    })
+}
+
+pub(crate) fn validate_slack_app_token(token: &str) -> Result<(), BackendError> {
+    validate_slack_token(token, "xapp-")
+}
+
+pub(crate) fn validate_slack_bot_token(token: &str) -> Result<(), BackendError> {
+    validate_slack_token(token, "xoxb-")
+}
+
+fn validate_slack_token(token: &str, prefix: &str) -> Result<(), BackendError> {
+    if token.len() < prefix.len() + 16
+        || token.len() > 512
+        || !token.starts_with(prefix)
+        || !token.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(invalid_slack_binding());
+    }
+    Ok(())
+}
+
+fn verify_slack_channel(
+    client: &reqwest::blocking::Client,
+    api_base_url: &str,
+    app_token: &str,
+    bot_token: &str,
+    expected_user_id: &str,
+    expected_channel_id: &str,
+) -> Result<VerifiedSlackChannel, BackendError> {
+    validate_slack_api_base_url(api_base_url)?;
+    let base = api_base_url.trim_end_matches('/');
+    let bot_authorization = format!("Bearer {bot_token}");
+    let auth: SlackAuthTestResponse = read_slack_setup_json(
+        client
+            .post(format!("{base}/auth.test"))
+            .header(reqwest::header::AUTHORIZATION, &bot_authorization)
+            .send()
+            .map_err(|_| BackendError::Unavailable)?,
+        64 * 1024,
+    )?;
+    let (Some(team_id), Some(team_name), Some(app_id), Some(bot_user_id), Some(bot_name)) = (
+        auth.team_id,
+        auth.team,
+        auth.app_id,
+        auth.user_id,
+        auth.user,
+    ) else {
+        return Err(invalid_slack_binding());
+    };
+    if !auth.ok
+        || !mealy_application::valid_slack_platform_id(&team_id)
+        || !mealy_application::valid_slack_app_id(&app_id)
+        || !mealy_application::valid_slack_platform_id(&bot_user_id)
+        || bot_user_id == expected_user_id
+    {
+        return Err(invalid_slack_binding());
+    }
+    verify_slack_user(client, base, &bot_authorization, expected_user_id, &team_id)?;
+    verify_slack_conversation(
+        client,
+        base,
+        &bot_authorization,
+        expected_user_id,
+        expected_channel_id,
+    )?;
+    verify_slack_socket_open(client, base, app_token)?;
+    Ok(VerifiedSlackChannel {
+        team_id,
+        team_name,
+        app_id,
+        bot_user_id,
+        bot_name,
+    })
+}
+
+fn verify_slack_user(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    bot_authorization: &str,
+    expected_user_id: &str,
+    team_id: &str,
+) -> Result<(), BackendError> {
+    let response: SlackUserInfoResponse = read_slack_setup_json(
+        client
+            .get(format!("{base}/users.info"))
+            .header(reqwest::header::AUTHORIZATION, bot_authorization)
+            .query(&[("user", expected_user_id)])
+            .send()
+            .map_err(|_| BackendError::Unavailable)?,
+        128 * 1024,
+    )?;
+    if !response.ok {
+        return Err(invalid_slack_binding());
+    }
+    let Some(user) = response.user else {
+        return Err(invalid_slack_binding());
+    };
+    if user.id != expected_user_id
+        || user
+            .team_id
+            .as_deref()
+            .is_some_and(|value| value != team_id)
+        || user.deleted
+        || user.is_bot
+        || user.name.is_empty()
+        || !mealy_application::valid_slack_platform_id(&user.id)
+    {
+        return Err(invalid_slack_binding());
+    }
+    Ok(())
+}
+
+fn verify_slack_conversation(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    bot_authorization: &str,
+    expected_user_id: &str,
+    expected_channel_id: &str,
+) -> Result<(), BackendError> {
+    let response: SlackConversationInfoResponse = read_slack_setup_json(
+        client
+            .get(format!("{base}/conversations.info"))
+            .header(reqwest::header::AUTHORIZATION, bot_authorization)
+            .query(&[("channel", expected_channel_id)])
+            .send()
+            .map_err(|_| BackendError::Unavailable)?,
+        128 * 1024,
+    )?;
+    let Some(channel) = response.channel else {
+        return Err(invalid_slack_binding());
+    };
+    let direct_message = expected_channel_id.starts_with('D');
+    if !response.ok
+        || channel.id != expected_channel_id
+        || channel.is_archived
+        || !mealy_application::valid_slack_platform_id(&channel.id)
+        || if direct_message {
+            !channel.is_im || channel.user.as_deref() != Some(expected_user_id)
+        } else {
+            !channel.is_member || channel.is_im
+        }
+    {
+        return Err(invalid_slack_binding());
+    }
+    Ok(())
+}
+
+fn verify_slack_socket_open(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    app_token: &str,
+) -> Result<(), BackendError> {
+    let socket: SlackSocketOpenResponse = read_slack_setup_json(
+        client
+            .post(format!("{base}/apps.connections.open"))
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("Bearer {app_token}"),
+            )
+            .send()
+            .map_err(|_| BackendError::Unavailable)?,
+        128 * 1024,
+    )?;
+    let Some(socket_url) = socket.url else {
+        return Err(invalid_slack_binding());
+    };
+    if !socket.ok {
+        return Err(invalid_slack_binding());
+    }
+    validate_slack_socket_url(&socket_url)
+}
+
+fn read_slack_setup_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    maximum_bytes: u64,
+) -> Result<T, BackendError> {
+    match response.status().as_u16() {
+        200..=299 => {}
+        400 | 401 | 403 | 404 => return Err(invalid_slack_binding()),
+        _ => return Err(BackendError::Unavailable),
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes)
+    {
+        return Err(BackendError::Unavailable);
+    }
+    let mut body = Vec::new();
+    response
+        .take(maximum_bytes + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| BackendError::Unavailable)?;
+    if u64::try_from(body.len()).unwrap_or(u64::MAX) > maximum_bytes {
+        return Err(BackendError::Unavailable);
+    }
+    serde_json::from_slice(&body).map_err(|_| BackendError::Unavailable)
+}
+
+pub(crate) fn validate_slack_api_base_url(value: &str) -> Result<(), BackendError> {
+    let url = reqwest::Url::parse(value).map_err(|_| BackendError::Unavailable)?;
+    let official = url.scheme() == "https"
+        && url.host_str() == Some("slack.com")
+        && url.port().is_none()
+        && matches!(url.path(), "/api" | "/api/");
+    let loopback_test = url.scheme() == "http"
+        && url
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback())
+        && matches!(url.path(), "" | "/");
+    if url.cannot_be_a_base()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !(official || loopback_test)
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(BackendError::Unavailable);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_slack_socket_url(value: &str) -> Result<(), BackendError> {
+    let url = reqwest::Url::parse(value).map_err(|_| BackendError::Unavailable)?;
+    let official = url.scheme() == "wss"
+        && url.host_str() == Some("wss-primary.slack.com")
+        && url.port().is_none();
+    let loopback_test = matches!(url.scheme(), "ws" | "wss")
+        && url
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback());
+    if url.cannot_be_a_base()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !(official || loopback_test)
+        || url.fragment().is_some()
+    {
+        return Err(BackendError::Unavailable);
+    }
+    Ok(())
+}
+
+fn invalid_slack_binding() -> BackendError {
+    BackendError::InvalidRequest(
+        "Slack app/bot tokens, workspace, app, member, or conversation did not verify".to_owned(),
     )
 }
 
@@ -4632,6 +5412,19 @@ fn session_transcript_turn_response(
             content: turn.user.content,
             content_digest: turn.user.content_digest,
             byte_length: turn.user.byte_length,
+            images: turn
+                .user
+                .images
+                .into_iter()
+                .map(|image| SessionTranscriptImageResponse {
+                    artifact_id: image.artifact_id.to_string(),
+                    media_type: image.media_type,
+                    sha256_digest: image.sha256_digest,
+                    size_bytes: image.size_bytes,
+                    width: image.width,
+                    height: image.height,
+                })
+                .collect(),
             accepted_at_ms: epoch_milliseconds(turn.user.accepted_at)?,
             citation: SessionTranscriptCitationResponse {
                 event_id: turn.user.admission_event_id.to_string(),
@@ -4757,7 +5550,28 @@ fn render_session_transcript_html(
         )
         .map_err(|_| BackendError::Internal)?;
         push_html_escaped(&mut html, &turn.user.citation.event_id);
-        html.push_str("</dd></dl></section><section><h4>Assistant</h4><pre>");
+        html.push_str("</dd></dl>");
+        if !turn.user.images.is_empty() {
+            html.push_str(
+                "<h5>Canonical images (metadata only; binary content deliberately omitted)</h5><ol>",
+            );
+            for image in &turn.user.images {
+                html.push_str("<li><dl><dt>Artifact ID</dt><dd>");
+                push_html_escaped(&mut html, &image.artifact_id);
+                html.push_str("</dd><dt>Media type</dt><dd>");
+                push_html_escaped(&mut html, &image.media_type);
+                html.push_str("</dd><dt>Digest (SHA-256)</dt><dd>");
+                push_html_escaped(&mut html, &image.sha256_digest);
+                write!(
+                    html,
+                    "</dd><dt>Bytes</dt><dd>{}</dd><dt>Dimensions</dt><dd>{} × {}</dd></dl></li>",
+                    image.size_bytes, image.width, image.height
+                )
+                .map_err(|_| BackendError::Internal)?;
+            }
+            html.push_str("</ol>");
+        }
+        html.push_str("</section><section><h4>Assistant</h4><pre>");
         push_html_escaped(&mut html, &turn.assistant.content);
         html.push_str("</pre><dl><dt>Content digest (SHA-256)</dt><dd>");
         push_html_escaped(&mut html, &turn.assistant.content_digest);
@@ -4954,6 +5768,17 @@ fn map_artifact_blob_error(error: &ArtifactBlobStoreError) -> BackendError {
     }
 }
 
+fn map_media_normalizer_error(error: &MediaNormalizerError) -> BackendError {
+    match error {
+        MediaNormalizerError::InvalidInput | MediaNormalizerError::ResourceLimitExceeded => {
+            BackendError::InvalidRequest(error.to_string())
+        }
+        MediaNormalizerError::Unavailable | MediaNormalizerError::TimedOut => {
+            BackendError::Unavailable
+        }
+    }
+}
+
 fn map_context_evidence_error(error: &ContextManifestEvidenceStoreError) -> BackendError {
     match error {
         ContextManifestEvidenceStoreError::NotFound => BackendError::NotFound,
@@ -5050,6 +5875,18 @@ fn map_discord_store_error(error: DiscordChannelStoreError) -> BackendError {
     }
 }
 
+fn map_slack_store_error(error: SlackChannelStoreError) -> BackendError {
+    match error {
+        SlackChannelStoreError::NotFound => BackendError::NotFound,
+        SlackChannelStoreError::Revoked | SlackChannelStoreError::Conflict => {
+            BackendError::Conflict
+        }
+        SlackChannelStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
+        SlackChannelStoreError::Unavailable(_) => BackendError::Unavailable,
+        SlackChannelStoreError::InvariantViolation(_) => BackendError::Internal,
+    }
+}
+
 fn map_schedule_store_error(error: ScheduleStoreError) -> BackendError {
     match error {
         ScheduleStoreError::NotFound | ScheduleStoreError::Unauthorized => BackendError::NotFound,
@@ -5082,6 +5919,10 @@ fn map_telegram_secret_error(error: &ProviderSecretStoreError) -> BackendError {
 }
 
 fn map_discord_secret_error(error: &ProviderSecretStoreError) -> BackendError {
+    map_telegram_secret_error(error)
+}
+
+fn map_slack_secret_error(error: &ProviderSecretStoreError) -> BackendError {
     map_telegram_secret_error(error)
 }
 
@@ -5357,15 +6198,16 @@ mod tests {
     use super::{
         ApiBackend, AuthenticatedIdentity, BackendError, DrainController, KeyedConcurrencyLimiter,
         RuntimeBackend, RuntimeChannelConfig, RuntimeDiscordConfig, RuntimeOperationalConfig,
-        RuntimeTelegramConfig, map_artifact_blob_error, parse_ownership,
-        session_transcript_export_model, validate_extension_mount_roots,
+        RuntimeSlackConfig, RuntimeTelegramConfig, map_artifact_blob_error, parse_ownership,
+        render_session_transcript_html, session_transcript_export_model,
+        validate_extension_mount_roots,
     };
     use crate::{agent::RuntimeModelProvider, store_runtime::RuntimeStore};
     use mealy_application::{
-        ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore, ProviderConfig,
-        SessionTranscriptAssistantMessage, SessionTranscriptLineage, SessionTranscriptSnapshot,
-        SessionTranscriptTurn, SessionTranscriptUserMessage, TimelineCursor, estimate_tokens,
-        sha256_digest,
+        AgentContextImage, ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore,
+        ProviderConfig, SessionTranscriptAssistantMessage, SessionTranscriptLineage,
+        SessionTranscriptSnapshot, SessionTranscriptTurn, SessionTranscriptUserMessage,
+        TimelineCursor, estimate_tokens, sha256_digest,
     };
     use mealy_domain::{
         ArtifactId, ChannelBindingId, ContextEpochId, ContextItemId, ContextManifestId,
@@ -5501,6 +6343,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn transcript_model_hydrates_artifacts_and_fails_closed_on_blob_corruption() {
         let fixture = Fixture::new();
         let ownership = parse_ownership(&fixture.identity).expect("fixture ownership");
@@ -5512,6 +6355,8 @@ mod tests {
             .expect("authorized transcript artifact");
         let session_id = SessionId::new();
         let user_content = "artifact-backed response".to_owned();
+        let input_image_id = ArtifactId::new();
+        let input_image_digest = sha256_digest(b"canonical image bytes");
         let snapshot = SessionTranscriptSnapshot {
             session_id,
             title: "Artifact transcript".to_owned(),
@@ -5546,6 +6391,14 @@ mod tests {
                     content_digest: sha256_digest(user_content.as_bytes()),
                     byte_length: u64::try_from(user_content.len()).expect("user size"),
                     content: user_content,
+                    images: vec![AgentContextImage {
+                        artifact_id: input_image_id,
+                        media_type: "image/png".to_owned(),
+                        sha256_digest: input_image_digest.clone(),
+                        size_bytes: 21,
+                        width: 32,
+                        height: 24,
+                    }],
                     admission_event_id: EventId::new(),
                     admission_cursor: TimelineCursor(2),
                     accepted_at: SystemTime::UNIX_EPOCH + Duration::from_millis(1),
@@ -5569,6 +6422,21 @@ mod tests {
             .expect("hydrate transcript artifact");
         assert_eq!(export.turns[0].assistant.content.as_bytes(), CONTENT);
         assert_eq!(export.turns[0].assistant.storage, "artifact");
+        assert_eq!(export.schema_version, "mealy.session-transcript.v2");
+        assert_eq!(export.turns[0].user.images.len(), 1);
+        assert_eq!(
+            export.turns[0].user.images[0].artifact_id,
+            input_image_id.to_string()
+        );
+        assert_eq!(
+            export.turns[0].user.images[0].sha256_digest,
+            input_image_digest
+        );
+        let html = render_session_transcript_html(&export).expect("render safe image metadata");
+        assert!(html.contains("metadata only; binary content deliberately omitted"));
+        assert!(html.contains(&input_image_id.to_string()));
+        assert!(html.contains(&input_image_digest));
+        assert!(!html.contains("canonical image bytes"));
         let expected_artifact_id = fixture.artifact_id.to_string();
         assert_eq!(
             export.turns[0].assistant.artifact_id.as_deref(),
@@ -5952,11 +6820,19 @@ mod tests {
                             )),
                             api_base_url: "http://127.0.0.1:9".to_owned(),
                         },
+                        slack: RuntimeSlackConfig {
+                            credentials: Some(Arc::new(
+                                FileProviderSecretStore::new(backend_home.join("provider-secrets"))
+                                    .expect("open Slack credential broker"),
+                            )),
+                            api_base_url: "http://127.0.0.1:9".to_owned(),
+                        },
                     },
                     provider,
                     RuntimeOperationalConfig {
                         home: backend_home,
                         artifact_gc_minimum_age_hours: 24,
+                        media_normalizer: None,
                         maximum_pending_inputs_per_session: 1_024,
                         maximum_extension_invocations: 1,
                         enabled_read_tools: vec!["fixture.read".to_owned()],

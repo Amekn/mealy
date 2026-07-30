@@ -1,8 +1,13 @@
-use crate::{Clock, IdGenerator, ProviderSelection, ProviderSelectionPreference};
-use mealy_domain::{
-    ChannelBindingId, CorrelationId, DeliveryMode, EventId, InboxEntryId, OutboxId, PrincipalId,
-    SessionId,
+use crate::{
+    Clock, CommittedArtifactBlob, IdGenerator, MAXIMUM_PROVIDER_IMAGE_DIMENSION,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUTS, ProviderSelection, ProviderSelectionPreference,
 };
+use mealy_domain::{
+    ArtifactId, ChannelBindingId, CorrelationId, DeliveryMode, EventId, InboxEntryId, OutboxId,
+    PrincipalId, SessionId,
+};
+use std::collections::BTreeSet;
 use std::time::SystemTime;
 use thiserror::Error;
 
@@ -53,6 +58,40 @@ pub struct SessionCreationCommit {
     pub created_at: SystemTime,
 }
 
+/// One canonical image blob already committed outside the atomic inbox transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputImageArtifactCommit {
+    /// Owner-scoped logical artifact identity.
+    pub artifact_id: ArtifactId,
+    /// Exact content-addressed blob committed before this transaction.
+    pub blob: CommittedArtifactBlob,
+    /// Time at which the blob commit completed.
+    pub committed_at: SystemTime,
+    /// Canonical normalized media type (`image/png` or `image/jpeg`).
+    pub media_type: String,
+    /// Canonical decoded width.
+    pub width: u32,
+    /// Canonical decoded height.
+    pub height: u32,
+}
+
+impl InputImageArtifactCommit {
+    /// Returns whether this evidence fits the normalized post-worker image contract.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.blob.validate().is_ok()
+            && self.blob.size_bytes > 0
+            && self.blob.size_bytes
+                <= u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES).unwrap_or(u64::MAX)
+            && matches!(self.media_type.as_str(), "image/png" | "image/jpeg")
+            && self.width > 0
+            && self.height > 0
+            && self.width <= MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            && self.height <= MAXIMUM_PROVIDER_IMAGE_DIMENSION
+            && self.committed_at >= SystemTime::UNIX_EPOCH
+    }
+}
+
 /// Complete transaction input for admitting one session input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputAdmissionCommit {
@@ -68,6 +107,8 @@ pub struct InputAdmissionCommit {
     pub dedupe_key: String,
     /// Bounded input content.
     pub content: String,
+    /// Ordered canonical images committed before the inbox transaction.
+    pub images: Vec<InputImageArtifactCommit>,
     /// Atomic provider/model resolution requested for this input.
     pub provider_selection: ProviderSelectionPreference,
     /// Maximum pending inbox records permitted after this admission.
@@ -89,6 +130,8 @@ pub struct InputAdmissionReceipt {
     pub session_id: SessionId,
     /// Stable inbox-entry identifier.
     pub inbox_entry_id: InboxEntryId,
+    /// Ordered owner-private image artifacts bound to the input.
+    pub image_artifact_ids: Vec<ArtifactId>,
     /// Positive monotonic sequence scoped to the session.
     pub inbox_sequence: u64,
     /// Ordering behavior bound to the idempotency key.
@@ -276,6 +319,10 @@ pub enum SessionUseCaseError {
     /// An exact provider or model identity is empty, padded, controlled, or oversized.
     #[error("provider selection is invalid")]
     InvalidProviderSelection,
+    /// One or more committed image artifacts violate count, byte, identity, media, or dimension
+    /// bounds.
+    #[error("committed input image evidence is invalid")]
+    InvalidImageInput,
     /// Atomic persistence rejected the command.
     #[error(transparent)]
     Store(#[from] SessionStoreError),
@@ -338,6 +385,26 @@ pub fn admit_input(
     limits: InputAdmissionLimits,
     command: AdmitInputCommand,
 ) -> Result<InputAdmissionOutcome, SessionUseCaseError> {
+    admit_input_with_images(store, clock, ids, limits, command, Vec::new())
+}
+
+/// Durably admits text plus ordered, already-normalized content-addressed image evidence.
+///
+/// Blob publication must complete before this call. If the atomic metadata/link transaction
+/// fails, the unreferenced blob remains safe for age-gated garbage collection.
+///
+/// # Errors
+///
+/// Returns [`SessionUseCaseError`] before persistence for invalid text/image bounds, or after the
+/// atomic store rejects authorization, idempotency, conflict, or dependency state.
+pub fn admit_input_with_images(
+    store: &mut impl SessionStore,
+    clock: &impl Clock,
+    ids: &impl IdGenerator,
+    limits: InputAdmissionLimits,
+    command: AdmitInputCommand,
+    images: Vec<InputImageArtifactCommit>,
+) -> Result<InputAdmissionOutcome, SessionUseCaseError> {
     let dedupe_key_bytes = command.dedupe_key.len();
     if dedupe_key_bytes == 0 {
         return Err(SessionUseCaseError::EmptyDedupeKey);
@@ -364,6 +431,10 @@ pub fn admit_input(
     if !command.provider_selection.is_valid() {
         return Err(SessionUseCaseError::InvalidProviderSelection);
     }
+    let accepted_at = clock.now();
+    if !valid_input_images(&images, accepted_at) {
+        return Err(SessionUseCaseError::InvalidImageInput);
+    }
 
     store
         .admit_input(InputAdmissionCommit {
@@ -373,30 +444,55 @@ pub fn admit_input(
             delivery_mode: command.delivery_mode,
             dedupe_key: command.dedupe_key,
             content: command.content,
+            images,
             provider_selection: command.provider_selection,
             maximum_pending_inputs: limits.maximum_pending_inputs(),
             event_id: ids.generate_event_id(),
             outbox_id: ids.generate_outbox_id(),
             correlation_id: ids.generate_correlation_id(),
-            accepted_at: clock.now(),
+            accepted_at,
         })
         .map_err(SessionUseCaseError::from)
+}
+
+fn valid_input_images(images: &[InputImageArtifactCommit], accepted_at: SystemTime) -> bool {
+    if images.len() > MAXIMUM_PROVIDER_IMAGE_INPUTS {
+        return false;
+    }
+    let mut artifact_ids = BTreeSet::new();
+    let mut total_bytes = 0_u64;
+    for image in images {
+        if !image.is_valid()
+            || image.committed_at > accepted_at
+            || !artifact_ids.insert(image.artifact_id)
+        {
+            return false;
+        }
+        let Some(next_total) = total_bytes.checked_add(image.blob.size_bytes) else {
+            return false;
+        };
+        total_bytes = next_total;
+    }
+    total_bytes <= u64::try_from(MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         AdmitInputCommand, InputAdmissionCommit, InputAdmissionLimits, InputAdmissionOutcome,
-        InputAdmissionReceipt, OwnershipContext, SessionCreationCommit, SessionStore,
-        SessionStoreError, SessionUseCaseError, admit_input, create_session,
+        InputAdmissionReceipt, InputImageArtifactCommit, OwnershipContext, SessionCreationCommit,
+        SessionStore, SessionStoreError, SessionUseCaseError, admit_input, admit_input_with_images,
+        create_session,
     };
-    use crate::{Clock, IdGenerator, ProviderSelectionPreference};
+    use crate::{
+        Clock, CommittedArtifactBlob, IdGenerator, ProviderSelectionPreference, sha256_digest,
+    };
     use mealy_domain::{
         ApprovalId, ArtifactId, AttemptId, ChannelBindingId, CompactionId, ContextEpochId,
-        ContextItemId, ContextManifestId, CorrelationId, DelegationId, DeliveryMode, EffectId,
-        EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId, InboxEntryId, LeaseId,
-        MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId, SessionCheckpointId,
-        SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
+        ContextItemId, ContextManifestId, CorrelationId, DelegationGroupId, DelegationId,
+        DeliveryMode, EffectId, EventId, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
+        InboxEntryId, LeaseId, MemoryId, MemoryRevisionId, MessageId, OutboxId, PrincipalId, RunId,
+        SessionCheckpointId, SessionId, TaskId, ToolCallId, TurnId, ValidationId, WorkerId,
     };
     use std::time::SystemTime;
 
@@ -569,6 +665,10 @@ mod tests {
             self.delegation
         }
 
+        fn generate_delegation_group_id(&self) -> DelegationGroupId {
+            DelegationGroupId::new()
+        }
+
         fn generate_memory_id(&self) -> MemoryId {
             self.memory
         }
@@ -616,6 +716,11 @@ mod tests {
             let receipt = InputAdmissionReceipt {
                 session_id: commit.session_id,
                 inbox_entry_id: commit.inbox_entry_id,
+                image_artifact_ids: commit
+                    .images
+                    .iter()
+                    .map(|image| image.artifact_id)
+                    .collect(),
                 inbox_sequence: 1,
                 delivery_mode: commit.delivery_mode,
                 provider_selection: None,
@@ -633,6 +738,22 @@ mod tests {
 
     fn ownership() -> OwnershipContext {
         OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new())
+    }
+
+    fn image_commit(
+        artifact_id: ArtifactId,
+        marker: &[u8],
+        size_bytes: u64,
+    ) -> InputImageArtifactCommit {
+        InputImageArtifactCommit {
+            artifact_id,
+            blob: CommittedArtifactBlob::new_sha256(sha256_digest(marker), size_bytes)
+                .expect("valid image blob descriptor"),
+            committed_at: NOW,
+            media_type: "image/png".to_owned(),
+            width: 32,
+            height: 24,
+        }
     }
 
     #[test]
@@ -700,5 +821,98 @@ mod tests {
         let commit = store.admission.expect("admission commit captured");
         assert_eq!(commit.delivery_mode, DeliveryMode::SteerAtBoundary);
         assert_eq!(commit.accepted_at, NOW);
+    }
+
+    #[test]
+    fn image_admission_preserves_exact_ordered_content_addresses() {
+        let mut store = RecordingStore::default();
+        let ids = FixedIds::new();
+        let first = image_commit(ArtifactId::new(), b"first", 1_024);
+        let second = image_commit(ArtifactId::new(), b"second", 2_048);
+        let command = AdmitInputCommand {
+            session_id: ids.session,
+            ownership: ownership(),
+            dedupe_key: "delivery-with-images".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "describe these images".to_owned(),
+            provider_selection: ProviderSelectionPreference::InheritSession,
+        };
+
+        let outcome = admit_input_with_images(
+            &mut store,
+            &FixedClock,
+            &ids,
+            InputAdmissionLimits::default(),
+            command,
+            vec![first.clone(), second.clone()],
+        )
+        .expect("admit bounded image input");
+
+        assert_eq!(
+            outcome.receipt().image_artifact_ids,
+            vec![first.artifact_id, second.artifact_id]
+        );
+        assert_eq!(
+            store.admission.expect("admission captured").images,
+            vec![first, second]
+        );
+    }
+
+    #[test]
+    fn invalid_image_evidence_is_rejected_before_storage() {
+        let command = || AdmitInputCommand {
+            session_id: SessionId::new(),
+            ownership: ownership(),
+            dedupe_key: "delivery-with-images".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "describe these images".to_owned(),
+            provider_selection: ProviderSelectionPreference::InheritSession,
+        };
+        let duplicate_id = ArtifactId::new();
+        let invalid_cases = [
+            vec![
+                image_commit(duplicate_id, b"first", 1),
+                image_commit(duplicate_id, b"second", 1),
+            ],
+            (0..5)
+                .map(|ordinal| {
+                    image_commit(ArtifactId::new(), format!("count-{ordinal}").as_bytes(), 1)
+                })
+                .collect(),
+            (0..3)
+                .map(|ordinal| {
+                    image_commit(
+                        ArtifactId::new(),
+                        format!("aggregate-{ordinal}").as_bytes(),
+                        2 * 1_024 * 1_024,
+                    )
+                })
+                .collect(),
+            {
+                let mut image = image_commit(ArtifactId::new(), b"media", 1);
+                image.media_type = "image/svg+xml".to_owned();
+                vec![image]
+            },
+            {
+                let mut image = image_commit(ArtifactId::new(), b"future", 1);
+                image.committed_at = NOW + std::time::Duration::from_millis(1);
+                vec![image]
+            },
+        ];
+
+        for images in invalid_cases {
+            let mut store = RecordingStore::default();
+            let error = admit_input_with_images(
+                &mut store,
+                &FixedClock,
+                &FixedIds::new(),
+                InputAdmissionLimits::default(),
+                command(),
+                images,
+            )
+            .expect_err("invalid image evidence must fail closed");
+            assert_eq!(error, SessionUseCaseError::InvalidImageInput);
+            assert!(store.admission.is_none());
+        }
     }
 }
