@@ -215,8 +215,10 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > OAuth dynamic client registration, resource-template expansion, resumable MCP streams, or
 > long-lived MCP sessions,
 > verified provider-wide price coverage, owner-reviewed live-provider acceptance, and published
-> clean-host release evidence must be verified in the exact tag's linked workflows. The checked
-> clean 24-hour packaged-binary report is complete. Credential-scoped live model discovery is available
+> clean-host release evidence must be verified in the exact tag's linked workflows. The published
+> v0.2.1 tag has a checked clean 24-hour packaged-binary report; the v0.3 candidate does not inherit
+> that evidence and remains held until its fresh exact-binary soak and terminal validation complete.
+> Credential-scoped live model discovery is available
 > for both supported provider protocols, alongside a credentialless, literal-loopback
 > Responses-compatible discovery/activation preset. See the
 > [quickstart](docs/QUICKSTART.md) for exactly what can be run today.
