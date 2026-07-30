@@ -741,8 +741,12 @@ stopped-home reactivation. Expired or invalid client login fails the connectivit
 replacing the previous provider.
 
 Mealy does not offer Claude.ai subscription login. Anthropic's current
-[legal and compliance guidance](https://code.claude.com/docs/en/legal-and-compliance) says
-third-party developers may not route requests through Claude Free, Pro, or Max plan credentials.
+[Agent SDK guidance](https://code.claude.com/docs/en/agent-sdk/overview) says an unapproved
+third-party product may not offer Claude.ai login or plan rate limits. Anthropic separately
+documents subscription-backed CI and script authentication for its own Claude Code client; that
+first-party permission does not authorize a subscription-backed Mealy provider. The
+[dated primary-source review](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md) records the
+boundary and its reconsideration criteria.
 The retired `claude-subscription` onboarding alias and
 `config provider-subscription-claude` command fail before mutation or client execution. Use
 `anthropic-api`, `openrouter-free`, a custom endpoint, or Claude Code directly. An old Mealy config
