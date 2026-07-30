@@ -180,6 +180,18 @@ define_id!(
     ScheduleRunId
 );
 define_id!(
+    /// Identifies one owner-managed one-shot or event-driven automation.
+    AutomationId
+);
+define_id!(
+    /// Identifies one crash-recoverable automation trigger occurrence.
+    AutomationRunId
+);
+define_id!(
+    /// Identifies one revocable single-owner remote continuation.
+    RemoteContinuationId
+);
+define_id!(
     /// Identifies related commands, events, attempts, and effects.
     CorrelationId
 );

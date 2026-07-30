@@ -434,6 +434,9 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
 - verifies reproducibility, checksums, installed archive/package behavior, upgrade/rollback, and
   state preservation;
 - creates GitHub artifact attestations plus retained offline Sigstore bundles;
+- packages the stable Rust domain/protocol/client SDK reproducibly, compiles a clean external
+  consumer under its exact lock, and publishes the crates, checksums, and dedicated Sigstore
+  provenance as release assets;
 - creates package-manager-native signed APT, DNF, and Pacman repositories with an owner-reviewed
   signing key, attests their complete manifest, and stages the exact Pages artifact;
 - assembles one exact release inventory and publishes deterministic evidence-bound notes;
@@ -450,7 +453,9 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
   tagged version through each public HTTPS repository before the workflow can pass.
 
 The tag workflow and `.github/workflows/public-repository-acceptance.yml` share checked manifest
-verification and package-manager installation scripts. Every GitHub release command supplies an
+verification and package-manager installation scripts. For v0.5-or-newer releases, the protected
+non-publishing workflow also downloads every stable SDK asset, verifies its release digest and
+dedicated provenance, and compiles a clean consumer under the retained lock. Every GitHub release command supplies an
 explicit `OWNER/REPOSITORY`, so the verifier is independent of checkout discovery. The manual
 workflow is a non-publishing recovery path for an already published immutable tag when only the
 dependent verification harness was defective. It runs only from protected `main`, resolves the

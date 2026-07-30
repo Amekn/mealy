@@ -1,14 +1,17 @@
 use super::SqliteStore;
 use mealy_application::{
-    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,
-    OwnershipContext, PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
-    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, SLACK_MAXIMUM_ERROR_CODE_BYTES,
-    SlackChannelBindingView, SlackChannelStatus, SlackChannelStore, SlackChannelStoreError,
-    SlackEnvelopeDisposition, SlackEnvelopeReservation, SlackOutboundContext,
+    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit,
+    CreateSlackRemoteContinuationCommit, OutboundSlackTarget, OwnershipContext,
+    PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
+    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit,
+    SLACK_MAXIMUM_ERROR_CODE_BYTES, SLACK_REMOTE_CONTINUATION_MAXIMUM_LIFETIME_MS,
+    SLACK_REMOTE_CONTINUATION_MINIMUM_LIFETIME_MS, SlackChannelBindingView, SlackChannelStatus,
+    SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition, SlackEnvelopeReservation,
+    SlackOutboundContext, SlackRemoteContinuationStatus, SlackRemoteContinuationView,
     SlackReservedDisposition, SlackSocketTarget, sha256_digest, valid_slack_acknowledgement_id,
-    validate_slack_binding, validate_slack_reservation,
+    valid_slack_thread_id, validate_slack_binding, validate_slack_reservation,
 };
-use mealy_domain::{ChannelBindingId, PrincipalId};
+use mealy_domain::{ChannelBindingId, PrincipalId, RemoteContinuationId};
 use rusqlite::{ErrorCode, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::json;
 use std::{str::FromStr, time::SystemTime};
@@ -292,6 +295,188 @@ impl SlackChannelStore for SqliteStore {
         ids.into_iter()
             .map(|id| load_binding(&self.connection, parse_id(&id, "Slack binding ID")?))
             .collect()
+    }
+
+    fn create_slack_remote_continuation(
+        &mut self,
+        commit: CreateSlackRemoteContinuationCommit,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError> {
+        let created_at_ms = epoch_milliseconds(commit.created_at)?;
+        if commit.remote_continuation_id.as_uuid().get_version_num() != 7
+            || !valid_slack_thread_id(&commit.thread_id)
+        {
+            return Err(invalid_contract(
+                "Slack continuation needs a UUIDv7 identity and exact thread",
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        authorize_administrator(&transaction, commit.administrative_ownership)?;
+        if remote_continuation_exists(&transaction, commit.remote_continuation_id)? {
+            let existing = load_remote_continuation(
+                &transaction,
+                commit.remote_continuation_id,
+                created_at_ms,
+            )?;
+            if existing.principal_id != commit.administrative_ownership.principal_id()
+                || existing.binding_id != commit.binding_id
+                || existing.thread_id != commit.thread_id
+                || existing.expires_at_ms != commit.expires_at_ms
+            {
+                return Err(SlackChannelStoreError::Conflict);
+            }
+            transaction.commit().map_err(map_sqlite_error)?;
+            return Ok(existing);
+        }
+        validate_remote_continuation_lifetime(commit.expires_at_ms, created_at_ms)?;
+        let binding = load_binding(&transaction, commit.binding_id)?;
+        if binding.principal_id != commit.administrative_ownership.principal_id() {
+            return Err(SlackChannelStoreError::NotFound);
+        }
+        if binding.status != SlackChannelStatus::Active {
+            return Err(SlackChannelStoreError::Revoked);
+        }
+        let source_acknowledgement_id =
+            admitted_slack_thread_receipt(&transaction, &binding, &commit.thread_id)?;
+        ensure_remote_continuation_route_available(&transaction, commit.binding_id, created_at_ms)?;
+        let synchronized_after_cursor = timeline_high_cursor(&transaction)?;
+        persist_slack_remote_continuation(
+            &transaction,
+            &commit,
+            &binding,
+            &source_acknowledgement_id,
+            synchronized_after_cursor,
+            created_at_ms,
+        )?;
+        transaction.commit().map_err(map_sqlite_error)?;
+        load_remote_continuation(
+            &self.connection,
+            commit.remote_continuation_id,
+            created_at_ms,
+        )
+    }
+
+    fn slack_remote_continuation(
+        &self,
+        ownership: OwnershipContext,
+        binding_id: ChannelBindingId,
+        remote_continuation_id: RemoteContinuationId,
+        observed_at_ms: i64,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError> {
+        validate_observation_time(observed_at_ms)?;
+        authorize_administrator(&self.connection, ownership)?;
+        let view =
+            load_remote_continuation(&self.connection, remote_continuation_id, observed_at_ms)?;
+        if view.principal_id == ownership.principal_id() && view.binding_id == binding_id {
+            Ok(view)
+        } else {
+            Err(SlackChannelStoreError::NotFound)
+        }
+    }
+
+    fn slack_remote_continuations(
+        &self,
+        ownership: OwnershipContext,
+        binding_id: ChannelBindingId,
+        observed_at_ms: i64,
+    ) -> Result<Vec<SlackRemoteContinuationView>, SlackChannelStoreError> {
+        validate_observation_time(observed_at_ms)?;
+        authorize_administrator(&self.connection, ownership)?;
+        let binding = load_binding(&self.connection, binding_id)?;
+        if binding.principal_id != ownership.principal_id() {
+            return Err(SlackChannelStoreError::NotFound);
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT remote_continuation_id FROM slack_remote_continuation \
+                 WHERE principal_id = ?1 AND binding_id = ?2 \
+                 ORDER BY created_at_ms, remote_continuation_id",
+            )
+            .map_err(map_sqlite_error)?;
+        let ids = statement
+            .query_map(
+                params![ownership.principal_id().to_string(), binding_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(map_sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_sqlite_error)?;
+        ids.into_iter()
+            .map(|id| {
+                load_remote_continuation(
+                    &self.connection,
+                    parse_id(&id, "Slack remote continuation ID")?,
+                    observed_at_ms,
+                )
+            })
+            .collect()
+    }
+
+    fn revoke_slack_remote_continuation(
+        &mut self,
+        commit: RevokeSlackRemoteContinuationCommit,
+    ) -> Result<SlackRemoteContinuationView, SlackChannelStoreError> {
+        let revoked_at_ms = epoch_milliseconds(commit.revoked_at)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        authorize_administrator(&transaction, commit.administrative_ownership)?;
+        let current =
+            load_remote_continuation(&transaction, commit.remote_continuation_id, revoked_at_ms)?;
+        if current.principal_id != commit.administrative_ownership.principal_id()
+            || current.binding_id != commit.binding_id
+        {
+            return Err(SlackChannelStoreError::NotFound);
+        }
+        let stored_status = transaction
+            .query_row(
+                "SELECT status FROM slack_remote_continuation \
+                 WHERE remote_continuation_id = ?1",
+                [commit.remote_continuation_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if stored_status != "active"
+            || current.revision != commit.expected_revision
+            || revoked_at_ms < current.created_at_ms
+        {
+            return Err(SlackChannelStoreError::Conflict);
+        }
+        append_remote_continuation_revocation_event(
+            &transaction,
+            &commit,
+            current.principal_id,
+            revoked_at_ms,
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE slack_remote_continuation \
+                 SET status = 'revoked', revision = revision + 1, revoked_event_id = ?1, \
+                     revoked_at_ms = ?2, updated_at_ms = ?2 \
+                 WHERE remote_continuation_id = ?3 AND binding_id = ?4 \
+                   AND status = 'active' AND revision = ?5",
+                params![
+                    commit.event_id.to_string(),
+                    revoked_at_ms,
+                    commit.remote_continuation_id.to_string(),
+                    commit.binding_id.to_string(),
+                    to_i64(commit.expected_revision)?,
+                ],
+            )
+            .map_err(map_registration_error)?;
+        if changed != 1 {
+            return Err(SlackChannelStoreError::Conflict);
+        }
+        transaction.commit().map_err(map_sqlite_error)?;
+        load_remote_continuation(
+            &self.connection,
+            commit.remote_continuation_id,
+            revoked_at_ms,
+        )
     }
 
     fn active_slack_socket_targets(
@@ -623,10 +808,28 @@ impl SlackChannelStore for SqliteStore {
         }
         let binding_id = parse_id(&binding_id, "Slack binding ID")?;
         let binding = load_binding(&self.connection, binding_id)?;
-        let thread_id = resolve_thread(&self.connection, binding_id, &context)?
-            .ok_or_else(|| invariant("Slack outbox input could not resolve an exact thread"))?;
+        let thread_id = if let Some(remote_continuation_id) = context.remote_continuation_id {
+            let continuation = load_remote_continuation(
+                &self.connection,
+                remote_continuation_id,
+                context.observed_at_ms,
+            )?;
+            if continuation.binding_id != binding_id
+                || continuation.session_id != context.session_id
+            {
+                return Err(SlackChannelStoreError::NotFound);
+            }
+            if continuation.status != SlackRemoteContinuationStatus::Active {
+                return Err(SlackChannelStoreError::Revoked);
+            }
+            continuation.thread_id
+        } else {
+            resolve_thread(&self.connection, binding_id, &context)?
+                .ok_or_else(|| invariant("Slack outbox input could not resolve an exact thread"))?
+        };
         Ok(Some(OutboundSlackTarget {
             binding_id,
+            remote_continuation_id: context.remote_continuation_id,
             slack_channel_id: binding.slack_channel_id,
             team_id: binding.team_id,
             slack_user_id: binding.slack_user_id,
@@ -822,16 +1025,25 @@ fn supported_outbound_context(context: &SlackOutboundContext<'_>) -> bool {
             context.inbox_entry_id.is_some()
                 && context.task_id.is_none()
                 && context.approval_id.is_none()
+                && context.remote_continuation_id.is_none()
         }
         "session.turn_completed" => {
             context.inbox_entry_id.is_none()
                 && context.task_id.is_some()
                 && context.approval_id.is_none()
+                && context.remote_continuation_id.is_none()
         }
         "effect.approval_requested" => {
             context.inbox_entry_id.is_none()
                 && context.task_id.is_none()
                 && context.approval_id.is_some()
+                && context.remote_continuation_id.is_none()
+        }
+        "automation.notification" => {
+            context.inbox_entry_id.is_none()
+                && context.task_id.is_none()
+                && context.approval_id.is_none()
+                && context.remote_continuation_id.is_some()
         }
         _ => false,
     }
@@ -918,6 +1130,60 @@ fn append_revocation_event(
             "UPDATE aggregate_sequence SET sequence = 1 \
              WHERE aggregate_kind = 'channel_binding' AND aggregate_id = ?1 AND sequence = 0",
             [commit.binding_id.to_string()],
+        )
+        .map_err(map_sqlite_error)?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(SlackChannelStoreError::Conflict)
+    }
+}
+
+fn append_remote_continuation_revocation_event(
+    transaction: &Transaction<'_>,
+    commit: &RevokeSlackRemoteContinuationCommit,
+    principal_id: PrincipalId,
+    revoked_at_ms: i64,
+) -> Result<(), SlackChannelStoreError> {
+    let sequence = transaction
+        .query_row(
+            "SELECT sequence FROM aggregate_sequence \
+             WHERE aggregate_kind = 'remote_continuation' AND aggregate_id = ?1",
+            [commit.remote_continuation_id.to_string()],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if sequence != 0 {
+        return Err(invariant("Slack remote-continuation sequence is invalid"));
+    }
+    transaction
+        .execute(
+            "INSERT INTO journal_event(\
+                event_id, aggregate_kind, aggregate_id, aggregate_sequence, event_type, \
+                event_version, occurred_at_ms, actor_principal_id, correlation_id, sensitivity, \
+                payload_json\
+             ) VALUES (?1, 'remote_continuation', ?2, 1, \
+                       'remote_continuation.slack_revoked', 1, ?3, ?4, ?5, 'private', ?6)",
+            params![
+                commit.event_id.to_string(),
+                commit.remote_continuation_id.to_string(),
+                revoked_at_ms,
+                principal_id.to_string(),
+                commit.correlation_id.to_string(),
+                json!({
+                    "binding_id": commit.binding_id,
+                    "remote_continuation_id": commit.remote_continuation_id,
+                })
+                .to_string(),
+            ],
+        )
+        .map_err(map_registration_error)?;
+    let changed = transaction
+        .execute(
+            "UPDATE aggregate_sequence SET sequence = 1 \
+             WHERE aggregate_kind = 'remote_continuation' AND aggregate_id = ?1 \
+               AND sequence = 0",
+            [commit.remote_continuation_id.to_string()],
         )
         .map_err(map_sqlite_error)?;
     if changed == 1 {
@@ -1056,15 +1322,293 @@ fn load_binding(
 }
 
 fn valid_thread(value: &str) -> bool {
-    let Some((seconds, micros)) = value.split_once('.') else {
-        return false;
+    valid_slack_thread_id(value)
+}
+
+fn admitted_slack_thread_receipt(
+    transaction: &Transaction<'_>,
+    binding: &SlackChannelBindingView,
+    thread_id: &str,
+) -> Result<String, SlackChannelStoreError> {
+    transaction
+        .query_row(
+            "SELECT acknowledgement_id FROM slack_envelope_receipt \
+             WHERE binding_id = ?1 AND session_id = ?2 AND state = 'admitted' \
+               AND workspace_id = ?3 AND conversation_id = ?4 AND sender_id = ?5 \
+               AND thread_id = ?6 \
+             ORDER BY received_at_ms, acknowledgement_id LIMIT 1",
+            params![
+                binding.binding_id.to_string(),
+                binding.session_id.to_string(),
+                binding.team_id,
+                binding.slack_channel_id,
+                binding.slack_user_id,
+                thread_id,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or_else(|| invalid_contract("Slack continuation thread has no admitted owner message"))
+}
+
+fn ensure_remote_continuation_route_available(
+    transaction: &Transaction<'_>,
+    binding_id: ChannelBindingId,
+    observed_at_ms: i64,
+) -> Result<(), SlackChannelStoreError> {
+    let overlap = transaction
+        .query_row(
+            "SELECT EXISTS(\
+                SELECT 1 FROM slack_remote_continuation \
+                WHERE binding_id = ?1 AND status = 'active' AND expires_at_ms > ?2\
+             )",
+            params![binding_id.to_string(), observed_at_ms],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if overlap {
+        Err(SlackChannelStoreError::Conflict)
+    } else {
+        Ok(())
+    }
+}
+
+fn persist_slack_remote_continuation(
+    transaction: &Transaction<'_>,
+    commit: &CreateSlackRemoteContinuationCommit,
+    binding: &SlackChannelBindingView,
+    source_acknowledgement_id: &str,
+    synchronized_after_cursor: u64,
+    created_at_ms: i64,
+) -> Result<(), SlackChannelStoreError> {
+    transaction
+        .execute(
+            "INSERT INTO journal_event(\
+                event_id, aggregate_kind, aggregate_id, aggregate_sequence, event_type, \
+                event_version, occurred_at_ms, actor_principal_id, correlation_id, \
+                sensitivity, payload_json\
+             ) VALUES (?1, 'remote_continuation', ?2, 0, \
+                       'remote_continuation.slack_activated', 1, ?3, ?4, ?5, 'private', ?6)",
+            params![
+                commit.event_id.to_string(),
+                commit.remote_continuation_id.to_string(),
+                created_at_ms,
+                binding.principal_id.to_string(),
+                commit.correlation_id.to_string(),
+                json!({
+                    "binding_id": commit.binding_id,
+                    "expires_at_ms": commit.expires_at_ms,
+                    "session_id": binding.session_id,
+                    "source_acknowledgement_id": source_acknowledgement_id,
+                    "synchronized_after_cursor": synchronized_after_cursor,
+                    "thread_id": commit.thread_id,
+                    "transport": "slack_socket_outbound",
+                })
+                .to_string(),
+            ],
+        )
+        .map_err(map_registration_error)?;
+    transaction
+        .execute(
+            "INSERT INTO aggregate_sequence(aggregate_kind, aggregate_id, sequence) \
+             VALUES ('remote_continuation', ?1, 0)",
+            [commit.remote_continuation_id.to_string()],
+        )
+        .map_err(map_registration_error)?;
+    transaction
+        .execute(
+            "INSERT INTO slack_remote_continuation(\
+                remote_continuation_id, principal_id, binding_id, session_id, thread_id, \
+                source_acknowledgement_id, synchronized_after_cursor, status, revision, \
+                created_event_id, created_at_ms, expires_at_ms, updated_at_ms\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'active', 0, ?8, ?9, ?10, ?9)",
+            params![
+                commit.remote_continuation_id.to_string(),
+                binding.principal_id.to_string(),
+                commit.binding_id.to_string(),
+                binding.session_id.to_string(),
+                commit.thread_id,
+                source_acknowledgement_id,
+                to_i64(synchronized_after_cursor)?,
+                commit.event_id.to_string(),
+                created_at_ms,
+                commit.expires_at_ms,
+            ],
+        )
+        .map_err(map_registration_error)?;
+    Ok(())
+}
+
+fn validate_remote_continuation_lifetime(
+    expires_at_ms: i64,
+    created_at_ms: i64,
+) -> Result<(), SlackChannelStoreError> {
+    let lifetime = expires_at_ms
+        .checked_sub(created_at_ms)
+        .ok_or_else(|| invalid_contract("Slack continuation expiry overflowed"))?;
+    if !(SLACK_REMOTE_CONTINUATION_MINIMUM_LIFETIME_MS
+        ..=SLACK_REMOTE_CONTINUATION_MAXIMUM_LIFETIME_MS)
+        .contains(&lifetime)
+    {
+        return Err(invalid_contract(
+            "Slack continuation lifetime must be between one minute and 30 days",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observation_time(observed_at_ms: i64) -> Result<(), SlackChannelStoreError> {
+    if observed_at_ms < 0 {
+        Err(invalid_contract(
+            "Slack continuation observation time precedes the Unix epoch",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn timeline_high_cursor(connection: &rusqlite::Connection) -> Result<u64, SlackChannelStoreError> {
+    let cursor = connection
+        .query_row(
+            "SELECT COALESCE(MAX(cursor), 0) FROM timeline_event",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_sqlite_error)?;
+    nonnegative(cursor, "Slack continuation timeline cursor")
+}
+
+fn remote_continuation_exists(
+    connection: &rusqlite::Connection,
+    remote_continuation_id: RemoteContinuationId,
+) -> Result<bool, SlackChannelStoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM slack_remote_continuation \
+                           WHERE remote_continuation_id = ?1)",
+            [remote_continuation_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)
+}
+
+#[allow(clippy::too_many_lines)]
+fn load_remote_continuation(
+    connection: &rusqlite::Connection,
+    remote_continuation_id: RemoteContinuationId,
+    observed_at_ms: i64,
+) -> Result<SlackRemoteContinuationView, SlackChannelStoreError> {
+    validate_observation_time(observed_at_ms)?;
+    let row = connection
+        .query_row(
+            "SELECT continuation.principal_id, continuation.binding_id, \
+                    continuation.session_id, continuation.thread_id, \
+                    continuation.synchronized_after_cursor, continuation.status, \
+                    continuation.revision, continuation.created_at_ms, \
+                    continuation.expires_at_ms, continuation.updated_at_ms, \
+                    continuation.revoked_at_ms, binding.principal_id, binding.session_id, \
+                    binding.team_id, binding.slack_user_id, binding.slack_channel_id, \
+                    binding.status, registry.status, receipt.state, receipt.session_id, \
+                    receipt.workspace_id, receipt.conversation_id, receipt.sender_id, \
+                    receipt.thread_id \
+             FROM slack_remote_continuation continuation \
+             JOIN slack_channel_binding binding USING(binding_id) \
+             JOIN channel_binding_registry registry USING(binding_id) \
+             JOIN slack_envelope_receipt receipt \
+               ON receipt.binding_id = continuation.binding_id \
+              AND receipt.acknowledgement_id = continuation.source_acknowledgement_id \
+             WHERE continuation.remote_continuation_id = ?1",
+            [remote_continuation_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, String>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, String>(16)?,
+                    row.get::<_, String>(17)?,
+                    row.get::<_, String>(18)?,
+                    row.get::<_, String>(19)?,
+                    row.get::<_, Option<String>>(20)?,
+                    row.get::<_, Option<String>>(21)?,
+                    row.get::<_, Option<String>>(22)?,
+                    row.get::<_, Option<String>>(23)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(SlackChannelStoreError::NotFound)?;
+    if row.0 != row.11
+        || row.2 != row.12
+        || row.18 != "admitted"
+        || row.2 != row.19
+        || row.20.as_deref() != Some(row.13.as_str())
+        || row.21.as_deref() != Some(row.15.as_str())
+        || row.22.as_deref() != Some(row.14.as_str())
+        || row.23.as_deref() != Some(row.3.as_str())
+        || !valid_slack_thread_id(&row.3)
+        || row.7 < 0
+        || row.8 <= row.7
+        || row.9 < row.7
+        || row.10.is_some_and(|revoked| revoked < row.7)
+    {
+        return Err(invariant(
+            "stored Slack remote-continuation evidence is invalid",
+        ));
+    }
+    let stored_status = match row.5.as_str() {
+        "active" if row.10.is_none() => SlackRemoteContinuationStatus::Active,
+        "revoked" if row.10.is_some() => SlackRemoteContinuationStatus::Revoked,
+        _ => {
+            return Err(invariant(
+                "stored Slack remote-continuation lifecycle is invalid",
+            ));
+        }
     };
-    !seconds.is_empty()
-        && seconds.len() <= 16
-        && !micros.is_empty()
-        && micros.len() <= 6
-        && seconds.bytes().all(|byte| byte.is_ascii_digit())
-        && micros.bytes().all(|byte| byte.is_ascii_digit())
+    let status = if stored_status == SlackRemoteContinuationStatus::Revoked
+        || row.16 != "active"
+        || row.17 != "active"
+    {
+        SlackRemoteContinuationStatus::Revoked
+    } else if row.8 <= observed_at_ms {
+        SlackRemoteContinuationStatus::Expired
+    } else {
+        SlackRemoteContinuationStatus::Active
+    };
+    Ok(SlackRemoteContinuationView {
+        remote_continuation_id,
+        principal_id: parse_id(&row.0, "Slack continuation principal ID")?,
+        binding_id: parse_id(&row.1, "Slack continuation binding ID")?,
+        session_id: parse_id(&row.2, "Slack continuation session ID")?,
+        team_id: row.13,
+        slack_user_id: row.14,
+        slack_channel_id: row.15,
+        thread_id: row.3,
+        synchronized_after_cursor: nonnegative(
+            row.4,
+            "Slack continuation synchronized timeline cursor",
+        )?,
+        status,
+        revision: nonnegative(row.6, "Slack continuation revision")?,
+        created_at_ms: row.7,
+        expires_at_ms: row.8,
+        updated_at_ms: row.9,
+        revoked_at_ms: row.10,
+    })
 }
 
 fn required(value: Option<String>, field: &str) -> Result<String, SlackChannelStoreError> {
@@ -1119,14 +1663,16 @@ mod tests {
     use super::SlackChannelStore;
     use mealy_application::{
         AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, ChannelInboundMessage,
-        CompleteSlackEnvelopeCommit, InputAdmissionLimits, OwnershipContext,
-        RecordSlackSocketCommit, RegisterSlackChannelCommit, ReserveSlackEnvelopeCommit,
-        RevokeSlackChannelCommit, SlackChannelStatus, SlackEnvelopeDisposition,
-        SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, admit_input,
-        sha256_digest, slack_input_dedupe_key,
+        CompleteSlackEnvelopeCommit, CreateSlackRemoteContinuationCommit, InputAdmissionLimits,
+        OwnershipContext, RecordSlackSocketCommit, RegisterSlackChannelCommit,
+        ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit,
+        SlackChannelStatus, SlackChannelStoreError, SlackEnvelopeDisposition,
+        SlackEnvelopeReservation, SlackOutboundContext, SlackRemoteContinuationStatus,
+        SlackReservedDisposition, admit_input, sha256_digest, slack_input_dedupe_key,
     };
     use mealy_domain::{
-        ChannelBindingId, CorrelationId, DeliveryMode, EventId, PrincipalId, SessionId,
+        ChannelBindingId, CorrelationId, DeliveryMode, EventId, PrincipalId, RemoteContinuationId,
+        SessionId,
     };
     use mealy_testkit::{TestClock, TestIdGenerator};
     use std::time::{Duration, SystemTime};
@@ -1266,10 +1812,139 @@ mod tests {
                 inbox_entry_id: Some(admission.inbox_entry_id),
                 task_id: None,
                 approval_id: None,
+                remote_continuation_id: None,
+                observed_at_ms: 1_800_000_000_000,
             })
             .expect("Slack route")
             .expect("active Slack target");
         assert_eq!(target.thread_id.as_deref(), Some("1785254000.000100"));
+        assert!(matches!(
+            store.create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                administrative_ownership: administrator,
+                remote_continuation_id: RemoteContinuationId::new(),
+                binding_id,
+                thread_id: "1785254999.000999".to_owned(),
+                expires_at_ms: 1_800_000_060_003,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                created_at: now + Duration::from_millis(3),
+            }),
+            Err(SlackChannelStoreError::InvalidContract(message))
+                if message.contains("no admitted owner message")
+        ));
+        let remote_continuation_id = RemoteContinuationId::new();
+        let remote_created_at = now + Duration::from_millis(3);
+        let expires_at_ms = 1_800_000_060_003;
+        let remote = store
+            .create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                administrative_ownership: administrator,
+                remote_continuation_id,
+                binding_id,
+                thread_id: "1785254000.000100".to_owned(),
+                expires_at_ms,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                created_at: remote_created_at,
+            })
+            .expect("activate exact-thread remote continuation");
+        assert_eq!(remote.status, SlackRemoteContinuationStatus::Active);
+        assert!(remote.synchronized_after_cursor > 0);
+        assert_eq!(
+            store.create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                administrative_ownership: administrator,
+                remote_continuation_id,
+                binding_id,
+                thread_id: "1785254000.000100".to_owned(),
+                expires_at_ms: expires_at_ms + 1,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                created_at: now + Duration::from_millis(4),
+            }),
+            Err(SlackChannelStoreError::Conflict)
+        );
+        assert_eq!(
+            store
+                .slack_remote_continuations(administrator, binding_id, 1_800_000_000_004)
+                .expect("list continuations"),
+            vec![remote.clone()]
+        );
+        assert!(
+            store
+                .create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                    administrative_ownership: administrator,
+                    remote_continuation_id: RemoteContinuationId::new(),
+                    binding_id,
+                    thread_id: "1785254000.000100".to_owned(),
+                    expires_at_ms,
+                    event_id: EventId::new(),
+                    correlation_id: CorrelationId::new(),
+                    created_at: now + Duration::from_millis(4),
+                })
+                .is_err(),
+            "one binding cannot have overlapping effective continuation routes"
+        );
+        let proactive = store
+            .outbound_slack_target(SlackOutboundContext {
+                session_id,
+                topic: "automation.notification",
+                inbox_entry_id: None,
+                task_id: None,
+                approval_id: None,
+                remote_continuation_id: Some(remote_continuation_id),
+                observed_at_ms: 1_800_000_000_004,
+            })
+            .expect("proactive Slack route")
+            .expect("active exact-thread destination");
+        assert_eq!(
+            proactive.remote_continuation_id,
+            Some(remote_continuation_id)
+        );
+        assert_eq!(proactive.thread_id.as_deref(), Some("1785254000.000100"));
+        assert_eq!(
+            store
+                .create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                    administrative_ownership: administrator,
+                    remote_continuation_id,
+                    binding_id,
+                    thread_id: "1785254000.000100".to_owned(),
+                    expires_at_ms,
+                    event_id: EventId::new(),
+                    correlation_id: CorrelationId::new(),
+                    created_at: now + Duration::from_millis(60_003),
+                })
+                .expect("exact retry remains readable after expiry")
+                .status,
+            SlackRemoteContinuationStatus::Expired
+        );
+        assert_eq!(
+            store
+                .outbound_slack_target(SlackOutboundContext {
+                    session_id,
+                    topic: "automation.notification",
+                    inbox_entry_id: None,
+                    task_id: None,
+                    approval_id: None,
+                    remote_continuation_id: Some(remote_continuation_id),
+                    observed_at_ms: expires_at_ms,
+                })
+                .expect_err("expired continuation must fail closed"),
+            SlackChannelStoreError::Revoked
+        );
+        let revoked_remote = store
+            .revoke_slack_remote_continuation(RevokeSlackRemoteContinuationCommit {
+                administrative_ownership: administrator,
+                binding_id,
+                remote_continuation_id,
+                expected_revision: 0,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                revoked_at: now + Duration::from_millis(60_004),
+            })
+            .expect("terminally revoke expired continuation");
+        assert_eq!(
+            revoked_remote.status,
+            SlackRemoteContinuationStatus::Revoked
+        );
         assert_eq!(
             store
                 .reserve_slack_envelope(ReserveSlackEnvelopeCommit {
@@ -1313,7 +1988,7 @@ mod tests {
                 expected_revision: 0,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
-                revoked_at: now + Duration::from_millis(5),
+                revoked_at: now + Duration::from_millis(60_005),
             })
             .expect("revoke channel");
         assert_eq!(revoked.status, SlackChannelStatus::Revoked);

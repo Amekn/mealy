@@ -84,6 +84,7 @@ schema_version=$(jq -er '.stateSchemaVersion' "$manifest")
 [[ -f $prefix/share/mealy/docs/research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md ]]
 [[ -f $prefix/share/mealy/docs/research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md ]]
 [[ -f $prefix/share/mealy/docs/research/REFERENCE_SYSTEMS.md ]]
+[[ -f $prefix/share/mealy/docs/research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md ]]
 [[ -f $prefix/share/mealy/docs/THREAT_MODEL.md ]]
 [[ $("$mealyd" --version) == "mealyd $version" ]]
 [[ $("$mealyctl" --version) == "mealyctl $version" ]]

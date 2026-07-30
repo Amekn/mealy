@@ -1634,12 +1634,15 @@ pub struct MemoryLifecycleRequest {
     pub expected_revision: u64,
 }
 
-/// Authenticated request to rebuild the caller's derived lexical index rows.
+/// Authenticated request to rebuild lexical and optionally semantic derived index rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RebuildMemoryIndexRequest {
     /// Requested semantic API version.
     pub api_version: String,
+    /// Also rebuild the optional semantic index through its explicit embedding privacy policy.
+    #[serde(default)]
+    pub semantic: bool,
 }
 
 /// One immutable source citation in a memory response.
@@ -1725,27 +1728,92 @@ pub struct MemoriesResponse {
     pub memories: Vec<MemoryResponse>,
 }
 
-/// One lexical retrieval hit.
+/// Requested and actual governed-memory retrieval behavior.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRetrievalMode {
+    /// Deterministic FTS5 or literal fallback only.
+    #[default]
+    Lexical,
+    /// Deterministic reciprocal-rank fusion of lexical and semantic candidates.
+    Hybrid,
+    /// Hybrid was requested but safely degraded to lexical retrieval.
+    LexicalFallback,
+}
+
+/// Safe semantic retrieval/index classification with no downstream error text.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySemanticStatus {
+    /// Complete current semantic index was used.
+    Healthy,
+    /// No embedding policy is configured.
+    Disabled,
+    /// No complete semantic index has been built for this owner.
+    NotBuilt,
+    /// Canonical lifecycle changes require a rebuild.
+    Stale,
+    /// The last explicit rebuild failed.
+    Degraded,
+    /// The embedding endpoint could not serve this request.
+    EmbeddingUnavailable,
+    /// Index configuration or dimensions differ from current policy.
+    Incompatible,
+}
+
+/// Owner-inspectable optional semantic-index provenance and health.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySemanticIndexResponse {
+    /// Digest of the complete non-secret embedding and privacy policy.
+    pub config_digest: String,
+    /// Safe current status.
+    pub status: MemorySemanticStatus,
+    /// Exact vector dimensions.
+    pub dimensions: u32,
+    /// Active revisions represented by derived vectors.
+    pub indexed_revision_count: u64,
+    /// Most recent successful atomic rebuild.
+    pub last_rebuilt_at_ms: Option<i64>,
+    /// Fixed safe failure classification, never downstream response text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error_code: Option<String>,
+}
+
+/// One lexical, semantic, or fused retrieval hit.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchHitResponse {
     /// Complete cited memory.
     pub memory: MemoryResponse,
     /// FTS5 BM25 rank; lower is more relevant.
-    pub lexical_rank: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lexical_rank: Option<f64>,
+    /// Cosine similarity from the exact derived index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_similarity: Option<f64>,
+    /// Deterministic reciprocal-rank fusion score when hybrid retrieval was used.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fused_rank_score: Option<f64>,
 }
 
-/// Deterministically filtered lexical search response.
+/// Deterministically filtered governed-memory search response.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchResponse {
     /// Semantic API version.
     pub api_version: String,
+    /// Retrieval behavior actually used.
+    #[serde(default)]
+    pub retrieval_mode: MemoryRetrievalMode,
+    /// Semantic status when hybrid retrieval was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_status: Option<MemorySemanticStatus>,
     /// Ranked results.
     pub hits: Vec<MemorySearchHitResponse>,
 }
 
-/// Derived lexical-index rebuild receipt.
+/// Derived lexical and optional semantic-index rebuild receipt.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryIndexRebuildResponse {
@@ -1755,6 +1823,9 @@ pub struct MemoryIndexRebuildResponse {
     pub indexed_revision_count: u64,
     /// UTC rebuild completion time.
     pub rebuilt_at_ms: i64,
+    /// Optional semantic rebuild status and exact provenance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_index: Option<MemorySemanticIndexResponse>,
 }
 
 /// Owner request to commit one cited derived compaction artifact.
@@ -1921,8 +1992,27 @@ pub struct ExtensionManifestRevisionResponse {
     pub manifest_digest: String,
     /// Package version declared by that manifest.
     pub version: String,
+    /// Signed-registry identity for this revision, when registry-installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry: Option<ExtensionRegistryProvenanceResponse>,
     /// UTC installation/staging time.
     pub installed_at_ms: i64,
+}
+
+/// Owner-safe signed-registry provenance for one extension revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionRegistryProvenanceResponse {
+    /// Registry namespace.
+    pub registry_id: String,
+    /// Stable package identity.
+    pub package_id: String,
+    /// Exact immutable package version.
+    pub version: String,
+    /// Publisher-signed release envelope digest.
+    pub release_envelope_digest: String,
+    /// Exact authenticated archive digest.
+    pub archive_digest: String,
 }
 
 /// Owner-safe summary of the active immutable extension grant.
@@ -2421,6 +2511,90 @@ pub struct RevokeSlackChannelRequest {
     pub expected_revision: u64,
 }
 
+/// Strict creation of one short-lived exact-thread Slack remote continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSlackRemoteContinuationRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Client-proposed canonical `UUIDv7` identity and exact retry key.
+    pub remote_continuation_id: String,
+    /// Exact Slack thread root previously admitted from the allowlisted owner.
+    pub thread_id: String,
+    /// Exclusive expiry UTC epoch milliseconds, no more than 30 days after creation.
+    pub expires_at_ms: i64,
+}
+
+/// Effective lifecycle of one exact-thread remote continuation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackRemoteContinuationStatusResponse {
+    /// The exact route can receive owner-authorized proactive notifications.
+    Active,
+    /// The bounded lifetime elapsed.
+    Expired,
+    /// The owner or parent Slack binding revoked the route.
+    Revoked,
+}
+
+/// Owner-safe exact-thread remote-continuation projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackRemoteContinuationResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable `UUIDv7` continuation identity.
+    pub remote_continuation_id: String,
+    /// Exact Slack binding.
+    pub binding_id: String,
+    /// Dedicated durable Slack session.
+    pub session_id: String,
+    /// Exact verified workspace.
+    pub team_id: String,
+    /// Exact allowlisted owner member.
+    pub slack_user_id: String,
+    /// Exact allowlisted Slack conversation.
+    pub slack_channel_id: String,
+    /// Exact previously admitted thread root.
+    pub thread_id: String,
+    /// Exclusive global timeline cursor captured before activation.
+    pub synchronized_after_cursor: u64,
+    /// Effective lifecycle.
+    pub status: SlackRemoteContinuationStatusResponse,
+    /// Optimistic-concurrency revision.
+    pub revision: u64,
+    /// Creation UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Exclusive expiry UTC epoch milliseconds.
+    pub expires_at_ms: i64,
+    /// Last lifecycle update UTC epoch milliseconds.
+    pub updated_at_ms: i64,
+    /// Terminal explicit revocation time.
+    pub revoked_at_ms: Option<i64>,
+}
+
+/// Stable exact-thread remote-continuation list.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlackRemoteContinuationsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Exact parent Slack binding.
+    pub binding_id: String,
+    /// Owner-created routes in stable creation order.
+    pub remote_continuations: Vec<SlackRemoteContinuationResponse>,
+}
+
+/// Optimistic terminal exact-thread continuation revocation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RevokeSlackRemoteContinuationRequest {
+    /// Requested semantic API version.
+    pub api_version: String,
+    /// Exact current continuation revision.
+    pub expected_revision: u64,
+}
+
 /// Strict raw-body contract authenticated by the signed webhook ingress.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2666,6 +2840,18 @@ pub struct AdminStatusResponse {
     pub failed_schedule_runs: u64,
     /// Policy-skipped schedule occurrences.
     pub skipped_schedule_runs: u64,
+    /// Active one-shot or future-event automation definitions.
+    #[serde(default)]
+    pub active_automations: u64,
+    /// Paused future-event automation definitions.
+    #[serde(default)]
+    pub paused_automations: u64,
+    /// Automation occurrences currently held by a daemon claim.
+    #[serde(default)]
+    pub claimed_automation_runs: u64,
+    /// Terminally failed automation actions.
+    #[serde(default)]
+    pub failed_automation_runs: u64,
     /// Current `SQLite` database and sidecar bytes.
     pub database_bytes: u64,
     /// Current committed artifact bytes.
@@ -3247,6 +3433,260 @@ pub struct ScheduleRunsResponse {
     pub runs: Vec<ScheduleRunResponse>,
 }
 
+/// Strict trigger definition for a one-shot or future direct-session-event automation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AutomationTriggerRequest {
+    /// Fire once at or after an exact UTC epoch-millisecond instant.
+    OneShot {
+        /// Exact future due instant.
+        due_at_ms: i64,
+    },
+    /// Observe only future direct events on one owner-authorized source session.
+    SessionEvent {
+        /// Existing same-principal source session.
+        source_session_id: String,
+        /// Exact canonical journal event type.
+        event_type: String,
+    },
+}
+
+/// Stored trigger projection including its exclusive non-replay cursor.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AutomationTriggerResponse {
+    /// Fire once at or after an exact UTC epoch-millisecond instant.
+    OneShot {
+        /// Exact due instant.
+        due_at_ms: i64,
+    },
+    /// Observe only direct source-session events after the exclusive cursor.
+    SessionEvent {
+        /// Existing same-principal source session.
+        source_session_id: String,
+        /// Exact canonical journal event type.
+        event_type: String,
+        /// Exclusive durable global timeline cursor.
+        after_cursor: u64,
+    },
+}
+
+/// Bounded automation action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AutomationActionCommand {
+    /// Admit an exact prompt through the target session's durable inbox.
+    SubmitPrompt {
+        /// Existing same-principal destination session.
+        target_session_id: String,
+        /// Exact prompt.
+        prompt: String,
+        /// Explicit owner opt-in for an approval-required action-mode prefix.
+        allow_approval_required_action: bool,
+    },
+    /// Enqueue a static owner-authored notification through the target session's channel.
+    Notify {
+        /// Existing same-principal destination session.
+        target_session_id: String,
+        /// Bounded static notification.
+        message: String,
+        /// Exact Slack remote continuation required only for a Slack target session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_continuation_id: Option<String>,
+    },
+}
+
+/// Stored bounded automation action projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AutomationActionResponse {
+    /// Exact prompt admitted through the target session's durable inbox.
+    SubmitPrompt {
+        /// Existing same-principal destination session.
+        target_session_id: String,
+        /// Exact prompt.
+        prompt: String,
+        /// Explicit owner opt-in for an approval-required action-mode prefix.
+        allow_approval_required_action: bool,
+    },
+    /// Static owner-authored notification enqueued through the target session's channel.
+    Notify {
+        /// Existing same-principal destination session.
+        target_session_id: String,
+        /// Bounded static notification.
+        message: String,
+        /// Exact Slack remote continuation pinned by this definition.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        remote_continuation_id: Option<String>,
+    },
+}
+
+/// Strict request to create one active automation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateAutomationRequest {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Client-proposed canonical `UUIDv7` identity and durable creation key.
+    pub automation_id: String,
+    /// Bounded owner-visible label.
+    pub name: String,
+    /// One-shot or future event trigger.
+    pub trigger: AutomationTriggerRequest,
+    /// Prompt or static notification action.
+    pub action: AutomationActionCommand,
+}
+
+/// Strict revision-fenced request to replace an automation definition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EditAutomationRequest {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Exact revision last rendered to the owner.
+    pub expected_revision: u64,
+    /// Replacement bounded owner-visible label.
+    pub name: String,
+    /// Replacement trigger. Event observation restarts after the edit commit.
+    pub trigger: AutomationTriggerRequest,
+    /// Replacement action.
+    pub action: AutomationActionCommand,
+}
+
+/// Revision-fenced pause, resume, or cancel request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AutomationLifecycleRequest {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Exact revision last rendered to the owner.
+    pub expected_revision: u64,
+}
+
+/// Public automation lifecycle.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationStatusResponse {
+    /// Trigger occurrences may be claimed.
+    Active,
+    /// Claims are suspended.
+    Paused,
+    /// A one-shot reached a terminal outcome.
+    Completed,
+    /// Owner terminally disabled the definition.
+    Cancelled,
+}
+
+/// Complete owner-authorized automation projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable automation identity.
+    pub automation_id: String,
+    /// Owner-visible label.
+    pub name: String,
+    /// Stored trigger and non-replay cursor.
+    pub trigger: AutomationTriggerResponse,
+    /// Stored bounded action.
+    pub action: AutomationActionResponse,
+    /// Current lifecycle.
+    pub status: AutomationStatusResponse,
+    /// Optimistic-concurrency and runtime-cursor revision.
+    pub revision: u64,
+    /// Creation UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Last transition UTC epoch milliseconds.
+    pub updated_at_ms: i64,
+}
+
+/// Stable automation list response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Definitions in stable creation order.
+    pub automations: Vec<AutomationResponse>,
+}
+
+/// Public automation occurrence lifecycle.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutomationRunStatusResponse {
+    /// One daemon lifetime owns the action attempt.
+    Claimed,
+    /// The deterministic prompt was accepted or already present.
+    Admitted,
+    /// A durable notification was enqueued.
+    Notified,
+    /// A terminal bounded action failure occurred.
+    Failed,
+}
+
+/// One durable automation occurrence projection.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRunResponse {
+    /// Stable occurrence identity.
+    pub automation_run_id: String,
+    /// Owning automation.
+    pub automation_id: String,
+    /// Stable exact trigger key.
+    pub trigger_key: String,
+    /// One-shot due instant or source event occurrence instant.
+    pub triggered_at_ms: i64,
+    /// Direct source event cursor for an event trigger.
+    pub source_event_cursor: Option<u64>,
+    /// Direct source journal event identity for an event trigger.
+    pub source_event_id: Option<String>,
+    /// Exact source event type for an event trigger.
+    pub source_event_type: Option<String>,
+    /// Current lifecycle.
+    pub status: AutomationRunStatusResponse,
+    /// Accepted inbox entry for a prompt action.
+    pub inbox_entry_id: Option<String>,
+    /// Durable notification delivery identity.
+    pub outbox_id: Option<String>,
+    /// Bounded terminal failure reason.
+    pub reason: Option<String>,
+    /// First claim UTC epoch milliseconds.
+    pub created_at_ms: i64,
+    /// Terminal UTC epoch milliseconds.
+    pub completed_at_ms: Option<i64>,
+}
+
+/// Bounded newest-first automation occurrence history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRunsResponse {
+    /// Semantic API version.
+    pub api_version: String,
+    /// Stable automation identity.
+    pub automation_id: String,
+    /// Newest-first durable history.
+    pub runs: Vec<AutomationRunResponse>,
+}
+
 /// Stable error response safe for local clients.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3288,9 +3728,10 @@ mod tests {
     use super::{
         API_VERSION, ArtifactMetadataResponse, CancelTaskRequest, ContextItemDisposition,
         ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
-        CreateDiscordChannelRequest, CreateSlackChannelRequest, CreateTelegramChannelRequest,
-        DeliveryMode, ProviderSelectionCommand, SessionSummaryResponse, SubmitImageInputRequest,
-        SubmitInputRequest, SubmittedImageInput, TimelineCursor,
+        CreateAutomationRequest, CreateDiscordChannelRequest, CreateSlackChannelRequest,
+        CreateTelegramChannelRequest, DeliveryMode, ProviderSelectionCommand,
+        SessionSummaryResponse, SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput,
+        TimelineCursor,
     };
 
     #[test]
@@ -3432,6 +3873,31 @@ mod tests {
             "unexpected": true,
         });
         assert!(serde_json::from_value::<CancelTaskRequest>(unknown_field).is_err());
+    }
+
+    #[test]
+    fn automation_command_rejects_nested_authority_drift() {
+        let request = serde_json::json!({
+            "apiVersion": API_VERSION,
+            "automationId": "019f0000-0000-7000-8000-000000000001",
+            "name": "reminder",
+            "trigger": {"kind": "one_shot", "dueAtMs": 42},
+            "action": {
+                "kind": "notify",
+                "targetSessionId": "019f0000-0000-7000-8000-000000000002",
+                "message": "Review the build."
+            }
+        });
+        assert!(serde_json::from_value::<CreateAutomationRequest>(request.clone()).is_ok());
+
+        let mut trigger_drift = request.clone();
+        trigger_drift["trigger"]["timezone"] = serde_json::json!("Pacific/Auckland");
+        assert!(serde_json::from_value::<CreateAutomationRequest>(trigger_drift).is_err());
+
+        let mut action_drift = request;
+        action_drift["action"]["callbackUrl"] =
+            serde_json::json!("https://attacker.invalid/notify");
+        assert!(serde_json::from_value::<CreateAutomationRequest>(action_drift).is_err());
     }
 
     #[test]

@@ -290,6 +290,50 @@ browser transaction reconciliation evidence.
 - Registry discovery never executes package content and never grants requested
   authority automatically.
 
+The first v0.5 registry foundation is implemented as an inert application-layer verifier.
+An owner-supplied out-of-band root authorizes threshold-signed, expiring, monotonic snapshots;
+snapshots authorize threshold publisher keys and immutable media-type/size/SHA-256 release
+descriptors; publisher releases bind exact package/manifest identities, host compatibility, and
+dependency locks. Strict exact-byte Ed25519 fixtures cover signature tampering, missing
+thresholds, expiry, rollback, same-version equivocation, target substitution, withdrawal,
+incompatibility, and missing dependency targets. Deterministic extension and skill diffs expose
+capability contracts, filesystem/network/secret/process requests, and governed-tool references.
+Exact out-of-band root inspection, dual-threshold next-version rotation, and schema 24 canonical
+root/snapshot evidence are also implemented. Acceptance re-verifies against the active root and
+prior head inside one write transaction and survives migration/reopen without allowing stale
+writes, rollback, or equivocation. A stopped-home `registry` CLI now exposes bounded no-follow root
+inspection/bootstrap/rotation, snapshot inspection/acceptance, and status with explicit approval,
+live-daemon exclusion, exact-schema refusal, idempotent replay, and real process/SQLite tests.
+The next transport slice is also implemented: `snapshot-fetch` and approved `snapshot-refresh`
+read one fixed current-snapshot path from a canonical owner-selected HTTPS mirror. The adapter
+rejects proxy/redirect/credential paths, non-public or mixed DNS answers, peer drift, content
+encoding, non-200 status, type drift, and bodies above 4 MiB; signature and durable anti-rollback
+verification remain authoritative. Approved refresh additionally requires the exact envelope
+digest printed by the preceding fetch, closing mutable-current review/apply drift. Immutable
+content requests can only derive `objects/sha256/DIGEST` from signed descriptors and require exact
+type, length, and digest. Schema 25 and `release-fetch`,
+`release-accept`, and `release-status` now add immutable publisher-release evidence under the exact
+active root/snapshot fence. Acceptance repeats publisher threshold, withdrawal, dependency,
+compatibility, and descriptor checks transactionally; root rotation requires a newly authorized
+snapshot, exact replay is idempotent, and later withdrawal preserves audit history while blocking
+new acceptance. Exact manifest/archive download and extraction-free inspection are implemented by
+`package-fetch`; explicitly approved, review-digest-fenced `package-stage` repeats those checks and
+retains the exact inert blobs through schema 26 and the established content-addressed artifact
+store. Offline `package-plan` now compares exact staged skills and extensions with canonical
+installed state and binds the complete content/permission diff into one review digest. For
+data-only skills, approved `package-install` uses the existing immutable disabled-by-default
+lifecycle and supports install, update, and same-flow rollback without granting required tools.
+Exact installed provenance is now projected against the newest accepted
+snapshot and staged evidence: withdrawal, removal, substitution, or evidence loss blocks
+activation and suppresses configured instructions at restart without deleting bytes or history.
+The extension lifecycle bridge is also implemented: authenticated manifest/executable bytes are
+published inertly to a private content-addressed root, schema 27 binds their exact signed evidence
+to retained extension revisions, and install/update/rollback leave no runtime grant. Identical-byte
+provenance adoption also creates a new disabled revision instead of preserving execution
+authority. The daemon rechecks current registry policy before enable and every invocation.
+Snapshot expiry alone does not disable an offline install. Registry publication tooling and
+release qualification remain separate slices.
+
 ### Memory and automation
 
 - Add optional hybrid semantic retrieval as a rebuildable derived index with
@@ -299,17 +343,75 @@ browser transaction reconciliation evidence.
   justified, schedule editing, webhooks, completion/approval notifications,
   and durable deduplication.
 
+The semantic-memory foundation is implemented through schema 28 and
+[ADR 0021](decisions/0021-derived-semantic-memory-index.md). It is disabled by default and pins one
+exact OpenAI-compatible endpoint/model/dimension/prefix/residency policy. Literal-loopback models
+may be credentialless; remote models require HTTPS and a broker credential. A bounded dedicated
+worker prevents blocking-client lifetime from crossing the async daemon boundary. Explicit
+rebuild snapshots all active owner revisions, embeds outside the writer, and publishes only a
+complete revision/content/configuration-fenced set. Correction/deletion/status drift marks the
+index stale transactionally. Hybrid search applies canonical scope and sensitivity first,
+combines FTS5/cosine ranks deterministically, and reports lexical fallback rather than failing or
+claiming semantic success. Adapter, store, CLI/config, and real-daemon hard-restart tests cover
+dimensions, credentials, prefix/order, atomic replacement, ranking, stale fallback, and rebuild
+recovery.
+
+The durable-automation foundation is implemented through schema 29 and
+[ADR 0022](decisions/0022-revisioned-future-event-automation.md). It leaves recurring cron
+schedules stable and adds client-keyed one-shot prompts/notifications plus exact future direct-
+session-event notifications. Definitions are whole-revision fenced; creation/edit/resume establish
+exclusive no-replay cursors; leased occurrences recover after restart; prompt admission uses
+deterministic inbox deduplication; and notification completion atomically commits outbox, run,
+cursor/status, and journal evidence. Event actions are static notification-only and never copy
+source payloads. CLI/API, migration, store, observability, safe-mode, clean-drain, and hard-restart
+process evidence cover the slice. Exact Slack-thread pinning is implemented through schema 30 and
+[ADR 0023](decisions/0023-exact-thread-slack-remote-continuation.md). A local owner creates one
+UUIDv7-keyed, one-minute-to-30-day route to a thread already admitted from the exact allowlisted
+Slack workspace/member/conversation. Creation stores a no-replay cursor; only one effective pin
+per binding is allowed; revision-fenced revoke retains evidence. Static notification definitions
+pin that exact route, and definition mutation, outbox publication, and delivery claim all
+revalidate it without latest-thread or local-delivery fallback. Public-process evidence covers
+restart recovery, pin/list/read, proactive exact-thread delivery, revoke, and post-revoke
+rejection. Release qualification remains open.
+
 ### SDK, observability, evaluation, and remote continuation
 
 - Publish stable typed clients for the daemon, timeline, approvals, extensions,
-  and channels.
+  and channels. The first stable Rust SDK is implemented in `mealy-client`: it reuses the
+  versioned protocol DTOs and covers health/status, provider discovery, session workbench,
+  text/image admission, task control/replay, durable delegation inspection, approvals, complete
+  automation lifecycle/history, governed extensions, and all four administrative channel
+  lifecycles. It requires HTTPS outside
+  literal loopback, ignores ambient proxies, refuses redirects, redacts bearer credentials, bounds
+  request/response JSON, and rejects incompatible request, response, and structured error versions.
+  Frozen v0.2.1/v0.3/v0.4/v0.5 daemon fixtures, byte-reproducible publishable crate archives, a
+  retained qualification-consumer lock, clean external-consumer compilation, and dedicated
+  release attestation complete the v0.5 SDK qualification boundary. Async/SSE and non-Rust clients
+  remain later ecosystem work.
 - Export bounded OpenTelemetry traces/metrics without prompts, secrets, or
-  private content by default.
+  private content by default. The first typed Rust slice is implemented behind an explicit
+  `--otlp-endpoint`: it records claimed agent-run slices with canonical correlation IDs on traces
+  and fixed outcome-only metric labels. It deliberately does not bridge general logs, accepts no
+  arbitrary attributes or exporter credentials, ignores ambient OTLP/proxy configuration, and
+  bounds queue, batch, cardinality, body, interval, timeout, response, and shutdown behavior.
+  Broader typed attempt/effect/scheduler instruments and authenticated collector credentials
+  remain later v0.5 work.
 - Add versioned scenario/evaluation contracts for task success, safety,
-  recovery, latency, and cost regression.
-- Add outbound-only, authenticated, revocable, single-owner remote
-  continuation with synchronized timeline cursors and completion/approval
-  notifications. Multi-user hosting remains outside this milestone.
+  recovery, latency, and cost regression. The first `mealy.evaluation-suite.v1` /
+  `mealy.evaluation-report.v1` slice is implemented in `mealy-evaluation` and `mealyctl eval`.
+  It strictly validates bounded suites, creates a fresh public-API session per case, observes
+  canonical task/validation/usage/timeline/recorded-replay evidence, applies deterministic
+  status/digest/event/budget assertions, and emits a digest-bearing content-free report. It
+  never reads storage, uses a provider shortcut, grants authority, or resolves approvals.
+  Deterministic process coverage proves validated success plus approval parking with zero effect
+  dispatch. Crash injection/restart remains an outer-harness responsibility, and signed report
+  publication plus model-judge plugins remain later v0.5 work.
+- Add outbound-only, authenticated, revocable, single-owner remote continuation with synchronized
+  timeline cursors and completion/approval notifications. The exact-thread Slack static-
+  notification slice is implemented through schema 30 without a public inbound listener.
+  Reactive completion/approval replies retain their originating-thread route. General remote
+  interactive prompts, additional transports, and multi-user hosting remain outside this
+  milestone.
 
 ### v0.5 release gate
 

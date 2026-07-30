@@ -33,7 +33,6 @@ const MAXIMUM_SECRET_FILES: usize = 4_001;
 const BUFFER_BYTES: usize = 64 * 1024;
 const MAXIMUM_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_SECRET_ARCHIVE_BYTES: usize = 4 * 1024 * 1024;
-const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const SECRET_KDF_MEMORY_KIB: u32 = 64 * 1024;
 const SECRET_KDF_ITERATIONS: u32 = 3;
 const SECRET_KDF_PARALLELISM: u32 = 1;
@@ -2191,7 +2190,7 @@ fn inspect_configured_mcp_executable(
         || metadata.file_type().is_symlink()
         || !metadata.is_file()
         || metadata.len() < 4
-        || metadata.len() > MAXIMUM_MCP_EXECUTABLE_BYTES
+        || metadata.len() > crate::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
     {
         return Err(MaintenanceError::UnsafePath(
             executable.display().to_string(),
@@ -3329,6 +3328,16 @@ mod tests {
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
+                 DROP TRIGGER automation_slack_remote_route_update_guard;
+                 DROP TRIGGER automation_slack_remote_route_insert_guard;
+                 DROP INDEX automation_slack_remote_continuation_idx;
+                 ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+                 DROP TRIGGER slack_remote_continuation_immutable_delete;
+                 DROP TRIGGER slack_remote_continuation_transition_guard;
+                 DROP TRIGGER slack_remote_continuation_insert_guard;
+                 DROP INDEX slack_remote_continuation_route_idx;
+                 DROP INDEX slack_remote_continuation_owner_idx;
+                 DROP TABLE slack_remote_continuation;
                  DROP TABLE slack_envelope_receipt;
                  DROP TABLE slack_channel_health;
                  DROP TABLE slack_channel_binding;
@@ -3360,8 +3369,27 @@ mod tests {
                                = json(intent.normalized_arguments_json)
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+                 DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+                 DROP TABLE extension_manifest_registry_provenance;
+                 DROP TABLE automation_run;
+                 DROP TABLE automation_revision;
+                 DROP TABLE automation;
+                 DROP TRIGGER memory_revision_semantic_invalidate;
+                 DROP INDEX memory_semantic_vector_scope_idx;
+                 DROP TABLE memory_semantic_vector;
+                 DROP TABLE memory_semantic_index_state;
+                 DROP TABLE registry_package;
+                 DROP TABLE registry_release;
+                 DROP TABLE registry_snapshot_head;
+                 DROP TABLE registry_snapshot;
+                 DROP TABLE registry_trust_root_head;
+                 DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
+                 WHERE version IN (
+                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+                 );
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");
@@ -3540,6 +3568,16 @@ mod tests {
                  DROP TABLE context_manifest_bundle_compaction;
                  DROP TABLE context_manifest_bundle_artifact;
                  DROP TABLE context_manifest_bundle;
+                 DROP TRIGGER automation_slack_remote_route_update_guard;
+                 DROP TRIGGER automation_slack_remote_route_insert_guard;
+                 DROP INDEX automation_slack_remote_continuation_idx;
+                 ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+                 DROP TRIGGER slack_remote_continuation_immutable_delete;
+                 DROP TRIGGER slack_remote_continuation_transition_guard;
+                 DROP TRIGGER slack_remote_continuation_insert_guard;
+                 DROP INDEX slack_remote_continuation_route_idx;
+                 DROP INDEX slack_remote_continuation_owner_idx;
+                 DROP TABLE slack_remote_continuation;
                  DROP TABLE slack_envelope_receipt;
                  DROP TABLE slack_channel_health;
                  DROP TABLE slack_channel_binding;
@@ -3571,8 +3609,27 @@ mod tests {
                                = json(intent.normalized_arguments_json)
                      ) THEN RAISE(ABORT, 'agent effect origin does not match normalized model result') END;
                  END;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+                 DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+                 DROP TABLE extension_manifest_registry_provenance;
+                 DROP TABLE automation_run;
+                 DROP TABLE automation_revision;
+                 DROP TABLE automation;
+                 DROP TRIGGER memory_revision_semantic_invalidate;
+                 DROP INDEX memory_semantic_vector_scope_idx;
+                 DROP TABLE memory_semantic_vector;
+                 DROP TABLE memory_semantic_index_state;
+                 DROP TABLE registry_package;
+                 DROP TABLE registry_release;
+                 DROP TABLE registry_snapshot_head;
+                 DROP TABLE registry_snapshot;
+                 DROP TABLE registry_trust_root_head;
+                 DROP TABLE registry_trust_root;
                  DELETE FROM schema_version
-                 WHERE version IN (14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
+                 WHERE version IN (
+                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
+                 );
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("simulate exact v13 snapshot");

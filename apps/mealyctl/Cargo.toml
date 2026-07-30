@@ -4,13 +4,14 @@ description = "Local administration and client CLI for Mealy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license-file.workspace = true
+license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
@@ -19,6 +20,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 mealy-application.workspace = true
 mealy-domain.workspace = true
+mealy-evaluation.workspace = true
 mealy-infrastructure.workspace = true
 mealy-protocol.workspace = true
 ratatui.workspace = true
@@ -42,6 +44,7 @@ workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+ed25519-dalek.workspace = true
 rustix = { workspace = true, features = ["pty"] }
 rusqlite.workspace = true
 tempfile = "3.27.0"

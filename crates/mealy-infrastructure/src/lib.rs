@@ -13,7 +13,10 @@ mod mcp;
 mod mcp_oauth;
 mod mcp_oauth_token;
 mod media;
+mod memory_embedding;
 mod provider_secret;
+mod registry_mirror;
+mod registry_package;
 mod sandbox;
 mod skill_package;
 mod sqlite;
@@ -22,6 +25,13 @@ mod system;
 mod trusted_executable;
 mod web;
 mod workspace;
+
+/// Maximum size of an owner-selected external executable that Mealy will inspect and identity-pin.
+///
+/// Current signed subscription clients and all-feature development launchers can exceed 256 MiB.
+/// The 384 MiB ceiling keeps those supported inputs bounded while remaining independent of
+/// per-process runtime memory limits and stricter package-format limits.
+pub const MAXIMUM_EXTERNAL_EXECUTABLE_BYTES: u64 = 384 * 1024 * 1024;
 
 pub use artifact::{ArtifactGarbageCollectionReport, ArtifactStorageUsage, FileArtifactBlobStore};
 pub use browser::{
@@ -68,12 +78,19 @@ pub use mcp_oauth_token::{
 pub use media::{
     CanonicalImage, LinuxBubblewrapMediaNormalizer, MediaNormalizerError, media_worker_main,
 };
+pub use memory_embedding::{MemoryEmbedding, MemoryEmbeddingError, OpenAiCompatibleMemoryEmbedder};
 pub use provider_secret::{FileProviderSecretStore, ProviderSecretStoreError};
+pub use registry_mirror::HttpsRegistryMirrorTransport;
+pub use registry_package::{
+    InspectedRegistryPackageArchive, InspectedRegistryPackageFile, RegistryExtensionPackageError,
+    RegistryPackageArchiveError, inspect_registry_package_archive,
+    publish_registry_extension_package,
+};
 pub use sandbox::{LinuxBubblewrapConfig, LinuxBubblewrapExecutor, SandboxRuntimeBinding};
 pub use skill_package::{
     InspectedSkillAsset, InspectedSkillPackage, MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES,
     MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, SkillPackageError, SkillResourceReadTool,
-    inspect_skill_package, publish_skill_package,
+    inspect_skill_package, inspected_registry_skill_package, publish_skill_package,
 };
 pub use sqlite::{
     ArtifactBlobRecord, JournalRecord, LATEST_SCHEMA_VERSION, OutboxRecord, SqliteStore,

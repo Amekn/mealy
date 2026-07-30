@@ -1,0 +1,20 @@
+[package]
+name = "mealy-evaluation"
+description = "Versioned public-API scenario evaluation contracts and runner for Mealy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+mealy-client.workspace = true
+mealy-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

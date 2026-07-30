@@ -62,10 +62,12 @@ release retains `ATTESTATION-linux-repositories.sigstore.json`, while the public
 the OpenPGP-signed complete manifest and minimal public certificate.
 
 The copyright holder selected Apache-2.0 on 2026-07-15. The repository now carries the canonical
-Apache License 2.0 text through the existing exact `license-file = "LICENSE"` inheritance, so the
-choice does not introduce an unrelated package-metadata change.
-A clean auditable fingerprint probe at commit `0be7f63` changed only the referenced license-file
-content and reproduced the then-active soak subject exactly: `mealyd` SHA-256
+Apache License 2.0 text and every workspace package inherits the matching `Apache-2.0` SPDX
+identity. Each publishable SDK crate also embeds an exact copy checked against the canonical file
+before packaging, so dependency-notice generation and standalone crate distribution retain the
+same reviewed terms. A clean auditable fingerprint probe at commit `0be7f63` changed only the
+then-referenced license-file content and reproduced the then-active soak subject exactly:
+`mealyd` SHA-256
 `649db94894de63fb973c7d2ef7a4749100d5c9b3ca77524a0f8cbfde66c39572` and `mealyctl` SHA-256
 `e96d0012fb07b62d033d385257e3cc3a1c75f93d3a256a8804e213405c2dcf90`. That soak later failed and
 is superseded by the corrected candidate described in the
@@ -170,7 +172,7 @@ Cargo Auditable `0.7.5`, Cargo About `0.9.1`, Cargo Deny `0.20.2`, and zizmor `1
 remain the current reviewed releases. Syft advanced to `v1.50.0`; its upstream release notes
 identify a high-severity gRPC dependency vulnerability remediated by that release, so the release
 workflow now requests `v1.50.0` from the already commit-pinned SBOM Action. This workflow and
-documentation-only refresh does not change the soaked Rust binary source boundary. Protected CI
+documentation-only refresh does not change the observed Rust binary source boundary. Protected CI
 and the tag workflow still validate the updated workflow and generated SBOM before publication.
 
 The 2026-07-30 final pre-tag refresh advanced Headless Shell to stable `151.0.7922.71`
@@ -484,14 +486,34 @@ packages. They reject maintainer scripts/install hooks and wrong architecture, r
 embedded payload, install with the native package manager, check root ownership/modes and the
 generated owner-service unit, complete and recorded-replay a real daemon task, drain, remove the
 package, and prove the temporary user database remains.
-The checked `packaging/release-upgrade-baseline.json` separately identifies the prior public
-tag/version/schema for this candidate. Each tag runner downloads and cryptographically verifies
-that release's native package and checksum manifest before replacing it with the just-built
-candidate. `scripts/installed-native-upgrade-smoke.sh` requires the prior durable task, replay, and
+The checked `packaging/release-upgrade-baseline.json` separately identifies every prior public
+tag/version/schema required for this candidate. The validator accepts the historical single-entry
+format and normalizes it to the bounded v2 baseline set. It requires older semantic versions and
+schemas in newest-first order; v0.5 explicitly names both v0.4 and v0.3. Each tag runner downloads
+and cryptographically verifies every declared release's native
+package and checksum manifest before replacing it with the just-built candidate. Both the
+pre-publication and public-distribution lanes use
+`scripts/fetch-release-upgrade-baselines.sh`, whose checked fake-release test covers exact
+multi-lineage inventories, target-specific package names, GitHub asset verification, checksum
+rejection, release-identity rejection, and the unsupported Arch-on-ARM boundary.
+`scripts/installed-native-upgrade-smoke.sh` requires each predecessor's durable task, replay, and
 owner identity to survive the schema transition, verifies the automatic migration snapshot,
 creates new-version title/checkpoint records, and proves native removal preserves the migrated
-home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats the same
-old-public-to-new-public proof rather than inheriting a build-runner result.
+home. After publication, every Ubuntu, Debian, Fedora, and Arch acceptance lane repeats every
+declared old-public-to-new-public proof rather than inheriting a build-runner result.
+
+The v0.5 release additionally publishes `mealy-domain`, `mealy-protocol`, and `mealy-client`
+`.crate` archives, `mealy-sdk-VERSION-Cargo.lock`, `SHA256SUMS-sdk`, and
+`ATTESTATION-sdk.sigstore.json`. `scripts/build-sdk-packages.sh` requires clean tagged source,
+packages the complete dependency set together twice, and rejects byte drift. The verifier checks
+the exact bounded archive/checksum inventory, extracts outside the workspace, and compiles a clean
+consumer against the retained qualification lock. Protected CI and the tag gate run that proof
+before publication; the native x86-64 public-release job downloads every SDK asset, verifies its GitHub
+release digest and dedicated provenance, and repeats the extracted-package consumer build. The
+protected non-publishing post-release workflow can repeat the same proof independently for an
+unchanged tag. GitHub assets are the supported v0.5 SDK distribution boundary and do not imply
+crates.io publication.
+
 Before packaging, each native tag runner launches the exact auditable binaries through their
 generated systemd user unit. After constructing the native system packages, clean distribution
 containers install each exact package and repeat the same proof from the root-owned package paths
@@ -709,9 +731,10 @@ protected CI/package suite before starting that release's exact-binary soak. The
 tree—not the earlier stacked branch—inherits no soak, CI, provider, package, or publication
 evidence.
 
-1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` remains inherited by every
-   workspace package and run `scripts/validate-public-license.sh .`. Then make the workspace version
-   and intended stable `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
+1. Confirm the copyright-holder-selected canonical Apache-2.0 `LICENSE` still matches the
+   workspace SPDX declaration and each publishable SDK crate copy, then run
+   `scripts/validate-public-license.sh .`. Make the workspace version and intended stable
+   `vMAJOR.MINOR.PATCH` tag identical. The production workflow deliberately
    rejects prerelease/build metadata and leading-zero version components. From the canonical source
    checkout, run `scripts/preflight-release-environments.sh Amekn/mealy`; do not tag until its
    read-only rebase-merge availability, immutable-release, Actions allowlist/full-SHA, Pages,

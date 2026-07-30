@@ -132,6 +132,47 @@ These rules apply to every implementation phase.
 - **SCHED-014:** Backpressure MUST reject or defer excess work predictably; unbounded in-memory queues are forbidden.
 - **SCHED-015:** Retries MUST use classified errors, bounded attempts, exponential backoff with jitter, and a persisted next-attempt time.
 
+### 6.3.1 Durable owner automation
+
+- **AUTO-010:** Every automation MUST use a client-proposed canonical UUIDv7 as its durable
+  creation key. An exact retry MUST return the existing current projection without another
+  journal event; reusing the identity with different ownership, trigger, target, or action MUST
+  conflict.
+- **AUTO-011:** Supported triggers MUST be bounded future one-shot instants or exact direct
+  session-event types observed only after a transactionally recorded cursor. Historical events and
+  events accumulated while paused MUST NOT replay.
+- **AUTO-012:** Definitions, whole-definition revisions, status, trigger cursor, occurrence
+  claims, terminal outcomes, and journal evidence MUST be durable. Edit, pause, resume, and cancel
+  MUST use an exact optimistic revision fence.
+- **AUTO-013:** One-shot actions MAY admit an exact prompt or enqueue a static notification.
+  Event-driven actions MUST be notification-only and MUST NOT copy source event payload into a
+  prompt or notification.
+- **AUTO-014:** Source and target sessions MUST be owned by the authenticated principal through
+  exact bindings. A notification MUST use only a supported, still-authorized destination route;
+  channel revocation MUST NOT restore or widen authority.
+- **AUTO-015:** Automated prompt admission MUST use the ordinary bounded inbox, capability,
+  approval, effect, provider, and recovery path. An action-mode opt-in MUST NOT constitute effect
+  approval.
+- **AUTO-016:** Every occurrence MUST have a durable leased identity. Restart after an expired
+  claim MUST reclaim the same occurrence; prompt admission MUST use a deterministic deduplication
+  key, and notification completion MUST atomically create one outbox record with terminal run and
+  cursor/status evidence.
+- **AUTO-017:** Completed one-shots and cancelled automations MUST be terminal. Failed event
+  occurrences MUST advance the cursor so one poison event cannot block later occurrences.
+- **AUTO-018:** Safe mode MUST start no automation driver and reject automation mutation.
+  Authenticated status, metrics, doctor, definition inspection, and bounded run history MUST expose
+  operational state without private source payloads.
+- **AUTO-019:** Proactive Slack notification MUST require an exact, bounded, owner-created route to
+  one previously admitted thread. Creation MUST bind the verified workspace, member, conversation,
+  session, and admitted-envelope evidence, record an exclusive no-replay cursor, accept only a
+  client-proposed UUIDv7 exact retry key, and expire no later than 30 days. The runtime MUST NOT
+  choose a newest, ambient, or fallback thread.
+- **AUTO-020:** A Slack notification definition MUST store the exact remote-continuation identity.
+  The route MUST be revalidated at definition mutation, before outbox publication, and at delivery
+  claim. Expiry, revision-fenced continuation revocation, parent-binding revocation, or route
+  mismatch MUST fail closed without local-delivery fallback. Proactive Slack prompt automation
+  MUST remain unsupported.
+
 ### 6.4 Agent execution
 
 - **AGENT-010:** Mealy MUST own an explicit agent loop: compile context, call a model, validate structured output, propose tools or a response, execute authorized tools, observe results, and decide the next step.

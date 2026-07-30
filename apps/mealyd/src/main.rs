@@ -28,23 +28,25 @@ use effect_runtime::{PhaseThreeRuntime, ProcessCommandBinding};
 use futures_util::{SinkExt as _, StreamExt as _};
 use mealy_api::{ApiAuth, ApiConfig, AuthenticatedIdentity, router_with_shutdown};
 use mealy_application::{
-    AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, BeginDaemonRunCommit, ChannelAdapter,
-    ChannelInboundDisposition, ChannelOutboundContent, ClaimScheduleRunCommit,
-    CompleteDaemonRunCommit, CompleteDiscordMessageCommit, CompleteScheduleRunCommit,
-    CompleteSlackEnvelopeCommit, CompleteTelegramUpdateCommit, DaemonRunStatus,
-    DiscordChannelStore, DiscordChannelStoreError, DiscordMessageDisposition,
-    DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore, EffectLedgerStoreError,
-    IdGenerator, InitialTaskProfile, InputAdmissionLimits, McpHttpAuthentication, OperationalStore,
-    OutboundDiscordTarget, OutboundSlackTarget, OutboundTelegramTarget, OutboundWebhookTarget,
-    OutboxClaimOutcome, OutboxDelivery, OutboxUseCaseError, OwnershipContext, PendingSlackEnvelope,
-    PromotionDefaults, ProviderCredentialReference, ProviderSelectionPreference,
-    RecordDiscordPollCommit, RecordSlackSocketCommit, RecordTelegramPollCommit,
-    ReserveDiscordMessageCommit, ReserveSlackEnvelopeCommit, ReserveTelegramUpdateCommit,
-    ResolveApprovalCommit, ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy,
-    ScheduleRunIntent, ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError,
-    SlackAdapter, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
-    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
-    TelegramChannelStore, TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
+    AcknowledgeSlackEnvelopeCommit, AdmitInputCommand, AutomationAction, AutomationClaimOutcome,
+    AutomationRunStatus, AutomationStore, BeginDaemonRunCommit, ChannelAdapter,
+    ChannelInboundDisposition, ChannelOutboundContent, ClaimAutomationRunCommit,
+    ClaimScheduleRunCommit, CompleteAutomationRunCommit, CompleteDaemonRunCommit,
+    CompleteDiscordMessageCommit, CompleteScheduleRunCommit, CompleteSlackEnvelopeCommit,
+    CompleteTelegramUpdateCommit, DaemonRunStatus, DiscordChannelStore, DiscordChannelStoreError,
+    DiscordMessageDisposition, DiscordMessageReservation, DiscordPollTarget, EffectLedgerStore,
+    EffectLedgerStoreError, IdGenerator, InitialTaskProfile, InputAdmissionLimits,
+    McpHttpAuthentication, OperationalStore, OutboundDiscordTarget, OutboundSlackTarget,
+    OutboundTelegramTarget, OutboundWebhookTarget, OutboxClaimOutcome, OutboxDelivery,
+    OutboxUseCaseError, OwnershipContext, PendingSlackEnvelope, PromotionDefaults,
+    ProviderCredentialReference, ProviderSelectionPreference, RecordDiscordPollCommit,
+    RecordSlackSocketCommit, RecordTelegramPollCommit, ReserveDiscordMessageCommit,
+    ReserveSlackEnvelopeCommit, ReserveTelegramUpdateCommit, ResolveApprovalCommit,
+    ScheduleClaimOutcome, ScheduleDueDecision, ScheduleOverlapPolicy, ScheduleRunIntent,
+    ScheduleRunStatus, ScheduleStore, SessionStoreError, SessionUseCaseError, SlackAdapter,
+    SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition, SlackEnvelopeReservation,
+    SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget, TelegramChannelStore,
+    TelegramChannelStoreError, TelegramPollTarget, TelegramUpdateDisposition,
     TelegramUpdateReservation, WebhookChannelStore, WebhookChannelStoreError, admit_input,
     canonical_arguments_digest, claim_next_outbox, complete_outbox, discord_input_dedupe_key,
     exponential_retry_delay, is_sha256_digest, pending_promotion_sessions, plan_due_schedule,
@@ -53,17 +55,20 @@ use mealy_application::{
     validate_discord_snowflake,
 };
 use mealy_domain::{
-    ApprovalDecision, ApprovalId, CapabilityGrant, CorrelationId, DeliveryMode, EffectClass,
-    InboxEntryId, PolicyProfile, ScheduleRunId, TaskId, WorkerId,
+    ApprovalDecision, ApprovalId, AutomationRunId, CapabilityGrant, CorrelationId, DeliveryMode,
+    EffectClass, EventId, InboxEntryId, OutboxId, PolicyProfile, RemoteContinuationId,
+    ScheduleRunId, TaskId, WorkerId,
 };
 use mealy_infrastructure::{
     BrowserReadTool, BrowserTransactionTool, FileArtifactBlobStore, FileChannelSecretStore,
     FileMcpOAuthTokenStore, FileProviderSecretStore, ImageGenerationAdapter, LATEST_SCHEMA_VERSION,
-    LinuxBubblewrapMediaNormalizer, ProviderSecretStoreError, SqliteStore, StoreError, SystemClock,
-    SystemIdGenerator, WebReadTool, WorkspaceGrant, WorkspaceReadTool, browser_worker_main,
-    create_pre_migration_backup, inspect_existing_schema_version, load_mcp_http_tools,
-    load_mcp_tools, mcp_stdio_launcher_main, media_worker_main, preserve_forensic_database,
+    LinuxBubblewrapMediaNormalizer, OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError,
+    SqliteStore, StoreError, SystemClock, SystemIdGenerator, WebReadTool, WorkspaceGrant,
+    WorkspaceReadTool, browser_worker_main, create_pre_migration_backup,
+    inspect_existing_schema_version, load_mcp_http_tools, load_mcp_tools, mcp_stdio_launcher_main,
+    media_worker_main, preserve_forensic_database,
 };
+use mealy_observability::{TelemetryConfig, TelemetryRuntime};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -97,6 +102,15 @@ struct Arguments {
     /// Start query-only: reject mutation and do not run dispatch/promotion workers.
     #[arg(long)]
     safe_mode: bool,
+    /// OTLP/HTTP collector origin; disabled unless explicitly configured.
+    #[arg(long)]
+    otlp_endpoint: Option<String>,
+    /// Interval for bounded OTLP trace batches and metric exports.
+    #[arg(long, default_value_t = 30_000)]
+    otlp_export_interval_ms: u64,
+    /// Per-request timeout for the no-proxy, no-redirect OTLP transport.
+    #[arg(long, default_value_t = 3_000)]
+    otlp_request_timeout_ms: u64,
     /// Override the validated configuration's bounded graceful-drain deadline.
     #[arg(long)]
     drain_deadline_ms: Option<u64>,
@@ -186,14 +200,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         std::process::exit(64);
     }
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run_daemon())
-}
-
-#[allow(clippy::too_many_lines)]
-async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -205,6 +211,35 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("{LATEST_SCHEMA_VERSION}");
         return Ok(());
     }
+    let telemetry = Arc::new(if let Some(endpoint) = arguments.otlp_endpoint.as_deref() {
+        let config = TelemetryConfig::new(
+            endpoint,
+            Duration::from_millis(arguments.otlp_export_interval_ms),
+            Duration::from_millis(arguments.otlp_request_timeout_ms),
+        )?;
+        let runtime = TelemetryRuntime::new(&config)?;
+        tracing::info!(
+            telemetry_schema = "mealy.telemetry.v1",
+            "privacy-preserving OTLP trace and metric export enabled"
+        );
+        runtime
+    } else {
+        TelemetryRuntime::disabled()
+    });
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run_daemon(arguments, Arc::clone(&telemetry)));
+    drop(runtime);
+    drop(telemetry);
+    result
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_daemon(
+    arguments: Arguments,
+    telemetry: Arc<TelemetryRuntime>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     backend::validate_telegram_api_base_url(&arguments.telegram_api_base_url)?;
     backend::validate_discord_api_base_url(&arguments.discord_api_base_url)?;
     backend::validate_slack_api_base_url(&arguments.slack_api_base_url)?;
@@ -450,6 +485,33 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
     } else {
         None
     };
+    let memory_embedder = if arguments.safe_mode {
+        None
+    } else if let Some(config) = daemon_config.memory_embedding() {
+        let credential = match config.credential() {
+            None => None,
+            Some(ProviderCredentialReference::Broker { secret_id }) => Some(
+                FileProviderSecretStore::new(arguments.home.join("provider-secrets"))?
+                    .read(secret_id)?,
+            ),
+            Some(ProviderCredentialReference::Environment { variable }) => {
+                Some(std::env::var(variable).map(Zeroizing::new).map_err(
+                    |_| "memory-embedding credential environment variable is unavailable",
+                )?)
+            }
+        };
+        let adapter = Arc::new(OpenAiCompatibleMemoryEmbedder::new(config, credential)?);
+        tracing::info!(
+            config_digest = adapter.config_digest(),
+            dimensions = adapter.dimensions(),
+            local = config.is_local().unwrap_or(false),
+            residency = config.residency(),
+            "optional derived semantic-memory retrieval enabled"
+        );
+        Some(adapter)
+    } else {
+        None
+    };
     let fake_provider_delay = Duration::from_millis(arguments.fake_provider_delay_ms);
     let fake_provider_estimated_latency_ms = arguments.fake_provider_estimated_latency_ms;
     let maximum_provider_requests = daemon_config.maximum_provider_requests();
@@ -561,7 +623,17 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         );
         tools
     };
-    let skill_context = RuntimeSkillContext::load(&arguments.home, daemon_config.skills())?;
+    let skill_context = RuntimeSkillContext::load(&arguments.home, daemon_config.skills(), &store)?;
+    for suppression in skill_context.registry_suppressions() {
+        tracing::warn!(
+            registry_id = %suppression.registry_id,
+            skill_id = %suppression.package_id,
+            version = %suppression.version,
+            snapshot_version = suppression.snapshot_version,
+            disposition = ?suppression.disposition,
+            "configured registry skill was suppressed by current accepted policy"
+        );
+    }
     if skill_context.enabled_count() != 0 {
         tracing::info!(
             enabled_skill_count = skill_context.enabled_count(),
@@ -937,6 +1009,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             home: arguments.home.clone(),
             artifact_gc_minimum_age_hours: daemon_config.artifact_gc_minimum_age_hours(),
             media_normalizer,
+            memory_embedder,
             maximum_pending_inputs_per_session: daemon_config.maximum_pending_inputs_per_session(),
             maximum_extension_invocations: daemon_config.maximum_extension_invocations(),
             enabled_read_tools,
@@ -1131,6 +1204,16 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             shutdown_receiver.clone(),
         ))
     });
+    let automations = (!arguments.safe_mode).then(|| {
+        tokio::spawn(automation_driver(
+            Arc::clone(&store),
+            WorkerId::new(),
+            daemon_config.maximum_pending_inputs_per_session(),
+            arguments.schedule_clock_offset_ms,
+            Duration::from_millis(250),
+            shutdown_receiver.clone(),
+        ))
+    });
     let telegram = telegram_credentials.as_ref().map(|credentials| {
         tokio::spawn(telegram_driver(
             Arc::clone(&store),
@@ -1224,6 +1307,7 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Arc::clone(&read_tool),
                     effect_runtime.clone(),
                     Arc::clone(&artifacts),
+                    Arc::clone(&telemetry),
                     daemon_config.lease_concurrency_limits(),
                     daemon_config.maximum_resource_class_invocations(),
                     Duration::from_millis(arguments.agent_delay_ms),
@@ -1272,6 +1356,9 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
             let _ = worker.await;
         }
         if let Some(worker) = schedules {
+            let _ = worker.await;
+        }
+        if let Some(worker) = automations {
             let _ = worker.await;
         }
         if let Some(worker) = telegram {
@@ -1346,6 +1433,12 @@ async fn run_daemon() -> Result<(), Box<dyn Error + Send + Sync>> {
         let _ = std::fs::remove_file(&connection_path);
         std::process::exit(2);
     }
+    let telemetry_for_shutdown = Arc::clone(&telemetry);
+    match tokio::task::spawn_blocking(move || telemetry_for_shutdown.shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "bounded telemetry shutdown failed"),
+        Err(_) => tracing::warn!("bounded telemetry shutdown worker failed"),
+    }
     let _ = std::fs::remove_file(connection_path);
     Ok(())
 }
@@ -1382,6 +1475,7 @@ async fn agent_driver(
     tool: Arc<RuntimeReadTools>,
     effect_runtime: Option<Arc<PhaseThreeRuntime>>,
     artifacts: Arc<FileArtifactBlobStore>,
+    telemetry: Arc<TelemetryRuntime>,
     lease_concurrency_limits: mealy_application::LeaseConcurrencyLimits,
     maximum_resource_class_invocations: u32,
     initial_delay: Duration,
@@ -1399,6 +1493,7 @@ async fn agent_driver(
         let worker_tool = Arc::clone(&tool);
         let worker_effect_runtime = effect_runtime.clone();
         let worker_artifacts = Arc::clone(&artifacts);
+        let worker_telemetry = Arc::clone(&telemetry);
         match tokio::task::spawn_blocking(move || {
             drive_one_agent_run(
                 &worker_store,
@@ -1407,6 +1502,7 @@ async fn agent_driver(
                 &worker_tool,
                 worker_effect_runtime.as_deref(),
                 &worker_artifacts,
+                &worker_telemetry,
                 AgentDriverPolicy::new(
                     boundary_delay,
                     lease_concurrency_limits,
@@ -1721,6 +1817,213 @@ enum ScheduleDriverError {
     SessionUnavailable(String),
     #[error(transparent)]
     Store(#[from] mealy_application::ScheduleStoreError),
+}
+
+async fn automation_driver(
+    store: Arc<RuntimeStore>,
+    worker_id: WorkerId,
+    maximum_pending_inputs_per_session: u64,
+    clock_offset_ms: i64,
+    interval: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        let worker_store = Arc::clone(&store);
+        match tokio::task::spawn_blocking(move || {
+            drive_automation_batch(
+                &worker_store,
+                worker_id,
+                maximum_pending_inputs_per_session,
+                clock_offset_ms,
+            )
+        })
+        .await
+        {
+            Ok(Ok(count)) if count != 0 => {
+                tracing::info!(occurrences = count, "durable automation triggers processed");
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::error!(%error, "durable automation scan failed"),
+            Err(error) => tracing::error!(%error, "durable automation task failed"),
+        }
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            _ = shutdown.changed() => return,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn drive_automation_batch(
+    store: &Arc<RuntimeStore>,
+    worker_id: WorkerId,
+    maximum_pending_inputs_per_session: u64,
+    clock_offset_ms: i64,
+) -> Result<usize, AutomationDriverError> {
+    let now_ms = automation_now_ms(clock_offset_ms)?;
+    let candidates = store
+        .read()
+        .map_err(|_| AutomationDriverError::Lock)?
+        .due_automations(now_ms, 32)?;
+    let mut completed = 0;
+    for candidate in candidates {
+        let mut guard = store.write().map_err(|_| AutomationDriverError::Lock)?;
+        let claim = guard.claim_automation_run(ClaimAutomationRunCommit {
+            automation_id: candidate.automation.automation_id,
+            expected_revision: candidate.automation.revision,
+            trigger_key: candidate.trigger_key.clone(),
+            triggered_at_ms: candidate.triggered_at_ms,
+            source_event_cursor: candidate.source_event_cursor,
+            source_event_id: candidate.source_event_id,
+            source_event_type: candidate.source_event_type.clone(),
+            proposed_automation_run_id: AutomationRunId::new(),
+            owner_id: worker_id,
+            claimed_at_ms: now_ms,
+            claim_expires_at_ms: now_ms + 30_000,
+        })?;
+        let AutomationClaimOutcome::Claimed(run) = claim else {
+            continue;
+        };
+        let completion = match &candidate.automation.action {
+            AutomationAction::Notify { .. } => CompleteAutomationRunCommit {
+                automation_id: candidate.automation.automation_id,
+                automation_run_id: run.automation_run_id,
+                owner_id: worker_id,
+                status: AutomationRunStatus::Notified,
+                inbox_entry_id: None,
+                outbox_id: Some(OutboxId::new()),
+                reason: None,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                completed_at_ms: automation_now_ms(clock_offset_ms)?,
+            },
+            AutomationAction::SubmitPrompt {
+                prompt,
+                target_session_id,
+                ..
+            } => {
+                let admission = admit_input(
+                    &mut *guard,
+                    &SystemClock,
+                    &SystemIdGenerator,
+                    InputAdmissionLimits::new(
+                        256,
+                        mealy_application::MAXIMUM_AUTOMATION_PROMPT_BYTES,
+                        maximum_pending_inputs_per_session,
+                    ),
+                    AdmitInputCommand {
+                        session_id: *target_session_id,
+                        ownership: candidate.automation.target_ownership,
+                        dedupe_key: format!(
+                            "automation:{}:{}",
+                            candidate.automation.automation_id, run.trigger_key
+                        ),
+                        delivery_mode: DeliveryMode::Queue,
+                        content: prompt.clone(),
+                        provider_selection: ProviderSelectionPreference::InheritSession,
+                    },
+                );
+                match admission {
+                    Ok(outcome) => CompleteAutomationRunCommit {
+                        automation_id: candidate.automation.automation_id,
+                        automation_run_id: run.automation_run_id,
+                        owner_id: worker_id,
+                        status: AutomationRunStatus::Admitted,
+                        inbox_entry_id: Some(outcome.receipt().inbox_entry_id),
+                        outbox_id: None,
+                        reason: None,
+                        event_id: EventId::new(),
+                        correlation_id: CorrelationId::new(),
+                        completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                    },
+                    Err(SessionUseCaseError::Store(SessionStoreError::Unavailable(message))) => {
+                        return Err(AutomationDriverError::SessionUnavailable(message));
+                    }
+                    Err(error) => CompleteAutomationRunCommit {
+                        automation_id: candidate.automation.automation_id,
+                        automation_run_id: run.automation_run_id,
+                        owner_id: worker_id,
+                        status: AutomationRunStatus::Failed,
+                        inbox_entry_id: None,
+                        outbox_id: None,
+                        reason: Some(automation_admission_failure(&error).to_owned()),
+                        event_id: EventId::new(),
+                        correlation_id: CorrelationId::new(),
+                        completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                    },
+                }
+            }
+        };
+        match guard.complete_automation_run(completion) {
+            Ok(_) => {}
+            Err(mealy_application::AutomationStoreError::Unauthorized)
+                if matches!(candidate.automation.action, AutomationAction::Notify { .. }) =>
+            {
+                guard.complete_automation_run(CompleteAutomationRunCommit {
+                    automation_id: candidate.automation.automation_id,
+                    automation_run_id: run.automation_run_id,
+                    owner_id: worker_id,
+                    status: AutomationRunStatus::Failed,
+                    inbox_entry_id: None,
+                    outbox_id: None,
+                    reason: Some("notification_target_unauthorized".to_owned()),
+                    event_id: EventId::new(),
+                    correlation_id: CorrelationId::new(),
+                    completed_at_ms: automation_now_ms(clock_offset_ms)?,
+                })?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        completed += 1;
+    }
+    Ok(completed)
+}
+
+fn automation_admission_failure(error: &SessionUseCaseError) -> &'static str {
+    match error {
+        SessionUseCaseError::Store(SessionStoreError::Backpressure) => "session_backpressure",
+        SessionUseCaseError::Store(SessionStoreError::SessionNotFound) => "session_not_found",
+        SessionUseCaseError::Store(SessionStoreError::Unauthorized) => "session_unauthorized",
+        SessionUseCaseError::Store(SessionStoreError::IdempotencyConflict) => {
+            "automation_idempotency_conflict"
+        }
+        SessionUseCaseError::Store(SessionStoreError::Conflict) => "session_admission_conflict",
+        SessionUseCaseError::Store(SessionStoreError::InvariantViolation(_)) => {
+            "session_invariant_violation"
+        }
+        SessionUseCaseError::Store(SessionStoreError::Unavailable(_)) => {
+            "session_store_unavailable"
+        }
+        SessionUseCaseError::EmptyDedupeKey
+        | SessionUseCaseError::DedupeKeyTooLarge { .. }
+        | SessionUseCaseError::EmptyContent
+        | SessionUseCaseError::ContentTooLarge { .. }
+        | SessionUseCaseError::InvalidQueueCapacity
+        | SessionUseCaseError::InvalidProviderSelection
+        | SessionUseCaseError::InvalidImageInput => "automation_input_invalid",
+    }
+}
+
+fn automation_now_ms(clock_offset_ms: i64) -> Result<i64, AutomationDriverError> {
+    let duration = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| AutomationDriverError::Time)?;
+    i64::try_from(duration.as_millis())
+        .map_err(|_| AutomationDriverError::Time)?
+        .checked_add(clock_offset_ms)
+        .ok_or(AutomationDriverError::Time)
+}
+
+#[derive(Debug, ThisError)]
+enum AutomationDriverError {
+    #[error("automation store lock is unavailable")]
+    Lock,
+    #[error("automation time is outside the supported epoch range")]
+    Time,
+    #[error("automated session admission is unavailable: {0}")]
+    SessionUnavailable(String),
+    #[error(transparent)]
+    Store(#[from] mealy_application::AutomationStoreError),
 }
 
 async fn telegram_driver(
@@ -3954,6 +4257,25 @@ struct RoutedOutboxDelivery {
     slack_target: Option<OutboundSlackTarget>,
     supported: bool,
     valid_payload: bool,
+    route_failure: Option<String>,
+}
+
+struct OutboxRouteTargets {
+    webhook: Option<OutboundWebhookTarget>,
+    telegram: Option<OutboundTelegramTarget>,
+    discord: Option<OutboundDiscordTarget>,
+    slack: Option<OutboundSlackTarget>,
+    remote_continuation_id: Option<RemoteContinuationId>,
+    slack_route_error: Option<String>,
+}
+
+impl OutboxRouteTargets {
+    fn count(&self) -> usize {
+        usize::from(self.webhook.is_some())
+            + usize::from(self.telegram.is_some())
+            + usize::from(self.discord.is_some())
+            + usize::from(self.slack.is_some())
+    }
 }
 
 enum OutboxDeliveryResult {
@@ -3970,6 +4292,8 @@ enum OutboxDriverError {
     Lock,
     #[error("outbox blocking worker failed")]
     Join,
+    #[error("outbox delivery clock is outside the supported epoch range")]
+    Time,
     #[error(transparent)]
     Outbox(#[from] OutboxUseCaseError),
     #[error(transparent)]
@@ -4037,6 +4361,8 @@ async fn drive_outbox_batch(
                 &routed.delivery,
             )
             .await
+        } else if let Some(error) = routed.route_failure {
+            OutboxDeliveryResult::Terminal(error)
         } else if routed.supported && routed.valid_payload {
             tracing::debug!(
                 outbox_id = %routed.delivery.outbox_id,
@@ -4098,67 +4424,141 @@ fn claim_routed_outbox(
             | "session.turn_completed"
             | "delegation.completed"
             | "effect.approval_requested"
+            | "automation.notification"
     );
+    let targets = resolve_outbox_route_targets(&mut guard, &delivery, payload.as_ref())?;
+    if targets.count() > 1 {
+        return Err(OutboxDriverError::AmbiguousRoute);
+    }
+    let route_failure =
+        automation_notification_route_failure(&delivery.topic, payload.as_ref(), &targets);
+    Ok(Some(RoutedOutboxDelivery {
+        delivery,
+        webhook_target: targets.webhook,
+        telegram_target: targets.telegram,
+        discord_target: targets.discord,
+        slack_target: targets.slack,
+        supported,
+        valid_payload,
+        route_failure,
+    }))
+}
+
+fn resolve_outbox_route_targets(
+    store: &mut SqliteStore,
+    delivery: &OutboxDelivery,
+    payload: Option<&Value>,
+) -> Result<OutboxRouteTargets, OutboxDriverError> {
     let session_id = payload
-        .as_ref()
         .and_then(|value| value.get("session_id"))
         .and_then(serde_json::Value::as_str)
         .and_then(|session_id| session_id.parse().ok());
     let webhook_target = session_id
-        .map(|session_id| guard.outbound_webhook_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_webhook_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let telegram_target = session_id
-        .map(|session_id| guard.outbound_telegram_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_telegram_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let discord_target = session_id
-        .map(|session_id| guard.outbound_discord_target(session_id, &delivery.topic))
+        .map(|session_id| store.outbound_discord_target(session_id, &delivery.topic))
         .transpose()?
         .flatten();
     let inbox_entry_id = payload
-        .as_ref()
         .and_then(|value| value.get("inbox_entry_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<InboxEntryId>().ok());
     let task_id = payload
-        .as_ref()
         .and_then(|value| value.get("task_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<TaskId>().ok());
     let approval_id = payload
-        .as_ref()
         .and_then(|value| value.get("approval_id"))
         .and_then(Value::as_str)
         .and_then(|value| value.parse::<ApprovalId>().ok());
-    let slack_target = session_id
+    let remote_continuation_id = payload
+        .and_then(|value| value.get("remote_continuation_id"))
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<RemoteContinuationId>().ok());
+    let observed_at_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| OutboxDriverError::Time)?
+            .as_millis(),
+    )
+    .map_err(|_| OutboxDriverError::Time)?;
+    let slack_resolution = session_id
         .map(|session_id| {
-            guard.outbound_slack_target(SlackOutboundContext {
+            store.outbound_slack_target(SlackOutboundContext {
                 session_id,
                 topic: &delivery.topic,
                 inbox_entry_id,
                 task_id,
                 approval_id,
+                remote_continuation_id,
+                observed_at_ms,
             })
         })
-        .transpose()?
-        .flatten();
-    let route_count = usize::from(webhook_target.is_some())
-        + usize::from(telegram_target.is_some())
-        + usize::from(discord_target.is_some())
-        + usize::from(slack_target.is_some());
-    if route_count > 1 {
-        return Err(OutboxDriverError::AmbiguousRoute);
+        .transpose();
+    let (slack_target, slack_route_error) = match slack_resolution {
+        Ok(target) => (target.flatten(), None),
+        Err(
+            SlackChannelStoreError::NotFound
+            | SlackChannelStoreError::Revoked
+            | SlackChannelStoreError::Conflict
+            | SlackChannelStoreError::InvalidContract(_),
+        ) if delivery.topic == "automation.notification" => (
+            None,
+            Some("Slack remote continuation is absent, expired, or revoked".to_owned()),
+        ),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(OutboxRouteTargets {
+        webhook: webhook_target,
+        telegram: telegram_target,
+        discord: discord_target,
+        slack: slack_target,
+        remote_continuation_id,
+        slack_route_error,
+    })
+}
+
+fn automation_notification_route_failure(
+    topic: &str,
+    payload: Option<&Value>,
+    targets: &OutboxRouteTargets,
+) -> Option<String> {
+    if topic != "automation.notification" {
+        return None;
     }
-    Ok(Some(RoutedOutboxDelivery {
-        delivery,
-        webhook_target,
-        telegram_target,
-        discord_target,
-        slack_target,
-        supported,
-        valid_payload,
-    }))
+    let declared_notification_route = payload
+        .and_then(|value| value.get("notification_route"))
+        .and_then(Value::as_str);
+    let remote_continuation_declared = payload
+        .and_then(|value| value.get("remote_continuation_id"))
+        .is_some();
+    targets.slack_route_error.clone().or_else(|| {
+        let route_count = targets.count();
+        let exact = match declared_notification_route {
+            Some("local") => route_count == 0 && !remote_continuation_declared,
+            Some("signed_webhook") => targets.webhook.is_some() && route_count == 1,
+            Some("telegram") => targets.telegram.is_some() && route_count == 1,
+            Some("discord") => targets.discord.is_some() && route_count == 1,
+            Some("slack_remote_continuation") => {
+                targets.remote_continuation_id.is_some()
+                    && targets
+                        .slack
+                        .as_ref()
+                        .and_then(|target| target.remote_continuation_id)
+                        == targets.remote_continuation_id
+                    && route_count == 1
+            }
+            _ => false,
+        };
+        (!exact)
+            .then(|| "automation notification route is malformed, expired, or revoked".to_owned())
+    })
 }
 
 async fn deliver_signed_webhook(
@@ -4658,7 +5058,30 @@ fn render_slack_outbox(delivery: &OutboxDelivery) -> Result<String, &'static str
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\nApproval: {approval_id}\n\nFor safety, approve or deny from the owner-local Mealy dashboard or mealyctl; Slack replies cannot grant authority."
             ))
         }
+        "automation.notification" => render_automation_notification(payload),
         _ => Err("Slack topic is unsupported"),
+    }
+}
+
+fn render_automation_notification(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<String, &'static str> {
+    let message = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| {
+            !message.is_empty()
+                && message.len() <= mealy_application::MAXIMUM_AUTOMATION_MESSAGE_BYTES
+        })
+        .ok_or("automation notification is absent or oversized")?;
+    let source_event_type = payload.get("source_event_type").and_then(Value::as_str);
+    let source_event_cursor = payload.get("source_event_cursor").and_then(Value::as_u64);
+    match (source_event_type, source_event_cursor) {
+        (Some(event_type), Some(cursor)) => Ok(format!(
+            "Mealy automation:\n{message}\n\nTrigger: {event_type} at timeline cursor {cursor}"
+        )),
+        (None, None) => Ok(format!("Mealy automation:\n{message}")),
+        _ => Err("automation notification source evidence is incomplete"),
     }
 }
 
@@ -4710,6 +5133,7 @@ fn render_discord_outbox(delivery: &OutboxDelivery) -> Result<String, &'static s
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\n\nApprove: /approve {approval_id} {subject_digest}\nDeny: /deny {approval_id} {subject_digest}"
             )
         }
+        "automation.notification" => render_automation_notification(payload)?,
         _ => return Err("Discord topic is unsupported"),
     };
     Ok(truncate_discord_message(&text))
@@ -4775,6 +5199,7 @@ fn render_telegram_outbox(delivery: &OutboxDelivery) -> Result<String, &'static 
                 "Mealy approval required\nTool: {tool_id}\nTargets: {targets}\nArguments: {arguments}\nSubject: {subject_digest}\n\nApprove: /approve {approval_id} {subject_digest}\nDeny: /deny {approval_id} {subject_digest}"
             )
         }
+        "automation.notification" => render_automation_notification(payload)?,
         _ => return Err("Telegram topic is unsupported"),
     };
     Ok(truncate_telegram_message(&text))
@@ -4888,7 +5313,8 @@ fn epoch_milliseconds(time: SystemTime) -> Result<i64, Box<dyn Error + Send + Sy
 #[cfg(test)]
 mod schedule_driver_tests {
     use super::{
-        DiscordInboundAction, RuntimeStore, TelegramInboundAction, TelegramSendAcknowledgement,
+        DiscordInboundAction, OutboxRouteTargets, RuntimeStore, TelegramInboundAction,
+        TelegramSendAcknowledgement, automation_notification_route_failure,
         classify_telegram_send_acknowledgement, discord_approval_action, discord_message_action,
         discord_success_delay, drive_schedule_batch, render_discord_outbox, render_telegram_outbox,
         schedule_now_ms, telegram_approval_action,
@@ -5019,6 +5445,65 @@ mod schedule_driver_tests {
         assert!(rendered.contains("Targets: [\"workspace://notes/today.md\"]"));
         assert!(rendered.contains(&format!("Approve: /approve {approval_id} {digest}")));
         assert!(rendered.contains(&format!("Deny: /deny {approval_id} {digest}")));
+    }
+
+    #[test]
+    fn automation_notification_renders_static_text_and_source_identity_only() {
+        let delivery = OutboxDelivery {
+            outbox_id: OutboxId::new(),
+            topic: "automation.notification".to_owned(),
+            payload_json: serde_json::json!({
+                "session_id": mealy_domain::SessionId::new(),
+                "message": "The watched session completed.",
+                "source_event_type": "turn.completed",
+                "source_event_cursor": 42,
+                "source_payload": "PRIVATE-SOURCE-PAYLOAD-MUST-NOT-RENDER",
+            })
+            .to_string(),
+            attempt: 1,
+        };
+        for rendered in [
+            render_telegram_outbox(&delivery).expect("render Telegram automation"),
+            render_discord_outbox(&delivery).expect("render Discord automation"),
+        ] {
+            assert!(rendered.contains("The watched session completed."));
+            assert!(rendered.contains("turn.completed"));
+            assert!(rendered.contains("timeline cursor 42"));
+            assert!(!rendered.contains("PRIVATE-SOURCE-PAYLOAD-MUST-NOT-RENDER"));
+        }
+    }
+
+    #[test]
+    fn automation_notification_route_cannot_downgrade_malformed_remote_identity_to_local() {
+        let targets = OutboxRouteTargets {
+            webhook: None,
+            telegram: None,
+            discord: None,
+            slack: None,
+            remote_continuation_id: None,
+            slack_route_error: None,
+        };
+        let local = serde_json::json!({"notification_route": "local"});
+        assert_eq!(
+            automation_notification_route_failure(
+                "automation.notification",
+                Some(&local),
+                &targets,
+            ),
+            None
+        );
+        let malformed = serde_json::json!({
+            "notification_route": "local",
+            "remote_continuation_id": "not-a-uuid",
+        });
+        assert!(
+            automation_notification_route_failure(
+                "automation.notification",
+                Some(&malformed),
+                &targets,
+            )
+            .is_some()
+        );
     }
 
     #[test]

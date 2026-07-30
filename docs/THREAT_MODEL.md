@@ -35,6 +35,7 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
 | Remote MCP HTTP server | Untrusted external service confined to an exact endpoint/credential/catalog-item/effect-class grant and bounded fresh session |
 | Chrome Headless Shell and rendered page | Untrusted browser/runtime content confined to a fresh agent-only profile, private network namespace, and exact GET/HEAD destination grant |
 | Provider/service | External dependency; responses untrusted, credential scope limited |
+| OTLP Collector | Optional external derived-view sink; responses untrusted, never an audit authority |
 | Image-generation provider and output | External billable effect; response metadata and binary bytes are untrusted |
 | Official subscription client | Trusted owner-installed authentication/transport broker; executable identity pinned, model decision untrusted |
 | Sandbox worker | Disposable, lower-trust process |
@@ -58,6 +59,8 @@ This is risk reduction, not a claim that arbitrary native code can be perfectly 
     fencing, cost/output reservation, bounded response parsing, isolated media normalization, and
     atomic content-addressed settlement.
 11. SQLite/artifacts to presentation: authorization and redaction.
+12. Typed observability record to OTLP Collector: fixed allowlist, bounded protobuf transport, and
+    no general log bridge, arbitrary attributes, ambient configuration, or collector credentials.
 
 Session IDs, task IDs, continuation tokens, and shared gateway secrets are never principal boundaries by themselves.
 
@@ -70,6 +73,44 @@ Controls: model is untrusted; typed tool schema; default-deny policy; exact appr
 ### Duplicate external effect after crash
 
 Controls: durable intent-before-dispatch; stable idempotency key where supported; effect outcome state; stale-lease fencing; `outcome_unknown` reconciliation; no automatic non-idempotent retry.
+
+### Telemetry exports private content or becomes a new availability dependency
+
+Controls: export is absent unless the owner explicitly configures an OTLP origin.
+`mealy-observability` does not subscribe to the general `tracing` stream because HTTP URIs,
+provider/tool errors, and nested events can contain private material. Its closed API accepts only
+bounded canonical task/run/turn/session/correlation IDs, a fixed outcome, start time, and duration.
+Resource attributes are constructed from an empty detector set and contain only service
+name/version/schema. Metrics use fixed outcome labels only.
+
+The custom OTLP/HTTP protobuf transport reads no `OTEL_*` or proxy environment, accepts no
+arbitrary header or credential, refuses redirects and non-HTTPS remote origins, and caps queues,
+batches, cardinality, encoded bodies, responses, intervals, and timeouts. Collector error text is
+never reflected. Pressure drops optional spans; timeout, partial rejection, or shutdown failure
+cannot change canonical state, replay evidence, or drain classification. The Collector is a
+derived operational view and cannot grant authority or replace the durable event ledger.
+
+### Automation replays history, loops on its own output, or widens unattended authority
+
+Controls: automation creation uses one canonical UUIDv7 semantic key and exact owner/source/target
+bindings. A future-event definition records the global high watermark in its creation transaction;
+edit and resume establish a new watermark, so history and paused-time events are skipped. Matching
+requires the exact source session aggregate and exact canonical event type. Event rules are
+notification-only: source payload is never copied, and they cannot admit prompts, preventing
+journal content from becoming model input or an autonomous event-to-agent cycle.
+
+One-shot prompt actions admit through the existing bounded inbox with a deterministic occurrence
+key. Action-mode text needs explicit automation opt-in but retains ordinary capability, exact
+approval, effect, sandbox, and recovery controls. Claims are durable and owner fenced; expiry
+reclaims the same run identity. Notification terminal state, outbox row, cursor/status transition,
+and journal event commit atomically. Static notification destinations are restricted to same-owner
+local, active webhook, Telegram, or Discord routes, or an exact short-lived Slack continuation
+pinned to a previously admitted owner thread. Slack prompt automation remains rejected.
+Definitions store the exact continuation ID and cannot select a newest/ambient thread. Revocation
+never restores authority. Safe mode starts no driver and permits no mutation. The exact target
+binding and continuation are revalidated immediately before notification outbox publication and
+again at delivery claim; a revoked or expired target cannot fall back to local delivery. Bounded
+status, metrics, doctor, and run history expose stuck or failed work without source payloads.
 
 ### Image generation duplicates spend or publishes hostile output
 
@@ -121,6 +162,15 @@ bot-token app identity before events are accepted. Routes may share a connection
 workspace, app, bot, and both secret identities/digests agree. Runtime input repeats the exact
 workspace/conversation/member claims and rejects bot, subtype, malformed, or unmentioned shared
 messages. Token possession alone is not a local principal boundary.
+
+Proactive Slack continuation requires a separate local-owner command that pins one exact thread
+already represented by an admitted envelope matching that binding's workspace, conversation,
+member, and session. The client-proposed UUIDv7 is an exact retry key; creation records a
+no-replay timeline high cursor and a one-minute-to-30-day exclusive expiry. Only one effective pin
+per binding is allowed. Automation names the exact pin, and create/edit, outbox publication, and
+delivery claim all revalidate it. Expiry, explicit revision-fenced revoke, or parent-binding revoke
+removes authority without deleting evidence. No inbound listener or latest-thread heuristic is
+introduced.
 
 ### Channel backlog, rate, mention, and duplicate-message abuse
 
@@ -412,6 +462,34 @@ buckets, or non-exact browser integers. The per-task adapter distinguishes used 
 microunits. Neither view labels configured provider-neutral microunits as an invoice or infers
 unsupported upstream billing axes. Financial reconciliation still requires the provider's records.
 
+### Semantic retrieval leaks memory or revives corrected/deleted content
+
+Controls: semantic memory is absent by default and has no background auto-discovery or auto-rebuild
+path. The owner must stop the daemon and approve an exact endpoint/model/dimension/prefix/residency
+policy before any embedding call. Literal-loopback HTTP is the only clear-text exception; every
+other endpoint requires HTTPS and a broker credential. The adapter disables ambient proxy use,
+refuses redirects, bounds batch/text/response/time dimensions, and maps all downstream failures to
+fixed local codes without returning the endpoint, credential, memory/query text, or response body.
+A dedicated bounded worker owns and destroys the blocking client and zeroizing credential outside
+the asynchronous control thread.
+
+Vectors are derived per-principal rows tied to the exact active memory/revision/content digest,
+workspace, complete non-secret policy digest, and dimensions. Rebuild reads all active candidates,
+embeds outside the writer, and atomically replaces the complete set only after rechecking every
+canonical fence. Partial or mixed-policy sets cannot become healthy. Search first applies owner,
+channel, workspace, active-status, sensitivity, and digest filters, then performs bounded cosine
+rank and deterministic fusion. Semantic-only matches still return the normal cited canonical
+memory; vectors never enter context as evidence.
+
+Lifecycle triggers delete affected vectors and mark the principal index stale when active content
+or status changes, including correction, expiry, rejection, or deletion. Stale, degraded,
+unbuilt, disabled, endpoint-unavailable, wrong-policy, or wrong-dimension states are not searched;
+the API reports a fixed reason and uses lexical retrieval. State and invalidation survive restart.
+Backups, exports, retention, and tombstones continue to derive from canonical memory rather than
+the cache. Operators must still treat a remote embedding service as a disclosure recipient:
+rebuild sends every active owner memory, queries send owner search text, and embeddings may leak
+semantic or membership information even when raw content is not stored locally with the vector.
+
 ### Session metadata, fork, or export is used to smuggle control or inherited authority
 
 Controls: fallback titles are local deterministic projections and never provider output. Owner
@@ -539,6 +617,15 @@ descriptor itself with no-follow semantics, validates the metadata on that exact
 caps it at 64 KiB, and accepts only a 32-byte bearer plus a literal loopback HTTP origin. This
 prevents a permissive or redirected parent directory from turning an otherwise private descriptor
 check into bearer disclosure.
+The reusable Rust SDK accepts a parsed descriptor only after rechecking its v1 version, exact
+32-byte base64url bearer shape, and literal-loopback HTTP origin with an explicit port. It does not
+claim to load the file safely on behalf of an embedding application. Its general constructor
+allows HTTPS for future owner-controlled remote continuation, but non-loopback clear-text origins,
+URL credentials, base paths, queries, and fragments are rejected. Ambient proxies and redirects
+are disabled, authorization headers are marked sensitive, debug output is redacted, responses are
+bounded independently of `Content-Length`, typed command serialization is bounded before dispatch
+and held in a zeroizing source buffer, and incompatible or terminal-unsafe structured errors are
+rejected before an application can display them.
 Dashboard memory explicitly warns that credential-category content is a reference only. The
 adapter never accepts arbitrary source locators, but it cannot determine whether owner-entered
 content is itself a secret; typed review, sensitivity/category metadata, owner-local exposure, and
@@ -604,6 +691,98 @@ backup/restore verification; bounded at-rest compression whose declared and actu
 sizes, UTF-8/JSON shape, and logical digest are rechecked before dispatch/replay; optional encryption
 and future hash-chain checkpoints.
 
+### Registry or mirror serves substituted, withdrawn, frozen, or older packages
+
+Controls: a registry starts only from an owner-configured out-of-band root with exact registry
+identity, monotonic root version, expiry, ordered Ed25519 key IDs, and a signature threshold.
+Signed snapshots expire within seven days, advance monotonically, reject new bytes at an accepted
+version, and separately bind publisher key thresholds, target descriptors, and withdrawals.
+Publisher-signed releases bind exact package/publisher/version/class, host compatibility,
+manifest/archive media type, size and SHA-256, publication time, and the complete dependency
+release-envelope digest closure. Exact decoded payload bytes are domain-separated before strict
+signature verification, so parser reserialization cannot change signature meaning.
+
+Discovery remains inert. Optional snapshot retrieval fetches only signed data; it performs no
+package extraction, extension import, skill activation, configuration write, staging, or grant. A
+candidate must later pass the existing full-inventory skill/extension inspector and present an
+exact permission diff; an old grant is never inherited.
+An initial root is exact out-of-band owner input. A rotation envelope must satisfy both current and
+candidate thresholds and advance exactly one version. Schema 24 stores immutable exact root and
+snapshot bytes plus monotonic heads; acceptance reloads the active root and prior fence and repeats
+verification inside one immediate transaction. The stopped-home CLI reads only bounded nonempty
+no-follow regular files, requires separate approval for root/snapshot state changes, excludes a
+live daemon with the canonical home lock, and refuses to create or migrate the database. Summary
+output withholds public-key bodies and signed payloads.
+
+Mirror access requires a canonical owner-selected HTTPS directory and derives only the fixed
+current-snapshot path or a SHA-256 object path from signed metadata. Credentials, queries,
+fragments, ambiguous paths, HTTP, loopback, private/special addresses, and mixed public/private
+DNS answers are rejected. The complete DNS answer is pinned into TLS and the response peer must
+match; proxy, redirect, referrer, ambient authentication, content decoding, non-200 status, media
+type drift, timeout, and byte-limit violations fail closed. Snapshot bytes are still untrusted
+until local threshold, expiry, identity, rollback, and equivocation verification succeeds.
+Content-addressed objects additionally require exact signed type, length, and digest. Transport
+failure cannot advance state, and refresh holds the stopped-home lock across network and commit.
+Refresh additionally requires the exact envelope digest printed by the preceding fetch, so the
+mutable current path cannot change between owner review and apply. The implementation shares the
+same reviewed IANA special-address policy as web, MCP, and browser egress so the deny list cannot
+drift independently. Installed registry skills are reprojected against the newest accepted
+snapshot and their exact accepted/staged provenance. Withdrawal, target removal, identity
+substitution, or missing/mismatched evidence prevents activation and suppresses configured
+instructions at daemon restart. This is deliberately non-destructive: immutable bytes and evidence
+remain available for diagnosis or rollback, and mere snapshot expiry does not disable an offline
+installation. Registry extensions receive the same policy projection before enable and every
+invocation, so a prior grant cannot resume after restart under withdrawn or substituted evidence.
+
+Publisher-release retrieval is selected only by the active snapshot's signed content descriptor.
+Review prints the exact envelope digest, publisher, host range, manifest/archive descriptors, and
+dependency closure without retaining authority. Approved acceptance requires that same digest and
+repeats active-root/current-snapshot, publisher threshold, withdrawal, dependency, compatibility,
+and descriptor verification inside schema 25's immediate transaction. The immutable row binds the
+first admitting root/snapshot, host API, exact envelope/payload, manifest, and archive identities.
+A newer withdrawal blocks acceptance but does not erase historical evidence. Root rotation makes
+the prior snapshot ineligible until a newly authorized snapshot is accepted.
+
+An accepted release may then drive `package-fetch`, but only while its exact envelope is still
+authorized by the current unexpired snapshot under the active root. The command retrieves the two
+content-addressed objects, binds the manifest's semantic identity to the signed release, and
+inspects deterministic USTAR entirely in memory. Only regular files with canonical relative paths,
+zero owner/group/time/padding, strict data/executable modes, two exact trailer blocks, and the exact
+manifest-declared inventory/digests/sizes are accepted. Links, devices, FIFOs, sparse/PAX/GNU
+extensions, duplicate/traversal/extra paths, malformed checksums, control-bearing instructions,
+and trailing bytes fail closed. No archive extraction helper is called, so no attacker-selected
+path is created and no extraction-destination time-of-check race exists.
+
+An owner may then run `package-stage` with the exact archive digest printed by that review and
+explicit approval. The command repeats retrieval and inspection, takes a fresh clock after both
+network reads, and revalidates current root/snapshot/release/withdrawal authority before the
+immediate schema 26 transaction repeats those checks. SQLite accepts only the strict inspector's
+opaque result and exact content-addressed blob descriptors, rather than a caller-asserted success
+flag. Private atomic blob publication may precede a database failure, but that leaves only an
+unreferenced, age-gated artifact-store orphan; immutable package evidence is the sole path to a
+durable staged identity. Neither path extracts code, installs a skill, activates an extension, or
+creates a grant.
+
+`package-plan` then rereads both staged blobs and repeats current release authorization before
+comparing the candidate with canonical installed state. The plan digest binds exact publisher,
+release, manifest, archive, prior revision/status, permission or governed-tool reference diff,
+content changes, widening, and authority-reset intent. `package-install` checks approval before
+work, rebuilds that plan under the stopped-home lock, and refuses any digest drift. Skills pass
+only through the opaque extraction-free inspected package and existing immutable skill lifecycle.
+New, updated, or rollback skill bytes are configured disabled; prior instructions therefore
+cannot remain active across a changed manifest. Identical skill bytes may adopt signed provenance
+without changing their status. Required tools remain ungranted references, and a separate
+exact-manifest-digest approval is still required to enable instructions.
+
+For extensions, installation copies only the authenticated manifest and executable to a private
+content-addressed temporary root, synchronizes and atomically renames it, rejects redirected or
+conflicting destinations, and re-inspects exact executable identity without executing it. Schema
+27 binds that exact signed evidence to the immutable extension revision. Install creates no grant;
+update, rollback, and identical-byte evidence adoption create a new disabled revision at the
+registry-published root and terminally supersede any old grant. A separate health-probed explicit
+grant remains required for enablement, and current accepted registry policy is checked again
+before enable and each invocation.
+
 ### A staging asset substitutes a different release daemon
 
 Controls: the x86-64 soak subject is never selected by a mutable URL, display name alone, or a
@@ -620,6 +799,30 @@ binary's digest and version to the report. RustSec binary audit, real service ex
 package checksums, GitHub provenance attestations, immutable release creation, and public
 clean-host install tests all occur after promotion. The draft asset and current-run artifact are
 transport, not authority: mutating or replacing either cannot satisfy the committed digest.
+
+### A scenario file becomes an authority or data-exfiltration path
+
+Threat: an untrusted evaluation suite asks the test runner to approve a mutation, inject a crash,
+read daemon storage, call an arbitrary URL, select hidden provider behavior, or copy prompts,
+responses, tool arguments, validation bodies, and timeline payloads into a CI artifact.
+
+Controls: `mealyctl eval` is an isolated command namespace. Offline preflight opens one nonempty
+no-follow regular file, caps it at 2 MiB, rejects unknown fields, limits it to 128 cases and
+256 KiB input per case, and bounds time, polling, identifiers, event names, and timeline volume.
+The runner constructs the fail-closed typed client on a blocking worker and uses only public
+session/input/timeline/task/replay methods. Every case gets a fresh session. Scenario fields
+cannot name an approval decision, tool grant, effect dispatch, host command, storage path, fault
+injection, service action, report destination, arbitrary HTTP endpoint, or report attribute.
+
+The evaluator never resolves an approval. An effect scenario must expect a parked task or rely on
+a separately governed actor outside the evaluator. Reports use fixed assertion names and contain
+only bounded IDs, counters, statuses, validation references, digests, and first/last relevant
+event-envelope citations. They omit all model/tool-authored bodies and arbitrary errors. A
+real-daemon process case proves a write proposal parks and creates no file, and report canaries
+prove private inputs and timeline/validation payloads are absent. Suite/input SHA-256 commitments
+can reveal equality or allow guesses of low-entropy content, so reports remain sensitivity-scoped
+rather than automatically public. The report digest is integrity evidence, not signer identity;
+release publication must place it in the ordinary attestation chain.
 
 ### Public repository controls change after manifest verification
 
@@ -653,6 +856,13 @@ installation.
 - Duplicate delivery and stale lease tests prove no unauthorized transition.
 - Provider payload and child environment tests prove secret minimization.
 - Extension-host crash and malicious-request fixtures cannot stop or bypass the daemon.
+- Registry fixtures prove threshold signatures, exact target membership, expiry, rollback and
+  same-version-equivocation denial, withdrawal, host compatibility, dependency-envelope locks,
+  strict descriptors, and deterministic permission-diff widening without fetching or executing
+  package content.
+- Schema-24 fixtures prove out-of-band bootstrap, dual-threshold consecutive root rotation,
+  transaction-local reverification, stale/rollback denial, immutable evidence, restart persistence,
+  v23 upgrade preservation, complete infrastructure integrity, and migration-backup compatibility.
 - MCP fixtures prove stdio network/filesystem/environment/process isolation plus HTTP
   SSRF/redirect/credential/session confinement, framing and output bounds, complete-catalog
   executable/endpoint drift denial, cancellation, daemon survival, and zero-execution replay.

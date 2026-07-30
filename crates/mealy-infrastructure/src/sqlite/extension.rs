@@ -1,11 +1,12 @@
 use super::{SqliteStore, agent};
 use mealy_application::{
-    BeginExtensionInvocationCommit, CompleteExtensionInvocationCommit, DisableExtensionCommit,
-    EnableExtensionCommit, ExtensionGrant, ExtensionInvocationStatus, ExtensionInvocationTerminal,
-    ExtensionInvocationView, ExtensionManifestRevisionView, ExtensionStore, ExtensionStoreError,
-    ExtensionView, InstallExtensionCommit, OwnershipContext, RevokeExtensionCommit,
-    StageExtensionManifestCommit, extension_grant_digest, is_sha256_digest, sha256_digest,
-    validate_extension_object,
+    AdoptExtensionRegistryProvenanceCommit, BeginExtensionInvocationCommit,
+    CompleteExtensionInvocationCommit, DisableExtensionCommit, EnableExtensionCommit,
+    ExtensionGrant, ExtensionInvocationStatus, ExtensionInvocationTerminal,
+    ExtensionInvocationView, ExtensionManifestRevisionView, ExtensionRegistryProvenance,
+    ExtensionStore, ExtensionStoreError, ExtensionView, InstallExtensionCommit, OwnershipContext,
+    RevokeExtensionCommit, StageExtensionManifestCommit, extension_grant_digest, is_sha256_digest,
+    sha256_digest, validate_extension_object,
 };
 use mealy_domain::{
     CorrelationId, EventId, ExtensionId, ExtensionInvocationId, ExtensionManifest, ExtensionStatus,
@@ -124,10 +125,21 @@ impl ExtensionStore for SqliteStore {
             commit.event_id,
             installed_at_ms,
         )?;
+        insert_registry_provenance(
+            &transaction,
+            extension_id,
+            1,
+            &commit.inspection.manifest,
+            &commit.inspection.manifest_digest,
+            commit.registry_provenance.as_ref(),
+            commit.event_id,
+            installed_at_ms,
+        )?;
         transaction.commit().map_err(map_sqlite_error)?;
         load_extension(&self.connection, commit.ownership, extension_id)
     }
 
+    #[allow(clippy::too_many_lines)] // One transaction stages evidence and resets prior authority.
     fn stage_extension_manifest(
         &mut self,
         commit: StageExtensionManifestCommit,
@@ -158,7 +170,8 @@ impl ExtensionStore for SqliteStore {
         if current.status == "revoked"
             || current.name != commit.inspection.manifest.name
             || current.publisher != commit.inspection.manifest.publisher
-            || current.manifest_digest == commit.inspection.manifest_digest
+            || (current.manifest_digest == commit.inspection.manifest_digest
+                && commit.registry_provenance.is_none())
         {
             return Err(ExtensionStoreError::Conflict);
         }
@@ -201,6 +214,16 @@ impl ExtensionStore for SqliteStore {
             commit.event_id,
             staged_at_ms,
         )?;
+        insert_registry_provenance(
+            &transaction,
+            commit.extension_id,
+            ordinal,
+            &commit.inspection.manifest,
+            &commit.inspection.manifest_digest,
+            commit.registry_provenance.as_ref(),
+            commit.event_id,
+            staged_at_ms,
+        )?;
         let changed = transaction
             .execute(
                 "UPDATE extension_installation SET status = 'installed', revision = revision + 1, \
@@ -218,6 +241,83 @@ impl ExtensionStore for SqliteStore {
                     commit.extension_id.to_string(),
                     commit.ownership.principal_id().to_string(),
                     to_i64(commit.expected_revision, "expected extension revision")?,
+                ],
+            )
+            .map_err(map_sqlite_error)?;
+        if changed != 1 {
+            return Err(ExtensionStoreError::Conflict);
+        }
+        transaction.commit().map_err(map_sqlite_error)?;
+        load_extension(&self.connection, commit.ownership, commit.extension_id)
+    }
+
+    fn adopt_extension_registry_provenance(
+        &mut self,
+        commit: AdoptExtensionRegistryProvenanceCommit,
+    ) -> Result<ExtensionView, ExtensionStoreError> {
+        let adopted_at_ms = epoch_milliseconds(commit.adopted_at)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite_error)?;
+        authorize_identity(&transaction, commit.ownership)?;
+        let current = load_current_for_mutation(
+            &transaction,
+            commit.ownership,
+            commit.extension_id,
+            commit.expected_revision,
+        )?;
+        if current.status == "revoked"
+            || current.manifest_digest != commit.manifest_digest
+            || current.name != commit.registry_provenance.package_id
+            || current.version != commit.registry_provenance.version
+        {
+            return Err(ExtensionStoreError::Conflict);
+        }
+        append_event(
+            &transaction,
+            "extension",
+            &commit.extension_id.to_string(),
+            commit.event_id,
+            "extension.registry_evidence_adopted",
+            adopted_at_ms,
+            commit.ownership.principal_id(),
+            commit.correlation_id,
+            &json!({
+                "extension_id": commit.extension_id,
+                "manifest_digest": commit.manifest_digest,
+                "registry_id": commit.registry_provenance.registry_id,
+                "package_id": commit.registry_provenance.package_id,
+                "version": commit.registry_provenance.version,
+                "release_envelope_digest": commit.registry_provenance.release_envelope_digest,
+                "archive_digest": commit.registry_provenance.archive_digest,
+            }),
+        )?;
+        let manifest = serde_json::from_str::<ExtensionManifest>(&current.manifest_json)
+            .map_err(|error| invariant(error.to_string()))?;
+        insert_registry_provenance(
+            &transaction,
+            commit.extension_id,
+            current.manifest_ordinal,
+            &manifest,
+            &commit.manifest_digest,
+            Some(&commit.registry_provenance),
+            commit.event_id,
+            adopted_at_ms,
+        )?;
+        let changed = transaction
+            .execute(
+                "UPDATE extension_installation
+                 SET revision = revision + 1, updated_event_id = ?1, updated_at_ms = ?2
+                 WHERE extension_id = ?3 AND principal_id = ?4 AND revision = ?5
+                   AND current_manifest_digest = ?6 AND status <> 'revoked'",
+                params![
+                    commit.event_id.to_string(),
+                    adopted_at_ms,
+                    commit.extension_id.to_string(),
+                    commit.ownership.principal_id().to_string(),
+                    to_i64(commit.expected_revision, "expected extension revision")?,
+                    commit.manifest_digest,
                 ],
             )
             .map_err(map_sqlite_error)?;
@@ -696,8 +796,10 @@ struct CurrentExtension {
     status: String,
     name: String,
     publisher: String,
+    version: String,
     manifest_ordinal: i64,
     manifest_digest: String,
+    manifest_json: String,
     active_grant_id: Option<String>,
 }
 
@@ -709,10 +811,18 @@ fn load_current_for_mutation(
 ) -> Result<CurrentExtension, ExtensionStoreError> {
     transaction
         .query_row(
-            "SELECT status, name, publisher, current_manifest_ordinal, \
-                    current_manifest_digest, active_grant_id \
-             FROM extension_installation \
-             WHERE extension_id = ?1 AND principal_id = ?2 AND revision = ?3",
+            "SELECT installation.status, installation.name, installation.publisher,
+                    installation.current_version, installation.current_manifest_ordinal,
+                    installation.current_manifest_digest, revision.manifest_json,
+                    installation.active_grant_id
+             FROM extension_installation installation
+             JOIN extension_manifest_revision revision
+               ON revision.extension_id = installation.extension_id
+              AND revision.ordinal = installation.current_manifest_ordinal
+              AND revision.manifest_digest = installation.current_manifest_digest
+             WHERE installation.extension_id = ?1
+               AND installation.principal_id = ?2
+               AND installation.revision = ?3",
             params![
                 extension_id.to_string(),
                 ownership.principal_id().to_string(),
@@ -723,9 +833,11 @@ fn load_current_for_mutation(
                     status: row.get(0)?,
                     name: row.get(1)?,
                     publisher: row.get(2)?,
-                    manifest_ordinal: row.get(3)?,
-                    manifest_digest: row.get(4)?,
-                    active_grant_id: row.get(5)?,
+                    version: row.get(3)?,
+                    manifest_ordinal: row.get(4)?,
+                    manifest_digest: row.get(5)?,
+                    manifest_json: row.get(6)?,
+                    active_grant_id: row.get(7)?,
                 })
             },
         )
@@ -761,6 +873,46 @@ fn insert_manifest_revision(
                 installation_root,
                 event_id.to_string(),
                 installed_at_ms,
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn insert_registry_provenance(
+    transaction: &Transaction<'_>,
+    extension_id: ExtensionId,
+    ordinal: i64,
+    manifest: &ExtensionManifest,
+    manifest_digest: &str,
+    provenance: Option<&ExtensionRegistryProvenance>,
+    event_id: EventId,
+    recorded_at_ms: i64,
+) -> Result<(), ExtensionStoreError> {
+    let Some(provenance) = provenance else {
+        return Ok(());
+    };
+    validate_registry_provenance(provenance, manifest, manifest_digest)?;
+    transaction
+        .execute(
+            "INSERT INTO extension_manifest_registry_provenance(
+                 extension_id, manifest_ordinal, manifest_digest,
+                 registry_id, package_id, package_version,
+                 release_envelope_digest, archive_digest,
+                 recorded_event_id, recorded_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                extension_id.to_string(),
+                ordinal,
+                manifest_digest,
+                provenance.registry_id,
+                provenance.package_id,
+                provenance.version,
+                provenance.release_envelope_digest,
+                provenance.archive_digest,
+                event_id.to_string(),
+                recorded_at_ms,
             ],
         )
         .map_err(map_sqlite_error)?;
@@ -877,14 +1029,24 @@ fn load_extension(
     })
 }
 
+#[allow(clippy::too_many_lines)] // One projection validates revision and optional registry evidence.
 fn load_manifest_history(
     connection: &rusqlite::Connection,
     extension_id: ExtensionId,
 ) -> Result<Vec<ExtensionManifestRevisionView>, ExtensionStoreError> {
     let mut statement = connection
         .prepare(
-            "SELECT ordinal, manifest_digest, manifest_json, installation_root, installed_at_ms \
-             FROM extension_manifest_revision WHERE extension_id = ?1 ORDER BY ordinal",
+            "SELECT revision.ordinal, revision.manifest_digest, revision.manifest_json,
+                    revision.installation_root, revision.installed_at_ms,
+                    provenance.registry_id, provenance.package_id, provenance.package_version,
+                    provenance.release_envelope_digest, provenance.archive_digest
+             FROM extension_manifest_revision revision
+             LEFT JOIN extension_manifest_registry_provenance provenance
+               ON provenance.extension_id = revision.extension_id
+              AND provenance.manifest_ordinal = revision.ordinal
+              AND provenance.manifest_digest = revision.manifest_digest
+             WHERE revision.extension_id = ?1
+             ORDER BY revision.ordinal",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement
@@ -895,6 +1057,11 @@ fn load_manifest_history(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })
         .map_err(map_sqlite_error)?
@@ -903,7 +1070,21 @@ fn load_manifest_history(
     rows.into_iter()
         .enumerate()
         .map(
-            |(index, (ordinal, digest, manifest_json, installation_root, installed_at_ms))| {
+            |(
+                index,
+                (
+                    ordinal,
+                    digest,
+                    manifest_json,
+                    installation_root,
+                    installed_at_ms,
+                    registry_id,
+                    package_id,
+                    package_version,
+                    release_envelope_digest,
+                    archive_digest,
+                ),
+            )| {
                 if usize::try_from(ordinal).ok() != index.checked_add(1)
                     || sha256_digest(manifest_json.as_bytes()) != digest
                 {
@@ -917,11 +1098,43 @@ fn load_manifest_history(
                 if manifest.extension_id != extension_id {
                     return Err(invariant("extension manifest history identity diverged"));
                 }
+                let registry_provenance = match (
+                    registry_id,
+                    package_id,
+                    package_version,
+                    release_envelope_digest,
+                    archive_digest,
+                ) {
+                    (
+                        Some(registry_id),
+                        Some(package_id),
+                        Some(version),
+                        Some(release_envelope_digest),
+                        Some(archive_digest),
+                    ) => {
+                        let provenance = ExtensionRegistryProvenance {
+                            registry_id,
+                            package_id,
+                            version,
+                            release_envelope_digest,
+                            archive_digest,
+                        };
+                        validate_registry_provenance(&provenance, &manifest, &digest)?;
+                        Some(provenance)
+                    }
+                    (None, None, None, None, None) => None,
+                    _ => {
+                        return Err(invariant(
+                            "extension registry provenance is only partially populated",
+                        ));
+                    }
+                };
                 Ok(ExtensionManifestRevisionView {
                     manifest_digest: digest,
                     manifest,
                     manifest_json,
                     installation_root,
+                    registry_provenance,
                     installed_at_ms,
                 })
             },
@@ -1170,6 +1383,25 @@ fn validate_inspection(
     Ok(())
 }
 
+fn validate_registry_provenance(
+    provenance: &ExtensionRegistryProvenance,
+    manifest: &ExtensionManifest,
+    manifest_digest: &str,
+) -> Result<(), ExtensionStoreError> {
+    if !valid_registry_identifier(&provenance.registry_id)
+        || provenance.package_id != manifest.name
+        || provenance.version != manifest.version
+        || !valid_field(&provenance.package_id, 255)
+        || !valid_field(&provenance.version, 128)
+        || !is_sha256_digest(manifest_digest)
+        || !is_sha256_digest(&provenance.release_envelope_digest)
+        || !is_sha256_digest(&provenance.archive_digest)
+    {
+        return Err(invalid_contract("extension registry provenance is invalid"));
+    }
+    Ok(())
+}
+
 fn authorize_identity(
     connection: &rusqlite::Connection,
     ownership: OwnershipContext,
@@ -1270,6 +1502,14 @@ fn valid_field(value: &str, maximum: usize) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn valid_registry_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
 fn valid_absolute_path(value: &str) -> bool {
     value.starts_with('/')
         && value.len() <= 4_096
@@ -1333,10 +1573,10 @@ mod tests {
     use super::SqliteStore;
     use mealy_application::{
         BeginExtensionInvocationCommit, CompleteExtensionInvocationCommit, EnableExtensionCommit,
-        ExtensionGrant, ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionStore,
-        ExtensionStoreError, InstallExtensionCommit, OwnershipContext, RevokeExtensionCommit,
-        StageExtensionManifestCommit, extension_grant_digest, inspect_extension_manifest,
-        sha256_digest,
+        ExtensionGrant, ExtensionInvocationStatus, ExtensionInvocationTerminal,
+        ExtensionRegistryProvenance, ExtensionStore, ExtensionStoreError, InstallExtensionCommit,
+        OwnershipContext, RevokeExtensionCommit, StageExtensionManifestCommit,
+        extension_grant_digest, inspect_extension_manifest, sha256_digest,
     };
     use mealy_domain::{
         ChannelBindingId, CorrelationId, EXTENSION_MANIFEST_SCHEMA_VERSION, EffectClass, EventId,
@@ -1370,6 +1610,7 @@ mod tests {
                 ownership,
                 inspection: first.clone(),
                 installation_root: "/opt/mealy/extensions/sample".to_owned(),
+                registry_provenance: None,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 installed_at: at(NOW + 1),
@@ -1490,6 +1731,7 @@ mod tests {
                 expected_revision: enabled.revision,
                 inspection: second.clone(),
                 installation_root: "/opt/mealy/extensions/sample-v2".to_owned(),
+                registry_provenance: None,
                 event_id: EventId::new(),
                 correlation_id: CorrelationId::new(),
                 staged_at: at(NOW + 7),
@@ -1546,6 +1788,118 @@ mod tests {
         );
     }
 
+    #[test]
+    #[allow(clippy::too_many_lines)] // One proof covers rollback, evidence adoption, and immutability.
+    fn registry_provenance_is_exact_atomic_and_immutable() {
+        let mut store = SqliteStore::open_in_memory(NOW).expect("open extension store");
+        let ownership = OwnershipContext::new(PrincipalId::new(), ChannelBindingId::new());
+        seed_session(&store, ownership, "registry owner");
+        let extension_id = ExtensionId::new();
+        let inspection = inspection(&manifest(extension_id, "1.0.0"));
+        let archive_digest = "f".repeat(64);
+        let release_digest = "d".repeat(64);
+        seed_registry_extension_package(&store, &inspection, &release_digest, &archive_digest);
+        let provenance = ExtensionRegistryProvenance {
+            registry_id: "dev.mealy.registry".to_owned(),
+            package_id: inspection.manifest.name.clone(),
+            version: inspection.manifest.version.clone(),
+            release_envelope_digest: release_digest,
+            archive_digest,
+        };
+        let commit = |provenance: ExtensionRegistryProvenance| InstallExtensionCommit {
+            ownership,
+            inspection: inspection.clone(),
+            installation_root: "/opt/mealy/extensions/registry/exact".to_owned(),
+            registry_provenance: Some(provenance),
+            event_id: EventId::new(),
+            correlation_id: CorrelationId::new(),
+            installed_at: at(NOW + 1),
+        };
+
+        let mut substituted = provenance.clone();
+        substituted.archive_digest = "0".repeat(64);
+        assert_eq!(
+            store.install_extension(commit(substituted)),
+            Err(ExtensionStoreError::Conflict)
+        );
+        assert_eq!(
+            store.extension(ownership, extension_id),
+            Err(ExtensionStoreError::NotFound),
+            "failed provenance insertion must roll back the installation and journal event"
+        );
+
+        let installed = store
+            .install_extension(InstallExtensionCommit {
+                ownership,
+                inspection: inspection.clone(),
+                installation_root: "/opt/mealy/extensions/local".to_owned(),
+                registry_provenance: None,
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                installed_at: at(NOW + 2),
+            })
+            .expect("install owner-local identical extension");
+        let enabled = store
+            .enable_extension(EnableExtensionCommit {
+                ownership,
+                extension_id,
+                expected_revision: installed.revision,
+                grant: grant(
+                    ownership,
+                    extension_id,
+                    &inspection.manifest_digest,
+                    NOW + 3,
+                ),
+                health_output_digest: "1".repeat(64),
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                enabled_at: at(NOW + 3),
+            })
+            .expect("enable owner-local revision");
+        let installed = store
+            .stage_extension_manifest(StageExtensionManifestCommit {
+                ownership,
+                extension_id,
+                expected_revision: enabled.revision,
+                inspection,
+                installation_root: "/opt/mealy/extensions/registry/exact".to_owned(),
+                registry_provenance: Some(provenance.clone()),
+                event_id: EventId::new(),
+                correlation_id: CorrelationId::new(),
+                staged_at: at(NOW + 4),
+            })
+            .expect("adopt exact registry evidence through a fresh disabled revision");
+        assert_eq!(installed.status, ExtensionStatus::Installed);
+        assert!(installed.active_grant.is_none());
+        assert_eq!(installed.manifest_history.len(), 2);
+        assert!(installed.manifest_history[0].registry_provenance.is_none());
+        assert_eq!(
+            installed.manifest_history[1].registry_provenance.as_ref(),
+            Some(&provenance)
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "UPDATE extension_manifest_registry_provenance
+                     SET archive_digest = ?1
+                     WHERE extension_id = ?2 AND manifest_ordinal = 2",
+                    params!["0".repeat(64), extension_id.to_string()],
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .connection
+                .execute(
+                    "DELETE FROM extension_manifest_registry_provenance
+                     WHERE extension_id = ?1 AND manifest_ordinal = 2",
+                    [extension_id.to_string()],
+                )
+                .is_err()
+        );
+    }
+
     fn seed_session(store: &SqliteStore, ownership: OwnershipContext, suffix: &str) {
         store
             .connection
@@ -1560,6 +1914,119 @@ mod tests {
                 ],
             )
             .unwrap_or_else(|error| panic!("seed {suffix} session: {error}"));
+    }
+
+    #[allow(clippy::too_many_lines)] // Complete relational evidence keeps the provenance test real.
+    fn seed_registry_extension_package(
+        store: &SqliteStore,
+        inspection: &mealy_application::ExtensionManifestInspection,
+        release_digest: &str,
+        archive_digest: &str,
+    ) {
+        let root_digest = "a".repeat(64);
+        let snapshot_digest = "b".repeat(64);
+        let snapshot_payload_digest = "c".repeat(64);
+        let release_payload_digest = "e".repeat(64);
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root(
+                     registry_id, root_version, root_digest, root_json,
+                     expires_at_ms, activated_at_ms
+                 ) VALUES ('dev.mealy.registry', 1, ?1, x'7b7d', ?2, ?3)",
+                params![root_digest, NOW + 86_400_000, NOW],
+            )
+            .expect("registry root");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root_head(
+                     registry_id, root_version, root_digest, expires_at_ms
+                 ) VALUES ('dev.mealy.registry', 1, ?1, ?2)",
+                params![root_digest, NOW + 86_400_000],
+            )
+            .expect("registry root head");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_snapshot(
+                     registry_id, root_version, snapshot_version, envelope_digest,
+                     payload_digest, envelope_bytes, expires_at_ms, accepted_at_ms
+                 ) VALUES ('dev.mealy.registry', 1, 1, ?1, ?2, x'7b7d', ?3, ?4)",
+                params![
+                    snapshot_digest,
+                    snapshot_payload_digest,
+                    NOW + 43_200_000,
+                    NOW
+                ],
+            )
+            .expect("registry snapshot");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_snapshot_head(
+                     registry_id, root_version, snapshot_version, envelope_digest, expires_at_ms
+                 ) VALUES ('dev.mealy.registry', 1, 1, ?1, ?2)",
+                params![snapshot_digest, NOW + 43_200_000],
+            )
+            .expect("registry snapshot head");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_release(
+                     registry_id, package_id, package_kind, version, publisher_id,
+                     envelope_digest, payload_digest, envelope_bytes, manifest_digest,
+                     package_digest, accepted_snapshot_version, accepted_snapshot_root_version,
+                     accepted_snapshot_envelope_digest, accepted_host_api_version, accepted_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', ?1, 'extension', ?2, ?3,
+                     ?4, ?5, x'7b7d', ?6, ?7, 1, 1, ?8, 1, ?9
+                 )",
+                params![
+                    inspection.manifest.name,
+                    inspection.manifest.version,
+                    inspection.manifest.publisher,
+                    release_digest,
+                    release_payload_digest,
+                    inspection.manifest_digest,
+                    archive_digest,
+                    snapshot_digest,
+                    NOW,
+                ],
+            )
+            .expect("registry release");
+        for digest in [&inspection.manifest_digest, archive_digest] {
+            store
+                .connection
+                .execute(
+                    "INSERT INTO artifact_blob(
+                         algorithm, digest, size_bytes, relative_path, committed_at_ms
+                     ) VALUES ('sha256', ?1, 1, 'sha256/' || ?1, ?2)",
+                    params![digest, NOW],
+                )
+                .expect("registry artifact blob");
+        }
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_package(
+                     registry_id, package_id, package_kind, version, release_envelope_digest,
+                     manifest_blob_algorithm, manifest_blob_digest,
+                     package_blob_algorithm, package_blob_digest, staged_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', ?1, 'extension', ?2, ?3,
+                     'sha256', ?4, 'sha256', ?5, ?6
+                 )",
+                params![
+                    inspection.manifest.name,
+                    inspection.manifest.version,
+                    release_digest,
+                    inspection.manifest_digest,
+                    archive_digest,
+                    NOW,
+                ],
+            )
+            .expect("registry package");
     }
 
     fn inspection(manifest: &ExtensionManifest) -> mealy_application::ExtensionManifestInspection {

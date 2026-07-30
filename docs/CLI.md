@@ -31,6 +31,7 @@ public command cannot be added or removed without updating this reference.
 | `session` | Create, submit to, inspect, search, or watch durable sessions. |
 | `provider` | Inspect the active provider/model catalog and metadata provenance. |
 | `task` | Inspect, cancel, pause, resume, or replay durable agent tasks. |
+| `eval` | Validate or run versioned public-API scenario suites. |
 | `delegation` | Inspect durable parent-to-child agent delegations. |
 | `approval` | Inspect and resolve authenticated approval subjects. |
 | `effect` | Inspect governed effects, dispatch attempts, and reconciliation evidence. |
@@ -38,10 +39,12 @@ public command cannot be added or removed without updating this reference.
 | `compaction` | Create or inspect cited derived session compactions. |
 | `extension` | Install, grant, invoke, upgrade, disable, or revoke isolated extensions. |
 | `skill` | Inspect and manage stopped-home data-only skill bundles. |
-| `channel` | Configure and inspect webhook, Telegram, Discord, and Slack channel bindings. |
+| `registry` | Inspect and advance signed inert registry trust metadata while stopped. |
+| `channel` | Configure and inspect webhook, Telegram, Discord, Slack, and exact-thread Slack continuation bindings. |
 | `schedule` | Create, inspect, pause, resume, cancel, or audit recurring schedules. |
+| `automation` | Create, edit, inspect, pause, resume, cancel, or audit one-shot and future-event automations. |
 | `health` | Check daemon liveness. |
-| `status` | Inspect queues, leases, providers, approvals, effects, channels, and storage. |
+| `status` | Inspect queues, leases, providers, approvals, effects, channels, automations, and storage. |
 | `metrics` | Emit stable machine-readable operational gauges. |
 | `usage` | Emit exact settled terminal-run usage for a bounded trailing day range. |
 | `doctor` | Diagnose control-plane, permission, and sandbox conformance. |
@@ -64,6 +67,281 @@ public command cannot be added or removed without updating this reference.
 | `media` | Explicitly activate or disable bounded stopped-home media capabilities. |
 | `browser` | Explicitly activate or disable separately governed one-shot browser transactions. |
 | `mcp-http` | Inspect and govern remote Streamable HTTP MCP catalogs, explicit read-only/idempotent/non-idempotent tool classes, OAuth login/activation/local revocation, and lifecycle. |
+
+## Scenario evaluations
+
+Validate a strict suite without a daemon, then run it through fresh authenticated public sessions:
+
+```sh
+mealyctl eval validate ./evaluation-suite.json
+mealyctl --home "$HOME/.mealy" eval run ./evaluation-suite.json
+```
+
+`eval run` emits the complete digest-bearing report and exits nonzero after output when any case
+fails. It never resolves approvals or exposes prompt/response bodies in the report. See the
+[evaluation guide](EVALUATIONS.md) for the contract, safety/recovery composition, privacy limits,
+and CI workflow.
+
+## Optional semantic memory
+
+Semantic retrieval is disabled until the owner stops the daemon and approves an exact
+OpenAI-compatible embedding policy:
+
+```sh
+systemctl --user stop mealy.service
+mealyctl --home "$HOME/.mealy" config memory-embedding \
+  --base-url http://127.0.0.1:8080/v1 \
+  --model nomic-embed-text \
+  --dimensions 768 \
+  --residency owner-host \
+  --document-prefix 'search_document: ' \
+  --query-prefix 'search_query: ' \
+  --approve
+systemctl --user start mealy.service
+```
+
+Non-loopback endpoints require HTTPS and paired `--secret-id` / `--credential-env` arguments; the
+environment value is probed and imported once into the private broker. The command preserves the
+replaced configuration, prints the non-secret policy digest, and requires explicit `--approve`.
+Its compatibility probe is enabled by default. `--skip-connectivity-test` stages an unproved
+policy rather than making it production-ready.
+
+Build the complete derived set and request hybrid retrieval:
+
+```sh
+mealyctl --home "$HOME/.mealy" memory rebuild-index --semantic
+mealyctl --home "$HOME/.mealy" memory search \
+  --workspace WORKSPACE_IDENTITY --hybrid 'related meaning'
+```
+
+The response distinguishes actual hybrid retrieval from safe lexical fallback. Correction,
+expiry, rejection, deletion, or active-revision drift marks the complete semantic set stale until
+another approved rebuild. Stop the daemon and run
+`mealyctl config memory-embedding-disable --approve` to disable future embedding calls while
+retaining canonical memory and the separately managed broker credential. See
+[the semantic-memory guide](SEMANTIC_MEMORY.md) for the privacy and recovery contract.
+
+## Signed registry trust metadata
+
+The v0.5 registry trust-bootstrap surface is deliberately local-file-only. First obtain an initial
+root through an independently authenticated out-of-band path, retain its expected digest outside
+the registry, and inspect the exact file without changing the Mealy home:
+
+```sh
+mealyctl registry root-inspect --root ./mealy-registry-root.json
+```
+
+Review `registryId`, `rootVersion`, `rootDigest`, `threshold`, every `keyId`, and the expiry. Mealy
+can verify the root's internal structure but cannot decide whether the first key set belongs to
+the registry you intended. After the matching Mealy daemon has initialized the current canonical
+schema and is stopped, make that explicit trust decision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry root-add \
+  --root ./mealy-registry-root.json --approve
+
+mealyctl --home "$HOME/.mealy" registry status dev.mealy.registry
+```
+
+`root-add` refuses to initialize or migrate the canonical database. A prior release must first run
+its normal backup-protected daemon migration. All state-dependent registry commands acquire the
+same stopped-home lock as the daemon, so they fail while `mealyd` owns the home.
+
+Root rotation accepts only an exact next-version envelope that independently satisfies the active
+old threshold and the candidate new threshold:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry root-rotate dev.mealy.registry \
+  --envelope ./mealy-registry-root-rotation.json --approve
+```
+
+Inspect a threshold-signed snapshot against the active root and durable anti-rollback fence before
+accepting that same no-follow file:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-inspect dev.mealy.registry \
+  --envelope ./mealy-registry-snapshot.json
+
+mealyctl --home "$HOME/.mealy" registry snapshot-accept dev.mealy.registry \
+  --envelope ./mealy-registry-snapshot.json --approve
+```
+
+Exact root-rotation and snapshot replays are idempotent. Lower snapshot versions, different bytes
+at an accepted version, expired metadata, wrong registry identities, missing signature thresholds,
+and post-rotation root regression fail closed. Root files are capped at 128 KiB, rotation
+envelopes at 256 KiB, and snapshot envelopes at 4 MiB; all are opened as nonempty no-follow regular
+files. Output includes only key IDs and summary counts, not public-key bodies or signed metadata
+payloads.
+
+Root and file-based snapshot commands perform no DNS lookup or HTTP request. To retrieve the fixed
+current snapshot from an owner-selected mirror and verify it without mutation:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-fetch dev.mealy.registry \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+Review the same snapshot summary, then repeat through the approved atomic acceptance boundary:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry snapshot-refresh dev.mealy.registry \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-envelope-digest DIGEST_FROM_SNAPSHOT_FETCH \
+  --approve
+```
+
+`snapshot-fetch` prints the signed envelope identity as `state.envelopeDigest`. Refresh requires
+that exact lowercase SHA-256, so a mirror update between review and apply fails without advancing
+state; fetch and review the new summary before trying again.
+
+The base must be a canonical HTTPS directory URL ending in `/`; credentials, query strings,
+fragments, encoded/empty path segments, HTTP, loopback, private, link-local, documentation,
+reserved, multicast, and otherwise non-public destinations fail closed. Mealy resolves once,
+rejects the entire DNS answer if any address is non-public, pins that answer into TLS connection
+establishment, and verifies the connected peer is in the pinned set. The client uses no proxy,
+redirect, referrer, cookie, content decoding, or ambient credential path. It requests only
+`metadata/snapshot.json`, accepts exactly HTTP 200 and the registry snapshot-envelope media type,
+and retains at most 4 MiB under a five-second DNS deadline and five-minute HTTP deadline. The
+shared resolver permits at most eight concurrent outstanding lookups, so a stuck operating-system
+resolver cannot create unbounded threads. Signature, expiry, registry-identity, rollback, and
+equivocation verification still run against the locally trusted root before output or acceptance.
+The stopped-home lock remains held across retrieval and any commit, so the daemon cannot race the
+reviewed state.
+
+After accepting a snapshot, inspect one exact publisher release selected by that snapshot:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry release-fetch dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+Review the publisher, host compatibility, exact dependencies, and manifest/archive descriptors,
+then retain the same release as immutable inert evidence:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry release-accept dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-envelope-digest DIGEST_FROM_RELEASE_FETCH \
+  --approve
+
+mealyctl --home "$HOME/.mealy" registry release-status dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0
+```
+
+Release fetch derives the immutable object path solely from the active signed snapshot. Both
+review and acceptance require an unexpired snapshot under the active root; a root rotation
+therefore requires a newly authorized snapshot before any release can be admitted. Acceptance
+repeats snapshot, publisher threshold, withdrawal, dependency closure, host API, and exact
+envelope verification inside an immediate schema 25 SQLite transaction. An exact replay is
+idempotent, while the same registry/package/version can never alias different bytes.
+`release-status` is offline and remains available for historical evidence after a later
+withdrawal; that withdrawal blocks new acceptance.
+
+Once release evidence is accepted, fetch and strictly inspect its exact manifest and package:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-fetch dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+```
+
+`package-fetch` requires the release to remain selected and unwithdrawn by the current unexpired
+snapshot under the active root. It retrieves only the manifest and archive objects addressed by
+that release's signed SHA-256 descriptors. Output presents the exact manifest/archive digests,
+complete file inventory, executable flags, and requested extension authority or separately
+governed skill/tool references. It writes no package bytes and creates no grant. After reviewing
+that output, retain those exact inert bytes with a second digest-fenced decision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-stage dev.mealy.registry \
+  dev.mealy.extension.clock 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-archive-digest DIGEST_FROM_PACKAGE_FETCH \
+  --approve
+```
+
+`package-stage` repeats the complete fetch and inspection path, then rechecks the active root,
+current unexpired snapshot, selected publisher release, withdrawal state, host compatibility,
+manifest/archive identities, and exact byte counts inside schema 26's immediate transaction. The
+manifest and archive are published atomically into Mealy's private content-addressed artifact
+store before their immutable evidence row is committed. An exact replay is idempotent. If the
+database commit loses a race or fails, the unreferenced content remains inert and is eligible for
+the existing age-gated artifact garbage collector; it cannot become installed authority.
+Content-addressed package blobs are included in the established backup, restore, migration-copy,
+integrity, and orphan-accounting paths.
+
+For a staged skill or extension, compare its exact content and requested authority with the
+currently installed revision:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-plan dev.mealy.registry \
+  dev.mealy.skill.review 1.0.0
+```
+
+The offline plan rereads and verifies both staged blobs, requires the release to remain authorized
+and unwithdrawn, and reports install/update/evidence-adoption intent, prior status and digest,
+instruction/resource changes, exact added/removed governed-tool references, whether authority
+widens, and whether applying an update will remove active authority. Extension plans include the
+analogous capability, filesystem, network, secret, process, executable, and runtime-file diff.
+The canonical plan material is returned as `planDigest`; it binds the staged publisher evidence
+and the exact current installation.
+
+Apply one unchanged reviewed skill plan:
+
+```sh
+mealyctl --home "$HOME/.mealy" registry package-install dev.mealy.registry \
+  dev.mealy.skill.review 1.0.0 \
+  --expected-plan-digest DIGEST_FROM_PACKAGE_PLAN \
+  --approve
+```
+
+Apply repeats the active-root/snapshot/release/withdrawal checks, staged-blob integrity inspection,
+and complete install-plan calculation under the stopped-home lock. A digest mismatch changes
+nothing. A new skill is published through the existing immutable skill store and configured
+disabled. An update or rollback retains prior immutable revisions, replaces the configured
+revision, and removes prior instruction authority by leaving the candidate disabled. If identical
+locally installed bytes lack registry provenance, evidence adoption preserves their current
+enabled/disabled state. The signed registry, release, and archive identities are retained in
+non-secret skill configuration. Skill enablement remains the separate existing
+`skill enable --expected-manifest-digest ... --approve` decision, and required tools remain
+references rather than grants.
+
+Extensions use the same command with the extension package ID and version. Mealy atomically
+publishes only the authenticated manifest and executable beneath the private
+`extensions/registry/MANIFEST_DIGEST` directory, re-inspects the result through the established
+extension-host boundary, and executes nothing. Schema 27 binds the exact registry, release,
+manifest, archive, and extension-revision identities. A new extension is installed without a
+grant. An update, rollback, or identical-byte evidence adoption creates a retained revision,
+switches to the registry-published root, removes any prior grant, and leaves the extension
+disabled. Start the daemon, inspect the resulting extension, and use the existing digest/revision
+fenced `extension enable` command with an explicit least-authority grant when ready.
+
+The application transport also derives immutable release/manifest/archive paths only as
+`objects/sha256/DIGEST` from already signed descriptors and checks exact media type, length, and
+SHA-256 before parsing. The package inspector accepts only uncompressed deterministic USTAR with
+two exact zero trailer blocks, regular files, canonical UTF-8 relative paths, zero owner/group/time,
+mode `0644` for data and `0755` only for the declared extension executable, zero padding, and an
+inventory exactly equal to `manifest.json` plus declared content. It rejects links, devices,
+FIFOs, sparse/PAX/GNU extensions, duplicates, undeclared files, traversal, non-canonical metadata,
+and trailing content. It parses and retains bytes in memory rather than invoking a tar extraction
+API, so inspection cannot create filesystem paths or race an extraction destination.
+
+No registry command activates an extension or skill, automatically discovers a mirror, or grants
+a tool or requested permission. `package-install` supports both package classes and always uses
+the existing disabled-by-default lifecycle for new or changed bytes. `skill status` and `skill list` include
+`registryPolicy` for provenance-bound revisions and distinguish configured `enabled` from actual
+`instructionAuthorityActive`. The projection compares the exact accepted
+release and staged manifest/archive identities with the newest accepted snapshot. Explicit
+withdrawal, target removal, package/version substitution, or missing/mismatched evidence blocks
+`skill enable`; an already configured revision is suppressed from runtime instruction context on
+the next daemon start. The same projection runs before every registry extension enable and
+invocation, so an enabled extension cannot resume after restart under a withdrawn, removed,
+substituted, or evidence-incomplete revision. Mealy retains immutable installed bytes and registry
+history so the owner can inspect, install a reviewed replacement, or use the same exact-version
+rollback flow. Snapshot expiry still blocks new admission but does not alone deactivate an offline
+installation. Registry publication tooling remains a later v0.5 boundary.
 
 For everyday conversation, plain `chat` creates a new durable session, `chat --continue` (or
 `chat -c`) resumes the most recently updated session for the exact local binding, `chat --pick`
@@ -295,6 +573,10 @@ choose a bounded non-interactive path.
   and the first chat.
 - Follow the [quickstart](QUICKSTART.md) for detailed provider activation, first
   conversation, skills, tools, channels, schedules, and delegation.
+- Follow [durable automation](AUTOMATION.md) for one-shot prompts, future-event notifications,
+  revision-fenced edits, crash recovery, and delivery boundaries.
+- Follow [exact-thread remote continuation](REMOTE_CONTINUATION.md) to pin, inspect, use, expire,
+  or revoke proactive Slack notification routes.
 - Use the [operations guide](OPERATIONS.md) for health, metrics, drain, backup/restore, retention,
   service management, upgrades, and incidents.
 - Use the [local API reference](API.md) when building a direct client rather than invoking

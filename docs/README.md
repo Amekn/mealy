@@ -18,24 +18,34 @@ Start with these documents in order:
 12. [`API.md`](API.md) — authenticated local HTTP/JSON and SSE compatibility reference.
 13. [`CLI.md`](CLI.md) — source-checked owner command surface and usage conventions.
 14. [`CI_CD.md`](CI_CD.md) — developer checks and protected source-to-production promotion.
-15. [`OPERATIONS.md`](OPERATIONS.md) — install, diagnostics, backup, retention, and recovery.
-16. [`RELEASE.md`](RELEASE.md) — attested packages, clean install, upgrade, and rollback.
-17. [`REQUIREMENTS_COVERAGE.md`](REQUIREMENTS_COVERAGE.md) — release evidence for normative groups.
-18. [`decisions/`](decisions/) — accepted architectural choices.
-19. [`V0_3_TO_V0_5_ROADMAP.md`](V0_3_TO_V0_5_ROADMAP.md) — active daily-use, governed-capability,
+15. [`EVALUATIONS.md`](EVALUATIONS.md) — versioned public-API scenarios, privacy, budgets, and CI.
+16. [`SEMANTIC_MEMORY.md`](SEMANTIC_MEMORY.md) — v0.5 embedding privacy policy, local setup,
+    hybrid retrieval, rebuild, fallback, and lifecycle recovery.
+17. [`AUTOMATION.md`](AUTOMATION.md) — v0.5 one-shot/event triggers, notifications, editing,
+    deduplication, privacy, and crash recovery.
+18. [`REMOTE_CONTINUATION.md`](REMOTE_CONTINUATION.md) — exact-thread Slack pinning, proactive
+    notifications, expiry, revocation, and fail-closed routing.
+19. [`OPERATIONS.md`](OPERATIONS.md) — install, diagnostics, backup, retention, and recovery.
+20. [`RELEASE.md`](RELEASE.md) — attested packages, clean install, upgrade, and rollback.
+21. [`REQUIREMENTS_COVERAGE.md`](REQUIREMENTS_COVERAGE.md) — release evidence for normative groups.
+22. [`decisions/`](decisions/) — accepted architectural choices.
+23. [`V0_3_TO_V0_5_ROADMAP.md`](V0_3_TO_V0_5_ROADMAP.md) — active daily-use, governed-capability,
     and ecosystem production milestones.
-20. [`research/REFERENCE_SYSTEMS.md`](research/REFERENCE_SYSTEMS.md) — pinned architectural
+24. [`research/REFERENCE_SYSTEMS.md`](research/REFERENCE_SYSTEMS.md) — pinned architectural
     evidence from the eight reference systems.
-21. [`research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md`](research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md)
+25. [`research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md`](research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md)
     — current install, onboarding, maintenance, documentation, CI, release, and user-experience
     comparison.
-22. [`research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md`](research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md)
+26. [`research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md`](research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md)
     — direct evidence for each competitor-grade onboarding outcome and its remaining external
     release gates.
-23. [`research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md`](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md)
+27. [`research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md`](research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md)
+    — requirement-by-requirement implementation evidence, scoped exclusions, sequential
+    normalization proof, and remaining public-release gates.
+28. [`research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md`](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md)
     — current first-party evidence and the fail-closed third-party subscription boundary.
-24. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
-25. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
+29. [`benchmarks/`](benchmarks/) — versioned soak/performance reports and reproduction commands.
+30. [`releases/`](releases/) — checked human-facing changes included in each immutable release.
 
 Requirements are authoritative for product intent. Accepted ADRs are authoritative for cross-cutting implementation decisions. Architecture describes the current synthesis and must be updated when an ADR supersedes it.
 

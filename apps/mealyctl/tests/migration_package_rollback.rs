@@ -165,6 +165,7 @@ fn package_manager_compensates_denial_then_activates_matching_binary_and_home() 
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn downgrade_fixture_to_v13(database: &Path) {
     let connection = rusqlite::Connection::open(database).expect("downgrade fixture");
     connection
@@ -223,6 +224,16 @@ fn downgrade_fixture_to_v13(database: &Path) {
              DROP TABLE context_manifest_bundle_compaction;
              DROP TABLE context_manifest_bundle_artifact;
              DROP TABLE context_manifest_bundle;
+             DROP TRIGGER automation_slack_remote_route_update_guard;
+             DROP TRIGGER automation_slack_remote_route_insert_guard;
+             DROP INDEX automation_slack_remote_continuation_idx;
+             ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+             DROP TRIGGER slack_remote_continuation_immutable_delete;
+             DROP TRIGGER slack_remote_continuation_transition_guard;
+             DROP TRIGGER slack_remote_continuation_insert_guard;
+             DROP INDEX slack_remote_continuation_route_idx;
+             DROP INDEX slack_remote_continuation_owner_idx;
+             DROP TABLE slack_remote_continuation;
              DROP TABLE slack_envelope_receipt;
              DROP TABLE slack_channel_health;
              DROP TABLE slack_channel_binding;
@@ -242,8 +253,25 @@ fn downgrade_fixture_to_v13(database: &Path) {
              ALTER TABLE session_inbox DROP COLUMN selected_model_id;
              ALTER TABLE turn DROP COLUMN selected_provider_id;
              ALTER TABLE turn DROP COLUMN selected_model_id;
+             DROP TABLE automation_run;
+             DROP TABLE automation_revision;
+             DROP TABLE automation;
+             DROP TRIGGER memory_revision_semantic_invalidate;
+             DROP INDEX memory_semantic_vector_scope_idx;
+             DROP TABLE memory_semantic_vector;
+             DROP TABLE memory_semantic_index_state;
+             DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+             DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+             DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+             DROP TABLE extension_manifest_registry_provenance;
+             DROP TABLE registry_package;
+             DROP TABLE registry_release;
+             DROP TABLE registry_snapshot_head;
+             DROP TABLE registry_snapshot;
+             DROP TABLE registry_trust_root_head;
+             DROP TABLE registry_trust_root;
              DELETE FROM schema_version WHERE version IN (
-                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+                 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30
              );
              PRAGMA wal_checkpoint(TRUNCATE);",
         )

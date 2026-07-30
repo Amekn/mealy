@@ -40,6 +40,15 @@ SHA-256 store, links them to SQLite, reopens both evidence layers, verifies the 
 rejected post-publication link leaves only a fresh unreferenced blob retained by age-gated garbage
 collection.
 
+Schema-29 storage tests apply the v28-to-v29 migration in place, verify fresh-schema parity and
+integrity, and exercise canonical automation definitions, immutable revisions, aggregate
+sequences, exact owner/source/target bindings, future event high-watermarks, due selection, claim
+exclusion/expiry/reclaim, terminal completion, atomic notification outbox publication, and bounded
+history. Creation replay is repeated after a one-shot due time and after unrelated timeline
+movement; the same UUID returns the existing projection without another definition. Event cursor
+advancement proves history, pause windows, and processed occurrences do not replay. A revoked
+target fails before outbox publication and can be settled as explicit failed history.
+
 ### Process-boundary tests
 
 Spawn the real executor/extension protocol. Verify framing, malformed messages, size limits, cancellation, timeout, stdout/stderr pressure, secret minimization, worker death, and daemon survival.
@@ -50,6 +59,25 @@ and pre-allocation oversize fail closed. Focused media units additionally cover 
 JPEG/PNG re-encoding, alpha preservation, metadata removal, APNG and animated-WebP denial,
 dimension-first rejection, and bounded downscaling. The daemon verifies canonical headers, bytes,
 size, and digest without invoking the image decoder in its own process.
+
+The v0.5 evaluator proof in `phase4_validation` runs
+`mealy.evaluation-suite.v1` through the stable blocking owner client against a real daemon. One
+fresh session reaches canonical success, validation, and recorded-only replay under explicit
+call/duration/event ceilings. A second fresh session proposes a write, settles in `waiting`, and
+requires `effect.proposed` plus `approval.requested` while forbidding approval, dispatch, and
+success. The evaluator never receives approval authority, the file is not created, timeline
+citations are envelope digests rather than payloads, and private prompt/write canaries are absent
+from the report. Contract units cover contradictory fields, transient states, digest and timing
+bounds, failures-as-report-data, privacy canaries, and report-digest changes; CLI units cover
+isolated parser selection plus bounded no-follow suite reads.
+
+The `phase7_operations` automation scenario crosses the real authenticated API and daemon driver.
+It rejects an event-to-prompt loop, admits a sub-minute one-shot prompt once, retries the same
+creation after completion, delivers one future event notification, retries event creation after
+cursor movement, skips events accumulated while paused, exports active/paused/claimed/failed
+operator gauges, drains cleanly, hard-restarts the same home, and proves retained history with no
+duplicate action. Safe-mode and migration/package suites cover the disabled driver, schemas 29/30,
+and complete-home backup/rollback inventories.
 
 The `real_provider` process suite includes one exact image-bearing turn through the public daemon
 API. It activates only a direct image-capable route, submits a one-pixel PNG with retry-stable
@@ -96,6 +124,14 @@ ordering, successful-row error classes, policy and descriptor capability evidenc
 producer metadata and blob presence, checkpoints, exact operation payloads, per-aggregate journal
 sequence chains, terminal graph state, and journal-to-timeline links. Every replay assertion also
 checks that no live provider or tool call occurred.
+
+`mealy-observability` adds a wire-level OTLP/HTTP protobuf fixture. It runs the real bounded trace
+and metric exporters against a loopback socket, forces flush and shutdown, decodes both signal
+requests, and requires the exact three resource attributes, six trace attributes, two metric
+names, and fixed metric-label contract. The fixture proves that an arbitrary general-`tracing`
+private canary and authorization header are absent. Adversarial units reject unsafe collector
+origins and malformed/overlong correlation IDs; the ordinary Phase 2 public-process scenario
+continues to prove the instrumented agent boundary with telemetry disabled.
 
 `apps/mealyd/tests/real_provider.rs` crosses the public process boundary with independent mock
 wire servers for `OpenAI` Responses and Anthropic Messages. It verifies protocol-specific headers,
@@ -375,9 +411,12 @@ token enters SQLite, then kills the daemon after the fixture observes a Socket M
 acknowledgement but before admission. Restart completes the persisted normalized disposition
 without another input, returns acknowledgements and results to the exact originating thread,
 honors one `429 Retry-After`, reuses `client_msg_id`, re-acknowledges an exact duplicate without
-duplication, durably ignores a wrong sender, removes both final-route broker entries, and preserves
-terminal evidence. `sqlite::slack` separately covers migration, shared-installation invariants,
-pending-envelope reconstruction, thread lookup, health, and revocation.
+duplication, and durably ignores a wrong sender. It then creates/lists/reads a UUIDv7-keyed pin for
+that exact admitted thread, delivers a proactive one-shot notification through it, revokes it, and
+proves a new definition cannot reuse the revoked route. Final binding revocation removes both
+broker entries and preserves terminal evidence. `sqlite::slack` separately covers migration,
+shared-installation invariants, pending-envelope reconstruction, exact retry, overlap, expiry,
+thread lookup, health, and revocation.
 
 The Phase 7 process suite at `apps/mealyd/tests/phase7_operations.rs` starts real daemon processes
 for safe mode, clean drain, corrupt-open failure, and a provider call deliberately held beyond a
@@ -531,11 +570,17 @@ DPKG/RPM/Pacman. The new daemon must preserve the exact owner identity, session,
 recorded-only replay; publish exactly one manifest-verified forward-migration snapshot; report the
 new schema through `doctor`; and accept a new title and checkpoint. Native removal must delete
 program paths while retaining the migrated database and snapshot. A checked
-`packaging/release-upgrade-baseline.json` binds each release to its old tag/version/schema, and its
-validator prevents a stale, same-version, future-schema, or extra-field baseline from entering the
-tag workflow. Pre-publication packages run this proof on Ubuntu-family, Fedora, and Arch lanes;
-post-publication acceptance downloads and release-verifies both versions and repeats it on every
-supported distribution/architecture lane.
+`packaging/release-upgrade-baseline.json` binds each release to a bounded, ordered, unique set of
+required old tag/version/schema identities. The validator normalizes the historical single-entry
+format and rejects an empty, duplicate, version/schema-out-of-order, same-or-future-version,
+future-schema, oversized, or extra-field set. v0.5 declares both v0.4/schema 23 and v0.3/schema 18.
+Pre-publication packages run
+every proof on Ubuntu-family, Fedora, and Arch lanes; post-publication acceptance downloads and
+release-verifies every predecessor plus the new release and repeats all declared transitions on
+every supported distribution/architecture lane. The shared release fetcher has a hermetic fake-CLI
+test for exact x86 and ARM inventories, package-name selection, release identity, checksum
+tampering, unsupported target/scope combinations, and the machine-readable baseline index consumed
+by those installed-upgrade proofs.
 For real ELF payloads, the Debian builder also compares each exact `NEEDED` set with the reviewed
 x86_64/ARM64 glibc contract. A new native dependency fails packaging until its owning package and
 the declared `Depends` field are updated deliberately.
@@ -786,6 +831,112 @@ content corpus distinguishes prefix-confusable tags such as `<scripture>`, respe
 characters, removes comments and active blocks, fails closed on unclosed blocks, preserves word
 boundaries, decodes bounded common/numeric entities once, and prevents cascading entity decoding.
 
+The v0.5 registry mirror adapter deliberately reuses that address policy. Application tests prove
+that callers can derive only `metadata/snapshot.json` or `objects/sha256/DIGEST`, that response
+media type/length/SHA-256 are exact, and that tampered bytes fail before parsing. Infrastructure
+tests prove the body ceiling and that HTTPS loopback cannot inherit the web adapter's explicit
+owner-granted local-development exception. The `registry_configuration` process suite proves
+approval and a canonical expected envelope digest are checked before refresh, HTTP and private
+mirrors cannot advance SQLite state, and file-based trust/rollback/restart behavior remains
+intact. A bounded five-second resolver with an eight-lookup global ceiling closes the pre-request
+DNS timeout gap for every adapter sharing this egress policy.
+
+Schema 25 tests accept one real publisher-signed release through the application and SQLite
+boundaries, reopen it, prove exact replay, reject immutable-row mutation, advance to a withdrawal,
+and prove historical evidence remains readable while new acceptance fails. Root rotation is also
+proved to invalidate release admission until a new snapshot is accepted. Migration tests cover
+both v23-to-current construction and direct v24-to-v25 preservation. CLI parser/process tests cover
+the separate release command graph, approval-before-network ordering, canonical review digests,
+and no release row on rejected input.
+
+Application tests additionally bind exact extension and skill manifests to their signed release
+identity and reject byte drift, duplicate JSON keys, and publisher/package/version/compatibility
+substitution. Infrastructure package tests construct deterministic USTAR archives for both package
+classes and verify exact inert inventory. Adversarial cases reject traversal, bad checksum or
+padding, trailing blocks, links, duplicate/extra paths, executable-mode widening, nonzero
+timestamps, substituted manifests, and control-bearing instruction text. CLI parser/process
+coverage proves the separate `package-fetch` graph and its accepted-release precondition; the
+command cannot create files, state, or authority.
+
+Schema 26 tests commit an inspected real package through the private content-addressed artifact
+store, reopen and read the exact manifest/archive bytes, prove idempotent replay, reject immutable
+row mutation, enumerate both blobs through the established backup interface, and prove a later
+withdrawal blocks a new stage without deleting history. Direct v25-to-v26 migration preserves
+release evidence and adds the guarded package table. CLI parser/process coverage proves
+`package-stage` is separately approval gated and rejects a noncanonical review digest before
+network access. Existing restore, migration-copy, rollback, artifact-integrity, and orphan-GC
+tests continue to exercise the shared artifact store used by staged packages.
+
+Registry install-plan tests prove a new skill exposes exact governed-tool additions while creating
+no package directory. Permission-diff unit coverage separately exercises extension capability,
+filesystem, network, secret, and process widening and skill tool-reference replacement. The
+registry-to-skill bridge republishes one signed deterministic archive through the existing
+immutable skill store and reinspects identical bytes. Apply coverage proves an exact reviewed plan
+publishes a provenance-bound disabled skill, creates no instruction or tool authority, and remains
+readable by the normal installed-skill verifier. CLI parser/process tests prove plan and install
+are distinct, approval precedes apply work, and malformed plan digests fail before staged-state
+lookup.
+
+The installed-policy proof projects real schema 26 release/package evidence before and after a
+newer signed withdrawal snapshot. It requires `authorized` before withdrawal and `withdrawn`
+afterward while preserving immutable rows and blob references. Daemon unit coverage proves a
+configured registry skill with unavailable current evidence is omitted from runtime instructions,
+and CLI coverage proves the same policy blocks digest-fenced enablement without changing the
+disabled configuration. Local non-registry skills remain unaffected.
+
+Schema 27 migration coverage proves v26 package evidence survives while the guarded immutable
+extension-provenance table and triggers are added. A real relational fixture proves substituted
+archive provenance rolls back the extension installation and journal event atomically, then
+accepts the exact evidence and rejects later update or deletion. Package publication tests copy
+only the authenticated manifest and executable, re-inspect the inert result, accept idempotent
+republication, and reject a substituted executable at the content-addressed destination. Strict
+workspace compilation and daemon integration cover policy checks at both registry extension
+enable and invocation; the existing application policy proof supplies authorized, withdrawn,
+removed, substituted, and evidence-incomplete dispositions.
+
+Schema 28 semantic-memory coverage treats vectors as disposable derived evidence. Configuration
+units accept no policy by default, permit credentialless literal-loopback HTTP, require a
+credential for remote HTTPS, and reject unsafe transport/dimension/prefix values. The adapter runs
+against a real loopback OpenAI-compatible socket and proves stable batch order, exact model and
+document/query prefixes, normalization, dimension drift rejection, safe credential
+classification, and no credential echo. Its blocking HTTP client and credential are constructed
+and destroyed on a dedicated bounded worker; the real daemon process test guards against
+async-runtime lifetime regression.
+
+SQLite tests create multiple active revisions, atomically replace one complete principal set,
+prove scope isolation and deterministic cosine ranking, then correct and delete canonical memory.
+The schema-28 lifecycle trigger removes affected vectors and marks health stale before another
+read; a complete rebuild restores health. The public `phase5_memory_context` process fixture
+configures a local embedding endpoint, creates canonical workspace/memory through authenticated
+APIs, proves semantic-only hybrid recall and fused rank evidence, corrects an active revision,
+observes lexical fallback with `stale`, hard-kills/restarts the daemon, observes the same safe
+state, rebuilds, and recovers the corrected semantic result. Captured endpoint requests prove
+prefix/model/float encoding and absence of an Authorization header for credentialless loopback.
+CLI tests prove approval, parser shape, archived policy activation, typed reload, and reversible
+disable. Package/migration/rollback, full workspace, and supported-distribution qualification
+remain mandatory before a v0.5 release claim.
+
+The v0.5 typed Rust client unit suite runs requests through real loopback sockets. It proves the
+exact bearer, accept, content-type, method, path, query, and typed JSON command boundary; compatible
+success and structured-error decoding; pre-dispatch request-version and path-identity rejection;
+response-version and nested-envelope rejection; strict descriptor validation; request/response
+size enforcement; and credential-free builder/client debug output. `mealy-client` also runs under
+the workspace's all-target/all-feature strict Clippy, doc-test, and warning-denied rustdoc gates.
+The same real-socket suite proves typed, version-checked list/detail reads for durable child
+delegations, and the clean packaged consumer compiles those methods from the extracted release
+archives.
+Frozen daemon fixtures additionally run the current stable client against retained v0.2.1,
+v0.3.0, v0.4.0, and v0.5.0 liveness/readiness/session/error shapes, including the v0.2.1
+title defaults and the titled v0.3-or-newer contract.
+`scripts/sdk-package-smoke.sh` packages the publishable domain/protocol/client set twice, requires
+byte-identical archives, validates their bounded inventory and checksum manifest, extracts them
+outside the workspace, and compiles a clean downstream consumer under the retained exact lock.
+The same smoke rejects changed archive bytes, a foreign checksum entry, a package archive carrying
+a symbolic link, and a checksum-valid repacked client whose publishable manifest was removed.
+The tag workflow attests those packages and repeats the same proof from the public release.
+Async/SSE resumption and non-Rust language bindings remain outside the stable v0.5
+blocking-client contract.
+
 The same test binary contains a separately filtered Brave Search check. It reads the credential
 once from `BRAVE_SEARCH_API_KEY`, requests at most three results, and requires bounded HTTPS
 citations without printing the credential:
@@ -892,7 +1043,8 @@ MIT/Apache workspaces with either matching SPDX metadata or the existing exact `
 inheritance, while rejecting restrictive terms, redirected/mismatched metadata, an unsupported
 expression, and a member package that does not inherit the workspace license. The tag workflow
 runs the validator on the real checkout; the copyright-holder-selected canonical Apache-2.0 text
-and existing exact license-file inheritance now pass that public-use gate.
+and exact workspace SPDX inheritance now pass that public-use gate. SDK package construction also
+requires each publishable crate's embedded license copy to match the canonical root file.
 The current tree additionally passed the equivalent GCC cross-check for
 `aarch64-unknown-linux-gnu`; ARM64 Linux runtime/package evidence remains the native CI and tag
 matrix's responsibility. macOS and Windows are outside the active support and CI contract.

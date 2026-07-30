@@ -250,6 +250,223 @@ crash/restart, no redispatch, reconciliation, and replay after runtime deletion.
 automation, payments, ambient-login/personal profiles, and unattended transactions remain future
 contracts.
 
+## Productionization slice: threshold-signed inert package registry
+
+Status: v0.5 verification, review, skill lifecycle, and extension lifecycle foundations
+implemented; publication and release qualification remain in progress. The owner-configured trust
+root and exact-byte envelope verifier enforce distinct
+registry and publisher Ed25519 thresholds. Expiring monotonic snapshots reject rollback,
+same-version equivocation, unknown publishers, malformed ordering, and descriptor drift. Registry
+withdrawals remain auditable but cannot install. Publisher releases bind exact package identity,
+class, host compatibility, manifest/archive descriptors, and a complete dependency closure whose
+signed-release-envelope digests must exist and remain unwithdrawn in that snapshot.
+
+Registry inspection is intentionally data-only and makes no network request, filesystem change,
+configuration mutation, install, stage, or grant. Deterministic extension diffs cover new,
+removed, and changed capability contracts plus logical filesystem, exact network, opaque secret,
+and process-spawn requests. Skill diffs cover separately governed tool references. Unit fixtures
+prove threshold failure, signature tampering, expiry, rollback, equivocation, target substitution,
+withdrawal, incompatible host ranges, missing dependency locks, and authority widening.
+
+The second slice adds exact out-of-band root inspection, old-and-new-threshold next-version root
+rotation, and schema 24 canonical persistence. Immutable exact root/snapshot bytes and monotonic
+heads survive reopen; the write transaction reloads the active root and prior snapshot fence,
+repeats cryptographic verification, and rejects stale commits, rollback, root regression, and
+same-version equivocation. Migration, complete infrastructure, integrity, and migration-backup
+tests cover the additive schema.
+
+The third slice exposes this boundary through `mealyctl registry`. Root and snapshot inspection,
+explicit root bootstrap/rotation, status, and explicit snapshot acceptance operate on bounded
+no-follow files. Mutations require `--approve`; every canonical-state command takes the stopped
+daemon home lock; existing stores must already match the binary's exact schema so the CLI cannot
+bypass the normal
+backup-protected migration path. Process tests cross real executable and SQLite boundaries,
+restart/replay, rollback, dual-threshold rotation, symlink rejection, live-daemon exclusion, and
+old-schema refusal. The output omits key bodies and metadata payloads and declares that neither
+network nor package authority was used.
+
+The fourth slice adds a transport-only mirror boundary without broadening trust. A canonical
+owner-selected HTTPS base produces only the fixed `metadata/snapshot.json` path or an
+`objects/sha256/DIGEST` path derived from signed metadata. Resolution rejects the complete answer
+if any address is not publicly routable, pins accepted addresses into TLS, and checks the
+connected peer. Proxies, redirects, referrers, content decoding, ambient credentials, non-200
+responses, media-type drift, and oversized bodies fail closed. Snapshot fetch/refresh holds the
+stopped-home lock and repeats signature, expiry, registry identity, rollback, and equivocation
+checks before inspection or an approved commit. Application/infrastructure and CLI process tests
+cover fixed layout, digest/length/type mismatch, insecure/private origins, approval ordering,
+review-to-apply envelope drift, and the shared IANA special-address corpus.
+
+The fifth slice adds schema 25 immutable publisher-release evidence and stopped-home
+`release-fetch`, `release-accept`, and `release-status`. Admission revalidates the exact current
+snapshot under the active root and current clock, then repeats publisher threshold, withdrawal,
+dependency-lock, host-compatibility, and descriptor verification inside an immediate transaction.
+The first admitting root/snapshot identity and host API revision remain durable provenance.
+Identical replay is idempotent; a package/version cannot alias different bytes. Later withdrawal
+blocks new acceptance without deleting historical evidence. Migration and restart tests cover
+v23-to-current, v24-to-v25, immutable triggers, replay, withdrawal, and root-rotation refresh.
+
+The sixth slice binds strict manifest and archive inspection to accepted release evidence.
+`package-fetch` revalidates the accepted publisher envelope under the current root/snapshot, then
+downloads only its exact signed manifest/archive objects. Extension identity, publisher, version,
+and host range or skill identity/version must agree with the release. The extraction-free,
+in-memory deterministic USTAR parser accepts only regular canonical inventory and exact declared
+content, while rejecting traversal, links, devices, sparse/extension records, duplicate/extra
+paths, metadata authority, malformed padding/trailers, and instruction control bytes. Output
+reports requested authority and exact file evidence but persists and grants nothing.
+
+The seventh slice adds an explicitly approved, exact-archive-digest-fenced `package-stage`
+operation and schema 26 immutable package evidence. It performs a fresh bounded retrieval and
+strict inspection, revalidates current registry and publisher authority after network I/O and
+again inside the immediate database transaction, then binds the exact manifest/archive descriptors
+to the already accepted release. Blobs use the established private content-addressed artifact
+store, so backup, restore, migration-copy, integrity, deduplication, and age-gated orphan cleanup
+remain one mechanism. Exact replay is idempotent; no archive is extracted and no extension, skill,
+tool, or permission is installed or enabled.
+
+The eighth slice adds offline `package-plan` for both package classes. It reloads exact staged
+bytes, requires current unwithdrawn release authorization, and reports deterministic content and
+permission/tool-reference diffs against the existing installation. One canonical digest binds the
+candidate and current state. Approved `package-install` applies that digest only for data-only
+skills, bridging the extraction-free registry evidence into the established immutable skill
+publisher. New or changed revisions are disabled, prior immutable bytes remain available for the
+same rollback flow, identical-byte evidence adoption may preserve status, and registry provenance
+is retained without granting required tools. Activation remains a separate approval.
+
+Installed registry skills now carry a non-destructive runtime policy projection. Exact accepted
+release and staged manifest/archive evidence must still match the installed provenance and newest
+accepted snapshot. Withdrawal, removal, identity substitution, or evidence loss blocks activation
+and suppresses configured instruction authority at restart while retaining immutable bytes and
+history.
+
+The ninth slice extends approved `package-install` to extensions. Only the authenticated manifest
+and executable are atomically published to a private manifest-digest-addressed root, synchronized,
+re-inspected, and retained without execution. Schema 27 binds each immutable extension revision to
+the exact registry/package/version, publisher-release envelope, manifest, and archive evidence.
+New packages have no grant; update, rollback, and identical-byte provenance adoption create a new
+disabled revision and supersede any old grant. The daemon reprojects current registry policy
+before both enable and invoke, so withdrawal, removal, substitution, or evidence loss cannot
+resume authority after restart. Snapshot expiry alone does not disable an offline install. The
+next slices must add public registry publication tooling and package/upgrade/recovery
+qualification.
+[ADR 0020](decisions/0020-threshold-signed-inert-package-registry.md) records the boundary.
+
+## Productionization slice: stable typed Rust owner client
+
+Status: v0.5 stable blocking SDK boundary implemented. `mealy-client` is an independently reusable blocking
+Rust client over the canonical `mealy-protocol` DTOs. Its initial stable surface covers daemon
+health/status and provider catalog, session create/list/search/status/title/provider-selection/
+checkpoint/fork/text-or-image-admission/timeline, task status/pause/resume/cancel/recorded replay,
+durable child delegation list/detail inspection, exact approval resolution, governed extension
+install/stage/lifecycle/invoke, and webhook, Telegram, Discord, and Slack administration.
+
+Construction rejects URL credentials, base paths, queries, fragments, unsupported schemes, and
+non-loopback clear-text origins. The client disables ambient proxies and redirects, applies
+positive connect/request deadlines, marks bearer headers sensitive, redacts debug output, caps
+JSON responses at 8 MiB by default and 64 MiB absolutely, validates typed request versions before
+network dispatch, caps serialized commands at 8 MiB, retains their source bytes in zeroizing
+readers, and requires compatible versions in both successful and structured error responses. The
+one-time webhook creation envelope validates its nested channel version. Opaque
+path identities cannot contain separators or control characters. The local connection-descriptor
+constructor additionally requires the exact v1, literal-loopback HTTP origin with explicit port,
+and 32-byte base64url bearer contract; filesystem loading remains the embedding application's
+owner-private no-follow responsibility.
+
+Unit fixtures exercise transport headers, typed command bodies, structured errors, response
+limits, incompatible versions, ambiguous identifiers, descriptor validation, and secret-free
+debug output against a real loopback socket. Frozen v0.2.1/v0.3/v0.4/v0.5 daemon fixtures preserve
+compatible response behavior. The domain/protocol/client crates are publishable and packaged
+twice reproducibly; a clean external consumer compiles from the extracted packages and retained
+lock in CI, the tag workflow, and public-release acceptance. GitHub release publication includes
+checksums and a dedicated offline Sigstore provenance bundle. Strict Clippy, unit, doc, and
+rustdoc gates cover the crates. Async/SSE and additional-language clients remain later ecosystem
+work rather than being implied by this stable blocking SDK.
+
+## Productionization slice: privacy-preserving OpenTelemetry export
+
+Status: first v0.5 trace/metric boundary implemented. `mealy-observability` is a separate typed
+crate rather than a `tracing` subscriber. Its public recording surface accepts only five bounded
+canonical agent-run correlation IDs, one fixed outcome enum, and duration. It has no prompt,
+response, tool-argument, path, error-message, arbitrary-attribute, log-event, environment, or
+credential input. `mealyd` keeps the runtime disabled unless an owner explicitly supplies
+`--otlp-endpoint`.
+
+The transport emits OTLP/HTTP protobuf to exact `/v1/traces` and `/v1/metrics` paths. HTTPS is
+required outside a literal loopback IP; clear-text loopback additionally requires an explicit
+port. URL credentials, base paths, queries, fragments, redirects, proxies, ambient OTLP endpoints,
+headers, resources, protocols, compression, retry controls, and host/process/environment resource
+detectors are absent. The only resource attributes are fixed service name, build version, and
+`mealy.telemetry.v1`. The exporter accepts no authentication header in this slice.
+
+Agent work never waits on trace delivery: a 1,024-span queue drops on pressure, batches contain at
+most 128 spans, and requests and responses are hard bounded. Export interval and request timeout
+have narrow programmatic ranges. Metrics use only the three fixed outcome values, preventing
+identifier-driven time-series growth; canonical task/run/turn/session/correlation IDs remain
+bounded trace attributes. Collector status, malformed response, oversized body, and partial
+rejection fail the export without returning attacker-controlled response text. Canonical agent
+state and shutdown classification remain authoritative if the optional collector is unavailable.
+
+Wire-level tests run both exporters against a real loopback socket, decode their protobuf, require
+the exact resource/span/metric inventories, reject authorization leakage, and prove an arbitrary
+general `tracing` canary is absent. Endpoint and identifier adversarial units, strict Clippy, the
+existing public agent-loop process scenario, documentation/package validation, and full workspace
+gates cover the first slice. Typed provider/tool/effect/attempt/scheduler instruments,
+authenticated secret-brokered collector headers, trace sampling policy, evaluation contracts, and
+cross-signal correlation beyond this first claimed-run slice remain later v0.5 work.
+
+## Productionization slice: public-API scenario evaluations
+
+Status: first v0.5 evaluation contract and runner implemented. `mealy-evaluation` owns strict
+`mealy.evaluation-suite.v1` and `mealy.evaluation-report.v1` DTOs and depends only on the stable
+typed client/protocol stack. `mealyctl eval validate` performs bounded no-follow offline
+preflight; `eval run` constructs and drops its blocking client on an isolated blocking thread,
+then runs 1–128 cases sequentially through fresh authenticated public sessions.
+
+Each case admits one normal idempotent input, discovers its root task after the admission cursor,
+waits for an explicit non-transient settled status, and reads only public task, validation, usage,
+timeline, and recorded-replay projections. Fixed assertions cover final digest/presence,
+validation presence/outcome/method, replay completeness and zero live calls, required/forbidden
+event counts, duration, calls, delegation, retries, tokens, cost, and output bytes. The runner
+never approves an effect; safety cases can require approval parking and forbid dispatch.
+
+Reports omit prompt/response/criteria text, event payloads, validator bodies, tool arguments,
+errors, paths, and credentials. They retain typed IDs, commitments, usage, validation/cursor
+references, relevant event-envelope citations, and a digest over the report payload. A real
+daemon process proof runs deterministic success and write-proposal cases, verifies zero approval
+or dispatch by the evaluator, and checks private canaries are absent. CLI parser/file tests,
+contract adversarial units, strict Clippy, and docs/package validation cover the remaining first
+slice. Outer-harness crash orchestration, report signing/attestation, distributed comparison
+storage, and optional model judges remain later v0.5 work.
+
+## Productionization slice: privacy-scoped semantic memory
+
+Status: first v0.5 hybrid retrieval boundary implemented. Schema 28 adds a per-principal derived
+semantic-index state and exact active-revision vector rows while keeping canonical governed memory
+authoritative. `memoryEmbedding` is absent by default and pins an OpenAI-compatible endpoint,
+model, residency, dimensions, document/query prefixes, timeout, and optional broker credential.
+Remote endpoints require HTTPS plus that reference; clear-text is restricted to literal loopback.
+The no-proxy/no-redirect adapter bounds text, batch, response, timeout, dimensions, ordering, and
+numeric validity and emits only fixed safe error classes. A bounded dedicated thread owns and
+destroys its blocking HTTP client/credential, leaving asynchronous daemon control with a safe
+channel.
+
+An owner-requested semantic rebuild first maintains FTS5, snapshots at most 10,000 complete active
+revision candidates, embeds batches outside the writer, then atomically replaces the complete
+vector set only after exact revision/content/configuration fences pass. Lifecycle triggers remove
+affected vectors and mark the principal state stale on correction, expiry, rejection, deletion,
+or active-status/content drift. Hybrid search applies principal/channel/workspace/status/
+sensitivity/digest filters, exact cosine rank, and deterministic reciprocal-rank fusion. It reports
+the actual retrieval mode and safe semantic status; disabled, unbuilt, stale, degraded,
+incompatible, or unavailable states fall back to lexical search.
+
+Typed API/CLI commands expose explicit configuration, compatibility probe, enable/disable,
+semantic rebuild, hybrid search, policy digest, dimensions, health, and rank evidence without
+printing credentials. Unit tests cover policy and transport adversaries; SQLite tests cover
+complete replacement, owner isolation, rank, correction, deletion, and rebuild; a real-daemon
+fixture proves local OpenAI-compatible prefix/model calls, atomic rebuild, semantic-only recall,
+stale lexical fallback, hard-restart persistence, and successful recovery. Full v0.5 package,
+upgrade, supported-distribution, and release qualification remain open.
+[ADR 0021](decisions/0021-derived-semantic-memory-index.md) records the boundary.
+
 ## Productionization slice: interactive operations dashboard
 
 Status: complete for the owner-local conversation/control, unknown-effect recovery, schedule,
@@ -388,7 +605,6 @@ this profile; Telegram remains the bounded text-document channel.
   task-usage/cost, unknown-effect-reconciliation, schedule-creation/lifecycle, governed-memory, and
   extension-lifecycle subsets;
 - Discord guild/group workflows beyond the completed exact one-human DM profile;
-- semantic/vector memory;
 - plugin marketplace;
 - distributed scheduler;
 - multi-user product UX;

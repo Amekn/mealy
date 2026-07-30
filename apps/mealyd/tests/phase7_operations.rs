@@ -4,11 +4,14 @@ use mealy_infrastructure::LATEST_SCHEMA_VERSION;
 #[cfg(target_os = "linux")]
 use mealy_protocol::SandboxProfileStatusResponse;
 use mealy_protocol::{
-    API_VERSION, AdminStatusResponse, BackupResponse, BackupVerificationResponse,
-    ControlTaskRequest, CreateBackupRequest, CreateExportRequest, CreateScheduleRequest,
-    CreateSessionRequest, CreateSessionResponse, DeliveryMode, DoctorResponse, DrainDaemonRequest,
-    DrainDaemonResponse, ExportKindRequest, ExportResponse, InputAdmissionResponse,
-    LocalConnectionInfo, MissedRunPolicyCommand, ReadinessResponse, ScheduleLifecycleRequest,
+    API_VERSION, AdminStatusResponse, AutomationActionCommand, AutomationLifecycleRequest,
+    AutomationResponse, AutomationRunResponse, AutomationRunStatusResponse, AutomationRunsResponse,
+    AutomationStatusResponse, AutomationTriggerRequest, AutomationsResponse, BackupResponse,
+    BackupVerificationResponse, ControlTaskRequest, CreateAutomationRequest, CreateBackupRequest,
+    CreateExportRequest, CreateScheduleRequest, CreateSessionRequest, CreateSessionResponse,
+    DeliveryMode, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest,
+    ExportKindRequest, ExportResponse, InputAdmissionResponse, LocalConnectionInfo,
+    MissedRunPolicyCommand, ReadinessResponse, ScheduleLifecycleRequest,
     ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse, ScheduleStatusResponse,
     SchedulesResponse, SubmitInputRequest, TaskControlReceipt, TaskResponse, TaskStatus,
 };
@@ -17,7 +20,7 @@ use std::{
     fs,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 use tempfile::TempDir;
 use tokio::time::{Instant, sleep};
@@ -156,6 +159,29 @@ async fn safe_mode_supports_diagnostics_backup_export_and_clean_drain() {
     )
     .await;
     assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let rejected_automation = authorized_post_response(
+        &client,
+        &connection,
+        "/v1/automations",
+        &CreateAutomationRequest {
+            api_version: API_VERSION.to_owned(),
+            automation_id: mealy_domain::AutomationId::new().to_string(),
+            name: "safe-mode denied automation".to_owned(),
+            trigger: AutomationTriggerRequest::OneShot {
+                due_at_ms: i64::MAX,
+            },
+            action: AutomationActionCommand::Notify {
+                target_session_id: mealy_domain::SessionId::new().to_string(),
+                message: "must not be accepted".to_owned(),
+                remote_continuation_id: None,
+            },
+        },
+    )
+    .await;
+    assert_eq!(
+        rejected_automation.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 
     let backup: BackupResponse = authorized_post(
         &client,
@@ -499,6 +525,310 @@ async fn recurring_schedule_api_is_revision_fenced_auditable_and_operationally_v
     assert!(daemon.wait().await.success());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn automation_api_drives_one_shot_and_future_event_actions_without_replay() {
+    let home = TempDir::new().expect("temporary daemon home");
+    let client = http_client();
+    let mut daemon = Daemon::spawn(
+        home.path(),
+        &[
+            "--promotion-delay-ms",
+            "60000",
+            "--agent-delay-ms",
+            "60000",
+            "--outbox-delay-ms",
+            "60000",
+        ],
+    );
+    let connection = wait_until_ready(&client, home.path()).await;
+    let source: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let target: CreateSessionResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+
+    let forbidden = authorized_post_response(
+        &client,
+        &connection,
+        "/v1/automations",
+        &CreateAutomationRequest {
+            api_version: API_VERSION.to_owned(),
+            automation_id: mealy_domain::AutomationId::new().to_string(),
+            name: "forbidden event loop".to_owned(),
+            trigger: AutomationTriggerRequest::SessionEvent {
+                source_session_id: source.session_id.clone(),
+                event_type: "turn.completed".to_owned(),
+            },
+            action: AutomationActionCommand::SubmitPrompt {
+                target_session_id: target.session_id.clone(),
+                prompt: "Continue autonomously.".to_owned(),
+                allow_approval_required_action: false,
+            },
+        },
+    )
+    .await;
+    assert_eq!(forbidden.status(), StatusCode::BAD_REQUEST);
+
+    let now_ms = i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("current epoch")
+            .as_millis(),
+    )
+    .expect("current epoch milliseconds");
+    let one_shot_request = CreateAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        automation_id: mealy_domain::AutomationId::new().to_string(),
+        name: "one-shot prompt".to_owned(),
+        trigger: AutomationTriggerRequest::OneShot {
+            due_at_ms: now_ms + 500,
+        },
+        action: AutomationActionCommand::SubmitPrompt {
+            target_session_id: target.session_id.clone(),
+            prompt: "Run the one-shot proof.".to_owned(),
+            allow_approval_required_action: false,
+        },
+    };
+    let one_shot: AutomationResponse =
+        authorized_post(&client, &connection, "/v1/automations", &one_shot_request).await;
+    assert_eq!(one_shot.status, AutomationStatusResponse::Active);
+    let one_shot_run = wait_for_automation_run(
+        &client,
+        &connection,
+        &one_shot.automation_id,
+        AutomationRunStatusResponse::Admitted,
+    )
+    .await;
+    assert!(one_shot_run.inbox_entry_id.is_some());
+    let completed_one_shot: AutomationResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}", one_shot.automation_id),
+    )
+    .await;
+    assert_eq!(
+        completed_one_shot.status,
+        AutomationStatusResponse::Completed
+    );
+    let delayed_replay: AutomationResponse =
+        authorized_post(&client, &connection, "/v1/automations", &one_shot_request).await;
+    assert_eq!(delayed_replay, completed_one_shot);
+
+    let event_request = CreateAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        automation_id: mealy_domain::AutomationId::new().to_string(),
+        name: "future accepted inputs".to_owned(),
+        trigger: AutomationTriggerRequest::SessionEvent {
+            source_session_id: source.session_id.clone(),
+            event_type: "input.accepted".to_owned(),
+        },
+        action: AutomationActionCommand::Notify {
+            target_session_id: target.session_id.clone(),
+            message: "A future source input was accepted.".to_owned(),
+            remote_continuation_id: None,
+        },
+    };
+    let event_rule: AutomationResponse =
+        authorized_post(&client, &connection, "/v1/automations", &event_request).await;
+    let _: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", source.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "phase7-automation-event-1".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Create one future source event.".to_owned(),
+        },
+    )
+    .await;
+    let event_run = wait_for_automation_run(
+        &client,
+        &connection,
+        &event_rule.automation_id,
+        AutomationRunStatusResponse::Notified,
+    )
+    .await;
+    assert_eq!(
+        event_run.source_event_type.as_deref(),
+        Some("input.accepted")
+    );
+    assert!(event_run.source_event_cursor.is_some());
+    let event_replay: AutomationResponse =
+        authorized_post(&client, &connection, "/v1/automations", &event_request).await;
+    assert_eq!(event_replay.automation_id, event_rule.automation_id);
+    assert_eq!(event_replay.revision, 1);
+    let edited: AutomationResponse = authorized_patch(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}", event_rule.automation_id),
+        &EditAutomationRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: event_replay.revision,
+            name: "edited future accepted inputs".to_owned(),
+            trigger: AutomationTriggerRequest::SessionEvent {
+                source_session_id: source.session_id.clone(),
+                event_type: "input.accepted".to_owned(),
+            },
+            action: AutomationActionCommand::Notify {
+                target_session_id: target.session_id.clone(),
+                message: "An input after the edit was accepted.".to_owned(),
+                remote_continuation_id: None,
+            },
+        },
+    )
+    .await;
+    assert_eq!(edited.revision, 2);
+    let _: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", source.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "phase7-automation-event-after-edit".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Create one event after the edit.".to_owned(),
+        },
+    )
+    .await;
+    wait_for_automation_runs(
+        &client,
+        &connection,
+        &event_rule.automation_id,
+        2,
+        AutomationRunStatusResponse::Notified,
+    )
+    .await;
+
+    let advanced: AutomationResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}", event_rule.automation_id),
+    )
+    .await;
+    let paused: AutomationResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}/pause", event_rule.automation_id),
+        &AutomationLifecycleRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: advanced.revision,
+        },
+    )
+    .await;
+    assert_eq!(paused.status, AutomationStatusResponse::Paused);
+    let _: InputAdmissionResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/sessions/{}/inputs", source.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "phase7-automation-event-paused".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "This event must be skipped while paused.".to_owned(),
+        },
+    )
+    .await;
+    let resumed: AutomationResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}/resume", event_rule.automation_id),
+        &AutomationLifecycleRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: paused.revision,
+        },
+    )
+    .await;
+    assert_eq!(resumed.status, AutomationStatusResponse::Active);
+    sleep(Duration::from_millis(600)).await;
+    let runs: AutomationRunsResponse = authorized_get(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}/runs?limit=10", event_rule.automation_id),
+    )
+    .await;
+    assert_eq!(runs.runs.len(), 2, "paused events must not replay");
+    let cancelled: AutomationResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/automations/{}/cancel", event_rule.automation_id),
+        &AutomationLifecycleRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: resumed.revision,
+        },
+    )
+    .await;
+    assert_eq!(cancelled.status, AutomationStatusResponse::Cancelled);
+
+    let listed: AutomationsResponse = authorized_get(&client, &connection, "/v1/automations").await;
+    assert_eq!(listed.automations.len(), 2);
+    let status: AdminStatusResponse =
+        authorized_get(&client, &connection, "/v1/admin/status").await;
+    assert_eq!(status.active_automations, 0);
+    assert_eq!(status.paused_automations, 0);
+    assert_eq!(status.claimed_automation_runs, 0);
+    assert_eq!(status.failed_automation_runs, 0);
+    let _: DrainDaemonResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/admin/drain",
+        &DrainDaemonRequest {
+            api_version: API_VERSION.to_owned(),
+        },
+    )
+    .await;
+    assert!(daemon.wait().await.success());
+
+    let mut restarted = Daemon::spawn(
+        home.path(),
+        &[
+            "--promotion-delay-ms",
+            "60000",
+            "--agent-delay-ms",
+            "60000",
+            "--outbox-delay-ms",
+            "60000",
+        ],
+    );
+    let restarted_connection = wait_until_ready(&client, home.path()).await;
+    let retained: AutomationRunsResponse = authorized_get(
+        &client,
+        &restarted_connection,
+        &format!("/v1/automations/{}/runs?limit=10", event_rule.automation_id),
+    )
+    .await;
+    assert_eq!(retained.runs.len(), 2);
+    let _: DrainDaemonResponse = authorized_post(
+        &client,
+        &restarted_connection,
+        "/v1/admin/drain",
+        &DrainDaemonRequest {
+            api_version: API_VERSION.to_owned(),
+        },
+    )
+    .await;
+    assert!(restarted.wait().await.success());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bounded_drain_records_forced_termination_durably() {
     let home = TempDir::new().expect("temporary daemon home");
@@ -631,6 +961,59 @@ async fn wait_until_ready(client: &Client, home: &Path) -> LocalConnectionInfo {
     }
 }
 
+async fn wait_for_automation_run(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    expected: AutomationRunStatusResponse,
+) -> AutomationRunResponse {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        let runs: AutomationRunsResponse = authorized_get(
+            client,
+            connection,
+            &format!("/v1/automations/{automation_id}/runs?limit=10"),
+        )
+        .await;
+        if let Some(run) = runs.runs.into_iter().find(|run| run.status == expected) {
+            return run;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automation did not reach {expected:?}"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn wait_for_automation_runs(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    expected_count: usize,
+    expected_status: AutomationRunStatusResponse,
+) {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        let runs: AutomationRunsResponse = authorized_get(
+            client,
+            connection,
+            &format!("/v1/automations/{automation_id}/runs?limit=10"),
+        )
+        .await;
+        if runs.runs.len() == expected_count
+            && runs.runs.iter().all(|run| run.status == expected_status)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "automation did not reach {expected_count} {expected_status:?} run(s)"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 async fn authorized_get<T: serde::de::DeserializeOwned>(
     client: &Client,
     connection: &LocalConnectionInfo,
@@ -677,6 +1060,26 @@ async fn authorized_post_response(
         .send()
         .await
         .expect("authorized POST")
+}
+
+async fn authorized_patch<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+    body: &impl serde::Serialize,
+) -> T {
+    client
+        .patch(format!("{}{path}", connection.base_url))
+        .bearer_auth(&connection.bearer_token)
+        .json(body)
+        .send()
+        .await
+        .expect("authorized PATCH")
+        .error_for_status()
+        .expect("successful PATCH")
+        .json()
+        .await
+        .expect("PATCH response JSON")
 }
 
 async fn wait_for_process(child: &mut Child) -> ExitStatus {

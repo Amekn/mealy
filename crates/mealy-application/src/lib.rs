@@ -4,6 +4,7 @@ mod agent;
 mod agent_effect;
 mod approval;
 mod artifact;
+mod automation;
 mod browser;
 mod browser_transaction;
 mod channel;
@@ -32,6 +33,7 @@ mod provider;
 mod provider_config;
 mod provider_selection;
 mod recovery;
+mod registry;
 mod schedule;
 mod scheduler;
 mod session_export;
@@ -75,6 +77,16 @@ pub use approval::{
 pub use artifact::{
     ArtifactBlobStore, ArtifactBlobStoreError, ArtifactContentDescriptor, ArtifactEvidenceStore,
     ArtifactEvidenceStoreError, ArtifactMetadata, CommittedArtifactBlob,
+};
+pub use automation::{
+    AutomationAction, AutomationCandidate, AutomationClaimOutcome, AutomationContractError,
+    AutomationRunStatus, AutomationRunView, AutomationStatus, AutomationStore,
+    AutomationStoreError, AutomationTransition, AutomationTrigger, AutomationTriggerView,
+    AutomationView, ClaimAutomationRunCommit, CompleteAutomationRunCommit, CreateAutomationCommit,
+    EditAutomationCommit, MAXIMUM_AUTOMATION_EVENT_TYPE_BYTES, MAXIMUM_AUTOMATION_MESSAGE_BYTES,
+    MAXIMUM_AUTOMATION_NAME_BYTES, MAXIMUM_AUTOMATION_ONE_SHOT_HORIZON_MS,
+    MAXIMUM_AUTOMATION_PROMPT_BYTES, TransitionAutomationCommit, validate_automation_definition,
+    validate_automation_view,
 };
 pub use browser::{
     BROWSER_CDP_PROTOCOL_VERSION, BROWSER_MAXIMUM_BUNDLE_BYTES, BROWSER_MAXIMUM_BUNDLE_FILE_BYTES,
@@ -172,13 +184,14 @@ pub use executor::{
     ExecutorRequest, ExecutorRequestError, ExecutorResult, ExecutorTerminal, SandboxExecutor,
 };
 pub use extension::{
-    BeginExtensionInvocationCommit, CompleteExtensionInvocationCommit, DisableExtensionCommit,
-    EXTENSION_HOST_API_VERSION, EXTENSION_MANIFEST_MAXIMUM_BYTES, EXTENSION_POLICY_VERSION,
-    EXTENSION_RPC_VERSION, EnableExtensionCommit, ExtensionDispatchRequest, ExtensionGrant,
-    ExtensionGrantError, ExtensionHost, ExtensionHostError, ExtensionInvocationStatus,
-    ExtensionInvocationTerminal, ExtensionInvocationView, ExtensionManifestInspection,
-    ExtensionManifestInspectionError, ExtensionManifestRevisionView, ExtensionMountGrant,
-    ExtensionRecoveryError, ExtensionRpcError, ExtensionRpcRequest, ExtensionRpcResponse,
+    AdoptExtensionRegistryProvenanceCommit, BeginExtensionInvocationCommit,
+    CompleteExtensionInvocationCommit, DisableExtensionCommit, EXTENSION_HOST_API_VERSION,
+    EXTENSION_MANIFEST_MAXIMUM_BYTES, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION,
+    EnableExtensionCommit, ExtensionDispatchRequest, ExtensionGrant, ExtensionGrantError,
+    ExtensionHost, ExtensionHostError, ExtensionInvocationStatus, ExtensionInvocationTerminal,
+    ExtensionInvocationView, ExtensionManifestInspection, ExtensionManifestInspectionError,
+    ExtensionManifestRevisionView, ExtensionMountGrant, ExtensionRecoveryError,
+    ExtensionRegistryProvenance, ExtensionRpcError, ExtensionRpcRequest, ExtensionRpcResponse,
     ExtensionStore, ExtensionStoreError, ExtensionView, InstallExtensionCommit,
     RevokeExtensionCommit, StageExtensionManifestCommit, extension_grant_digest,
     inspect_extension_manifest, recover_extension_invocations, validate_extension_object,
@@ -224,11 +237,16 @@ pub use mcp_oauth::{
     MCP_OAUTH_MAXIMUM_SCOPES, McpOAuthMetadataDiscovery, McpOAuthMetadataError, McpOAuthTokenGrant,
 };
 pub use memory::{
-    CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MEMORY_POLICY_VERSION,
-    MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit, MemorySearchQuery,
-    MemorySource, MemoryStore, MemoryStoreError, MemoryView, PromoteMemoryCommit,
-    ProposeMemoryCommit, RejectMemoryCommit, SetMemoryPinCommit, memory_context_locator,
-    memory_event_cursor, validate_memory_proposal, validate_memory_search, validate_sources,
+    CorrectMemoryCommit, DeleteMemoryCommit, ExpireMemoryCommit, MAXIMUM_MEMORY_EMBEDDING_BATCH,
+    MAXIMUM_MEMORY_EMBEDDING_BATCH_BYTES, MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS,
+    MEMORY_EMBEDDING_POLICY_VERSION, MEMORY_POLICY_VERSION, MemoryEmbeddingCandidate,
+    MemoryEmbeddingConfig, MemoryIndexRebuildReceipt, MemoryRevisionView, MemorySearchHit,
+    MemorySearchQuery, MemorySemanticIndexHealth, MemorySemanticIndexView, MemorySemanticSearchHit,
+    MemorySemanticSearchQuery, MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError,
+    MemoryView, PromoteMemoryCommit, ProposeMemoryCommit, RejectMemoryCommit,
+    ReplaceMemorySemanticIndexCommit, SetMemoryPinCommit, memory_context_locator,
+    memory_event_cursor, valid_memory_semantic_error_code, validate_memory_embedding_vector,
+    validate_memory_proposal, validate_memory_search, validate_sources,
 };
 
 pub use operations::{
@@ -285,6 +303,32 @@ pub use provider_selection::{
     update_session_provider_selection,
 };
 pub use recovery::{RecoveryPlan, plan_interrupted_effect};
+pub use registry::{
+    ExtensionCapabilityChange, ExtensionFilesystemPermissionChange, ExtensionPermissionDiff,
+    InspectedRegistryPackageManifest, InspectedRegistryRelease, InspectedRegistrySnapshot,
+    InspectedRegistryTrustRoot, REGISTRY_EXTENSION_MANIFEST_MEDIA_TYPE,
+    REGISTRY_EXTENSION_PACKAGE_MEDIA_TYPE, REGISTRY_MAXIMUM_SNAPSHOT_ENVELOPE_BYTES,
+    REGISTRY_RELEASE_CONTRACT_VERSION, REGISTRY_RELEASE_ENVELOPE_MEDIA_TYPE,
+    REGISTRY_RELEASE_PAYLOAD_TYPE, REGISTRY_ROOT_PAYLOAD_TYPE, REGISTRY_SKILL_MANIFEST_MEDIA_TYPE,
+    REGISTRY_SKILL_PACKAGE_MEDIA_TYPE, REGISTRY_SNAPSHOT_CONTRACT_VERSION,
+    REGISTRY_SNAPSHOT_ENVELOPE_MEDIA_TYPE, REGISTRY_SNAPSHOT_PAYLOAD_TYPE,
+    RegistryContentDescriptor, RegistryDependencyLock, RegistryError,
+    RegistryInstalledPackageDisposition, RegistryInstalledPackagePolicy, RegistryMetadataStore,
+    RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError, RegistryMirrorRequest,
+    RegistryMirrorResponse, RegistryMirrorTransport, RegistryMirrorTransportError,
+    RegistryPackageKind, RegistryPackageManifest, RegistryPackageState, RegistryPublicKey,
+    RegistryPublisher, RegistryRelease, RegistryReleaseCommit, RegistryReleaseState,
+    RegistrySignature, RegistrySignatureAlgorithm, RegistrySignedEnvelope, RegistrySnapshot,
+    RegistrySnapshotCommit, RegistrySnapshotState, RegistryTarget, RegistryTrustRoot,
+    RegistryTrustRootCommit, RegistryTrustRootState, RegistryUseCaseError, RegistryWithdrawal,
+    SkillPermissionDiff, accept_registry_release, accept_registry_snapshot,
+    active_registry_snapshot, bootstrap_registry_trust_root, diff_extension_permissions,
+    diff_skill_permissions, fetch_registry_content, fetch_registry_snapshot_envelope,
+    inspect_active_registry_release, inspect_initial_registry_trust_root,
+    inspect_installed_registry_package_policy, inspect_registry_package_manifest,
+    inspect_registry_release, inspect_registry_root_rotation, inspect_registry_snapshot,
+    rotate_registry_trust_root,
+};
 pub use schedule::{
     ClaimScheduleRunCommit, CompleteScheduleRunCommit, CreateScheduleCommit,
     MAXIMUM_CRON_EXPRESSION_BYTES, MAXIMUM_MISFIRE_GRACE_MS, MAXIMUM_SCHEDULE_NAME_BYTES,
@@ -326,16 +370,20 @@ pub use sessions::{
 pub use slack::{
     SLACK_MAXIMUM_ENVELOPE_BYTES, SLACK_MAXIMUM_INBOUND_TEXT_BYTES,
     SLACK_MAXIMUM_OUTBOUND_CHARACTERS, SlackAdapter, valid_slack_acknowledgement_id,
-    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id,
+    valid_slack_app_id, valid_slack_delivery_id, valid_slack_platform_id, valid_slack_thread_id,
 };
 pub use slack_channel::{
-    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit, OutboundSlackTarget,
-    PendingSlackEnvelope, RecordSlackSocketCommit, RegisterSlackChannelCommit,
-    ReserveSlackEnvelopeCommit, RevokeSlackChannelCommit, SLACK_MAXIMUM_DISPLAY_NAME_BYTES,
-    SLACK_MAXIMUM_ERROR_CODE_BYTES, SLACK_MAXIMUM_IGNORE_REASON_BYTES, SlackChannelBindingView,
-    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition,
-    SlackEnvelopeReservation, SlackOutboundContext, SlackReservedDisposition, SlackSocketTarget,
-    slack_input_dedupe_key, validate_slack_binding, validate_slack_reservation,
+    AcknowledgeSlackEnvelopeCommit, CompleteSlackEnvelopeCommit,
+    CreateSlackRemoteContinuationCommit, OutboundSlackTarget, PendingSlackEnvelope,
+    RecordSlackSocketCommit, RegisterSlackChannelCommit, ReserveSlackEnvelopeCommit,
+    RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit,
+    SLACK_MAXIMUM_DISPLAY_NAME_BYTES, SLACK_MAXIMUM_ERROR_CODE_BYTES,
+    SLACK_MAXIMUM_IGNORE_REASON_BYTES, SLACK_REMOTE_CONTINUATION_MAXIMUM_LIFETIME_MS,
+    SLACK_REMOTE_CONTINUATION_MINIMUM_LIFETIME_MS, SlackChannelBindingView, SlackChannelStatus,
+    SlackChannelStore, SlackChannelStoreError, SlackEnvelopeDisposition, SlackEnvelopeReservation,
+    SlackOutboundContext, SlackRemoteContinuationStatus, SlackRemoteContinuationView,
+    SlackReservedDisposition, SlackSocketTarget, slack_input_dedupe_key, validate_slack_binding,
+    validate_slack_reservation,
 };
 pub use startup::{
     LeaseRecoveryEventIds, StartupRecoveryBatch, StartupRecoveryCommit, StartupRecoveryError,

@@ -1,5 +1,6 @@
-//! Public-process proof for Slack setup, Socket Mode crash recovery, thread routing, output,
-//! duplicate acknowledgement, exact allowlists, credential revocation, and secret exclusion.
+//! Public-process proof for Slack setup, Socket Mode crash recovery, exact-thread remote
+//! continuation, proactive automation output, duplicate acknowledgement, exact allowlists,
+//! credential revocation, and secret exclusion.
 
 use axum::{
     Json, Router,
@@ -10,10 +11,15 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{SinkExt as _, StreamExt as _};
+use mealy_domain::{AutomationId, RemoteContinuationId};
 use mealy_protocol::{
-    API_VERSION, CreateSlackChannelRequest, DrainDaemonRequest, DrainDaemonResponse,
-    LocalConnectionInfo, ReadinessResponse, RevokeSlackChannelRequest, SlackChannelResponse,
-    SlackChannelStatusResponse,
+    API_VERSION, AutomationActionCommand, AutomationActionResponse, AutomationResponse,
+    AutomationTriggerRequest, CreateAutomationRequest, CreateSlackChannelRequest,
+    CreateSlackRemoteContinuationRequest, DrainDaemonRequest, DrainDaemonResponse,
+    LocalConnectionInfo, ReadinessResponse, RevokeSlackChannelRequest,
+    RevokeSlackRemoteContinuationRequest, SlackChannelResponse, SlackChannelStatusResponse,
+    SlackRemoteContinuationResponse, SlackRemoteContinuationStatusResponse,
+    SlackRemoteContinuationsResponse,
 };
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -26,7 +32,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tempfile::TempDir;
 use tokio::{
@@ -386,6 +392,120 @@ async fn slack_socket_ack_is_crash_safe_threaded_rate_limited_and_revocable() {
     );
     assert_eq!(session_inbox_count(home.path(), &created.session_id), 1);
 
+    let now_ms = current_epoch_ms();
+    let remote_continuation_id = RemoteContinuationId::new().to_string();
+    let continuation: SlackRemoteContinuationResponse = authorized_post(
+        &client,
+        &restarted,
+        &format!(
+            "/v1/channels/slack/{}/remote-continuations",
+            created.binding_id
+        ),
+        &CreateSlackRemoteContinuationRequest {
+            api_version: API_VERSION.to_owned(),
+            remote_continuation_id: remote_continuation_id.clone(),
+            thread_id: "1785254000.000100".to_owned(),
+            expires_at_ms: now_ms + 60 * 60 * 1_000,
+        },
+    )
+    .await;
+    assert_eq!(
+        continuation.status,
+        SlackRemoteContinuationStatusResponse::Active
+    );
+    assert_eq!(continuation.thread_id, "1785254000.000100");
+    let listed: SlackRemoteContinuationsResponse = authorized_get(
+        &client,
+        &restarted,
+        &format!(
+            "/v1/channels/slack/{}/remote-continuations",
+            created.binding_id
+        ),
+    )
+    .await;
+    assert_eq!(listed.remote_continuations, vec![continuation.clone()]);
+    let read: SlackRemoteContinuationResponse = authorized_get(
+        &client,
+        &restarted,
+        &format!(
+            "/v1/channels/slack/{}/remote-continuations/{remote_continuation_id}",
+            created.binding_id
+        ),
+    )
+    .await;
+    assert_eq!(read, continuation);
+
+    let automation: AutomationResponse = authorized_post(
+        &client,
+        &restarted,
+        "/v1/automations",
+        &CreateAutomationRequest {
+            api_version: API_VERSION.to_owned(),
+            automation_id: AutomationId::new().to_string(),
+            name: "Exact Slack continuation".to_owned(),
+            trigger: AutomationTriggerRequest::OneShot {
+                due_at_ms: current_epoch_ms() + 1_000,
+            },
+            action: AutomationActionCommand::Notify {
+                target_session_id: created.session_id.clone(),
+                message: "The exact-thread continuation is active.".to_owned(),
+                remote_continuation_id: Some(remote_continuation_id.clone()),
+            },
+        },
+    )
+    .await;
+    assert!(matches!(
+        automation.action,
+        AutomationActionResponse::Notify {
+            remote_continuation_id: Some(ref id),
+            ..
+        } if id == &remote_continuation_id
+    ));
+    wait_for_sent_text(
+        &state,
+        "Mealy automation:\nThe exact-thread continuation is active.",
+    )
+    .await;
+
+    let revoked_continuation: SlackRemoteContinuationResponse = authorized_post(
+        &client,
+        &restarted,
+        &format!(
+            "/v1/channels/slack/{}/remote-continuations/{remote_continuation_id}/revoke",
+            created.binding_id
+        ),
+        &RevokeSlackRemoteContinuationRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: 0,
+        },
+    )
+    .await;
+    assert_eq!(
+        revoked_continuation.status,
+        SlackRemoteContinuationStatusResponse::Revoked
+    );
+    assert_eq!(revoked_continuation.revision, 1);
+    let rejected = authorized_post_response(
+        &client,
+        &restarted,
+        "/v1/automations",
+        &CreateAutomationRequest {
+            api_version: API_VERSION.to_owned(),
+            automation_id: AutomationId::new().to_string(),
+            name: "Revoked Slack continuation".to_owned(),
+            trigger: AutomationTriggerRequest::OneShot {
+                due_at_ms: current_epoch_ms() + 1_000,
+            },
+            action: AutomationActionCommand::Notify {
+                target_session_id: created.session_id.clone(),
+                message: "This must not be delivered.".to_owned(),
+                remote_continuation_id: Some(remote_continuation_id),
+            },
+        },
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+
     let revoked: SlackChannelResponse = authorized_post(
         &client,
         &restarted,
@@ -633,6 +753,49 @@ async fn authorized_post<T: serde::de::DeserializeOwned>(
         .json()
         .await
         .expect("POST response JSON")
+}
+
+async fn authorized_post_response(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+    body: &impl serde::Serialize,
+) -> reqwest::Response {
+    client
+        .post(format!("{}{path}", connection.base_url))
+        .bearer_auth(&connection.bearer_token)
+        .json(body)
+        .send()
+        .await
+        .expect("authorized POST")
+}
+
+async fn authorized_get<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    path: &str,
+) -> T {
+    client
+        .get(format!("{}{path}", connection.base_url))
+        .bearer_auth(&connection.bearer_token)
+        .send()
+        .await
+        .expect("authorized GET")
+        .error_for_status()
+        .expect("successful GET")
+        .json()
+        .await
+        .expect("GET response JSON")
+}
+
+fn current_epoch_ms() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("wall clock after epoch")
+            .as_millis(),
+    )
+    .expect("current epoch milliseconds fit i64")
 }
 
 fn session_inbox_count(home: &Path, session_id: &str) -> i64 {

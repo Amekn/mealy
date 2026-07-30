@@ -20,28 +20,32 @@ use mealy_application::{
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
-    ApiErrorResponse, ApprovalResolutionReceipt, ArtifactMetadataResponse, BackupResponse,
-    BackupVerificationResponse, CancelTaskRequest, CompactionResponse,
-    ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
-    CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
-    CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
+    ApiErrorResponse, ApprovalResolutionReceipt, ArtifactMetadataResponse,
+    AutomationLifecycleRequest, AutomationResponse, AutomationRunsResponse, AutomationsResponse,
+    BackupResponse, BackupVerificationResponse, CancelTaskRequest, CompactionResponse,
+    ContextManifestEvidenceResponse, ControlTaskRequest, CorrectMemoryRequest,
+    CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
+    CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
+    CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
+    CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
     CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
     DelegationsResponse, DiscordChannelResponse, DiscordChannelsResponse, DoctorResponse,
-    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectReconciliationReceipt,
-    EffectResponse, EnableExtensionRequest, ExportResponse, ExtensionInvocationResponse,
-    ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryResponse, MemorySearchResponse, MemorySensitivityCommand, PendingApprovalsResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
+    DrainDaemonRequest, DrainDaemonResponse, EditAutomationRequest, EffectAttemptResponse,
+    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportResponse,
+    ExtensionInvocationResponse, ExtensionLifecycleRequest, ExtensionResponse, ExtensionsResponse,
+    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryIndexRebuildResponse,
+    MemoryLifecycleRequest, MemoryResponse, MemoryRetrievalMode, MemorySearchResponse,
+    MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
+    ProviderCatalogResponse, ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
+    RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
     ScheduleResponse, ScheduleRunsResponse, SchedulesResponse, SessionCheckpointResponse,
     SessionCheckpointsResponse, SessionForkResponse, SessionProviderSelectionResponse,
     SessionSearchResponse, SessionStatusResponse, SessionTitleResponse, SessionsResponse,
     SetMemoryPinRequest, SlackChannelResponse, SlackChannelsResponse,
+    SlackRemoteContinuationResponse, SlackRemoteContinuationsResponse,
     StageExtensionManifestRequest, SubmitImageInputRequest, SubmitInputRequest,
     TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse,
     TelegramChannelResponse, TelegramChannelsResponse, TimelineCursor, TimelinePageResponse,
@@ -647,6 +651,114 @@ pub trait ApiBackend: Send + Sync + 'static {
         Err(BackendError::Unavailable)
     }
 
+    /// Creates one canonical one-shot or future event automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, or persistence fails.
+    fn create_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _request: CreateAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists owner-authorized automations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization or persistence fails.
+    fn automations(
+        &self,
+        _identity: AuthenticatedIdentity,
+    ) -> Result<AutomationsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads one owner-authorized automation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when absent, unauthorized, or corrupt.
+    fn automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Replaces an active or paused automation under an exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when validation, authorization, lifecycle, or persistence fails.
+    fn edit_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: EditAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Pauses one active automation under an exact revision fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn pause_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Resumes one paused automation without replaying events accumulated while paused.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn resume_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Terminally cancels one automation while retaining history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, lifecycle, or persistence fails.
+    fn cancel_automation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads bounded newest-first automation occurrence history.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when authorization, bounds, or persistence fails.
+    fn automation_runs(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _automation_id: String,
+        _limit: usize,
+    ) -> Result<AutomationRunsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
     /// Reads an authorized bounded timeline page.
     ///
     /// # Errors
@@ -754,6 +866,7 @@ pub trait ApiBackend: Send + Sync + 'static {
         query: String,
         maximum_sensitivity: MemorySensitivityCommand,
         limit: usize,
+        retrieval_mode: MemoryRetrievalMode,
     ) -> Result<MemorySearchResponse, BackendError>;
 
     /// Corrects a memory by superseding, not rewriting, its active revision.
@@ -1149,6 +1262,63 @@ pub trait ApiBackend: Send + Sync + 'static {
         Err(BackendError::Unavailable)
     }
 
+    /// Creates one short-lived continuation pinned to an exact previously admitted Slack thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for malformed identity, unobserved thread, overlap, authorization,
+    /// invalid lifetime, or persistence.
+    fn create_slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _request: CreateSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Lists owner-authorized exact-thread continuations for one Slack binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for authorization, identity, or persistence failure.
+    fn slack_remote_continuations(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+    ) -> Result<SlackRemoteContinuationsResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Reads one exact-thread remote continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when absent, unauthorized, malformed, or corrupt.
+    fn slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _remote_continuation_id: String,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
+    /// Terminally revokes one exact-thread continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] for authorization, revision, lifecycle, or persistence failure.
+    fn revoke_slack_remote_continuation(
+        &self,
+        _identity: AuthenticatedIdentity,
+        _binding_id: String,
+        _remote_continuation_id: String,
+        _request: RevokeSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        Err(BackendError::Unavailable)
+    }
+
     /// Verifies and durably admits one external delivery without local bearer authentication.
     ///
     /// # Errors
@@ -1459,6 +1629,30 @@ fn build_router(
             get(schedule_runs_handler),
         )
         .route(
+            "/v1/automations",
+            get(automations_handler).post(create_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}",
+            get(automation_handler).patch(edit_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/pause",
+            post(pause_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/resume",
+            post(resume_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/cancel",
+            post(cancel_automation_handler),
+        )
+        .route(
+            "/v1/automations/{automation_id}/runs",
+            get(automation_runs_handler),
+        )
+        .route(
             "/v1/artifacts/{artifact_id}",
             get(artifact_metadata_handler),
         )
@@ -1578,6 +1772,18 @@ fn build_router(
         .route(
             "/v1/channels/slack/{binding_id}/revoke",
             post(revoke_slack_channel_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations",
+            get(slack_remote_continuations_handler).post(create_slack_remote_continuation_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}",
+            get(slack_remote_continuation_handler),
+        )
+        .route(
+            "/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke",
+            post(revoke_slack_remote_continuation_handler),
         )
         .route("/v1/admin/status", get(admin_status_handler))
         .route("/v1/admin/metrics", get(admin_metrics_handler))
@@ -2245,6 +2451,121 @@ async fn schedule_runs_handler(
     Ok(Json(result))
 }
 
+async fn create_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    request: Result<Json<CreateAutomationRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_automation(identity, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn automations_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+) -> Result<Json<AutomationsResponse>, HttpError> {
+    let result = run_backend(state, move |backend| backend.automations(identity)).await?;
+    Ok(Json(result))
+}
+
+async fn automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.automation(identity, automation_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn edit_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<EditAutomationRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.edit_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn pause_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.pause_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn resume_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.resume_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn cancel_automation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    request: Result<Json<AutomationLifecycleRequest>, JsonRejection>,
+) -> Result<Json<AutomationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.cancel_automation(identity, automation_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutomationRunParameters {
+    limit: Option<usize>,
+}
+
+async fn automation_runs_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(automation_id): Path<String>,
+    parameters: Result<Query<AutomationRunParameters>, QueryRejection>,
+) -> Result<Json<AutomationRunsResponse>, HttpError> {
+    let Query(parameters) = parameters.map_err(|rejection| map_query_rejection(&rejection))?;
+    let limit = parameters.limit.unwrap_or(100);
+    let result = run_backend(state, move |backend| {
+        backend.automation_runs(identity, automation_id, limit)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
 async fn artifact_metadata_handler(
     State(state): State<AppState>,
     Extension(identity): Extension<AuthenticatedIdentity>,
@@ -2315,6 +2636,8 @@ struct MemorySearchParameters {
     maximum_sensitivity: MemorySensitivityCommand,
     #[serde(default = "default_memory_limit")]
     limit: usize,
+    #[serde(default)]
+    retrieval_mode: MemoryRetrievalMode,
 }
 
 const fn default_memory_sensitivity() -> MemorySensitivityCommand {
@@ -2398,6 +2721,7 @@ async fn search_memories_handler(
             parameters.query,
             parameters.maximum_sensitivity,
             parameters.limit,
+            parameters.retrieval_mode,
         )
     })
     .await?;
@@ -2820,6 +3144,65 @@ async fn revoke_slack_channel_handler(
     require_version(&request.api_version)?;
     let result = run_backend(state, move |backend| {
         backend.revoke_slack_channel(identity, binding_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn create_slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+    request: Result<Json<CreateSlackRemoteContinuationRequest>, JsonRejection>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.create_slack_remote_continuation(identity, binding_id, request)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn slack_remote_continuations_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path(binding_id): Path<String>,
+) -> Result<Json<SlackRemoteContinuationsResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.slack_remote_continuations(identity, binding_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path((binding_id, remote_continuation_id)): Path<(String, String)>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let result = run_backend(state, move |backend| {
+        backend.slack_remote_continuation(identity, binding_id, remote_continuation_id)
+    })
+    .await?;
+    Ok(Json(result))
+}
+
+async fn revoke_slack_remote_continuation_handler(
+    State(state): State<AppState>,
+    Extension(identity): Extension<AuthenticatedIdentity>,
+    Path((binding_id, remote_continuation_id)): Path<(String, String)>,
+    request: Result<Json<RevokeSlackRemoteContinuationRequest>, JsonRejection>,
+) -> Result<Json<SlackRemoteContinuationResponse>, HttpError> {
+    let Json(request) = request.map_err(|rejection| map_json_rejection(&rejection))?;
+    require_version(&request.api_version)?;
+    let result = run_backend(state, move |backend| {
+        backend.revoke_slack_remote_continuation(
+            identity,
+            binding_id,
+            remote_continuation_id,
+            request,
+        )
     })
     .await?;
     Ok(Json(result))
@@ -3371,16 +3754,16 @@ mod tests {
         ContextManifestEvidenceResponse, CreateCompactionRequest, CreateSessionCheckpointRequest,
         CreateSessionResponse, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
         ForkSessionRequest, InputAdmissionResponse, MemoriesResponse, MemoryIndexRebuildResponse,
-        MemoryLifecycleRequest, MemoryResponse, MemorySearchResponse, MemorySensitivityCommand,
-        PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-        ProviderCatalogResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
-        ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-        SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
-        SessionProviderSelectionResponse, SessionStatusResponse, SessionSummaryResponse,
-        SessionTitleResponse, SessionsResponse, SetMemoryPinRequest, SubmitInputRequest,
-        TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass,
-        TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor, TimelinePageResponse,
-        UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
+        MemoryLifecycleRequest, MemoryResponse, MemoryRetrievalMode, MemorySearchResponse,
+        MemorySensitivityCommand, PendingApprovalsResponse, PromoteMemoryRequest,
+        ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+        RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+        ResolveApprovalRequest, SessionCheckpointResponse, SessionCheckpointsResponse,
+        SessionForkResponse, SessionProviderSelectionResponse, SessionStatusResponse,
+        SessionSummaryResponse, SessionTitleResponse, SessionsResponse, SetMemoryPinRequest,
+        SubmitInputRequest, TaskBudgetUsage, TaskCancellationReceipt, TaskReplayResponse,
+        TaskResponse, TaskRiskClass, TaskStatus, TaskSuccessCriteriaResponse, TimelineCursor,
+        TimelinePageResponse, UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3919,9 +4302,12 @@ mod tests {
             _query: String,
             _maximum_sensitivity: MemorySensitivityCommand,
             _limit: usize,
+            _retrieval_mode: MemoryRetrievalMode,
         ) -> Result<MemorySearchResponse, BackendError> {
             Ok(MemorySearchResponse {
                 api_version: API_VERSION.to_owned(),
+                retrieval_mode: MemoryRetrievalMode::Lexical,
+                semantic_status: None,
                 hits: Vec::new(),
             })
         }
@@ -3980,6 +4366,7 @@ mod tests {
                 api_version: API_VERSION.to_owned(),
                 indexed_revision_count: 0,
                 rebuilt_at_ms: 1,
+                semantic_index: None,
             })
         }
 

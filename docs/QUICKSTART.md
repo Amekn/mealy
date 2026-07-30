@@ -1024,6 +1024,44 @@ explicitly instructed to route credentials, identity numbers, health, financial,
 private content to the advanced categorized review workflow. The model never autonomously
 activates memories; every activation remains an explicit authenticated owner action.
 
+### Opt in to semantic retrieval
+
+The v0.5 semantic-memory foundation can improve recall across different wording, but it is
+deliberately separate from the chat provider and disabled by default. With the daemon stopped, an
+owner approves an exact local or HTTPS OpenAI-compatible embedding endpoint, model, dimensions,
+prefixes, residency, timeout, and optional broker credential. Then restart and build the complete
+derived index:
+
+```sh
+systemctl --user stop mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" config memory-embedding \
+  --base-url http://127.0.0.1:8080/v1 \
+  --model nomic-embed-text \
+  --dimensions 768 \
+  --residency owner-host \
+  --document-prefix 'search_document: ' \
+  --query-prefix 'search_query: ' \
+  --approve
+systemctl --user start mealy.service
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" memory rebuild-index --semantic
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" memory search \
+  --workspace mealy://assistant/no-workspace --hybrid 'preferred answer style'
+```
+
+The configured server must actually implement `POST /v1/embeddings` with the exact advertised
+dimensions; a chat-only model endpoint is not enough. An explicit rebuild sends every active
+memory revision for this owner to that endpoint, and hybrid search sends the query. Use a remote
+service only when that complete disclosure and its stated residency are acceptable. Literal
+loopback may use HTTP without a credential; every other endpoint requires HTTPS and a brokered
+credential.
+
+Correction, expiry, rejection, deletion, or active-revision drift removes affected vectors and
+makes the complete index stale transactionally. Hybrid requests then report
+`lexical_fallback`/`stale` and continue using canonical FTS5 until another rebuild succeeds.
+Endpoint or dimension failure likewise cannot make a partial vector set authoritative. Full setup,
+status, disabling, and recovery guidance is in
+[the semantic-memory guide](SEMANTIC_MEMORY.md).
+
 Inside `mealyctl chat`, use `/status` to refresh the live provider/model, health, locality,
 context/output limits, configured prices, and primary/fallback request pressure. The same concise
 status appears at chat startup. Every terminal turn also prints durable recorded input/output
@@ -1313,6 +1351,49 @@ that exact digest as a separate decision:
   --expected-manifest-digest "$SKILL_DIGEST" --approve
 "$HOME/.local/bin/mealyd" --home "$HOME/.mealy"
 ```
+
+If the same skill comes from an already bootstrapped signed registry, use the registry review chain
+instead of owner-local package paths. After `release-accept`, run:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-fetch \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-stage \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --mirror https://registry.example.org/mealy/v1/ \
+  --expected-archive-digest DIGEST_FROM_PACKAGE_FETCH --approve
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-plan \
+  dev.mealy.registry owner.release-review 1.0.0
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" registry package-install \
+  dev.mealy.registry owner.release-review 1.0.0 \
+  --expected-plan-digest DIGEST_FROM_PACKAGE_PLAN --approve
+```
+
+The plan is offline and shows content plus governed-tool-reference changes against the installed
+revision. Install repeats current withdrawal/trust checks and the exact plan under the stopped-home
+lock, publishes through the same immutable skill store, records signed provenance, and leaves new,
+updated, or rollback bytes disabled. Run the same separate `skill enable` command shown above only
+after reviewing the installed manifest digest.
+
+Use the same registry chain for an extension package ID. Install copies only the authenticated
+manifest and executable into Mealy's private content-addressed extension area, records schema 27
+signed provenance, and runs no package code. New installs have no grant. Updates, rollbacks, and
+identical-byte evidence adoption retain history, revoke any old grant, and leave the selected
+revision disabled. Start Mealy, inspect the extension, then use the normal `extension enable`
+command with its exact revision and an explicit least-authority capability/mount/network/secret
+grant. Current registry policy is checked again before enable and every invocation.
+
+After accepting a newer registry snapshot, inspect `skill status owner.release-review` before
+activation. Its `registryPolicy.disposition` is `authorized` only when the newest accepted
+snapshot still names the exact signed release and the retained staged manifest/archive evidence
+still matches; `instructionAuthorityActive` reports the effective runtime state separately from
+the retained configured `enabled` intent. `withdrawn`, `unavailable`, `superseded`, or
+`evidence_mismatch` blocks enablement
+and suppresses an already configured revision from instruction context at the next daemon start.
+Mealy does not delete the package or audit evidence; install a reviewed replacement or select an
+exact staged prior version through `package-plan` and `package-install`. Snapshot expiry alone does
+not disable an offline installed revision.
 
 Inspection rejects symlinks, traversal, undeclared files, missing assets, changed size/digest,
 non-UTF-8 or control-bearing instructions, oversized inventories, and executable helper fields.
@@ -2174,6 +2255,35 @@ approval but instruct the owner to approve or deny through the authenticated das
 installation removes both brokered tokens, stops connection discovery, and retains its session,
 envelope, health, and journal evidence.
 
+### Pin one Slack thread for proactive notifications
+
+Reactive progress and results already return to their originating thread. For a proactive static
+automation notification, first send Mealy a message in the intended Slack thread and wait for its
+acknowledgement. Then pin that exact admitted thread:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-pin BINDING_ID \
+  --thread-id 1785254000.000100 --expires-in-hours 24
+```
+
+Retain the printed `MEALY_REMOTE_CONTINUATION_ID`. Pass it as
+`--remote-continuation-id UUID` to `automation create-once-notify`,
+`create-event-notify`, or the corresponding edit command when the target is the Slack binding's
+`SESSION_ID`. Inspect or remove the route with:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-list BINDING_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" \
+  channel slack-continuation-revoke BINDING_ID REMOTE_CONTINUATION_ID \
+  --expected-revision REVISION
+```
+
+The pin lasts from one minute through 30 days (the CLI uses whole hours), cannot overlap another
+effective pin for the binding, and never changes to a newer thread. Proactive Slack prompts remain
+unsupported. See [exact-thread remote continuation](REMOTE_CONTINUATION.md).
+
 ## Create a recurring schedule
 
 Schedules target an existing durable session. This example admits one normal read-only turn at
@@ -2217,6 +2327,50 @@ pass the `sessionId` returned by `telegram-pair`/`telegram-create` or
 `discord-pair`/`discord-create`; the scheduled prompt is admitted to that dedicated session and
 its progress, approval request, and final result use the same durable channel outbox route.
 
+## Create a one-shot or future-event automation
+
+Use an RFC 3339 instant with an explicit offset for a one-time prompt:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation create-once-prompt SESSION_ID \
+  --name "review build" \
+  --at "2026-08-01T09:00:00+12:00" \
+  "Review the latest build evidence."
+```
+
+Or notify one target session after each future exact event from another same-owner session:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation create-event-notify \
+  SOURCE_SESSION_ID TARGET_SESSION_ID \
+  --name "completion notice" \
+  --event-type turn.completed \
+  "The watched session completed."
+```
+
+For a Slack target, first create the exact-thread pin above and add
+`--remote-continuation-id REMOTE_CONTINUATION_ID` to the notification command. The route is checked
+again before outbox publication and delivery, so expiry or revocation cannot redirect the message.
+
+The client prints `MEALY_AUTOMATION_ID UUID` before each create request. If the response is
+ambiguous, repeat the exact command with `--automation-id UUID`; it returns the existing
+definition rather than creating another automation.
+
+Event rules start after creation and never replay history. Pausing stops claims; resuming skips
+events accumulated while paused. Inspect the current revision before editing or changing lifecycle:
+
+```sh
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation list
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation status AUTOMATION_ID
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation runs AUTOMATION_ID --limit 20
+"$HOME/.local/bin/mealyctl" --home "$HOME/.mealy" automation pause AUTOMATION_ID --expected-revision REVISION
+```
+
+One-shot prompts use the ordinary inbox and do not bypass approvals. Event actions are static
+notifications only; source event payload is never copied. See
+[durable automation](AUTOMATION.md) for edits, supported delivery routes, recovery, and safe-mode
+behavior.
+
 ## Delegate one bounded read-only task
 
 Configured external-provider profiles expose `agent.delegate` to the model automatically. Ask for
@@ -2250,6 +2404,40 @@ Successful, failed, and cancelled child results return through the recorded
 `delegation://result` tool observation before the parent continues. Cancelling the parent while it
 waits propagates to a queued or running child, settles both reservations, and terminally cancels
 the parent. Delegation is unavailable in the built-in offline fixture profile and in safe mode.
+
+## Integrate from Rust
+
+Workspace users can depend on `mealy-client` and construct `MealyClient` from an already trusted
+`LocalConnectionInfo`. The SDK exposes the exact versioned DTOs through
+`mealy_client::protocol` and has typed methods for status/provider discovery, session workbench,
+text/image admission, task control and replay, durable delegation inspection, approvals,
+extensions, and channel administration.
+
+Release users should download and authenticate all six v0.5 SDK assets as described in the client
+README, extract the three `.crate` archives into a private vendor directory, and use the complete
+matched set:
+
+```toml
+[dependencies]
+mealy-client = { version = "=0.5.0", path = "vendor/mealy-client-0.5.0" }
+
+[patch.crates-io]
+mealy-domain = { path = "vendor/mealy-domain-0.5.0" }
+mealy-protocol = { path = "vendor/mealy-protocol-0.5.0" }
+```
+
+Generate the application's own lockfile after adding these paths. The released SDK lock records
+the exact qualification consumer and dependency graph; it cannot replace a lock whose root
+application has a different package identity.
+
+Do not open `$MEALY_HOME/connection.json` through an ordinary path lookup in a reusable service.
+It contains the bearer credential. Apply the same canonical owner-private directory,
+owner-private regular-file, no-follow, and 64-KiB bounds used by `mealyctl`, then pass the parsed
+descriptor to `MealyClient::from_connection`. Do not copy the token into source, command-line
+arguments, logs, ambient environment, or shared configuration. See
+[`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) for the client and error
+contract plus the attested GitHub-release package names. The v0.5 SDK contract is blocking and
+page-based; timeline SSE and additional languages remain later ecosystem work.
 
 ## Install as a user service
 

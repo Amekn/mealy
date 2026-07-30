@@ -2,8 +2,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 pub use mealy_application::ProviderConfig;
 use mealy_application::{
     AgentLoopLimits, BrowserConfig, ImageGenerationConfig, LeaseConcurrencyLimits,
-    McpHttpServerConfig, McpServerConfig, WebAccessConfig, is_sha256_digest, sha256_digest,
-    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_chain,
+    McpHttpServerConfig, McpServerConfig, MemoryEmbeddingConfig, WebAccessConfig, is_sha256_digest,
+    sha256_digest, validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_chain,
 };
 use mealy_domain::{ChannelBindingId, CorrelationId, PrincipalId};
 use mealy_infrastructure::{inspect_browser_bundle, is_trusted_system_executable};
@@ -59,6 +59,8 @@ pub struct DaemonConfig {
     image_input_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image_generation: Option<ImageGenerationConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    memory_embedding: Option<MemoryEmbeddingConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_roots: Vec<WorkspaceRootConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -107,6 +109,17 @@ pub struct SkillConfig {
     manifest_digest: String,
     package_path: PathBuf,
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<SkillRegistryProvenanceConfig>,
+}
+
+/// Signed-registry evidence that supplied one installed inert skill revision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SkillRegistryProvenanceConfig {
+    registry_id: String,
+    release_envelope_digest: String,
+    archive_digest: String,
 }
 
 impl SkillConfig {
@@ -138,6 +151,18 @@ impl SkillConfig {
     #[must_use]
     pub const fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Exact signed-registry provenance for the installed revision, when applicable.
+    #[must_use]
+    pub fn registry_provenance(&self) -> Option<(&str, &str, &str)> {
+        self.registry.as_ref().map(|registry| {
+            (
+                registry.registry_id.as_str(),
+                registry.release_envelope_digest.as_str(),
+                registry.archive_digest.as_str(),
+            )
+        })
     }
 }
 
@@ -256,6 +281,7 @@ impl Default for DaemonConfig {
             provider_fallbacks: Vec::new(),
             image_input_enabled: false,
             image_generation: None,
+            memory_embedding: None,
             workspace_roots: Vec::new(),
             command_tools: Vec::new(),
             web_access: WebAccessConfig::default(),
@@ -351,6 +377,12 @@ impl DaemonConfig {
     #[must_use]
     pub const fn image_generation(&self) -> Option<&ImageGenerationConfig> {
         self.image_generation.as_ref()
+    }
+
+    /// Returns the optional exact semantic-memory embedding and privacy policy.
+    #[must_use]
+    pub const fn memory_embedding(&self) -> Option<&MemoryEmbeddingConfig> {
+        self.memory_embedding.as_ref()
     }
 
     /// Returns explicitly granted workspace roots in deterministic configuration order.
@@ -454,6 +486,10 @@ impl DaemonConfig {
                     })
             || self
                 .image_generation
+                .as_ref()
+                .is_some_and(|config| config.validate().is_err())
+            || self
+                .memory_embedding
                 .as_ref()
                 .is_some_and(|config| config.validate().is_err())
             || !valid_workspace_roots(&self.workspace_roots)
@@ -578,6 +614,11 @@ fn valid_skills(skills: &[SkillConfig]) -> bool {
                 .package_path
                 .components()
                 .all(|component| matches!(component, std::path::Component::Normal(_)))
+            && skill.registry.as_ref().is_none_or(|registry| {
+                valid_skill_identifier(&registry.registry_id, 255)
+                    && is_sha256_digest(&registry.release_envelope_digest)
+                    && is_sha256_digest(&registry.archive_digest)
+            })
             && identities.insert(skill.skill_id.as_str())
             && package_paths.insert(skill.package_path.as_path())
     })
@@ -1290,6 +1331,44 @@ mod tests {
     }
 
     #[test]
+    fn memory_embedding_configuration_is_optional_private_and_transport_scoped() {
+        let home = tempfile::tempdir().expect("home");
+        let config = load_or_create_daemon_config(home.path()).expect("default config");
+        assert!(config.memory_embedding().is_none());
+        let mut value = serde_json::to_value(config).expect("config JSON");
+        value["memoryEmbedding"] = json!({
+            "baseUrl": "http://127.0.0.1:8080/v1",
+            "model": "nomic-embed-text",
+            "residency": "owner-host",
+            "dimensions": 768,
+            "documentPrefix": "search_document: ",
+            "queryPrefix": "search_query: ",
+            "requestTimeoutMs": 30_000
+        });
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("config bytes"),
+        )
+        .expect("write local embedding config");
+        let loaded = load_or_create_daemon_config(home.path()).expect("embedding config");
+        let embedding = loaded.memory_embedding().expect("configured embedding");
+        assert_eq!(embedding.model(), "nomic-embed-text");
+        assert_eq!(embedding.dimensions(), 768);
+        assert!(embedding.is_local().expect("locality"));
+
+        value["memoryEmbedding"]["baseUrl"] = json!("https://embeddings.example.test/v1");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("config bytes"),
+        )
+        .expect("write unsafe remote embedding config");
+        assert!(matches!(
+            load_or_create_daemon_config(home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
+    }
+
+    #[test]
     fn image_input_configuration_defaults_off_and_requires_only_direct_routes() {
         let direct_home = tempfile::tempdir().expect("direct home");
         let default =
@@ -1507,6 +1586,29 @@ mod tests {
         assert_eq!(loaded.skills().len(), 1);
         assert_eq!(loaded.skills()[0].skill_id(), "mealy.fixture.review");
         assert!(!loaded.skills()[0].enabled());
+
+        value["skills"][0]["registry"] = json!({
+            "registryId": "dev.mealy.registry",
+            "releaseEnvelopeDigest": "b".repeat(64),
+            "archiveDigest": "c".repeat(64),
+        });
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&value).expect("registry config bytes"),
+        )
+        .expect("write registry config");
+        load_or_create_daemon_config(home.path()).expect("registry provenance config");
+        let mut invalid_registry = value.clone();
+        invalid_registry["skills"][0]["registry"]["archiveDigest"] = json!("not-a-digest");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&invalid_registry).expect("invalid registry config bytes"),
+        )
+        .expect("write invalid registry config");
+        assert!(matches!(
+            load_or_create_daemon_config(home.path()),
+            Err(LocalConfigError::InvalidConfiguration)
+        ));
 
         for invalid_path in ["../skills/escape", "/tmp/skill", "skills/not-the-digest"] {
             let mut invalid = value.clone();

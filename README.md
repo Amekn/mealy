@@ -83,6 +83,8 @@ approvals, memory, governed tools, and `/attach PATH`. Each terminal turn report
 recorded input/output tokens, provider-neutral cost microunits, model/tool calls, and retries. See
 the [quickstart](docs/QUICKSTART.md) for detailed provider setup and capabilities,
 the [CLI reference](docs/CLI.md) for the complete public command map, or the
+[optional semantic-memory guide](docs/SEMANTIC_MEMORY.md) for the v0.5 local/remote embedding
+privacy boundary, rebuild, fallback, and recovery workflow, or the
 [release guide](docs/RELEASE.md) for attested archive and native-package
 install/upgrade/rollback behavior. Treat a build as published only when its exact tag workflow has
 produced the documented assets and attestations; never mistake a local dirty build for an attested
@@ -101,7 +103,9 @@ generated owner unit, and approved owner-local uninstall composes that cleanup w
 complete home.
 
 Local integrations can use the authenticated versioned HTTP/JSON and SSE surface documented in
-the [API reference](docs/API.md). Contributors and release operators should follow the
+the [API reference](docs/API.md). Maintainers can run strict public-API task, safety, recovery,
+latency, and cost scenarios with the [evaluation workflow](docs/EVALUATIONS.md). Contributors and
+release operators should follow the
 [development-to-production runbook](docs/CI_CD.md), which defines the required protected checks,
 reviewed free-provider acceptance, tag promotion, attestation, and public clean-host gates.
 
@@ -379,6 +383,15 @@ handling, same-schedule overlap policy, leased occurrence claims, deterministic 
 UUIDv7-keyed duplicate-safe creation, revision-fenced pause/resume/cancel, and durable run history.
 Scheduled action-mode prompts require
 an explicit creation-time opt-in and still traverse their normal exact approval boundary.
+Separate schema-29 automations add future one-shot prompt or notification actions and exact
+future-session-event notifications. They use client-keyed duplicate-safe creation, whole-definition
+revision fences, exclusive event cursors, recoverable leased runs, deterministic prompt admission,
+and atomic notification outbox evidence. Event payloads are never copied and event rules cannot
+submit model prompts. Schema 30 adds outbound-only Slack static notifications through one
+short-lived owner pin to an exact previously admitted thread; definitions store that exact route,
+and expiry/revocation cannot fall back to a newer or local thread. See
+[durable automation](docs/AUTOMATION.md) and
+[exact-thread remote continuation](docs/REMOTE_CONTINUATION.md).
 Operational hardening adds schema-versioned configuration and rollback history, durable daemon
 lifetime evidence, safe mode, bounded clean/forced drain, authenticated status/metrics/doctor
 views, immutable online backups, optional authenticated-encrypted secret archives, isolated fresh-
@@ -426,6 +439,7 @@ verifiable.
 - `crates/mealy-application`: use cases, recovery planning, and ports.
 - `crates/mealy-infrastructure`: SQLite, artifacts, processes, providers, and OS adapters.
 - `crates/mealy-protocol`: versioned transport DTOs.
+- `crates/mealy-client`: secure typed Rust SDK for the authenticated owner API.
 - `crates/mealy-api`: authenticated HTTP/SSE adapter.
 - `crates/mealy-testkit`: deterministic scenario support.
 - `docs`: design, decisions, research, and verification strategy.
@@ -491,6 +505,8 @@ cargo run -p mealyctl -- --home .mealy channel slack-create \
 cargo run -p mealyctl -- --home .mealy channel slack-list
 cargo run -p mealyctl -- --home .mealy schedule create <SESSION_ID> --name "weekday brief" --cron "0 9 * * MON-FRI" --timezone Pacific/Auckland "Prepare my weekday brief."
 cargo run -p mealyctl -- --home .mealy schedule list
+cargo run -p mealyctl -- --home .mealy automation create-once-prompt <SESSION_ID> --name "review build" --at "2026-08-01T09:00:00+12:00" "Review the latest build evidence."
+cargo run -p mealyctl -- --home .mealy automation list
 cargo run -p mealyctl -- --home .mealy backup nightly
 cargo run -p mealyctl -- --home .mealy restore-verify nightly
 cargo run -p mealyctl -- --home .mealy restore-activate nightly-secret --expected-manifest-digest <SHA256> --approve

@@ -279,6 +279,71 @@ and timestamps remain available from canonical attempts; historical success is n
 proof of current connectivity. The configured-provider doctor check ends with a concrete repair
 action and never prints credentials or provider response bodies.
 
+### Optional private OTLP export
+
+OpenTelemetry export is disabled by default. For an owner-operated local Collector using the
+standard OTLP/HTTP receiver, start the daemon with its literal loopback origin:
+
+```sh
+mealyd --home "$HOME/.mealy" \
+  --otlp-endpoint http://127.0.0.1:4318 \
+  --otlp-export-interval-ms 30000 \
+  --otlp-request-timeout-ms 3000
+```
+
+The endpoint is a collector origin, not a signal URL; Mealy derives exact `/v1/traces` and
+`/v1/metrics` paths. The export interval accepts 1,000 through 300,000 milliseconds and the
+request timeout accepts 100 through 30,000 milliseconds. Remote collectors require HTTPS.
+Clear-text HTTP accepts only a literal loopback IPv4 or IPv6 address and an explicit port, not
+`localhost`. URL credentials, base paths, query strings, fragments, proxy use, redirects,
+compression, retries, and arbitrary headers are rejected or unavailable. This first slice does
+not support authenticated vendor collectors; terminate authentication at an owner-controlled
+local Collector or leave export disabled. Never place a collector credential in the URL.
+
+Only the fixed `mealyd` service name/version/schema, claimed-run task/run/turn/session/correlation
+IDs, a fixed outcome, and duration can cross this boundary. Metrics group by the three fixed
+outcomes only; IDs occur on traces and are locators, not prompt content. Prompts, responses, tool
+arguments, memory, file paths, search terms, provider bodies, arbitrary errors, general log
+fields, host/user/process attributes, environment variables, and credentials have no recording
+API. The daemon does not read `OTEL_*`, proxy, or exporter-header environment variables for this
+pipeline.
+
+The queue holds at most 1,024 spans, batches at most 128, an encoded request at most 2 MiB, and a
+collector response at most 64 KiB. A full queue drops new telemetry rather than blocking agent
+work. Collector failure or a bounded final-flush failure is logged with a generic local error and
+does not rewrite canonical task state, durable events, or clean-drain evidence. The Collector is
+therefore an optional derived view, never Mealy's audit authority. For a supervised deployment,
+add these exact arguments to an operator-reviewed direct `mealyd` unit; the current generated
+`mealyctl service install` unit intentionally does not acquire optional network-export authority.
+
+### Scenario evaluation operations
+
+Preflight a checked suite without requiring a running service:
+
+```sh
+mealyctl eval validate ./evaluation-suite.json
+```
+
+Then run it against the selected private home:
+
+```sh
+mealyctl --home "$HOME/.mealy" eval run ./evaluation-suite.json \
+  > ./evaluation-report.json
+```
+
+The run creates fresh sessions and can make normal provider requests, so choose a deterministic
+local provider for protected CI and apply ordinary live-provider cost/rate policy to manual
+runs. Cases execute sequentially with explicit time/call/token/cost ceilings. A task that requires
+approval parks; the evaluator never approves it. The report is emitted before the command returns
+a failed status for a regression. Preserve both stdout and the exit status.
+
+Reports contain no prompt/response/tool/validation/timeline bodies, but do contain stable
+canonical IDs and unsalted SHA-256 commitments that may reveal equality or permit guessing
+low-entropy text. Store them with workload-appropriate access controls. The report digest detects
+modification but is not a signature. Release evidence must retain it inside the protected CI or
+attestation chain. See [`EVALUATIONS.md`](EVALUATIONS.md) for the complete contract and
+crash-harness composition.
+
 External providers configured with `streaming: true` request `text/event-stream`. Text deltas are
 untrusted, non-authoritative progress: each attempt retains no more than 64 KiB across 256 events,
 each event is at most 4 KiB, and correlation IDs keep adjacent turns separate. Responses requires
@@ -539,6 +604,46 @@ GC holds the canonical store while collecting its referenced artifact digests. I
 referenced blob regardless of age and erases only configured-age temporary or unreferenced files.
 User-visible memory deletion remains an immutable tombstone; backups and audit history retain what
 their manifest/retention constraints require.
+
+## Semantic memory operations
+
+Optional semantic retrieval is an explicitly configured derived cache, not canonical state. It is
+off when `memoryEmbedding` is absent. Configure or disable it only while the daemon is stopped;
+each command archives the replaced configuration and reports that restart is required. Remote
+endpoints require HTTPS and a credential imported from a named environment variable into the
+private provider-secret broker. Literal-loopback HTTP may be credentialless.
+
+After activation, run:
+
+```sh
+mealyctl --home "$HOME/.mealy" memory rebuild-index --semantic
+```
+
+This first rebuild snapshots all active governed-memory revisions for the authenticated principal,
+sends them to the exact configured endpoint in batches of at most 32, and atomically publishes the
+complete derived set only when every revision and content digest still matches. The initial exact
+cosine implementation caps the principal at 10,000 active revisions and vectors at 8,192
+dimensions. Rebuild networking occurs outside the SQLite writer lane.
+
+Inspect the JSON receipt before treating hybrid search as active:
+
+- `healthy` means the complete current policy/dimension set was committed;
+- `degraded` means the explicit endpoint rebuild failed and no partial set is searchable;
+- a changed policy digest or dimension is incompatible until a complete rebuild; and
+- zero active memories may produce a healthy empty set.
+
+Correction, activation-status drift, expiry, rejection, and deletion remove affected vector rows
+and mark the principal's set stale in the same transaction. That stale state survives restart.
+Hybrid queries then return `lexical_fallback`/`stale`; ordinary governed memory remains available.
+Run another explicit semantic rebuild after reviewing the lifecycle change. Temporary query
+endpoint failure reports `embedding_unavailable` without changing canonical memory.
+
+Do not copy derived-vector tables into another service as authoritative memory. Clean
+reconstruction from canonical active revisions is the recovery procedure. Changing the endpoint,
+model, prefixes, dimensions, residency, or credential policy requires an approved stopped-home
+configuration update and complete rebuild. Disabling the policy prevents future calls but retains
+canonical memory and the separately managed broker credential for rollback. See
+[the semantic-memory guide](SEMANTIC_MEMORY.md) for setup and response examples.
 
 ## Configuration activation and rollback
 
@@ -1095,6 +1200,31 @@ so paused time is not replayed. Cancel is terminal. Do not alter schedule tables
 nonzero `claimedScheduleRuns` that persist beyond a lease interval and any increase in
 `failedScheduleRuns`; inspect exact reasons with `schedule runs`. Safe mode deliberately starts no
 schedule driver.
+
+## One-shot and event automation operations
+
+Use `automation list`, `automation status`, and `automation runs` to inspect canonical definitions,
+current revisions, source cursors, and newest-first occurrence history. Creation uses a
+client-proposed UUIDv7 as a durable key: retain the same identity and exact definition after an
+ambiguous response. The store returns the current existing projection even if time, cursor, or
+lifecycle has advanced; any semantic reuse conflicts.
+
+Claims expire after 30 seconds and restart reclaims the same occurrence. Prompt actions use
+`automation:AUTOMATION_ID:TRIGGER_KEY` as the durable inbox key. Notification completion writes the
+terminal occurrence, next status/cursor, journal event, and one outbox record atomically. A
+`notified` run means accepted into the durable delivery outbox; inspect normal channel/outbox
+health for remote delivery failures. Slack static notifications additionally name one exact active
+remote-continuation ID. That route is checked at definition time, before outbox publication, and
+at delivery claim; expiry or revocation fails closed without choosing another thread.
+
+Review `activeAutomations`, `pausedAutomations`, `claimedAutomationRuns`, and
+`failedAutomationRuns` in `status`, and the snake-case equivalents in `metrics`. A claimed count
+that persists beyond one lease interval or a rising failed count needs investigation with
+`automation runs`. Safe mode starts no automation driver and rejects mutation. Do not edit schema
+29/30 automation or Slack-continuation tables directly. See
+[durable automation](AUTOMATION.md) for exact CLI forms, supported destinations, edit behavior,
+and payload-isolation rules, and [remote continuation](REMOTE_CONTINUATION.md) for route inspection,
+expiry, and revocation.
 
 ## Installed-program lifecycle
 

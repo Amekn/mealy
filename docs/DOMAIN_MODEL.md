@@ -60,6 +60,21 @@ Invariants:
 
 Owns a logical memory and versioned revisions. Source links remain immutable even when a corrected revision supersedes content.
 
+### Automation
+
+Owns one owner-authored name, trigger, action, lifecycle, current revision, and event cursor. Each
+trigger occurrence owns a separate durable run and claim.
+
+Invariants:
+
+- a client-proposed UUIDv7 maps to one semantic definition even after its lifecycle advances;
+- one-shot time and event-cursor keys identify at most one occurrence;
+- event observation begins strictly after create/edit/resume and never copies event payload;
+- event triggers may notify but cannot submit model prompts;
+- prompt admission uses the existing session inbox and approval/effect boundaries;
+- only an unexpired claim owner may commit a terminal run;
+- notification completion, outbox creation, cursor/status transition, and journal fact are atomic.
+
 ## Commands versus facts
 
 Commands are authenticated requests that may fail preconditions:
@@ -68,7 +83,8 @@ Commands are authenticated requests that may fail preconditions:
 SubmitInput  PromoteInput  PauseTask  ResumeTask  CancelTask
 StartRun     RecordModelResult  ProposeEffect  ResolveApproval
 RecordEffectOutcome  ReconcileEffect  ProposeMemory  AcceptMemory
-RecordValidation
+RecordValidation  CreateAutomation  EditAutomation  PauseAutomation
+ResumeAutomation  CancelAutomation  ClaimAutomationRun  CompleteAutomationRun
 ```
 
 Journal events are past-tense facts produced only after a committed transition:
@@ -78,6 +94,8 @@ input.accepted  input.promoted  task.started  task.waiting
 model.attempt_completed  effect.proposed  approval.requested
 effect.outcome_unknown  effect.reconciled  context.compiled
 memory.activated  validation.completed  task.succeeded
+automation.created  automation.edited  automation.paused  automation.resumed  automation.cancelled
+automation.admitted  automation.notified  automation.failed
 ```
 
 An event handler never mutates canonical state outside an application transaction. Outbox consumers perform delivery and report results through commands.

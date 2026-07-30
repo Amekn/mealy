@@ -7,15 +7,18 @@ members = [
     "crates/mealy-application",
     "crates/mealy-infrastructure",
     "crates/mealy-protocol",
+    "crates/mealy-client",
+    "crates/mealy-evaluation",
+    "crates/mealy-observability",
     "crates/mealy-api",
     "crates/mealy-testkit",
 ]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.97.1"
-license-file = "LICENSE"
+license = "Apache-2.0"
 repository = "https://github.com/Amekn/mealy"
 publish = false
 
@@ -32,6 +35,7 @@ clap_complete = "4.6.1"
 croner = "=3.0.1"
 crossterm = { version = "0.29.0", default-features = false, features = ["bracketed-paste", "event-stream", "events"] }
 dunce = "1.0.5"
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast", "zeroize"] }
 eventsource-stream = "0.2.3"
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3.32"
@@ -39,13 +43,20 @@ getrandom = "0.4.3"
 hmac = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jsonschema = { version = "0.47.0", default-features = false }
-mealy-api = { path = "crates/mealy-api", version = "=0.4.0" }
-mealy-application = { path = "crates/mealy-application", version = "=0.4.0" }
-mealy-domain = { path = "crates/mealy-domain", version = "=0.4.0" }
-mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.4.0" }
-mealy-protocol = { path = "crates/mealy-protocol", version = "=0.4.0" }
-mealy-testkit = { path = "crates/mealy-testkit", version = "=0.4.0" }
+mealy-api = { path = "crates/mealy-api", version = "=0.5.0" }
+mealy-application = { path = "crates/mealy-application", version = "=0.5.0" }
+mealy-domain = { path = "crates/mealy-domain", version = "=0.5.0" }
+mealy-infrastructure = { path = "crates/mealy-infrastructure", version = "=0.5.0" }
+mealy-protocol = { path = "crates/mealy-protocol", version = "=0.5.0" }
+mealy-client = { path = "crates/mealy-client", version = "=0.5.0" }
+mealy-evaluation = { path = "crates/mealy-evaluation", version = "=0.5.0" }
+mealy-observability = { path = "crates/mealy-observability", version = "=0.5.0" }
+mealy-testkit = { path = "crates/mealy-testkit", version = "=0.5.0" }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics", "trace"] }
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics", "trace"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["experimental_trace_batch_span_processor_with_async_runtime", "metrics", "trace"] }
 proptest = "1.7.0"
+prost = "0.14.1"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls", "stream"] }
 rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
@@ -53,6 +64,7 @@ rustix = { version = "1.1.4", features = ["fs", "process", "termios"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11.0"
+tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }

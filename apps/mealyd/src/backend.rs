@@ -13,69 +13,77 @@ use mealy_api::{
 use mealy_application::{
     AdmitInputCommand, AgentEvidenceStore, AgentExecutionStore, AgentStoreError,
     ApprovalRequestView, ArtifactBlobStore, ArtifactBlobStoreError, ArtifactEvidenceStore,
-    ArtifactEvidenceStoreError, ArtifactMetadata, COMPACTION_PROMPT_VERSION, CancellationProbe,
-    CapabilityRequirement, Clock, CommitCompaction, CompactionStore, CompactionStoreError,
-    CompactionView, CompleteExtensionInvocationCommit, CompleteWebhookDeliveryCommit,
-    ContextDisposition, ContextManifestEvidence, ContextManifestEvidenceStore,
-    ContextManifestEvidenceStoreError, CreateScheduleCommit, CreateSessionCheckpointCommand,
+    ArtifactEvidenceStoreError, ArtifactMetadata, AutomationAction, AutomationRunStatus,
+    AutomationRunView, AutomationStatus, AutomationStore, AutomationStoreError,
+    AutomationTransition, AutomationTrigger, AutomationTriggerView, AutomationView,
+    COMPACTION_PROMPT_VERSION, CancellationProbe, CapabilityRequirement, Clock, CommitCompaction,
+    CompactionStore, CompactionStoreError, CompactionView, CompleteExtensionInvocationCommit,
+    CompleteWebhookDeliveryCommit, ContextDisposition, ContextManifestEvidence,
+    ContextManifestEvidenceStore, ContextManifestEvidenceStoreError, CreateAutomationCommit,
+    CreateScheduleCommit, CreateSessionCheckpointCommand, CreateSlackRemoteContinuationCommit,
     DelegationStore, DisableExtensionCommit, DiscordChannelBindingView, DiscordChannelStatus,
     DiscordChannelStore, DiscordChannelStoreError, EXTENSION_POLICY_VERSION, EXTENSION_RPC_VERSION,
-    EffectAttemptState, EffectAttemptView, EffectLedgerStore, EffectLedgerStoreError,
-    EffectLedgerView, EffectOutcomeKind, EffectReconciliationOutcome, EnableExtensionCommit,
-    ExtensionDispatchRequest, ExtensionGrant, ExtensionHost, ExtensionHostError,
-    ExtensionInvocationStatus, ExtensionInvocationTerminal, ExtensionInvocationView,
-    ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest, ExtensionStore,
-    ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator, InputAdmissionLimits,
-    InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit, InstallExtensionCommit,
-    MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES,
-    MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION, MemorySearchQuery, MemorySource,
-    MemoryStore, MemoryStoreError, MemoryView, ModelProvider, OperationalSnapshot,
-    OperationalStore, OperationalStoreError, OwnershipContext, ProviderCapabilities,
-    ProviderFallbackPolicy, ProviderLocality, ProviderPricing, ProviderRouteCandidate,
-    ProviderRoutingPolicy, ProviderSelection, ProviderSelectionPreference,
-    ProviderSelectionStoreError, ProviderSelectionUseCaseError, ReconcileEffectOutcomeCommit,
-    RegisterDiscordChannelCommit, RegisterSlackChannelCommit, RegisterTelegramChannelCommit,
-    RegisterWebhookChannelCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
+    EditAutomationCommit, EffectAttemptState, EffectAttemptView, EffectLedgerStore,
+    EffectLedgerStoreError, EffectLedgerView, EffectOutcomeKind, EffectReconciliationOutcome,
+    EnableExtensionCommit, ExtensionDispatchRequest, ExtensionGrant, ExtensionHost,
+    ExtensionHostError, ExtensionInvocationStatus, ExtensionInvocationTerminal,
+    ExtensionInvocationView, ExtensionManifestInspection, ExtensionMountGrant, ExtensionRpcRequest,
+    ExtensionStore, ExtensionStoreError, ExtensionView, ForkSessionCommand, IdGenerator,
+    InputAdmissionLimits, InputAdmissionOutcome, InputAdmissionReceipt, InputImageArtifactCommit,
+    InstallExtensionCommit, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
+    MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, MEMORY_POLICY_VERSION,
+    MemorySearchHit, MemorySearchQuery, MemorySemanticIndexHealth, MemorySemanticSearchHit,
+    MemorySemanticSearchQuery, MemorySemanticVector, MemorySource, MemoryStore, MemoryStoreError,
+    MemoryView, ModelProvider, OperationalSnapshot, OperationalStore, OperationalStoreError,
+    OwnershipContext, ProviderCapabilities, ProviderFallbackPolicy, ProviderLocality,
+    ProviderPricing, ProviderRouteCandidate, ProviderRoutingPolicy, ProviderSelection,
+    ProviderSelectionPreference, ProviderSelectionStoreError, ProviderSelectionUseCaseError,
+    ReconcileEffectOutcomeCommit, RegisterDiscordChannelCommit, RegisterSlackChannelCommit,
+    RegisterTelegramChannelCommit, RegisterWebhookChannelCommit,
+    RegistryInstalledPackageDisposition, RegistryMetadataStore, RegistryPackageKind,
+    ReplaceMemorySemanticIndexCommit, RequestTaskCancellationCommit, ReserveWebhookDeliveryCommit,
     ResolveApprovalCommit, RevokeDiscordChannelCommit, RevokeExtensionCommit,
-    RevokeSlackChannelCommit, RevokeTelegramChannelCommit, RevokeWebhookChannelCommit,
-    ScheduleDefinition, ScheduleRunStatus, ScheduleRunView, ScheduleStatus, ScheduleStore,
-    ScheduleStoreError, ScheduleTransition, ScheduleView, SessionCheckpointView,
-    SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot, SessionTranscriptStoreError,
-    SessionTranscriptTurn, SessionUseCaseError, SessionWorkbenchStoreError,
-    SessionWorkbenchUseCaseError, SlackChannelBindingView, SlackChannelStatus, SlackChannelStore,
-    SlackChannelStoreError, StageExtensionManifestCommit, TaskControlAction, TaskControlCommit,
-    TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
+    RevokeSlackChannelCommit, RevokeSlackRemoteContinuationCommit, RevokeTelegramChannelCommit,
+    RevokeWebhookChannelCommit, ScheduleDefinition, ScheduleRunStatus, ScheduleRunView,
+    ScheduleStatus, ScheduleStore, ScheduleStoreError, ScheduleTransition, ScheduleView,
+    SessionCheckpointView, SessionSearchQuery, SessionStoreError, SessionTranscriptSnapshot,
+    SessionTranscriptStoreError, SessionTranscriptTurn, SessionUseCaseError,
+    SessionWorkbenchStoreError, SessionWorkbenchUseCaseError, SlackChannelBindingView,
+    SlackChannelStatus, SlackChannelStore, SlackChannelStoreError, SlackRemoteContinuationStatus,
+    SlackRemoteContinuationView, StageExtensionManifestCommit, TaskControlAction,
+    TaskControlCommit, TelegramChannelBindingView, TelegramChannelStatus, TelegramChannelStore,
     TelegramChannelStoreError, TimelineQuery, TimelineStoreError, TimelineUseCaseError,
-    TransitionScheduleCommit, UpdateSessionProviderSelectionCommand, UpdateSessionTitleCommand,
-    ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW, WEBHOOK_SIGNATURE_ALGORITHM,
-    WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView, WebhookChannelStatus,
-    WebhookChannelStore, WebhookChannelStoreError, admit_input, admit_input_with_images,
-    canonical_arguments_digest, compaction_source_event_digest, create_session,
-    create_session_checkpoint, create_session_with_selection, extension_grant_digest, fork_session,
-    inspect_extension_manifest, next_schedule_occurrence_ms, query_session_checkpoints,
-    query_session_provider_selection, query_session_status, query_session_transcript,
-    query_sessions, query_timeline, route_provider, search_sessions, sha256_digest,
-    update_session_provider_selection, update_session_title, validate_webhook_binding_fields,
-    validate_webhook_timestamp, verify_webhook_signature, webhook_input_dedupe_key,
-    webhook_signature_digest,
+    TransitionAutomationCommit, TransitionScheduleCommit, UpdateSessionProviderSelectionCommand,
+    UpdateSessionTitleCommand, ValidationStore, WEBHOOK_MAXIMUM_CLOCK_SKEW,
+    WEBHOOK_SIGNATURE_ALGORITHM, WEBHOOK_SIGNATURE_VERSION, WebhookChannelBindingView,
+    WebhookChannelStatus, WebhookChannelStore, WebhookChannelStoreError, admit_input,
+    admit_input_with_images, canonical_arguments_digest, compaction_source_event_digest,
+    create_session, create_session_checkpoint, create_session_with_selection,
+    extension_grant_digest, fork_session, inspect_extension_manifest,
+    inspect_installed_registry_package_policy, next_schedule_occurrence_ms,
+    query_session_checkpoints, query_session_provider_selection, query_session_status,
+    query_session_transcript, query_sessions, query_timeline, route_provider, search_sessions,
+    sha256_digest, update_session_provider_selection, update_session_title,
+    validate_webhook_binding_fields, validate_webhook_timestamp, verify_webhook_signature,
+    webhook_input_dedupe_key, webhook_signature_digest,
 };
 use mealy_domain::{
-    ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, ChannelBindingId,
-    CompactionCarryForward, CompactionId, CompactionRecord, CompactionSourceRange,
-    ContextManifestId, CorrelationId, DelegationId, EffectId, EffectStatus,
+    ApprovalDecision, ApprovalId, ApprovalStatus, ArtifactId, AttemptId, AutomationId,
+    ChannelBindingId, CompactionCarryForward, CompactionId, CompactionRecord,
+    CompactionSourceRange, ContextManifestId, CorrelationId, DelegationId, EffectId, EffectStatus,
     ExtensionFilesystemAccess, ExtensionGrantId, ExtensionId, ExtensionInvocationId,
     ExtensionStatus, MemoryCategory, MemoryConfidence, MemoryId, MemoryMetadata, MemoryNamespace,
     MemoryPromotionAuthorization, MemoryProvenance, MemoryRetention, MemoryRevisionId,
-    MemorySensitivity, PrincipalId, ScheduleId, SessionCheckpointId, SessionId, TaskId,
-    ValidationMethod, ValidationOutcome,
+    MemorySensitivity, PrincipalId, RemoteContinuationId, ScheduleId, SessionCheckpointId,
+    SessionId, TaskId, ValidationMethod, ValidationOutcome,
 };
 use mealy_infrastructure::{
     ChannelSecretStoreError, FileArtifactBlobStore, FileChannelSecretStore,
     FileProviderSecretStore, InstalledExtensionPackage, LinuxBubblewrapExtensionHost,
-    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError,
-    ProviderSecretStoreError, SqliteStore, SystemClock, SystemIdGenerator,
-    create_backup as create_complete_backup, create_complete_export, inspect_extension_package,
-    publish_export, verify_backup as verify_complete_backup,
+    LinuxBubblewrapMediaNormalizer, MaintenanceError, MediaNormalizerError, MemoryEmbeddingError,
+    OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError, SqliteStore, SystemClock,
+    SystemIdGenerator, create_backup as create_complete_backup, create_complete_export,
+    inspect_extension_package, publish_export, verify_backup as verify_complete_backup,
 };
 
 const BUBBLEWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -84,33 +92,40 @@ const SESSION_TRANSCRIPT_MAXIMUM_RENDERED_BYTES: usize = 32 * 1024 * 1024;
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageBucketResponse,
     AdminUsageReportResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt, ApprovalResponse,
-    ApprovalStatusResponse, ApprovalSubjectResponse, ArtifactMetadataResponse, BackupResponse,
-    BackupVerificationResponse, CancelTaskRequest, CompactionResponse, ContextItemDisposition,
-    ContextManifestEvidenceItemResponse, ContextManifestEvidenceResponse,
-    ContextMemoryEvidenceResponse, ContextMemorySourceCitationResponse, ControlTaskRequest,
-    CorrectMemoryRequest, CreateBackupRequest, CreateCompactionRequest,
+    ApprovalStatusResponse, ApprovalSubjectResponse, ArtifactMetadataResponse,
+    AutomationActionCommand, AutomationActionResponse, AutomationLifecycleRequest,
+    AutomationResponse, AutomationRunResponse, AutomationRunStatusResponse, AutomationRunsResponse,
+    AutomationStatusResponse, AutomationTriggerRequest, AutomationTriggerResponse,
+    AutomationsResponse, BackupResponse, BackupVerificationResponse, CancelTaskRequest,
+    CompactionResponse, ContextItemDisposition, ContextManifestEvidenceItemResponse,
+    ContextManifestEvidenceResponse, ContextMemoryEvidenceResponse,
+    ContextMemorySourceCitationResponse, ControlTaskRequest, CorrectMemoryRequest,
+    CreateAutomationRequest, CreateBackupRequest, CreateCompactionRequest,
     CreateDiscordChannelRequest, CreateExportRequest, CreateScheduleRequest,
     CreateSessionCheckpointRequest, CreateSessionRequest, CreateSessionResponse,
-    CreateSlackChannelRequest, CreateTelegramChannelRequest, CreateWebhookChannelRequest,
-    CreateWebhookChannelResponse, DaemonRunStatusResponse, DelegationResponse, DelegationsResponse,
-    DiscordChannelResponse, DiscordChannelStatusResponse, DiscordChannelsResponse, DoctorResponse,
-    DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse, EffectAttemptStatusResponse,
+    CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest, CreateTelegramChannelRequest,
+    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DaemonRunStatusResponse,
+    DelegationResponse, DelegationsResponse, DiscordChannelResponse, DiscordChannelStatusResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EditAutomationRequest, EffectAttemptResponse, EffectAttemptStatusResponse,
     EffectOutcomeEvidenceResponse, EffectOutcomeResponse, EffectReconciliationReceipt,
     EffectResponse, EffectStatusResponse, EnableExtensionRequest, ExportKindRequest,
     ExportResponse, ExtensionFilesystemAccessCommand, ExtensionGrantResponse,
     ExtensionInvocationResponse, ExtensionInvocationStatusResponse, ExtensionLifecycleRequest,
-    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand, ExtensionResponse,
-    ExtensionStatusResponse, ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse,
-    InputAdmissionResponse, InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse,
-    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
-    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
-    MemoryRevisionResponse, MemorySearchHitResponse, MemorySearchResponse,
-    MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse, MissedRunPolicyCommand,
-    OperationalFailureResponse, PendingApprovalsResponse, PromoteMemoryRequest,
-    ProposeMemoryRequest, ProviderCatalogResponse, ProviderCatalogRouteResponse,
-    ProviderEndpointStatusResponse, ProviderSelectionCommand, RebuildMemoryIndexRequest,
-    ReconcileEffectRequest, ReconciliationOutcomeCommand, ResolveApprovalRequest,
-    RevokeDiscordChannelRequest, RevokeSlackChannelRequest, RevokeTelegramChannelRequest,
+    ExtensionManifestRevisionResponse, ExtensionMountGrantCommand,
+    ExtensionRegistryProvenanceResponse, ExtensionResponse, ExtensionStatusResponse,
+    ExtensionsResponse, ForkSessionRequest, GarbageCollectionResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, MemoriesResponse, MemoryCategoryCommand,
+    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
+    MemoryResponse, MemoryRetentionCommand, MemoryRetrievalMode, MemoryRevisionResponse,
+    MemorySearchHitResponse, MemorySearchResponse, MemorySemanticIndexResponse,
+    MemorySemanticStatus, MemorySensitivityCommand, MemorySourceResponse, MemoryStatusResponse,
+    MissedRunPolicyCommand, OperationalFailureResponse, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse,
+    ProviderCatalogRouteResponse, ProviderEndpointStatusResponse, ProviderSelectionCommand,
+    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
+    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
+    RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
     RevokeWebhookChannelRequest, RunGarbageCollectionRequest, SandboxProfileResponse,
     SandboxProfileStatusResponse, ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand,
     ScheduleResponse, ScheduleRunIntentResponse, ScheduleRunResponse, ScheduleRunStatusResponse,
@@ -123,7 +138,8 @@ use mealy_protocol::{
     SessionTranscriptRedactionResponse, SessionTranscriptTurnResponse,
     SessionTranscriptUserMessageResponse, SessionsResponse, SetMemoryPinRequest,
     SignedWebhookInputRequest, SlackChannelResponse, SlackChannelStatusResponse,
-    SlackChannelsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
+    SlackChannelsResponse, SlackRemoteContinuationResponse, SlackRemoteContinuationStatusResponse,
+    SlackRemoteContinuationsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
     SubmitInputRequest, SuccessCriterionResponse, TaskBudgetUsage, TaskCancellationReceipt,
     TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskRiskClass, TaskStatus,
     TaskSuccessCriteriaResponse, TaskValidationResponse, TelegramChannelResponse,
@@ -155,6 +171,7 @@ pub struct RuntimeBackend {
     store: Arc<RuntimeStore>,
     artifacts: Arc<FileArtifactBlobStore>,
     media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
+    memory_embedder: Option<Arc<OpenAiCompatibleMemoryEmbedder>>,
     channel_secrets: Arc<FileChannelSecretStore>,
     telegram: RuntimeTelegramConfig,
     discord: RuntimeDiscordConfig,
@@ -181,6 +198,8 @@ pub struct RuntimeOperationalConfig {
     pub artifact_gc_minimum_age_hours: u64,
     /// Isolated hostile-image boundary, present only for activated image-capable routes.
     pub media_normalizer: Option<Arc<LinuxBubblewrapMediaNormalizer>>,
+    /// Optional privacy-scoped semantic-memory embedding adapter.
+    pub memory_embedder: Option<Arc<OpenAiCompatibleMemoryEmbedder>>,
     /// Maximum durable pending input records admitted to one session.
     pub maximum_pending_inputs_per_session: u64,
     /// Maximum simultaneous invocations for one extension identity.
@@ -276,6 +295,7 @@ impl RuntimeBackend {
             store,
             artifacts,
             media_normalizer: operations.media_normalizer,
+            memory_embedder: operations.memory_embedder,
             channel_secrets,
             telegram: channels.telegram,
             discord: channels.discord,
@@ -412,6 +432,30 @@ impl RuntimeBackend {
             })
             .map_err(map_schedule_store_error)?;
         Ok(schedule_response(schedule))
+    }
+
+    fn transition_automation_command(
+        &self,
+        identity: &AuthenticatedIdentity,
+        automation_id: &str,
+        request: &AutomationLifecycleRequest,
+        transition: AutomationTransition,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(identity)?;
+        let automation_id = parse_automation(automation_id)?;
+        let automation = self
+            .lock()?
+            .transition_automation(TransitionAutomationCommit {
+                automation_id,
+                manager_ownership: ownership,
+                expected_revision: request.expected_revision,
+                transition,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                transitioned_at_ms: epoch_milliseconds(self.clock.now())?,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
     }
 }
 
@@ -591,6 +635,10 @@ impl ApiBackend for RuntimeBackend {
             claimed_schedule_runs: snapshot.claimed_schedule_runs,
             failed_schedule_runs: snapshot.failed_schedule_runs,
             skipped_schedule_runs: snapshot.skipped_schedule_runs,
+            active_automations: snapshot.active_automations,
+            paused_automations: snapshot.paused_automations,
+            claimed_automation_runs: snapshot.claimed_automation_runs,
+            failed_automation_runs: snapshot.failed_automation_runs,
             database_bytes,
             artifact_bytes: artifacts.total_bytes,
             artifact_count: artifacts.blob_count,
@@ -703,6 +751,7 @@ impl ApiBackend for RuntimeBackend {
         let status = self.admin_status(identity)?;
         let mut gauges = BTreeMap::from([
             ("active_channels".to_owned(), status.active_channels),
+            ("active_automations".to_owned(), status.active_automations),
             ("degraded_channels".to_owned(), status.degraded_channels),
             ("active_schedules".to_owned(), status.active_schedules),
             ("active_leases".to_owned(), status.active_leases),
@@ -712,6 +761,10 @@ impl ApiBackend for RuntimeBackend {
             ("enabled_extensions".to_owned(), status.enabled_extensions),
             ("failed_extensions".to_owned(), status.failed_extensions),
             ("failed_outbox".to_owned(), status.failed_outbox),
+            (
+                "failed_automation_runs".to_owned(),
+                status.failed_automation_runs,
+            ),
             (
                 "failed_schedule_runs".to_owned(),
                 status.failed_schedule_runs,
@@ -733,6 +786,11 @@ impl ApiBackend for RuntimeBackend {
                 status.reserved_channel_updates,
             ),
             ("paused_schedules".to_owned(), status.paused_schedules),
+            ("paused_automations".to_owned(), status.paused_automations),
+            (
+                "claimed_automation_runs".to_owned(),
+                status.claimed_automation_runs,
+            ),
             (
                 "claimed_schedule_runs".to_owned(),
                 status.claimed_schedule_runs,
@@ -865,6 +923,7 @@ impl ApiBackend for RuntimeBackend {
                 },
             ),
             ("schedules".to_owned(), schedule_doctor_check(&snapshot)),
+            ("automations".to_owned(), automation_doctor_check(&snapshot)),
             (
                 "sqlite".to_owned(),
                 format!(
@@ -1786,6 +1845,170 @@ impl ApiBackend for RuntimeBackend {
         })
     }
 
+    fn create_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        request: CreateAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automation_id = parse_automation(&request.automation_id)?;
+        if automation_id.to_string() != request.automation_id
+            || automation_id.as_uuid().get_version_num() != 7
+        {
+            return Err(BackendError::InvalidRequest(
+                "automation ID must be a canonical UUIDv7".to_owned(),
+            ));
+        }
+        let created_at_ms = epoch_milliseconds(self.clock.now())?;
+        let trigger = automation_trigger_from_request(request.trigger)?;
+        let action = automation_action_from_command(request.action)?;
+        let automation = self
+            .lock()?
+            .create_automation(CreateAutomationCommit {
+                automation_id,
+                manager_ownership: ownership,
+                name: request.name,
+                trigger,
+                action,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                created_at_ms,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn automations(
+        &self,
+        identity: AuthenticatedIdentity,
+    ) -> Result<AutomationsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automations = self
+            .read()?
+            .automations(ownership)
+            .map_err(map_automation_store_error)?
+            .into_iter()
+            .map(automation_response)
+            .collect();
+        Ok(AutomationsResponse {
+            api_version: API_VERSION.to_owned(),
+            automations,
+        })
+    }
+
+    fn automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+    ) -> Result<AutomationResponse, BackendError> {
+        let automation = self
+            .read()?
+            .automation(
+                parse_ownership(&identity)?,
+                parse_automation(&automation_id)?,
+            )
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn edit_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: EditAutomationRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let edited_at_ms = epoch_milliseconds(self.clock.now())?;
+        let trigger = automation_trigger_from_request(request.trigger)?;
+        let action = automation_action_from_command(request.action)?;
+        mealy_application::validate_automation_definition(
+            &request.name,
+            &trigger,
+            &action,
+            edited_at_ms,
+        )
+        .map_err(|error| BackendError::InvalidRequest(error.to_string()))?;
+        let automation = self
+            .lock()?
+            .edit_automation(EditAutomationCommit {
+                automation_id: parse_automation(&automation_id)?,
+                manager_ownership: ownership,
+                expected_revision: request.expected_revision,
+                name: request.name,
+                trigger,
+                action,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                edited_at_ms,
+            })
+            .map_err(map_automation_store_error)?;
+        Ok(automation_response(automation))
+    }
+
+    fn pause_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Pause,
+        )
+    }
+
+    fn resume_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Resume,
+        )
+    }
+
+    fn cancel_automation(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        request: AutomationLifecycleRequest,
+    ) -> Result<AutomationResponse, BackendError> {
+        self.transition_automation_command(
+            &identity,
+            &automation_id,
+            &request,
+            AutomationTransition::Cancel,
+        )
+    }
+
+    fn automation_runs(
+        &self,
+        identity: AuthenticatedIdentity,
+        automation_id: String,
+        limit: usize,
+    ) -> Result<AutomationRunsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let automation_id = parse_automation(&automation_id)?;
+        let runs = self
+            .read()?
+            .automation_runs(ownership, automation_id, limit)
+            .map_err(map_automation_store_error)?
+            .into_iter()
+            .map(automation_run_response)
+            .collect();
+        Ok(AutomationRunsResponse {
+            api_version: API_VERSION.to_owned(),
+            automation_id: automation_id.to_string(),
+            runs,
+        })
+    }
+
     fn timeline_page(
         &self,
         identity: AuthenticatedIdentity,
@@ -2014,28 +2237,98 @@ impl ApiBackend for RuntimeBackend {
         query: String,
         maximum_sensitivity: MemorySensitivityCommand,
         limit: usize,
+        retrieval_mode: MemoryRetrievalMode,
     ) -> Result<MemorySearchResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
-        let hits = self
+        let hybrid_requested = retrieval_mode == MemoryRetrievalMode::Hybrid;
+        let candidate_limit = if hybrid_requested {
+            limit.saturating_mul(4).min(100)
+        } else {
+            limit
+        };
+        let search = MemorySearchQuery {
+            ownership,
+            workspace_identity,
+            query,
+            maximum_sensitivity: memory_sensitivity(maximum_sensitivity),
+            limit: candidate_limit,
+        };
+        let lexical = self
             .read()?
-            .search_memories(MemorySearchQuery {
-                ownership,
-                workspace_identity,
-                query,
-                maximum_sensitivity: memory_sensitivity(maximum_sensitivity),
+            .search_memories(search.clone())
+            .map_err(map_memory_error)?;
+        if !hybrid_requested {
+            return Ok(lexical_memory_search_response(lexical));
+        }
+        let Some(embedder) = self.memory_embedder.as_ref() else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::Disabled,
                 limit,
-            })
-            .map_err(map_memory_error)?
-            .into_iter()
-            .map(|hit| MemorySearchHitResponse {
-                memory: memory_response(hit.memory),
-                lexical_rank: hit.lexical_rank,
-            })
-            .collect();
-        Ok(MemorySearchResponse {
-            api_version: API_VERSION.to_owned(),
-            hits,
-        })
+            ));
+        };
+        if search.query.trim().is_empty() {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::Incompatible,
+                limit,
+            ));
+        }
+        let semantic_index = self
+            .read()?
+            .memory_semantic_index(ownership)
+            .map_err(map_memory_error)?;
+        let Some(semantic_index) = semantic_index else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::NotBuilt,
+                limit,
+            ));
+        };
+        let unavailable_status = match semantic_index.health {
+            MemorySemanticIndexHealth::Stale => Some(MemorySemanticStatus::Stale),
+            MemorySemanticIndexHealth::Degraded => Some(MemorySemanticStatus::Degraded),
+            MemorySemanticIndexHealth::Healthy
+                if semantic_index.config_digest != embedder.config_digest()
+                    || semantic_index.dimensions != embedder.dimensions() =>
+            {
+                Some(MemorySemanticStatus::Incompatible)
+            }
+            MemorySemanticIndexHealth::Healthy => None,
+        };
+        if let Some(status) = unavailable_status {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical, status, limit,
+            ));
+        }
+        if semantic_index.indexed_revision_count == 0 {
+            return Ok(fused_memory_search_response(lexical, Vec::new(), limit));
+        }
+        let Ok(query_vector) = embedder.embed_query(&search.query) else {
+            return Ok(lexical_fallback_memory_search_response(
+                lexical,
+                MemorySemanticStatus::EmbeddingUnavailable,
+                limit,
+            ));
+        };
+        let semantic = match self
+            .read()?
+            .search_memories_semantic(MemorySemanticSearchQuery {
+                search,
+                config_digest: embedder.config_digest().to_owned(),
+                query_vector: query_vector.values().to_vec(),
+            }) {
+            Ok(hits) => hits,
+            Err(MemoryStoreError::SemanticIndexUnavailable(code)) => {
+                return Ok(lexical_fallback_memory_search_response(
+                    lexical,
+                    semantic_status_from_unavailable_code(&code),
+                    limit,
+                ));
+            }
+            Err(error) => return Err(map_memory_error(error)),
+        };
+        Ok(fused_memory_search_response(lexical, semantic, limit))
     }
 
     fn correct_memory(
@@ -2167,17 +2460,72 @@ impl ApiBackend for RuntimeBackend {
     fn rebuild_memory_index(
         &self,
         identity: AuthenticatedIdentity,
-        _request: RebuildMemoryIndexRequest,
+        request: RebuildMemoryIndexRequest,
     ) -> Result<MemoryIndexRebuildResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let receipt = self
             .lock()?
             .rebuild_memory_index(ownership, self.clock.now())
             .map_err(map_memory_error)?;
+        let semantic_index = if request.semantic {
+            let embedder = self.memory_embedder.as_ref().ok_or_else(|| {
+                BackendError::InvalidRequest(
+                    "semantic memory is disabled until memoryEmbedding is configured".to_owned(),
+                )
+            })?;
+            let candidates = self
+                .read()?
+                .memory_embedding_candidates(ownership)
+                .map_err(map_memory_error)?;
+            let mut vectors = Vec::with_capacity(candidates.len());
+            let embedding_result = candidates.chunks(32).try_for_each(|batch| {
+                let content = batch
+                    .iter()
+                    .map(|candidate| candidate.content.clone())
+                    .collect::<Vec<_>>();
+                let batch_vectors = embedder.embed_documents(&content)?;
+                vectors.extend(batch.iter().zip(batch_vectors).map(|(candidate, vector)| {
+                    MemorySemanticVector {
+                        memory_id: candidate.memory_id,
+                        revision_id: candidate.revision_id,
+                        content_digest: candidate.content_digest.clone(),
+                        values: vector.values().to_vec(),
+                    }
+                }));
+                Ok::<(), MemoryEmbeddingError>(())
+            });
+            if let Err(error) = embedding_result {
+                let view = self
+                    .lock()?
+                    .degrade_memory_semantic_index(
+                        ownership,
+                        embedder.config_digest(),
+                        embedder.dimensions(),
+                        memory_embedding_error_code(error),
+                    )
+                    .map_err(map_memory_error)?;
+                Some(memory_semantic_index_response(view))
+            } else {
+                let view = self
+                    .lock()?
+                    .replace_memory_semantic_index(ReplaceMemorySemanticIndexCommit {
+                        ownership,
+                        config_digest: embedder.config_digest().to_owned(),
+                        dimensions: embedder.dimensions(),
+                        vectors,
+                        rebuilt_at: self.clock.now(),
+                    })
+                    .map_err(map_memory_error)?;
+                Some(memory_semantic_index_response(view))
+            }
+        } else {
+            None
+        };
         Ok(MemoryIndexRebuildResponse {
             api_version: API_VERSION.to_owned(),
             indexed_revision_count: receipt.indexed_revision_count,
             rebuilt_at_ms: receipt.rebuilt_at_ms,
+            semantic_index,
         })
     }
 
@@ -2254,6 +2602,7 @@ impl ApiBackend for RuntimeBackend {
                 ownership,
                 inspection,
                 installation_root,
+                registry_provenance: None,
                 event_id: self.ids.generate_event_id(),
                 correlation_id: self.ids.generate_correlation_id(),
                 installed_at: self.clock.now(),
@@ -2324,6 +2673,7 @@ impl ApiBackend for RuntimeBackend {
                 expected_revision: request.expected_revision,
                 inspection,
                 installation_root,
+                registry_provenance: None,
                 event_id: self.ids.generate_event_id(),
                 correlation_id: self.ids.generate_correlation_id(),
                 staged_at: self.clock.now(),
@@ -2340,13 +2690,15 @@ impl ApiBackend for RuntimeBackend {
     ) -> Result<ExtensionResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let extension_id = parse_extension(&extension_id)?;
-        let view = self
-            .read()?
+        let reader = self.read()?;
+        let view = reader
             .extension(ownership, extension_id)
             .map_err(map_extension_store_error)?;
         if view.revision != request.expected_revision {
             return Err(BackendError::Conflict);
         }
+        ensure_registry_extension_authorized(&*reader, &view)?;
+        drop(reader);
         validate_extension_mount_roots(
             &self.home,
             request.mounts.iter().map(|mount| mount.host_path.as_str()),
@@ -2463,13 +2815,15 @@ impl ApiBackend for RuntimeBackend {
     ) -> Result<ExtensionInvocationResponse, BackendError> {
         let ownership = parse_ownership(&identity)?;
         let extension_id = parse_extension(&extension_id)?;
-        let view = self
-            .read()?
+        let reader = self.read()?;
+        let view = reader
             .extension(ownership, extension_id)
             .map_err(map_extension_store_error)?;
         if view.status != ExtensionStatus::Enabled {
             return Err(BackendError::Conflict);
         }
+        ensure_registry_extension_authorized(&*reader, &view)?;
+        drop(reader);
         let grant = view.active_grant.clone().ok_or(BackendError::Internal)?;
         validate_extension_mount_roots(
             &self.home,
@@ -3162,6 +3516,93 @@ impl ApiBackend for RuntimeBackend {
         Ok(slack_channel_response(revoked))
     }
 
+    fn create_slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        request: CreateSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let binding_id = parse_channel_binding(&binding_id)?;
+        let remote_continuation_id = parse_remote_continuation(&request.remote_continuation_id)?;
+        let created = self
+            .lock()?
+            .create_slack_remote_continuation(CreateSlackRemoteContinuationCommit {
+                administrative_ownership: ownership,
+                remote_continuation_id,
+                binding_id,
+                thread_id: request.thread_id,
+                expires_at_ms: request.expires_at_ms,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                created_at: self.clock.now(),
+            })
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(created))
+    }
+
+    fn slack_remote_continuations(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+    ) -> Result<SlackRemoteContinuationsResponse, BackendError> {
+        let ownership = parse_ownership(&identity)?;
+        let binding_id = parse_channel_binding(&binding_id)?;
+        let observed_at_ms = epoch_milliseconds(self.clock.now())?;
+        let remote_continuations = self
+            .read()?
+            .slack_remote_continuations(ownership, binding_id, observed_at_ms)
+            .map_err(map_slack_store_error)?
+            .into_iter()
+            .map(slack_remote_continuation_response)
+            .collect();
+        Ok(SlackRemoteContinuationsResponse {
+            api_version: API_VERSION.to_owned(),
+            binding_id: binding_id.to_string(),
+            remote_continuations,
+        })
+    }
+
+    fn slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        remote_continuation_id: String,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let view = self
+            .read()?
+            .slack_remote_continuation(
+                parse_ownership(&identity)?,
+                parse_channel_binding(&binding_id)?,
+                parse_remote_continuation(&remote_continuation_id)?,
+                epoch_milliseconds(self.clock.now())?,
+            )
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(view))
+    }
+
+    fn revoke_slack_remote_continuation(
+        &self,
+        identity: AuthenticatedIdentity,
+        binding_id: String,
+        remote_continuation_id: String,
+        request: RevokeSlackRemoteContinuationRequest,
+    ) -> Result<SlackRemoteContinuationResponse, BackendError> {
+        let revoked = self
+            .lock()?
+            .revoke_slack_remote_continuation(RevokeSlackRemoteContinuationCommit {
+                administrative_ownership: parse_ownership(&identity)?,
+                binding_id: parse_channel_binding(&binding_id)?,
+                remote_continuation_id: parse_remote_continuation(&remote_continuation_id)?,
+                expected_revision: request.expected_revision,
+                event_id: self.ids.generate_event_id(),
+                correlation_id: self.ids.generate_correlation_id(),
+                revoked_at: self.clock.now(),
+            })
+            .map_err(map_slack_store_error)?;
+        Ok(slack_remote_continuation_response(revoked))
+    }
+
     fn receive_signed_webhook(
         &self,
         binding_id: String,
@@ -3746,6 +4187,36 @@ fn slack_channel_response(view: SlackChannelBindingView) -> SlackChannelResponse
         last_error_code: view.last_error_code,
         created_at_ms: view.created_at_ms,
         updated_at_ms: view.updated_at_ms,
+    }
+}
+
+fn slack_remote_continuation_response(
+    view: SlackRemoteContinuationView,
+) -> SlackRemoteContinuationResponse {
+    SlackRemoteContinuationResponse {
+        api_version: API_VERSION.to_owned(),
+        remote_continuation_id: view.remote_continuation_id.to_string(),
+        binding_id: view.binding_id.to_string(),
+        session_id: view.session_id.to_string(),
+        team_id: view.team_id,
+        slack_user_id: view.slack_user_id,
+        slack_channel_id: view.slack_channel_id,
+        thread_id: view.thread_id,
+        synchronized_after_cursor: view.synchronized_after_cursor,
+        status: match view.status {
+            SlackRemoteContinuationStatus::Active => SlackRemoteContinuationStatusResponse::Active,
+            SlackRemoteContinuationStatus::Expired => {
+                SlackRemoteContinuationStatusResponse::Expired
+            }
+            SlackRemoteContinuationStatus::Revoked => {
+                SlackRemoteContinuationStatusResponse::Revoked
+            }
+        },
+        revision: view.revision,
+        created_at_ms: view.created_at_ms,
+        expires_at_ms: view.expires_at_ms,
+        updated_at_ms: view.updated_at_ms,
+        revoked_at_ms: view.revoked_at_ms,
     }
 }
 
@@ -4468,6 +4939,36 @@ fn inspect_current_extension_package(
     .map_err(map_extension_package_error)
 }
 
+fn ensure_registry_extension_authorized(
+    store: &impl RegistryMetadataStore,
+    view: &ExtensionView,
+) -> Result<(), BackendError> {
+    let revision = view
+        .manifest_history
+        .iter()
+        .rev()
+        .find(|revision| revision.manifest_digest == view.current_manifest_digest)
+        .ok_or(BackendError::Internal)?;
+    let Some(provenance) = &revision.registry_provenance else {
+        return Ok(());
+    };
+    let policy = inspect_installed_registry_package_policy(
+        store,
+        &provenance.registry_id,
+        &provenance.package_id,
+        RegistryPackageKind::Extension,
+        &provenance.version,
+        &provenance.release_envelope_digest,
+        &revision.manifest_digest,
+        &provenance.archive_digest,
+    )
+    .map_err(|_| BackendError::Internal)?;
+    if policy.disposition != RegistryInstalledPackageDisposition::Authorized {
+        return Err(BackendError::Conflict);
+    }
+    Ok(())
+}
+
 fn build_extension_grant(
     ownership: OwnershipContext,
     extension_id: ExtensionId,
@@ -4590,6 +5091,15 @@ fn extension_response(view: ExtensionView) -> Result<ExtensionResponse, BackendE
             .map(|revision| ExtensionManifestRevisionResponse {
                 manifest_digest: revision.manifest_digest,
                 version: revision.manifest.version,
+                registry: revision.registry_provenance.map(|provenance| {
+                    ExtensionRegistryProvenanceResponse {
+                        registry_id: provenance.registry_id,
+                        package_id: provenance.package_id,
+                        version: provenance.version,
+                        release_envelope_digest: provenance.release_envelope_digest,
+                        archive_digest: provenance.archive_digest,
+                    }
+                }),
                 installed_at_ms: revision.installed_at_ms,
             })
             .collect(),
@@ -4736,6 +5246,16 @@ fn parse_schedule(value: &str) -> Result<ScheduleId, BackendError> {
         .map_err(|_| BackendError::InvalidRequest("invalid schedule ID".to_owned()))
 }
 
+fn parse_automation(value: &str) -> Result<AutomationId, BackendError> {
+    AutomationId::from_str(value)
+        .map_err(|_| BackendError::InvalidRequest("invalid automation ID".to_owned()))
+}
+
+fn parse_remote_continuation(value: &str) -> Result<RemoteContinuationId, BackendError> {
+    RemoteContinuationId::from_str(value)
+        .map_err(|_| BackendError::InvalidRequest("invalid remote continuation ID".to_owned()))
+}
+
 fn parse_task(value: &str) -> Result<TaskId, BackendError> {
     TaskId::from_str(value).map_err(|_| BackendError::InvalidRequest("invalid task ID".to_owned()))
 }
@@ -4867,6 +5387,129 @@ fn schedule_run_response(view: ScheduleRunView) -> ScheduleRunResponse {
             ScheduleRunStatus::Failed => ScheduleRunStatusResponse::Failed,
         },
         inbox_entry_id: view.inbox_entry_id.map(|id| id.to_string()),
+        reason: view.reason,
+        created_at_ms: view.created_at_ms,
+        completed_at_ms: view.completed_at_ms,
+    }
+}
+
+fn automation_trigger_from_request(
+    trigger: AutomationTriggerRequest,
+) -> Result<AutomationTrigger, BackendError> {
+    match trigger {
+        AutomationTriggerRequest::OneShot { due_at_ms } => {
+            Ok(AutomationTrigger::OneShot { due_at_ms })
+        }
+        AutomationTriggerRequest::SessionEvent {
+            source_session_id,
+            event_type,
+        } => Ok(AutomationTrigger::SessionEvent {
+            source_session_id: parse_session(&source_session_id)?,
+            event_type,
+        }),
+    }
+}
+
+fn automation_action_from_command(
+    action: AutomationActionCommand,
+) -> Result<AutomationAction, BackendError> {
+    match action {
+        AutomationActionCommand::SubmitPrompt {
+            target_session_id,
+            prompt,
+            allow_approval_required_action,
+        } => Ok(AutomationAction::SubmitPrompt {
+            target_session_id: parse_session(&target_session_id)?,
+            prompt,
+            approval_required_actions_allowed: allow_approval_required_action,
+        }),
+        AutomationActionCommand::Notify {
+            target_session_id,
+            message,
+            remote_continuation_id,
+        } => Ok(AutomationAction::Notify {
+            target_session_id: parse_session(&target_session_id)?,
+            message,
+            remote_continuation_id: remote_continuation_id
+                .as_deref()
+                .map(parse_remote_continuation)
+                .transpose()?,
+        }),
+    }
+}
+
+fn automation_action_response(action: AutomationAction) -> AutomationActionResponse {
+    match action {
+        AutomationAction::SubmitPrompt {
+            target_session_id,
+            prompt,
+            approval_required_actions_allowed,
+        } => AutomationActionResponse::SubmitPrompt {
+            target_session_id: target_session_id.to_string(),
+            prompt,
+            allow_approval_required_action: approval_required_actions_allowed,
+        },
+        AutomationAction::Notify {
+            target_session_id,
+            message,
+            remote_continuation_id,
+        } => AutomationActionResponse::Notify {
+            target_session_id: target_session_id.to_string(),
+            message,
+            remote_continuation_id: remote_continuation_id.map(|id| id.to_string()),
+        },
+    }
+}
+
+fn automation_response(view: AutomationView) -> AutomationResponse {
+    AutomationResponse {
+        api_version: API_VERSION.to_owned(),
+        automation_id: view.automation_id.to_string(),
+        name: view.name,
+        trigger: match view.trigger {
+            AutomationTriggerView::OneShot { due_at_ms } => {
+                AutomationTriggerResponse::OneShot { due_at_ms }
+            }
+            AutomationTriggerView::SessionEvent {
+                source_session_id,
+                event_type,
+                after_cursor,
+            } => AutomationTriggerResponse::SessionEvent {
+                source_session_id: source_session_id.to_string(),
+                event_type,
+                after_cursor,
+            },
+        },
+        action: automation_action_response(view.action),
+        status: match view.status {
+            AutomationStatus::Active => AutomationStatusResponse::Active,
+            AutomationStatus::Paused => AutomationStatusResponse::Paused,
+            AutomationStatus::Completed => AutomationStatusResponse::Completed,
+            AutomationStatus::Cancelled => AutomationStatusResponse::Cancelled,
+        },
+        revision: view.revision,
+        created_at_ms: view.created_at_ms,
+        updated_at_ms: view.updated_at_ms,
+    }
+}
+
+fn automation_run_response(view: AutomationRunView) -> AutomationRunResponse {
+    AutomationRunResponse {
+        automation_run_id: view.automation_run_id.to_string(),
+        automation_id: view.automation_id.to_string(),
+        trigger_key: view.trigger_key,
+        triggered_at_ms: view.triggered_at_ms,
+        source_event_cursor: view.source_event_cursor,
+        source_event_id: view.source_event_id.map(|id| id.to_string()),
+        source_event_type: view.source_event_type,
+        status: match view.status {
+            AutomationRunStatus::Claimed => AutomationRunStatusResponse::Claimed,
+            AutomationRunStatus::Admitted => AutomationRunStatusResponse::Admitted,
+            AutomationRunStatus::Notified => AutomationRunStatusResponse::Notified,
+            AutomationRunStatus::Failed => AutomationRunStatusResponse::Failed,
+        },
+        inbox_entry_id: view.inbox_entry_id.map(|id| id.to_string()),
+        outbox_id: view.outbox_id.map(|id| id.to_string()),
         reason: view.reason,
         created_at_ms: view.created_at_ms,
         completed_at_ms: view.completed_at_ms,
@@ -5163,6 +5806,150 @@ fn memory_response(view: MemoryView) -> MemoryResponse {
                 last_verified_at_ms: revision.last_verified_at_ms,
             })
             .collect(),
+    }
+}
+
+fn lexical_memory_search_response(hits: Vec<MemorySearchHit>) -> MemorySearchResponse {
+    MemorySearchResponse {
+        api_version: API_VERSION.to_owned(),
+        retrieval_mode: MemoryRetrievalMode::Lexical,
+        semantic_status: None,
+        hits: hits
+            .into_iter()
+            .map(|hit| MemorySearchHitResponse {
+                memory: memory_response(hit.memory),
+                lexical_rank: Some(hit.lexical_rank),
+                semantic_similarity: None,
+                fused_rank_score: None,
+            })
+            .collect(),
+    }
+}
+
+fn lexical_fallback_memory_search_response(
+    mut hits: Vec<MemorySearchHit>,
+    status: MemorySemanticStatus,
+    limit: usize,
+) -> MemorySearchResponse {
+    hits.truncate(limit);
+    let mut response = lexical_memory_search_response(hits);
+    response.retrieval_mode = MemoryRetrievalMode::LexicalFallback;
+    response.semantic_status = Some(status);
+    response
+}
+
+struct FusedMemoryHit {
+    memory: MemoryView,
+    lexical_rank: Option<f64>,
+    semantic_similarity: Option<f64>,
+    fused_rank_score: f64,
+}
+
+fn fused_memory_search_response(
+    lexical: Vec<MemorySearchHit>,
+    semantic: Vec<MemorySemanticSearchHit>,
+    limit: usize,
+) -> MemorySearchResponse {
+    let mut fused = BTreeMap::<String, FusedMemoryHit>::new();
+    for (position, hit) in lexical.into_iter().enumerate() {
+        let memory_id = hit.memory.memory_id.to_string();
+        fused.insert(
+            memory_id,
+            FusedMemoryHit {
+                memory: hit.memory,
+                lexical_rank: Some(hit.lexical_rank),
+                semantic_similarity: None,
+                fused_rank_score: reciprocal_rank_score(position),
+            },
+        );
+    }
+    for (position, hit) in semantic.into_iter().enumerate() {
+        let memory_id = hit.memory.memory_id.to_string();
+        let score = reciprocal_rank_score(position);
+        if let Some(existing) = fused.get_mut(&memory_id) {
+            existing.semantic_similarity = Some(hit.semantic_similarity);
+            existing.fused_rank_score += score;
+        } else {
+            fused.insert(
+                memory_id,
+                FusedMemoryHit {
+                    memory: hit.memory,
+                    lexical_rank: None,
+                    semantic_similarity: Some(hit.semantic_similarity),
+                    fused_rank_score: score,
+                },
+            );
+        }
+    }
+    let mut hits = fused.into_values().collect::<Vec<_>>();
+    hits.sort_by(|left, right| {
+        right
+            .fused_rank_score
+            .total_cmp(&left.fused_rank_score)
+            .then_with(|| {
+                left.memory
+                    .memory_id
+                    .to_string()
+                    .cmp(&right.memory.memory_id.to_string())
+            })
+    });
+    hits.truncate(limit);
+    MemorySearchResponse {
+        api_version: API_VERSION.to_owned(),
+        retrieval_mode: MemoryRetrievalMode::Hybrid,
+        semantic_status: Some(MemorySemanticStatus::Healthy),
+        hits: hits
+            .into_iter()
+            .map(|hit| MemorySearchHitResponse {
+                memory: memory_response(hit.memory),
+                lexical_rank: hit.lexical_rank,
+                semantic_similarity: hit.semantic_similarity,
+                fused_rank_score: Some(hit.fused_rank_score),
+            })
+            .collect(),
+    }
+}
+
+fn reciprocal_rank_score(position: usize) -> f64 {
+    const RECIPROCAL_RANK_OFFSET: f64 = 60.0;
+    u32::try_from(position).map_or(0.0, |position| {
+        1.0 / (RECIPROCAL_RANK_OFFSET + f64::from(position) + 1.0)
+    })
+}
+
+const fn semantic_status_from_unavailable_code(code: &str) -> MemorySemanticStatus {
+    match code.as_bytes() {
+        b"not_configured" => MemorySemanticStatus::NotBuilt,
+        b"stale" => MemorySemanticStatus::Stale,
+        b"degraded" => MemorySemanticStatus::Degraded,
+        _ => MemorySemanticStatus::Incompatible,
+    }
+}
+
+const fn memory_embedding_error_code(error: MemoryEmbeddingError) -> &'static str {
+    match error {
+        MemoryEmbeddingError::InvalidConfiguration => "invalid_configuration",
+        MemoryEmbeddingError::Unavailable => "endpoint_unavailable",
+        MemoryEmbeddingError::Unauthorized => "credential_rejected",
+        MemoryEmbeddingError::RateLimited => "rate_limited",
+        MemoryEmbeddingError::InvalidResponse => "invalid_response",
+    }
+}
+
+fn memory_semantic_index_response(
+    view: mealy_application::MemorySemanticIndexView,
+) -> MemorySemanticIndexResponse {
+    MemorySemanticIndexResponse {
+        config_digest: view.config_digest,
+        status: match view.health {
+            MemorySemanticIndexHealth::Healthy => MemorySemanticStatus::Healthy,
+            MemorySemanticIndexHealth::Stale => MemorySemanticStatus::Stale,
+            MemorySemanticIndexHealth::Degraded => MemorySemanticStatus::Degraded,
+        },
+        dimensions: view.dimensions,
+        indexed_revision_count: view.indexed_revision_count,
+        last_rebuilt_at_ms: view.last_rebuilt_at_ms,
+        last_error_code: view.last_error_code,
     }
 }
 
@@ -5795,9 +6582,9 @@ fn map_memory_error(error: MemoryStoreError) -> BackendError {
             BackendError::InvalidRequest("memory promotion requires owner authorization".to_owned())
         }
         MemoryStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
-        MemoryStoreError::IndexDegraded(_) | MemoryStoreError::Unavailable(_) => {
-            BackendError::Unavailable
-        }
+        MemoryStoreError::IndexDegraded(_)
+        | MemoryStoreError::SemanticIndexUnavailable(_)
+        | MemoryStoreError::Unavailable(_) => BackendError::Unavailable,
         MemoryStoreError::InvariantViolation(_) => BackendError::Internal,
     }
 }
@@ -5894,6 +6681,18 @@ fn map_schedule_store_error(error: ScheduleStoreError) -> BackendError {
         ScheduleStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
         ScheduleStoreError::Unavailable(_) => BackendError::Unavailable,
         ScheduleStoreError::InvariantViolation(_) => BackendError::Internal,
+    }
+}
+
+fn map_automation_store_error(error: AutomationStoreError) -> BackendError {
+    match error {
+        AutomationStoreError::NotFound | AutomationStoreError::Unauthorized => {
+            BackendError::NotFound
+        }
+        AutomationStoreError::Conflict => BackendError::Conflict,
+        AutomationStoreError::InvalidContract(message) => BackendError::InvalidRequest(message),
+        AutomationStoreError::Unavailable(_) => BackendError::Unavailable,
+        AutomationStoreError::InvariantViolation(_) => BackendError::Internal,
     }
 }
 
@@ -6062,6 +6861,16 @@ fn schedule_doctor_check(snapshot: &OperationalSnapshot) -> String {
     )
 }
 
+fn automation_doctor_check(snapshot: &OperationalSnapshot) -> String {
+    format!(
+        "ok: {} active, {} paused, {} claimed, {} failed automation occurrence(s)",
+        snapshot.active_automations,
+        snapshot.paused_automations,
+        snapshot.claimed_automation_runs,
+        snapshot.failed_automation_runs,
+    )
+}
+
 fn channel_doctor_check(snapshot: &OperationalSnapshot) -> String {
     if snapshot.degraded_channels == 0 && snapshot.reserved_channel_updates == 0 {
         format!(
@@ -6220,8 +7029,8 @@ mod tests {
     use mealy_protocol::{
         ContextItemDisposition, CorrectMemoryRequest, MemoryCategoryCommand,
         MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand, MemoryRetentionCommand,
-        MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse, PromoteMemoryRequest,
-        ProposeMemoryRequest,
+        MemoryRetrievalMode, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+        PromoteMemoryRequest, ProposeMemoryRequest,
     };
     use rusqlite::params;
     use serde_json::json;
@@ -6604,6 +7413,7 @@ mod tests {
                 "release Wednesday".to_owned(),
                 MemorySensitivityCommand::Private,
                 10,
+                MemoryRetrievalMode::Lexical,
             )
             .expect("search memory through backend");
         assert_eq!(search.hits.len(), 1);
@@ -6833,6 +7643,7 @@ mod tests {
                         home: backend_home,
                         artifact_gc_minimum_age_hours: 24,
                         media_normalizer: None,
+                        memory_embedder: None,
                         maximum_pending_inputs_per_session: 1_024,
                         maximum_extension_invocations: 1,
                         enabled_read_tools: vec!["fixture.read".to_owned()],

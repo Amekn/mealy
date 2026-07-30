@@ -16,11 +16,13 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
+        mpsc,
     },
+    thread,
     time::Duration,
 };
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
 use zeroize::Zeroizing;
 
 const MAXIMUM_FETCH_BYTES: usize = 128 * 1024;
@@ -32,6 +34,17 @@ const MAXIMUM_TOOL_OUTPUT_BYTES: u64 = 1024 * 1024;
 const MAXIMUM_QUERY_BYTES: usize = 512;
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(8);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const DNS_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAXIMUM_CONCURRENT_DNS_RESOLUTIONS: usize = 8;
+static ACTIVE_DNS_RESOLUTIONS: AtomicUsize = AtomicUsize::new(0);
+
+struct DnsResolutionLease;
+
+impl Drop for DnsResolutionLease {
+    fn drop(&mut self) {
+        ACTIVE_DNS_RESOLUTIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 /// Invalid or unenforceable web-tool configuration.
 #[derive(Debug, Error)]
@@ -437,7 +450,7 @@ fn build_pinned_client(
     let host = url
         .host_str()
         .ok_or_else(|| invalid_arguments_error("url host is absent"))?;
-    let literal = host.parse::<IpAddr>().ok();
+    let literal = url_literal_ip(url);
     let sockets = resolve_pinned_web_destination(url, config)?;
     let addresses = sockets.iter().map(SocketAddr::ip).collect();
     let mut builder = Client::builder()
@@ -467,20 +480,46 @@ pub(crate) fn resolve_pinned_web_destination(
     {
         return invalid_arguments("url is outside configured web authority");
     }
+    let exact_origin = config
+        .allowed_origins
+        .iter()
+        .any(|origin| origin == &url.origin().ascii_serialization());
+    resolve_destination_addresses(url, exact_origin && url.scheme() == "http")
+}
+
+/// Resolves one canonical HTTPS URL to a pinned, entirely public address set.
+///
+/// Registry mirrors reuse the same maintained IANA special-address policy as web, MCP, and browser
+/// adapters, but never inherit their explicit loopback-origin exception.
+pub(crate) fn resolve_pinned_public_https_destination(
+    url: &Url,
+) -> Result<Vec<SocketAddr>, ReadToolError> {
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return invalid_arguments("outbound HTTPS destination is invalid");
+    }
+    resolve_destination_addresses(url, false)
+}
+
+fn resolve_destination_addresses(
+    url: &Url,
+    allow_literal_loopback: bool,
+) -> Result<Vec<SocketAddr>, ReadToolError> {
     let host = url
         .host_str()
         .ok_or_else(|| invalid_arguments_error("url host is absent"))?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| invalid_arguments_error("url port is invalid"))?;
-    let exact_origin = config
-        .allowed_origins
-        .iter()
-        .any(|origin| origin == &url.origin().ascii_serialization());
-    let literal = host.parse::<IpAddr>().ok();
+    let literal = url_literal_ip(url);
     let addresses = if let Some(address) = literal {
         if address.is_loopback() {
-            if !exact_origin || url.scheme() != "http" {
+            if !allow_literal_loopback {
                 return invalid_arguments(
                     "loopback web access requires an exact HTTP origin grant",
                 );
@@ -490,11 +529,7 @@ pub(crate) fn resolve_pinned_web_destination(
         }
         BTreeSet::from([address])
     } else {
-        let resolved = (host, port)
-            .to_socket_addrs()
-            .map_err(|_| unavailable("web destination DNS resolution failed"))?
-            .map(|address| address.ip())
-            .collect::<BTreeSet<_>>();
+        let resolved = resolve_host_with_deadline(host, port)?;
         if resolved.is_empty() || resolved.iter().any(|address| !is_public_address(*address)) {
             return invalid_arguments("web destination DNS includes a non-public address");
         }
@@ -504,6 +539,51 @@ pub(crate) fn resolve_pinned_web_destination(
         .into_iter()
         .map(|address| SocketAddr::new(address, port))
         .collect())
+}
+
+pub(crate) fn url_literal_ip(url: &Url) -> Option<IpAddr> {
+    match url.host()? {
+        Host::Ipv4(address) => Some(IpAddr::V4(address)),
+        Host::Ipv6(address) => Some(IpAddr::V6(address)),
+        Host::Domain(_) => None,
+    }
+}
+
+fn resolve_host_with_deadline(host: &str, port: u16) -> Result<BTreeSet<IpAddr>, ReadToolError> {
+    let host = host.to_owned();
+    bounded_dns_resolution(DNS_RESOLUTION_TIMEOUT, move || {
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|addresses| {
+                addresses
+                    .map(|address| address.ip())
+                    .collect::<BTreeSet<_>>()
+            })
+            .map_err(|_| ())
+    })
+}
+
+fn bounded_dns_resolution(
+    timeout: Duration,
+    operation: impl FnOnce() -> Result<BTreeSet<IpAddr>, ()> + Send + 'static,
+) -> Result<BTreeSet<IpAddr>, ReadToolError> {
+    if ACTIVE_DNS_RESOLUTIONS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_CONCURRENT_DNS_RESOLUTIONS {
+        ACTIVE_DNS_RESOLUTIONS.fetch_sub(1, Ordering::AcqRel);
+        return Err(unavailable("web destination DNS capacity is unavailable"));
+    }
+    let lease = DnsResolutionLease;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("mealy-dns-resolution".to_owned())
+        .spawn(move || {
+            let _lease = lease;
+            let _ = sender.send(operation());
+        })
+        .map_err(|_| unavailable("web destination DNS resolution failed"))?;
+    receiver
+        .recv_timeout(timeout)
+        .map_err(|_| unavailable("web destination DNS resolution timed out"))?
+        .map_err(|()| unavailable("web destination DNS resolution failed"))
 }
 
 fn read_response(
@@ -907,16 +987,20 @@ fn web_descriptor(
 
 #[cfg(test)]
 mod tests {
-    use super::{WebReadTool, canonical_fetch_url, html_to_text, is_public_address};
+    use super::{
+        WebReadTool, bounded_dns_resolution, canonical_fetch_url, html_to_text, is_public_address,
+    };
     use mealy_application::{
         CancellationProbe, ProviderCredentialReference, ReadOnlyTool, ReadToolError,
         WebAccessConfig, WebSearchConfig,
     };
     use serde_json::{Value, json};
     use std::{
+        collections::BTreeSet,
         io::{Read, Write},
         net::{IpAddr, Ipv4Addr, TcpListener},
         thread,
+        time::Duration,
     };
     use zeroize::Zeroizing;
 
@@ -926,6 +1010,15 @@ mod tests {
         fn is_cancelled(&self) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn operating_system_dns_resolution_has_an_independent_deadline() {
+        let result = bounded_dns_resolution(Duration::from_millis(1), || {
+            thread::sleep(Duration::from_millis(25));
+            Ok(BTreeSet::from([IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]))
+        });
+        assert!(matches!(result, Err(ReadToolError::Unavailable(_))));
     }
 
     #[test]

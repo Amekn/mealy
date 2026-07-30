@@ -3922,7 +3922,13 @@ fn valid_memory_search_response(
     }
     let mut identifiers = BTreeSet::new();
     response.hits.iter().all(|hit| {
-        hit.lexical_rank.is_finite()
+        hit.lexical_rank.is_some_and(f64::is_finite)
+            || hit
+                .semantic_similarity
+                .is_some_and(|score| score.is_finite() && (-1.0..=1.0).contains(&score))
+    }) && response.hits.iter().all(|hit| {
+        hit.fused_rank_score
+            .is_none_or(|score| score.is_finite() && score > 0.0)
             && hit.memory.status == MemoryStatusResponse::Active
             && memory_sensitivity_rank(hit.memory.sensitivity)
                 <= memory_sensitivity_rank(maximum_sensitivity)
@@ -4964,9 +4970,13 @@ mod tests {
         assert!(valid_memory_response(&memory, Some(memory_id), workspace));
         let active_search = MemorySearchResponse {
             api_version: "v1".to_owned(),
+            retrieval_mode: mealy_protocol::MemoryRetrievalMode::Lexical,
+            semantic_status: None,
             hits: vec![mealy_protocol::MemorySearchHitResponse {
                 memory: memory.clone(),
-                lexical_rank: -0.5,
+                lexical_rank: Some(-0.5),
+                semantic_similarity: None,
+                fused_rank_score: None,
             }],
         };
         assert!(valid_memory_search_response(

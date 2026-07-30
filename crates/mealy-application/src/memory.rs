@@ -1,4 +1,7 @@
-use crate::{OwnershipContext, TimelineCursor, is_sha256_digest};
+use crate::{
+    OwnershipContext, ProviderCredentialReference, TimelineCursor, is_sha256_digest, sha256_digest,
+    validate_provider_base_url,
+};
 use mealy_domain::{
     CorrelationId, EventId, MemoryCategory, MemoryConfidence, MemoryId, MemoryMetadata,
     MemoryPromotionAuthorization, MemoryRetention, MemoryRevisionId, MemorySensitivity,
@@ -10,6 +13,142 @@ use thiserror::Error;
 
 /// Stable policy bundle for governed memory promotion and retrieval.
 pub const MEMORY_POLICY_VERSION: &str = "mealy.memory.v1";
+/// Stable contract for optional derived semantic-memory vectors.
+pub const MEMORY_EMBEDDING_POLICY_VERSION: &str = "mealy.memory-embedding.v1";
+/// Maximum supported embedding dimensions.
+pub const MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS: u32 = 8_192;
+/// Maximum texts sent in one embedding request.
+pub const MAXIMUM_MEMORY_EMBEDDING_BATCH: usize = 32;
+/// Maximum aggregate UTF-8 bytes sent in one embedding request.
+pub const MAXIMUM_MEMORY_EMBEDDING_BATCH_BYTES: usize = 512 * 1_024;
+
+/// Explicit non-secret policy for an optional OpenAI-compatible embedding endpoint.
+///
+/// Semantic vectors are always derived cache material. This configuration neither changes the
+/// canonical memory lifecycle nor authorizes memory outside the existing owner, workspace, and
+/// sensitivity boundaries.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MemoryEmbeddingConfig {
+    /// OpenAI-compatible API base ending at a version prefix such as `/v1`.
+    base_url: String,
+    /// Exact embedding model identity.
+    model: String,
+    /// Credential reference; optional only for literal-loopback endpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credential: Option<ProviderCredentialReference>,
+    /// Owner-declared data residency recorded in index provenance.
+    residency: String,
+    /// Exact expected output dimensions; drift fails closed and leaves lexical retrieval intact.
+    dimensions: u32,
+    /// Optional model-specific prefix applied only to canonical memory documents.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    document_prefix: String,
+    /// Optional model-specific prefix applied only to search queries.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    query_prefix: String,
+    /// Per-request timeout.
+    request_timeout_ms: u64,
+}
+
+impl MemoryEmbeddingConfig {
+    /// Validates endpoint locality, credential policy, model identity, prefixes, and bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError::InvalidContract`] without resolving or exposing credentials.
+    pub fn validate(&self) -> Result<(), MemoryStoreError> {
+        let local = validate_provider_base_url(&self.base_url)
+            .map_err(|_| invalid_contract("memory embedding endpoint is invalid"))?;
+        if !valid_embedding_label(&self.model)
+            || !valid_embedding_label(&self.residency)
+            || !(1..=MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS).contains(&self.dimensions)
+            || !(100..=300_000).contains(&self.request_timeout_ms)
+            || !valid_embedding_prefix(&self.document_prefix)
+            || !valid_embedding_prefix(&self.query_prefix)
+            || self
+                .credential
+                .as_ref()
+                .is_some_and(|reference| reference.validate().is_err())
+            || (!local && self.credential.is_none())
+        {
+            return Err(invalid_contract(
+                "memory embedding configuration is invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    /// OpenAI-compatible API base.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Exact embedding model.
+    #[must_use]
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Optional opaque credential reference.
+    #[must_use]
+    pub const fn credential(&self) -> Option<&ProviderCredentialReference> {
+        self.credential.as_ref()
+    }
+
+    /// Owner-declared data residency.
+    #[must_use]
+    pub fn residency(&self) -> &str {
+        &self.residency
+    }
+
+    /// Exact expected vector dimensions.
+    #[must_use]
+    pub const fn dimensions(&self) -> u32 {
+        self.dimensions
+    }
+
+    /// Prefix used for indexed documents.
+    #[must_use]
+    pub fn document_prefix(&self) -> &str {
+        &self.document_prefix
+    }
+
+    /// Prefix used for retrieval queries.
+    #[must_use]
+    pub fn query_prefix(&self) -> &str {
+        &self.query_prefix
+    }
+
+    /// Bounded request timeout.
+    #[must_use]
+    pub const fn request_timeout_ms(&self) -> u64 {
+        self.request_timeout_ms
+    }
+
+    /// Stable digest of the complete non-secret semantic-index identity and privacy policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError::InvalidContract`] when validation or canonical encoding fails.
+    pub fn digest(&self) -> Result<String, MemoryStoreError> {
+        self.validate()?;
+        let encoded = serde_json::to_vec(self)
+            .map_err(|_| invalid_contract("memory embedding configuration cannot be encoded"))?;
+        Ok(sha256_digest(&encoded))
+    }
+
+    /// Reports whether the configured endpoint is inside the literal-loopback boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError::InvalidContract`] for an invalid endpoint.
+    pub fn is_local(&self) -> Result<bool, MemoryStoreError> {
+        validate_provider_base_url(&self.base_url)
+            .map_err(|_| invalid_contract("memory embedding endpoint is invalid"))
+    }
+}
 
 /// One immutable provenance link attached to a memory revision.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -254,6 +393,99 @@ pub struct MemorySearchHit {
     pub lexical_rank: f64,
 }
 
+/// Canonical active revision supplied to an out-of-transaction embedding adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MemoryEmbeddingCandidate {
+    /// Logical memory identity.
+    pub memory_id: MemoryId,
+    /// Exact active revision identity.
+    pub revision_id: MemoryRevisionId,
+    /// Canonical bounded content sent under the explicit embedding privacy policy.
+    pub content: String,
+    /// Canonical content digest used to fence an eventual index commit.
+    pub content_digest: String,
+}
+
+/// One L2-normalized vector derived from an exact canonical active revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemorySemanticVector {
+    /// Logical memory identity.
+    pub memory_id: MemoryId,
+    /// Exact active revision identity.
+    pub revision_id: MemoryRevisionId,
+    /// Canonical content digest observed before embedding.
+    pub content_digest: String,
+    /// Finite non-zero vector values.
+    pub values: Vec<f32>,
+}
+
+/// Atomic replacement of one owner's complete derived semantic index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReplaceMemorySemanticIndexCommit {
+    /// Authenticated owner and verified channel.
+    pub ownership: OwnershipContext,
+    /// Digest of the complete non-secret embedding model and privacy policy.
+    pub config_digest: String,
+    /// Exact configured vector dimensions.
+    pub dimensions: u32,
+    /// One vector for every currently active owner revision.
+    pub vectors: Vec<MemorySemanticVector>,
+    /// Rebuild completion time.
+    pub rebuilt_at: SystemTime,
+}
+
+/// Health of one owner's optional derived semantic index.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySemanticIndexHealth {
+    /// Every active owner revision is represented by the current configuration.
+    Healthy,
+    /// Canonical lifecycle changes invalidated the last complete index.
+    Stale,
+    /// The last explicit rebuild failed before a complete atomic replacement.
+    Degraded,
+}
+
+/// Owner-inspectable provenance and health for the optional derived semantic index.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySemanticIndexView {
+    /// Exact owner whose active revisions are covered.
+    pub principal_id: mealy_domain::PrincipalId,
+    /// Digest of the non-secret embedding model and privacy policy.
+    pub config_digest: String,
+    /// Current derived-index health.
+    pub health: MemorySemanticIndexHealth,
+    /// Exact vector dimensions.
+    pub dimensions: u32,
+    /// Number of indexed active revisions.
+    pub indexed_revision_count: u64,
+    /// Most recent successful rebuild time.
+    pub last_rebuilt_at_ms: Option<i64>,
+    /// Fixed safe failure classification, never downstream text.
+    pub last_error_code: Option<String>,
+}
+
+/// Deterministically scoped semantic retrieval query over a complete healthy derived index.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemorySemanticSearchQuery {
+    /// Existing owner, namespace, sensitivity, and limit policy.
+    pub search: MemorySearchQuery,
+    /// Exact current embedding configuration digest.
+    pub config_digest: String,
+    /// L2-normalized finite query vector.
+    pub query_vector: Vec<f32>,
+}
+
+/// One semantic retrieval result retaining complete canonical citations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemorySemanticSearchHit {
+    /// Owner-authorized canonical memory and immutable citations.
+    pub memory: MemoryView,
+    /// Cosine similarity of normalized vectors, in the inclusive range -1 through 1.
+    pub semantic_similarity: f64,
+}
+
 /// Outcome from rebuilding the derived lexical index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MemoryIndexRebuildReceipt {
@@ -281,6 +513,9 @@ pub enum MemoryStoreError {
     /// Lexical index is marked degraded; deterministic namespace-filtered fallback was used.
     #[error("memory lexical index is degraded: {0}")]
     IndexDegraded(String),
+    /// Optional semantic index is absent, stale, degraded, incompatible, or exceeds scan bounds.
+    #[error("memory semantic index is unavailable: {0}")]
+    SemanticIndexUnavailable(String),
     /// Persistence could not complete the operation.
     #[error("memory store is unavailable: {0}")]
     Unavailable(String),
@@ -401,6 +636,62 @@ pub trait MemoryStore {
         ownership: OwnershipContext,
         rebuilt_at: SystemTime,
     ) -> Result<MemoryIndexRebuildReceipt, MemoryStoreError>;
+
+    /// Loads the complete bounded active owner revision set for an out-of-transaction rebuild.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError`] when ownership, active evidence, bounds, or persistence fails.
+    fn memory_embedding_candidates(
+        &self,
+        ownership: OwnershipContext,
+    ) -> Result<Vec<MemoryEmbeddingCandidate>, MemoryStoreError>;
+
+    /// Atomically replaces one owner's derived vectors after rechecking the complete active set.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError`] when authorization, configuration, vector, content-fence, or
+    /// persistence validation fails. A failed commit leaves the prior index unchanged.
+    fn replace_memory_semantic_index(
+        &mut self,
+        commit: ReplaceMemorySemanticIndexCommit,
+    ) -> Result<MemorySemanticIndexView, MemoryStoreError>;
+
+    /// Inspects one owner's optional derived semantic-index health and provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError`] when ownership, stored evidence, or persistence fails.
+    fn memory_semantic_index(
+        &self,
+        ownership: OwnershipContext,
+    ) -> Result<Option<MemorySemanticIndexView>, MemoryStoreError>;
+
+    /// Marks a failed rebuild with one fixed safe classification while retaining prior vectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError`] when authorization, configuration, error code, or persistence
+    /// validation fails.
+    fn degrade_memory_semantic_index(
+        &mut self,
+        ownership: OwnershipContext,
+        config_digest: &str,
+        dimensions: u32,
+        error_code: &str,
+    ) -> Result<MemorySemanticIndexView, MemoryStoreError>;
+
+    /// Searches a complete healthy owner index after canonical namespace/sensitivity filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MemoryStoreError`] when authorization, index health, vector validation, scan
+    /// bounds, canonical citations, or persistence validation fails.
+    fn search_memories_semantic(
+        &self,
+        query: MemorySemanticSearchQuery,
+    ) -> Result<Vec<MemorySemanticSearchHit>, MemoryStoreError>;
 }
 
 /// Validates a proposal without performing storage I/O.
@@ -483,6 +774,41 @@ pub fn validate_memory_search(query: &MemorySearchQuery) -> Result<(), MemorySto
     Ok(())
 }
 
+/// Validates a finite non-zero semantic vector and reports its dimensions.
+///
+/// # Errors
+///
+/// Returns [`MemoryStoreError::InvalidContract`] for empty, oversized, non-finite, or zero vectors.
+pub fn validate_memory_embedding_vector(values: &[f32]) -> Result<u32, MemoryStoreError> {
+    if values.is_empty()
+        || values.len()
+            > usize::try_from(MAXIMUM_MEMORY_EMBEDDING_DIMENSIONS)
+                .map_err(|_| invalid_contract("memory embedding dimension bound is invalid"))?
+        || values.iter().any(|value| !value.is_finite())
+    {
+        return Err(invalid_contract("memory embedding vector is invalid"));
+    }
+    let norm_squared = values
+        .iter()
+        .map(|value| f64::from(*value) * f64::from(*value))
+        .sum::<f64>();
+    if !norm_squared.is_finite() || norm_squared <= f64::EPSILON {
+        return Err(invalid_contract("memory embedding vector is zero"));
+    }
+    u32::try_from(values.len())
+        .map_err(|_| invalid_contract("memory embedding dimensions overflowed"))
+}
+
+/// Validates one safe fixed semantic-index failure classification.
+#[must_use]
+pub fn valid_memory_semantic_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 /// Produces a context-safe logical locator for a cited memory revision.
 #[must_use]
 pub fn memory_context_locator(memory_id: MemoryId, revision_id: MemoryRevisionId) -> String {
@@ -499,14 +825,28 @@ fn valid_content(content: &str) -> bool {
     !content.is_empty() && content.len() <= 65_536 && !content.contains('\0')
 }
 
+fn valid_embedding_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_embedding_prefix(value: &str) -> bool {
+    value.len() <= 256 && !value.contains('\0') && !value.chars().any(char::is_control)
+}
+
 fn invalid_contract(message: impl Into<String>) -> MemoryStoreError {
     MemoryStoreError::InvalidContract(message.into())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MemorySource, ProposeMemoryCommit, validate_memory_proposal, validate_sources};
-    use crate::OwnershipContext;
+    use super::{
+        MemoryEmbeddingConfig, MemorySource, ProposeMemoryCommit, validate_memory_proposal,
+        validate_sources,
+    };
+    use crate::{OwnershipContext, ProviderCredentialReference};
     use mealy_domain::{
         ChannelBindingId, CorrelationId, EventId, MemoryCategory, MemoryConfidence, MemoryId,
         MemoryMetadata, MemoryNamespace, MemoryProvenance, MemoryRetention, MemoryRevisionId,
@@ -552,5 +892,34 @@ mod tests {
         assert_eq!(validate_memory_proposal(&commit), Ok(()));
         commit.sources[0].digest = "b".repeat(64);
         assert!(validate_sources(&commit.sources, &metadata).is_err());
+    }
+
+    #[test]
+    fn embedding_policy_requires_explicit_remote_credentials_and_stable_dimensions() {
+        let local: MemoryEmbeddingConfig = serde_json::from_value(serde_json::json!({
+            "baseUrl": "http://127.0.0.1:8080/v1",
+            "model": "nomic-embed-text",
+            "residency": "owner_host",
+            "dimensions": 768,
+            "documentPrefix": "search_document: ",
+            "queryPrefix": "search_query: ",
+            "requestTimeoutMs": 5_000
+        }))
+        .expect("local policy");
+        assert_eq!(local.validate(), Ok(()));
+        assert!(local.is_local().expect("locality"));
+        assert_eq!(local.digest().expect("digest").len(), 64);
+
+        let mut remote = local.clone();
+        remote.base_url = "https://embeddings.example/v1".to_owned();
+        assert!(remote.validate().is_err());
+        remote.credential = Some(ProviderCredentialReference::Broker {
+            secret_id: "memory-embedding".to_owned(),
+        });
+        assert_eq!(remote.validate(), Ok(()));
+        assert!(!remote.is_local().expect("locality"));
+
+        remote.dimensions = 0;
+        assert!(remote.validate().is_err());
     }
 }

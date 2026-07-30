@@ -11,6 +11,7 @@ use thiserror::Error;
 mod agent;
 mod agent_effect;
 mod artifact;
+mod automation;
 mod channel;
 mod compaction;
 mod context;
@@ -24,6 +25,7 @@ mod outbox;
 mod promotion;
 mod provider_selection;
 mod recovery;
+mod registry;
 mod schedule;
 mod scheduler;
 mod sessions;
@@ -58,10 +60,17 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_session_input_medi
 const MIGRATION_0022: &str =
     include_str!("../migrations/0022_agent_effect_budget_reservations.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_browser_transaction_origin.sql");
+const MIGRATION_0024: &str = include_str!("../migrations/0024_registry_metadata.sql");
+const MIGRATION_0025: &str = include_str!("../migrations/0025_registry_release_evidence.sql");
+const MIGRATION_0026: &str = include_str!("../migrations/0026_registry_package_evidence.sql");
+const MIGRATION_0027: &str = include_str!("../migrations/0027_extension_registry_provenance.sql");
+const MIGRATION_0028: &str = include_str!("../migrations/0028_memory_semantic_index.sql");
+const MIGRATION_0029: &str = include_str!("../migrations/0029_automation.sql");
+const MIGRATION_0030: &str = include_str!("../migrations/0030_slack_remote_continuation.sql");
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SYNCHRONOUS_POLICY: &str = "FULL";
 /// Latest canonical schema revision understood by this binary.
-pub const LATEST_SCHEMA_VERSION: i64 = 23;
+pub const LATEST_SCHEMA_VERSION: i64 = 30;
 
 /// SQLite-backed transition store.
 pub struct SqliteStore {
@@ -374,6 +383,62 @@ impl SqliteStore {
             transaction.execute_batch(MIGRATION_0023)?;
             transaction.execute(
                 "INSERT INTO schema_version(version, applied_at_ms) VALUES (23, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 23;
+        }
+        if existing_version == 23 {
+            transaction.execute_batch(MIGRATION_0024)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (24, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 24;
+        }
+        if existing_version == 24 {
+            transaction.execute_batch(MIGRATION_0025)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (25, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 25;
+        }
+        if existing_version == 25 {
+            transaction.execute_batch(MIGRATION_0026)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (26, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 26;
+        }
+        if existing_version == 26 {
+            transaction.execute_batch(MIGRATION_0027)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (27, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 27;
+        }
+        if existing_version == 27 {
+            transaction.execute_batch(MIGRATION_0028)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (28, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 28;
+        }
+        if existing_version == 28 {
+            transaction.execute_batch(MIGRATION_0029)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (29, ?1)",
+                [applied_at_ms],
+            )?;
+            existing_version = 29;
+        }
+        if existing_version == 29 {
+            transaction.execute_batch(MIGRATION_0030)?;
+            transaction.execute(
+                "INSERT INTO schema_version(version, applied_at_ms) VALUES (30, ?1)",
                 [applied_at_ms],
             )?;
         }
@@ -975,6 +1040,7 @@ mod tests {
     }
 
     fn remove_browser_transaction_origin_schema(connection: &Connection) {
+        remove_registry_metadata_schema(connection);
         connection
             .execute_batch(
                 "DROP TRIGGER agent_effect_invocation_origin_insert;
@@ -1046,6 +1112,90 @@ mod tests {
                  DELETE FROM schema_version WHERE version = 23;",
             )
             .expect("remove v23 browser transaction origin schema");
+    }
+
+    fn remove_registry_metadata_schema(connection: &Connection) {
+        remove_registry_release_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE registry_snapshot_head;
+                 DROP TABLE registry_snapshot;
+                 DROP TABLE registry_trust_root_head;
+                 DROP TABLE registry_trust_root;
+                 DELETE FROM schema_version WHERE version = 24;",
+            )
+            .expect("remove v24 registry metadata schema");
+    }
+
+    fn remove_registry_release_schema(connection: &Connection) {
+        remove_registry_package_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE registry_release;
+                 DELETE FROM schema_version WHERE version = 25;",
+            )
+            .expect("remove v25 registry release schema");
+    }
+
+    fn remove_registry_package_schema(connection: &Connection) {
+        remove_extension_registry_provenance_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE registry_package;
+                 DELETE FROM schema_version WHERE version = 26;",
+            )
+            .expect("remove v26 registry package schema");
+    }
+
+    fn remove_extension_registry_provenance_schema(connection: &Connection) {
+        remove_semantic_memory_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TRIGGER extension_manifest_registry_provenance_immutable_delete;
+                 DROP TRIGGER extension_manifest_registry_provenance_immutable_update;
+                 DROP TRIGGER extension_manifest_registry_provenance_insert_guard;
+                 DROP TABLE extension_manifest_registry_provenance;
+                 DELETE FROM schema_version WHERE version = 27;",
+            )
+            .expect("remove v27 extension registry provenance schema");
+    }
+
+    fn remove_semantic_memory_schema(connection: &Connection) {
+        remove_automation_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TRIGGER memory_revision_semantic_invalidate;
+                 DROP INDEX memory_semantic_vector_scope_idx;
+                 DROP TABLE memory_semantic_vector;
+                 DROP TABLE memory_semantic_index_state;
+                 DELETE FROM schema_version WHERE version = 28;",
+            )
+            .expect("remove v28 semantic memory schema");
+    }
+
+    fn remove_automation_schema(connection: &Connection) {
+        remove_slack_remote_continuation_schema(connection);
+        connection
+            .execute_batch(
+                "DROP TABLE automation_run;
+                 DROP TABLE automation_revision;
+                 DROP TABLE automation;
+                 DELETE FROM schema_version WHERE version = 29;",
+            )
+            .expect("remove v29 automation schema");
+    }
+
+    fn remove_slack_remote_continuation_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TRIGGER automation_slack_remote_route_update_guard;
+                 DROP TRIGGER automation_slack_remote_route_insert_guard;
+                 DROP INDEX automation_slack_remote_continuation_idx;
+                 ALTER TABLE automation DROP COLUMN slack_remote_continuation_id;
+                 DROP TABLE slack_remote_continuation;
+                 DELETE FROM schema_version WHERE version = 30;",
+            )
+            .expect("remove v30 Slack remote-continuation schema");
     }
 
     fn remove_media_schema(connection: &Connection) {
@@ -2812,6 +2962,305 @@ mod tests {
         upgraded
             .verify_storage_integrity()
             .expect("upgraded integrity");
+    }
+
+    #[test]
+    fn v23_upgrade_installs_durable_registry_metadata_and_release_invariants() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO task(id, status, revision, validation_required)
+                 VALUES ('preserved-v23-task', 'queued', 0, 0)",
+                [],
+            )
+            .expect("seed v23 predecessor");
+        remove_registry_metadata_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v23 registry metadata schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "registry_trust_root",
+            "registry_trust_root_head",
+            "registry_snapshot",
+            "registry_snapshot_head",
+            "registry_release",
+            "registry_trust_root_immutable_update",
+            "registry_trust_root_head_monotonic_update",
+            "registry_snapshot_current_root_insert",
+            "registry_snapshot_head_monotonic_update",
+            "registry_release_immutable_update",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query registry schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row(
+                    "SELECT status FROM task WHERE id = 'preserved-v23-task'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("preserved predecessor task"),
+            "queued"
+        );
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded registry integrity");
+    }
+
+    #[test]
+    fn v24_upgrade_preserves_registry_metadata_and_adds_release_evidence() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root(
+                     registry_id, root_version, root_digest, root_json,
+                     expires_at_ms, activated_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', 1,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     x'7b7d', 9999999999999, 1
+                 )",
+                [],
+            )
+            .expect("seed v24 immutable root row");
+        remove_registry_release_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v24 registry release evidence schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row("SELECT COUNT(*) FROM registry_trust_root", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("preserved registry metadata"),
+            1
+        );
+        for object in [
+            "registry_release",
+            "registry_release_immutable_update",
+            "registry_release_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query release evidence schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded registry release integrity");
+    }
+
+    #[test]
+    fn v25_upgrade_preserves_release_schema_and_adds_package_evidence() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root(
+                     registry_id, root_version, root_digest, root_json,
+                     expires_at_ms, activated_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', 1,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     x'7b7d', 9999999999999, 1
+                 )",
+                [],
+            )
+            .expect("seed v25 root row");
+        remove_registry_package_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v25 registry package evidence schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row("SELECT COUNT(*) FROM registry_trust_root", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("preserved registry root"),
+            1
+        );
+        for object in [
+            "registry_release",
+            "registry_package",
+            "registry_package_insert_guard",
+            "registry_package_immutable_update",
+            "registry_package_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query package evidence schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded registry package integrity");
+    }
+
+    #[test]
+    fn v26_upgrade_preserves_package_evidence_and_adds_extension_provenance() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        store
+            .connection
+            .execute(
+                "INSERT INTO registry_trust_root(
+                     registry_id, root_version, root_digest, root_json,
+                     expires_at_ms, activated_at_ms
+                 ) VALUES (
+                     'dev.mealy.registry', 1,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     x'7b7d', 9999999999999, 1
+                 )",
+                [],
+            )
+            .expect("seed v26 root row");
+        remove_extension_registry_provenance_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v26 extension provenance schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        assert_eq!(
+            upgraded
+                .connection
+                .query_row("SELECT COUNT(*) FROM registry_trust_root", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("preserved registry root"),
+            1
+        );
+        for object in [
+            "registry_package",
+            "extension_installation",
+            "extension_manifest_revision",
+            "extension_manifest_registry_provenance",
+            "extension_manifest_registry_provenance_insert_guard",
+            "extension_manifest_registry_provenance_immutable_update",
+            "extension_manifest_registry_provenance_immutable_delete",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query extension provenance schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded extension provenance integrity");
+    }
+
+    #[test]
+    fn v27_upgrade_installs_rebuildable_semantic_memory_schema() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_semantic_memory_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v27 semantic memory schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "memory_semantic_index_state",
+            "memory_semantic_vector",
+            "memory_semantic_vector_scope_idx",
+            "memory_revision_semantic_invalidate",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query semantic memory schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded semantic memory integrity");
+    }
+
+    #[test]
+    fn v28_upgrade_installs_revisioned_automation_schema() {
+        let store = SqliteStore::open_in_memory(NOW).expect("current in-memory store");
+        remove_automation_schema(&store.connection);
+        let connection = store.connection;
+        let upgraded = SqliteStore::from_connection(connection, NOW + 1, false)
+            .expect("upgrade v28 automation schema");
+
+        assert_eq!(
+            upgraded.schema_version().expect("schema version"),
+            u64::try_from(LATEST_SCHEMA_VERSION).expect("nonnegative schema version")
+        );
+        for object in [
+            "automation",
+            "automation_revision",
+            "automation_run",
+            "automation_due_idx",
+            "automation_event_idx",
+            "automation_definition_update_guard",
+            "automation_transition_guard",
+            "automation_run_transition_guard",
+        ] {
+            let exists: bool = upgraded
+                .connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ?1)",
+                    [object],
+                    |row| row.get(0),
+                )
+                .expect("query automation schema object");
+            assert!(exists, "{object} was not installed");
+        }
+        upgraded
+            .verify_storage_integrity()
+            .expect("upgraded automation integrity");
     }
 
     #[test]

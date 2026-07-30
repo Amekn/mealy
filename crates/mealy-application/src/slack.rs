@@ -125,13 +125,13 @@ impl SlackAdapter {
         let Some(timestamp) = event
             .get("ts")
             .and_then(Value::as_str)
-            .filter(|value| valid_slack_timestamp(value))
+            .filter(|value| valid_slack_thread_id(value))
         else {
             return ignored(acknowledgement_id, "invalid_message_timestamp");
         };
         let thread_id = match event.get("thread_ts") {
             None => None,
-            Some(Value::String(value)) if valid_slack_timestamp(value) => Some(value.clone()),
+            Some(Value::String(value)) if valid_slack_thread_id(value) => Some(value.clone()),
             Some(_) => return ignored(acknowledgement_id, "invalid_thread_timestamp"),
         };
         let Some(raw_text) = event
@@ -214,7 +214,7 @@ impl ChannelAdapter for SlackAdapter {
             || content.text.is_empty()
             || content
                 .thread_id
-                .is_some_and(|thread_id| !valid_slack_timestamp(thread_id))
+                .is_some_and(|thread_id| !valid_slack_thread_id(thread_id))
             || content
                 .text
                 .chars()
@@ -308,7 +308,9 @@ pub fn valid_slack_app_id(value: &str) -> bool {
     valid_slack_id(value, b'A')
 }
 
-fn valid_slack_timestamp(value: &str) -> bool {
+/// Validates an exact Slack message/thread timestamp used as a remote-continuation route.
+#[must_use]
+pub fn valid_slack_thread_id(value: &str) -> bool {
     let Some((seconds, micros)) = value.split_once('.') else {
         return false;
     };

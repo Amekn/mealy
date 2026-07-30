@@ -216,6 +216,38 @@ bounds. Passive resources remain unloaded until the separately governed, read-on
 and never grant authority. See [`docs/QUICKSTART.md`](../../docs/QUICKSTART.md) for the manifest and
 copy-paste lifecycle.
 
+The `registry` namespace provides `root-inspect`, `root-add`, `root-rotate`, `status`,
+`snapshot-inspect`, `snapshot-accept`, `snapshot-fetch`, `snapshot-refresh`, `release-fetch`,
+`release-accept`, `release-status`, `package-fetch`, `package-stage`, `package-plan`, and
+`package-install` for the v0.5 signed registry trust root, monotonic snapshot fence, inert
+publisher-release evidence, extraction-free review, digest-fenced durable package evidence, and
+disabled-by-default skill and extension installation.
+Initial roots remain an explicit out-of-band owner trust decision; mutations require `--approve`,
+all canonical-state operations require the daemon to be stopped, and existing databases must
+already be on the exact schema supported by the binary. File inputs are bounded and no-follow.
+The optional snapshot mirror path is fixed-layout, HTTPS-only, proxy/redirect-free, DNS-pinned,
+public-address-only, response-bounded, exact-review-digest-fenced, and rechecked against local
+signature/anti-rollback state. Release acceptance repeats current root, snapshot, publisher,
+withdrawal, dependency-lock, descriptor, and host-compatibility checks inside schema 25's
+immutable SQLite transaction.
+`package-stage` additionally requires explicit approval and the exact archive digest from
+`package-fetch`; it revalidates current authority and commits exact inert manifest/archive blobs
+through schema 26 and the existing private content-addressed artifact store.
+`package-plan` is offline and binds complete current/candidate content and permission diffs into one
+review digest. Approved `package-install` publishes skills through the immutable skill lifecycle
+and extensions through a private content-addressed, re-inspected executable root. Schema 27 binds
+an extension revision to its exact signed registry/release/archive evidence. New and changed
+packages remain disabled; extension update, rollback, and evidence adoption revoke any old grant.
+No package content executes during installation, no required tool or extension permission is
+granted, and activation remains a separate explicit decision. `skill status`/`skill list` and the
+extension enable/invoke boundaries project the newest accepted registry policy over exact
+provenance. A withdrawn, removed, substituted, or evidence-incomplete registry revision cannot
+become or remain active after restart, without deleting its installed bytes or audit history.
+Snapshot expiry alone blocks new admission but does not disable an offline install.
+See
+[`docs/CLI.md`](../../docs/CLI.md#signed-registry-trust-metadata) for the exact review/apply
+lifecycle and current mirror boundary.
+
 `config mcp-inspect` executes one exact native ELF MCP stdio server in the Linux no-network
 Bubblewrap boundary and prints its complete `2025-11-25` tool inventory without changing
 authority. `mcp-add --allow-tool NAME --approve` re-inspects it, copies exact bytes into private

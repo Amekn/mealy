@@ -23,9 +23,11 @@ state_schema_version=$9
 # deliberately fail closed when any standalone boundary omits or adds a release document.
 release_documents=(
   API.md
+  AUTOMATION.md
   CI_CD.md
   CLI.md
   DOMAIN_MODEL.md
+  EVALUATIONS.md
   GETTING_STARTED.md
   IMPLEMENTATION_PLAN.md
   LINUX_REPOSITORIES.md
@@ -35,10 +37,13 @@ release_documents=(
   QUICKSTART.md
   README.md
   RELEASE.md
+  REMOTE_CONTINUATION.md
   REQUIREMENTS_COVERAGE.md
+  SEMANTIC_MEMORY.md
   TESTING.md
   THREAT_MODEL.md
   V0_3_TO_V0_5_ROADMAP.md
+  evaluation-suite-v1.json
   benchmarks/2026-07-12-development-soak.json
   benchmarks/2026-07-13-debian-13-installed-package-smoke.md
   benchmarks/2026-07-13-development-soak.json
@@ -87,12 +92,17 @@ release_documents=(
   decisions/0017-content-addressed-bounded-image-input.md
   decisions/0018-governed-image-generation-effect.md
   decisions/0019-one-shot-transactional-browser-effects.md
+  decisions/0020-threshold-signed-inert-package-registry.md
+  decisions/0021-derived-semantic-memory-index.md
+  decisions/0022-revisioned-future-event-automation.md
+  decisions/0023-exact-thread-slack-remote-continuation.md
   decisions/README.md
   research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
   research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md
   research/REFERENCE_SYSTEMS.md
+  research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md
   releases/README.md
   releases/v0.1.0.md
   releases/v0.1.1.md
@@ -100,6 +110,7 @@ release_documents=(
   releases/v0.2.1.md
   releases/v0.3.0.md
   releases/v0.4.0.md
+  releases/v0.5.0.md
 )
 
 if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] \

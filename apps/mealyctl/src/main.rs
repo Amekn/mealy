@@ -10,73 +10,97 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
+use chrono::DateTime;
 use clap::{CommandFactory as _, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use mealy_application::{
-    BrowserConfig, CancellationProbe, ImageGenerationConfig, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
+    ArtifactBlobStore, ArtifactBlobStoreError, BrowserConfig, CancellationProbe,
+    EXTENSION_HOST_API_VERSION, ExtensionRegistryProvenance, ExtensionStore, ExtensionStoreError,
+    ExtensionView, ImageGenerationConfig, InspectedRegistryRelease, InspectedRegistrySnapshot,
+    InspectedRegistryTrustRoot, InstallExtensionCommit, MAXIMUM_PROVIDER_CREDENTIAL_BYTES,
     MAXIMUM_PROVIDER_IMAGE_DIMENSION, MAXIMUM_PROVIDER_IMAGE_INPUT_BYTES,
     MAXIMUM_PROVIDER_IMAGE_INPUT_TOTAL_BYTES, MAXIMUM_PROVIDER_IMAGE_INPUTS, McpHttpAuthentication,
     McpHttpCatalogDiscovery, McpHttpEndpointConfig, McpHttpServerConfig, McpOAuthMetadataDiscovery,
     McpPromptGrant, McpResourceGrant, McpServerConfig, McpServerDiscovery, McpToolEffect,
-    McpToolGrant, MessageRole, ModelProvider, NormalizedMessage, ProviderConfig,
-    ProviderCredentialReference, ProviderRequest, ProviderResponse,
-    SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES, SESSION_TRANSCRIPT_MAXIMUM_TURNS,
-    SubscriptionCliClient, WebAccessConfig, WebSearchConfig, default_daemon_config_document,
-    is_sha256_digest, sha256_digest, valid_provider_secret_id, valid_session_metadata,
-    validate_discord_snowflake, validate_mcp_http_server_set, validate_mcp_server_set,
-    validate_provider_base_url, validate_provider_chain,
+    McpToolGrant, MemoryEmbeddingConfig, MessageRole, ModelProvider, NormalizedMessage,
+    OwnershipContext, ProviderConfig, ProviderCredentialReference, ProviderRequest,
+    ProviderResponse, RegistryContentDescriptor, RegistryDependencyLock, RegistryError,
+    RegistryInstalledPackageDisposition, RegistryInstalledPackagePolicy, RegistryMetadataStore,
+    RegistryMetadataStoreError, RegistryMirror, RegistryMirrorError, RegistryPackageKind,
+    RegistryPackageManifest, RegistryPackageState, RegistryReleaseState, RegistrySnapshotState,
+    RegistryUseCaseError, SESSION_TRANSCRIPT_MAXIMUM_CONTENT_BYTES,
+    SESSION_TRANSCRIPT_MAXIMUM_TURNS, StageExtensionManifestCommit, SubscriptionCliClient,
+    WebAccessConfig, WebSearchConfig, accept_registry_release, accept_registry_snapshot,
+    active_registry_snapshot, bootstrap_registry_trust_root, default_daemon_config_document,
+    diff_extension_permissions, diff_skill_permissions, fetch_registry_content,
+    fetch_registry_snapshot_envelope, inspect_active_registry_release,
+    inspect_initial_registry_trust_root, inspect_installed_registry_package_policy,
+    inspect_registry_snapshot, is_sha256_digest, rotate_registry_trust_root, sha256_digest,
+    valid_provider_secret_id, valid_session_metadata, validate_discord_snowflake,
+    validate_mcp_http_server_set, validate_mcp_server_set, validate_provider_base_url,
+    validate_provider_chain,
 };
 use mealy_domain::{
-    ArtifactId, AttemptId, ContextManifestId, RunId, ScheduleId, SessionId, SkillAsset,
+    ArtifactId, AttemptId, AutomationId, ChannelBindingId, ContextManifestId, CorrelationId,
+    EventId, PrincipalId, RemoteContinuationId, RunId, ScheduleId, SessionId, SkillAsset,
     SkillToolRequirement,
 };
+use mealy_evaluation::{EvaluationError, EvaluationSuite, run_suite};
 use mealy_infrastructure::{
     BrowserBundleError, BrowserHostError, CodexAccountKind, CodexAppServerClient,
     CodexChatgptLoginChallenge, CodexChatgptLoginFlow, CodexSubscriptionModel,
-    FileMcpOAuthTokenStore, FileProviderSecretStore, InspectedSkillPackage,
+    FileArtifactBlobStore, FileMcpOAuthTokenStore, FileProviderSecretStore,
+    HttpsRegistryMirrorTransport, InspectedSkillPackage, LATEST_SCHEMA_VERSION,
     MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, MAXIMUM_ACTIVE_SKILL_RESOURCE_BYTES, McpHostError,
-    McpOAuthTokenError, ProviderSecretStoreError, SubscriptionCliProvider, SubscriptionCliSettings,
-    activate_backup, activate_migration_backup, browser_worker_main, discover_mcp_http_server,
-    discover_mcp_oauth_metadata, discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code,
-    inspect_browser_bundle, inspect_mcp_http_endpoint, inspect_skill_package,
-    inspect_subscription_cli_executable, is_trusted_system_executable, mcp_stdio_launcher_main,
-    media_worker_main, prepare_mcp_oauth_authorization, probe_browser_bundle_product,
-    publish_browser_bundle, publish_skill_package, verify_browser_runtime_installation,
+    McpOAuthTokenError, OpenAiCompatibleMemoryEmbedder, ProviderSecretStoreError,
+    RegistryExtensionPackageError, RegistryPackageArchiveError, SqliteStore, StoreError,
+    SubscriptionCliProvider, SubscriptionCliSettings, activate_backup, activate_migration_backup,
+    browser_worker_main, discover_mcp_http_server, discover_mcp_oauth_metadata,
+    discover_mcp_stdio_server, exchange_mcp_oauth_authorization_code, inspect_browser_bundle,
+    inspect_existing_schema_version, inspect_mcp_http_endpoint, inspect_registry_package_archive,
+    inspect_skill_package, inspect_subscription_cli_executable, inspected_registry_skill_package,
+    is_trusted_system_executable, mcp_stdio_launcher_main, media_worker_main,
+    prepare_mcp_oauth_authorization, probe_browser_bundle_product, publish_browser_bundle,
+    publish_registry_extension_package, publish_skill_package, verify_browser_runtime_installation,
 };
 use mealy_protocol::{
     API_VERSION, AdminMetricsResponse, AdminStatusResponse, AdminUsageReportResponse,
     ApiErrorResponse, ApprovalDecisionCommand, ApprovalResolutionReceipt, ApprovalResponse,
+    AutomationActionCommand, AutomationLifecycleRequest, AutomationResponse,
+    AutomationRunsResponse, AutomationTriggerRequest, AutomationsResponse,
     BackupActivationResponse, BackupResponse, BackupVerificationResponse, CancelTaskRequest,
-    CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateBackupRequest,
-    CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
+    CompactionResponse, ControlTaskRequest, CorrectMemoryRequest, CreateAutomationRequest,
+    CreateBackupRequest, CreateCompactionRequest, CreateDiscordChannelRequest, CreateExportRequest,
     CreateScheduleRequest, CreateSessionCheckpointRequest, CreateSessionRequest,
-    CreateSessionResponse, CreateSlackChannelRequest, CreateTelegramChannelRequest,
-    CreateWebhookChannelRequest, CreateWebhookChannelResponse, DelegationResponse,
-    DelegationsResponse, DeliveryMode, DiscordChannelResponse, DiscordChannelsResponse,
-    DoctorResponse, DrainDaemonRequest, DrainDaemonResponse, EffectAttemptResponse,
-    EffectReconciliationReceipt, EffectResponse, EnableExtensionRequest, ExportKindRequest,
-    ExportResponse, ExtensionInvocationResponse, ExtensionLifecycleRequest,
-    ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse, ForkSessionRequest,
-    GarbageCollectionResponse, HealthResponse, InputAdmissionResponse, InstallExtensionRequest,
-    InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse, MemoryCategoryCommand,
-    MemoryIndexRebuildResponse, MemoryLifecycleRequest, MemoryPromotionAuthorizationCommand,
-    MemoryResponse, MemoryRetentionCommand, MemorySearchResponse, MemorySensitivityCommand,
-    MemorySourceCommand, MemoryStatusResponse, MigrationBackupActivationResponse,
-    MissedRunPolicyCommand, PendingApprovalsResponse, PromoteMemoryRequest, ProposeMemoryRequest,
-    ProviderCatalogResponse, ProviderSelectionCommand, ReadinessResponse,
-    RebuildMemoryIndexRequest, ReconcileEffectRequest, ReconciliationOutcomeCommand,
-    ResolveApprovalRequest, RevokeDiscordChannelRequest, RevokeSlackChannelRequest,
-    RevokeTelegramChannelRequest, RevokeWebhookChannelRequest, RunGarbageCollectionRequest,
-    ScheduleLifecycleRequest, ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse,
-    SchedulesResponse, SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
+    CreateSessionResponse, CreateSlackChannelRequest, CreateSlackRemoteContinuationRequest,
+    CreateTelegramChannelRequest, CreateWebhookChannelRequest, CreateWebhookChannelResponse,
+    DelegationResponse, DelegationsResponse, DeliveryMode, DiscordChannelResponse,
+    DiscordChannelsResponse, DoctorResponse, DrainDaemonRequest, DrainDaemonResponse,
+    EditAutomationRequest, EffectAttemptResponse, EffectReconciliationReceipt, EffectResponse,
+    EnableExtensionRequest, ExportKindRequest, ExportResponse, ExtensionInvocationResponse,
+    ExtensionLifecycleRequest, ExtensionMountGrantCommand, ExtensionResponse, ExtensionsResponse,
+    ForkSessionRequest, GarbageCollectionResponse, HealthResponse, InputAdmissionResponse,
+    InstallExtensionRequest, InvokeExtensionRequest, LocalConnectionInfo, MemoriesResponse,
+    MemoryCategoryCommand, MemoryIndexRebuildResponse, MemoryLifecycleRequest,
+    MemoryPromotionAuthorizationCommand, MemoryResponse, MemoryRetentionCommand,
+    MemorySearchResponse, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
+    MigrationBackupActivationResponse, MissedRunPolicyCommand, PendingApprovalsResponse,
+    PromoteMemoryRequest, ProposeMemoryRequest, ProviderCatalogResponse, ProviderSelectionCommand,
+    ReadinessResponse, RebuildMemoryIndexRequest, ReconcileEffectRequest,
+    ReconciliationOutcomeCommand, ResolveApprovalRequest, RevokeDiscordChannelRequest,
+    RevokeSlackChannelRequest, RevokeSlackRemoteContinuationRequest, RevokeTelegramChannelRequest,
+    RevokeWebhookChannelRequest, RunGarbageCollectionRequest, ScheduleLifecycleRequest,
+    ScheduleOverlapPolicyCommand, ScheduleResponse, ScheduleRunsResponse, SchedulesResponse,
+    SessionCheckpointResponse, SessionCheckpointsResponse, SessionForkResponse,
     SessionProviderSelectionResponse, SessionSearchResponse, SessionStatusResponse,
     SessionTitleResponse, SessionTranscriptExport, SessionsResponse, SetMemoryPinRequest,
-    SlackChannelResponse, SlackChannelsResponse, StageExtensionManifestRequest,
-    SubmitImageInputRequest, SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage,
-    TaskCancellationReceipt, TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus,
-    TelegramChannelResponse, TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
+    SlackChannelResponse, SlackChannelsResponse, SlackRemoteContinuationResponse,
+    SlackRemoteContinuationsResponse, StageExtensionManifestRequest, SubmitImageInputRequest,
+    SubmitInputRequest, SubmittedImageInput, TaskBudgetUsage, TaskCancellationReceipt,
+    TaskControlReceipt, TaskReplayResponse, TaskResponse, TaskStatus, TelegramChannelResponse,
+    TelegramChannelsResponse, TimelineEvent, TimelinePageResponse,
     UpdateSessionProviderSelectionRequest, UpdateSessionTitleRequest, VerifyBackupRequest,
     WebhookChannelResponse, WebhookChannelsResponse,
 };
@@ -114,13 +138,14 @@ const DAEMON_CONFIG_KEYS: [&str; 9] = [
     "provider",
     "retentionPolicy",
 ];
-const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 10] = [
+const DAEMON_OPTIONAL_CONFIG_KEYS: [&str; 11] = [
     "browser",
     "commandTools",
     "imageGeneration",
     "imageInputEnabled",
     "mcpHttpServers",
     "mcpServers",
+    "memoryEmbedding",
     "providerFallbacks",
     "skills",
     "webAccess",
@@ -139,7 +164,11 @@ const MAXIMUM_SESSION_TRANSCRIPT_EXPORT_BYTES: usize = 32 * 1024 * 1024;
 const MAXIMUM_TIMELINE_SSE_EVENT_BYTES: usize = MAXIMUM_DAEMON_RESPONSE_BYTES;
 const MAXIMUM_CONNECTION_DESCRIPTOR_BYTES: u64 = 64 * 1024;
 const MAXIMUM_EXTENSION_MANIFEST_BYTES: u64 = 1024 * 1024;
-const MAXIMUM_MCP_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
+const MAXIMUM_EVALUATION_SUITE_BYTES: u64 = 2 * 1024 * 1024;
+const MAXIMUM_REGISTRY_ROOT_BYTES: u64 = 128 * 1024;
+const MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES: u64 = 256 * 1024;
+const MAXIMUM_REGISTRY_SNAPSHOT_BYTES: u64 = 4 * 1024 * 1024;
+const MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES: u64 = 512 * 1024 * 1024;
 const MAXIMUM_SERVER_ERROR_CODE_BYTES: usize = 64;
 const MAXIMUM_SERVER_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
 const PROVIDER_PROBE_MAXIMUM_BYTES: u64 = 1024 * 1024;
@@ -199,6 +228,17 @@ struct LifecycleArguments {
 }
 
 #[derive(Debug, Parser)]
+#[command(version, about = "Governed stopped-daemon configuration")]
+struct ConfigArguments {
+    /// Private Mealy state directory containing `config.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Configuration namespace.
+    #[command(subcommand)]
+    command: ConfigNamespace,
+}
+
+#[derive(Debug, Parser)]
 #[command(version, about = "Governed Streamable HTTP MCP administration")]
 struct McpHttpArguments {
     /// Private Mealy state directory containing `config.json`.
@@ -231,6 +271,28 @@ struct BrowserArguments {
     command: BrowserNamespace,
 }
 
+#[derive(Debug, Parser)]
+#[command(version, about = "Signed inert registry trust administration")]
+struct RegistryArguments {
+    /// Private Mealy state directory containing the canonical database.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Registry trust metadata namespace.
+    #[command(subcommand)]
+    command: RegistryNamespace,
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about = "Versioned public-API scenario evaluations")]
+struct EvaluationArguments {
+    /// Private Mealy state directory containing `connection.json`.
+    #[arg(long, env = "MEALY_HOME", default_value = "~/.mealy")]
+    home: PathBuf,
+    /// Evaluation namespace.
+    #[command(subcommand)]
+    command: EvaluationNamespace,
+}
+
 #[derive(Debug, Subcommand)]
 enum McpHttpNamespace {
     /// Inspect or change governed Streamable HTTP MCP authority.
@@ -247,6 +309,36 @@ enum MediaNamespace {
 enum BrowserNamespace {
     /// Inspect or change separately governed transactional browser authority.
     Browser(BrowserOptions),
+}
+
+#[derive(Debug, Subcommand)]
+enum RegistryNamespace {
+    /// Inspect or advance signed inert registry trust and release evidence while stopped.
+    Registry {
+        /// Signed registry metadata operation.
+        #[command(subcommand)]
+        command: Box<RegistryCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EvaluationNamespace {
+    /// Validate or run versioned public-API scenario evaluations.
+    Eval {
+        /// Evaluation operation.
+        #[command(subcommand)]
+        command: Box<EvaluationCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigNamespace {
+    /// Inspect or change governed daemon configuration while the daemon is stopped.
+    Config {
+        /// Configuration operation.
+        #[command(subcommand)]
+        command: Box<ConfigCommand>,
+    },
 }
 
 #[derive(Debug, clap::Args)]
@@ -466,7 +558,7 @@ enum Command {
     Memory {
         /// Memory operation.
         #[command(subcommand)]
-        command: MemoryCommand,
+        command: Box<MemoryCommand>,
     },
     /// Create or inspect cited derived session compactions.
     Compaction {
@@ -497,6 +589,12 @@ enum Command {
         /// Schedule operation.
         #[command(subcommand)]
         command: ScheduleCommand,
+    },
+    /// Create, edit, inspect, pause, resume, cancel, or audit durable automations.
+    Automation {
+        /// Automation operation.
+        #[command(subcommand)]
+        command: AutomationCommand,
     },
     /// Check daemon liveness.
     Health,
@@ -587,12 +685,6 @@ enum Command {
         /// Service operation.
         #[command(subcommand)]
         command: ServiceCommand,
-    },
-    /// Inspect or change governed daemon configuration while the daemon is stopped.
-    Config {
-        /// Configuration operation.
-        #[command(subcommand)]
-        command: Box<ConfigCommand>,
     },
 }
 
@@ -1202,6 +1294,48 @@ enum ConfigCommand {
         #[arg(long)]
         approve: bool,
     },
+    /// Configure optional OpenAI-compatible semantic-memory embeddings while stopped.
+    MemoryEmbedding {
+        /// HTTPS API version base; literal-loopback HTTP is also allowed.
+        #[arg(long, default_value = "http://127.0.0.1:8080/v1")]
+        base_url: String,
+        /// Exact embedding model name.
+        #[arg(long)]
+        model: String,
+        /// Exact output dimensions advertised by this model.
+        #[arg(long)]
+        dimensions: u32,
+        /// Owner-declared data residency for embedding memory and search text.
+        #[arg(long, default_value = "owner-host")]
+        residency: String,
+        /// Optional broker identity; required together with `credential-env` for remote endpoints.
+        #[arg(long, requires = "credential_env")]
+        secret_id: Option<String>,
+        /// Optional environment variable imported once into the private broker.
+        #[arg(long, requires = "secret_id")]
+        credential_env: Option<String>,
+        /// Model-specific prefix applied to canonical memory documents.
+        #[arg(long, default_value = "")]
+        document_prefix: String,
+        /// Model-specific prefix applied to retrieval queries.
+        #[arg(long, default_value = "")]
+        query_prefix: String,
+        /// Per-request endpoint timeout in milliseconds.
+        #[arg(long, default_value_t = 30_000)]
+        request_timeout_ms: u64,
+        /// Activate without a bounded one-text embeddings compatibility probe.
+        #[arg(long)]
+        skip_connectivity_test: bool,
+        /// Confirm that memory and queries may be sent to this exact endpoint.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Disable semantic retrieval while retaining canonical memory and broker credentials.
+    MemoryEmbeddingDisable {
+        /// Confirm removal of the embedding/privacy policy.
+        #[arg(long)]
+        approve: bool,
+    },
     /// Grant one canonical host directory to read-only workspace tools while stopped.
     WorkspaceGrant {
         /// Stable logical identity shown to the model instead of the host path.
@@ -1496,6 +1630,20 @@ impl From<ExportKindArgument> for ExportKindRequest {
 }
 
 #[derive(Debug, Subcommand)]
+enum EvaluationCommand {
+    /// Strictly validate a bounded scenario suite without contacting a daemon.
+    Validate {
+        /// JSON file using `mealy.evaluation-suite.v1`.
+        suite: PathBuf,
+    },
+    /// Run a valid suite through fresh sessions on the authenticated daemon.
+    Run {
+        /// JSON file using `mealy.evaluation-suite.v1`.
+        suite: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum TaskCommand {
     /// Read current task state, usage, and final response.
     Status {
@@ -1677,7 +1825,7 @@ enum MemoryCommand {
         #[arg(long)]
         include_deleted: bool,
     },
-    /// Lexically search active memories after namespace/sensitivity filtering.
+    /// Search active memories after namespace/sensitivity filtering.
     Search {
         /// Exact logical workspace namespace.
         #[arg(long)]
@@ -1690,6 +1838,9 @@ enum MemoryCommand {
         /// Maximum returned results.
         #[arg(long, default_value_t = 20)]
         limit: usize,
+        /// Request hybrid lexical plus optional semantic retrieval with safe lexical fallback.
+        #[arg(long)]
+        hybrid: bool,
     },
     /// Correct active content by creating and activating a new immutable revision.
     Correct {
@@ -1763,8 +1914,12 @@ enum MemoryCommand {
         #[arg(long)]
         expected_revision: u64,
     },
-    /// Rebuild the authenticated owner's FTS5 derived index rows.
-    RebuildIndex,
+    /// Rebuild the authenticated owner's derived index rows.
+    RebuildIndex {
+        /// Also rebuild optional semantic vectors through the configured embedding policy.
+        #[arg(long)]
+        semantic: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -1963,6 +2118,175 @@ enum SkillCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum RegistryCommand {
+    /// Verify one owner-supplied out-of-band trust root without changing the Mealy home.
+    RootInspect {
+        /// Exact no-follow trust-root JSON file obtained through an authenticated path.
+        #[arg(long)]
+        root: PathBuf,
+    },
+    /// Bootstrap one owner-approved out-of-band trust root into canonical stopped-home state.
+    RootAdd {
+        /// Exact no-follow trust-root JSON file already reviewed with `root-inspect`.
+        #[arg(long)]
+        root: PathBuf,
+        /// Confirm the initial trust decision.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Verify and activate one exact next-version root signed by old and new thresholds.
+    RootRotate {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow dual-threshold signed rotation envelope.
+        #[arg(long)]
+        envelope: PathBuf,
+        /// Confirm the trust-root transition.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Inspect the active root and accepted snapshot anti-rollback fence.
+    Status {
+        /// Stable configured registry identity.
+        registry_id: String,
+    },
+    /// Verify one signed snapshot against canonical state without accepting it.
+    SnapshotInspect {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow threshold-signed snapshot envelope.
+        #[arg(long)]
+        envelope: PathBuf,
+    },
+    /// Verify and atomically accept one owner-approved monotonic snapshot.
+    SnapshotAccept {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Exact no-follow snapshot envelope already reviewed with `snapshot-inspect`.
+        #[arg(long)]
+        envelope: PathBuf,
+        /// Confirm advancement of the durable anti-rollback fence.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Fetch and verify the current fixed-path snapshot without accepting it.
+    SnapshotFetch {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+    },
+    /// Fetch, verify, and atomically accept the current monotonic snapshot.
+    SnapshotRefresh {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact lowercase SHA-256 printed by the reviewed `snapshot-fetch`.
+        #[arg(long)]
+        expected_envelope_digest: String,
+        /// Confirm advancement of the durable anti-rollback fence.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Fetch and verify one exact publisher release without retaining it.
+    ReleaseFetch {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity selected from the accepted snapshot.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+    },
+    /// Fetch, verify, and retain one exact publisher release as inert evidence.
+    ReleaseAccept {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity selected from the accepted snapshot.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact lowercase SHA-256 printed by the reviewed `release-fetch`.
+        #[arg(long)]
+        expected_envelope_digest: String,
+        /// Confirm the immutable evidence commit.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Inspect previously accepted immutable release evidence without network access.
+    ReleaseStatus {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+    },
+    /// Fetch and strictly inspect an accepted release's exact manifest and archive without staging.
+    PackageFetch {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+    },
+    /// Re-fetch, inspect, and durably retain exact package bytes without installation or grants.
+    PackageStage {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Canonical HTTPS registry directory ending in `/`.
+        #[arg(long)]
+        mirror: String,
+        /// Exact archive SHA-256 printed by the reviewed `package-fetch`.
+        #[arg(long)]
+        expected_archive_digest: String,
+        /// Confirm inert content-addressed retention.
+        #[arg(long)]
+        approve: bool,
+    },
+    /// Compare one durable staged package with the current inert installation and grants.
+    PackagePlan {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+    },
+    /// Apply one exact reviewed plan as a disabled inert skill installation.
+    PackageInstall {
+        /// Stable configured registry identity.
+        registry_id: String,
+        /// Stable package identity.
+        package_id: String,
+        /// Exact immutable package version.
+        version: String,
+        /// Exact plan SHA-256 printed by `package-plan`.
+        #[arg(long)]
+        expected_plan_digest: String,
+        /// Confirm immutable publication and disabled configuration update.
+        #[arg(long)]
+        approve: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ChannelCommand {
     /// Create a signed external-subject binding and dedicated durable session.
     Create {
@@ -2102,6 +2426,42 @@ enum ChannelCommand {
         #[arg(long)]
         expected_revision: u64,
     },
+    /// Pin proactive continuation to one exact Slack thread already admitted from the owner.
+    SlackContinuationPin {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Exact Slack thread root timestamp (`thread_ts`).
+        #[arg(long)]
+        thread_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Bounded route lifetime in whole hours.
+        #[arg(long, default_value_t = 168)]
+        expires_in_hours: u64,
+    },
+    /// List exact-thread remote continuations for one Slack binding.
+    SlackContinuationList {
+        /// Stable Slack binding ID.
+        binding_id: String,
+    },
+    /// Inspect one exact-thread remote continuation.
+    SlackContinuationStatus {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Stable remote-continuation ID.
+        remote_continuation_id: String,
+    },
+    /// Terminally revoke one exact-thread remote continuation.
+    SlackContinuationRevoke {
+        /// Stable Slack binding ID.
+        binding_id: String,
+        /// Stable remote-continuation ID.
+        remote_continuation_id: String,
+        /// Optimistic-concurrency revision returned by continuation status.
+        #[arg(long)]
+        expected_revision: u64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -2169,6 +2529,177 @@ enum ScheduleCommand {
     Runs {
         /// Stable schedule ID.
         schedule_id: String,
+        /// Maximum rows from 1 through 1000.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AutomationCommand {
+    /// Submit one prompt once at an RFC 3339 instant.
+    CreateOncePrompt {
+        /// Existing durable destination session.
+        session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant, for example `2026-08-01T09:00:00+12:00`.
+        #[arg(long)]
+        at: String,
+        /// Explicitly allow a prompt beginning `/act`, `/edit`, `/manage`, or `/run`.
+        #[arg(long)]
+        allow_approval_required_action: bool,
+        /// Exact prompt admitted once.
+        prompt: String,
+    },
+    /// Send one static notification once at an RFC 3339 instant.
+    CreateOnceNotify {
+        /// Existing destination session; remote Telegram, Discord, or webhook sessions are allowed.
+        session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Static notification body.
+        message: String,
+    },
+    /// Notify after each future direct event of one exact source-session event type.
+    CreateEventNotify {
+        /// Existing source session whose future direct events are observed.
+        source_session_id: String,
+        /// Existing destination session receiving the notification.
+        target_session_id: String,
+        /// Optional canonical `UUIDv7` creation key for an exact retry.
+        #[arg(long)]
+        automation_id: Option<String>,
+        /// Bounded owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Exact journal event type, such as `turn.completed`.
+        #[arg(long)]
+        event_type: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Static notification body. Source payload is never copied.
+        message: String,
+    },
+    /// Replace an active or paused automation with a one-shot prompt.
+    EditOncePrompt {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing durable destination session.
+        #[arg(long)]
+        session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Explicitly allow an approval-required action-mode prefix.
+        #[arg(long)]
+        allow_approval_required_action: bool,
+        /// Replacement prompt.
+        prompt: String,
+    },
+    /// Replace an active or paused automation with a one-shot notification.
+    EditOnceNotify {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing destination session.
+        #[arg(long)]
+        session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Future RFC 3339 instant.
+        #[arg(long)]
+        at: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Replacement static notification.
+        message: String,
+    },
+    /// Replace an active or paused automation with a future event notification.
+    EditEventNotify {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+        /// Existing source session.
+        #[arg(long)]
+        source_session_id: String,
+        /// Existing destination session.
+        #[arg(long)]
+        target_session_id: String,
+        /// Replacement owner-visible label.
+        #[arg(long)]
+        name: String,
+        /// Exact journal event type.
+        #[arg(long)]
+        event_type: String,
+        /// Exact active remote continuation when the destination is a Slack session.
+        #[arg(long)]
+        remote_continuation_id: Option<String>,
+        /// Replacement static notification.
+        message: String,
+    },
+    /// List automations in stable creation order.
+    List,
+    /// Inspect one automation.
+    Status {
+        /// Stable automation ID.
+        automation_id: String,
+    },
+    /// Pause one active automation.
+    Pause {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Resume one paused automation; event rules skip events accumulated while paused.
+    Resume {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Terminally cancel one automation while retaining history.
+    Cancel {
+        /// Stable automation ID.
+        automation_id: String,
+        /// Revision returned by `automation status`.
+        #[arg(long)]
+        expected_revision: u64,
+    },
+    /// Read newest-first durable occurrence history.
+    Runs {
+        /// Stable automation ID.
+        automation_id: String,
         /// Maximum rows from 1 through 1000.
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -2687,10 +3218,18 @@ fn main() -> ExitCode {
 }
 
 fn combined_cli_command() -> clap::Command {
-    <BrowserNamespace as clap::Subcommand>::augment_subcommands(
-        <MediaNamespace as clap::Subcommand>::augment_subcommands(
-            <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
-                <LifecycleCommand as clap::Subcommand>::augment_subcommands(Arguments::command()),
+    <EvaluationNamespace as clap::Subcommand>::augment_subcommands(
+        <RegistryNamespace as clap::Subcommand>::augment_subcommands(
+            <BrowserNamespace as clap::Subcommand>::augment_subcommands(
+                <MediaNamespace as clap::Subcommand>::augment_subcommands(
+                    <McpHttpNamespace as clap::Subcommand>::augment_subcommands(
+                        <ConfigNamespace as clap::Subcommand>::augment_subcommands(
+                            <LifecycleCommand as clap::Subcommand>::augment_subcommands(
+                                Arguments::command(),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         ),
     )
@@ -2766,6 +3305,25 @@ fn lifecycle_invocation(arguments: &[OsString]) -> bool {
     false
 }
 
+fn config_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "config";
+    }
+    false
+}
+
 fn mcp_http_invocation(arguments: &[OsString]) -> bool {
     let mut index = 1;
     while let Some(argument) = arguments.get(index) {
@@ -2823,10 +3381,74 @@ fn browser_invocation(arguments: &[OsString]) -> bool {
     false
 }
 
+fn registry_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "registry";
+    }
+    false
+}
+
+fn evaluation_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return argument == "eval";
+    }
+    false
+}
+
+fn combined_top_level_metadata_invocation(arguments: &[OsString]) -> bool {
+    let mut index = 1;
+    while let Some(argument) = arguments.get(index) {
+        if argument == "--home" {
+            index += 2;
+            continue;
+        }
+        if argument
+            .to_str()
+            .is_some_and(|value| value.starts_with("--home="))
+        {
+            index += 1;
+            continue;
+        }
+        return matches!(
+            argument.to_str(),
+            Some("-h" | "--help" | "-V" | "--version")
+        );
+    }
+    false
+}
+
 fn parse_operational_arguments(arguments: Vec<OsString>) -> Arguments {
-    let mut matches = combined_cli_command().get_matches_from(arguments);
-    <Arguments as clap::FromArgMatches>::from_arg_matches_mut(&mut matches)
-        .unwrap_or_else(|error| error.exit())
+    if combined_top_level_metadata_invocation(&arguments) {
+        match combined_cli_command().try_get_matches_from(arguments) {
+            Err(error) => error.exit(),
+            Ok(_) => unreachable!("top-level help or version must stop before command dispatch"),
+        }
+    }
+    Arguments::parse_from(arguments)
 }
 
 fn resolve_default_operational_subcommand(
@@ -3835,10 +4457,42 @@ async fn run() -> Result<(), CliError> {
             run_mcp_http_config_operation(&arguments.home, &options)
         });
     }
+    if registry_invocation(&raw_arguments) {
+        let mut arguments = RegistryArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let RegistryNamespace::Registry { command } = arguments.command;
+        return tokio::task::block_in_place(|| run_registry_operation(&arguments.home, &command));
+    }
+    if evaluation_invocation(&raw_arguments) {
+        let mut arguments = EvaluationArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let EvaluationNamespace::Eval { command } = arguments.command;
+        return match *command {
+            EvaluationCommand::Validate { suite } => validate_evaluation_suite(&suite),
+            EvaluationCommand::Run { suite } => {
+                let connection = load_connection(&arguments.home)?;
+                if connection.api_version != API_VERSION {
+                    return Err(CliError::Protocol(format!(
+                        "connection descriptor uses unsupported API version {:?}",
+                        connection.api_version
+                    )));
+                }
+                run_evaluation_suite(&connection, suite).await
+            }
+        };
+    }
     if lifecycle_invocation(&raw_arguments) {
         let mut arguments = LifecycleArguments::parse_from(raw_arguments);
         arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
         return run_lifecycle(arguments).await;
+    }
+    if config_invocation(&raw_arguments) {
+        let mut arguments = ConfigArguments::parse_from(raw_arguments);
+        arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
+        let ConfigNamespace::Config { command } = arguments.command;
+        return tokio::task::block_in_place(|| {
+            run_config_operation(&arguments.home, command.as_ref())
+        });
     }
     let mut arguments = parse_operational_arguments(raw_arguments);
     arguments.home = resolve_cli_home(arguments.home, home_override_supplied)?;
@@ -3851,9 +4505,6 @@ async fn run() -> Result<(), CliError> {
     if let Command::Service { command } = &arguments.command {
         let _mutation_lock = lock_service_mutations(&arguments.home)?;
         return run_service_installation(&arguments.home, command);
-    }
-    if let Command::Config { command } = &arguments.command {
-        return tokio::task::block_in_place(|| run_config_operation(&arguments.home, command));
     }
     if let Command::Skill { command } = &arguments.command {
         return run_skill_operation(&arguments.home, command);
@@ -3974,7 +4625,7 @@ async fn run() -> Result<(), CliError> {
         }
         Command::Approval { command } => run_approval(&client, &connection, command).await?,
         Command::Effect { command } => run_effect(&client, &connection, command).await?,
-        Command::Memory { command } => run_memory(&client, &connection, command).await?,
+        Command::Memory { command } => run_memory(&client, &connection, *command).await?,
         Command::Compaction { command } => run_compaction(&client, &connection, command).await?,
         Command::Extension { command } => run_extension(&client, &connection, command).await?,
         Command::Skill { .. } => {
@@ -3982,6 +4633,7 @@ async fn run() -> Result<(), CliError> {
         }
         Command::Channel { command } => run_channel(&client, &connection, command).await?,
         Command::Schedule { command } => run_schedule(&client, &connection, command).await?,
+        Command::Automation { command } => run_automation(&client, &connection, command).await?,
         Command::Health => {
             let response = authorized(
                 client.get(format!("{}/health/live", connection.base_url)),
@@ -4155,7 +4807,6 @@ async fn run() -> Result<(), CliError> {
             print_json(decode::<ExportResponse>(response).await?)?;
         }
         Command::Service { .. } => unreachable!("service installation returned before API setup"),
-        Command::Config { .. } => unreachable!("configuration operation returned before API setup"),
     }
     Ok(())
 }
@@ -4879,6 +5530,7 @@ async fn run_chat_memory_command(
                         ("query", query.as_str()),
                         ("maximumSensitivity", "private"),
                         ("limit", "20"),
+                        ("retrievalMode", "hybrid"),
                     ]),
                 connection,
             )
@@ -6208,6 +6860,7 @@ async fn run_memory(
             query,
             maximum_sensitivity,
             limit,
+            hybrid,
         } => {
             let response = authorized(
                 client
@@ -6220,6 +6873,10 @@ async fn run_memory(
                             maximum_sensitivity.as_query().to_owned(),
                         ),
                         ("limit", limit.to_string()),
+                        (
+                            "retrievalMode",
+                            if hybrid { "hybrid" } else { "lexical" }.to_owned(),
+                        ),
                     ]),
                 connection,
             )
@@ -6338,13 +6995,14 @@ async fn run_memory(
             .await?;
             print_json(response)?;
         }
-        MemoryCommand::RebuildIndex => {
+        MemoryCommand::RebuildIndex { semantic } => {
             let response = authorized(
                 client.post(format!("{}/v1/memory-index/rebuild", connection.base_url)),
                 connection,
             )
             .json(&RebuildMemoryIndexRequest {
                 api_version: API_VERSION.to_owned(),
+                semantic,
             })
             .send()
             .await?;
@@ -6765,7 +7423,11 @@ async fn run_channel(
         slack_command @ (ChannelCommand::SlackCreate { .. }
         | ChannelCommand::SlackList
         | ChannelCommand::SlackStatus { .. }
-        | ChannelCommand::SlackRevoke { .. }) => {
+        | ChannelCommand::SlackRevoke { .. }
+        | ChannelCommand::SlackContinuationPin { .. }
+        | ChannelCommand::SlackContinuationList { .. }
+        | ChannelCommand::SlackContinuationStatus { .. }
+        | ChannelCommand::SlackContinuationRevoke { .. }) => {
             return run_slack_channel(client, connection, slack_command).await;
         }
         ChannelCommand::Create {
@@ -7448,6 +8110,12 @@ async fn run_slack_channel(
             .send()
             .await?
         }
+        continuation @ (ChannelCommand::SlackContinuationPin { .. }
+        | ChannelCommand::SlackContinuationList { .. }
+        | ChannelCommand::SlackContinuationStatus { .. }
+        | ChannelCommand::SlackContinuationRevoke { .. }) => {
+            return run_slack_continuation(client, connection, continuation).await;
+        }
         _ => {
             return Err(CliError::Protocol(
                 "non-Slack command reached Slack dispatcher".to_owned(),
@@ -7455,6 +8123,127 @@ async fn run_slack_channel(
         }
     };
     print_json(decode::<SlackChannelResponse>(response).await?)
+}
+
+async fn run_slack_continuation(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: ChannelCommand,
+) -> Result<(), CliError> {
+    match command {
+        ChannelCommand::SlackContinuationPin {
+            binding_id,
+            thread_id,
+            remote_continuation_id,
+            expires_in_hours,
+        } => {
+            let (remote_continuation_id, generated) =
+                resolve_remote_continuation_id(remote_continuation_id)?;
+            if generated {
+                eprintln!("MEALY_REMOTE_CONTINUATION_ID {remote_continuation_id}");
+            }
+            let response = authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&CreateSlackRemoteContinuationRequest {
+                api_version: API_VERSION.to_owned(),
+                remote_continuation_id,
+                thread_id,
+                expires_at_ms: remote_continuation_expiry(expires_in_hours)?,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationList { binding_id } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationsResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationStatus {
+            binding_id,
+            remote_continuation_id,
+        } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        ChannelCommand::SlackContinuationRevoke {
+            binding_id,
+            remote_continuation_id,
+            expected_revision,
+        } => {
+            let response = authorized(
+                client.post(format!(
+                    "{}/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .json(&RevokeSlackRemoteContinuationRequest {
+                api_version: API_VERSION.to_owned(),
+                expected_revision,
+            })
+            .send()
+            .await?;
+            print_json(decode::<SlackRemoteContinuationResponse>(response).await?)
+        }
+        _ => Err(CliError::Protocol(
+            "non-continuation command reached Slack continuation dispatcher".to_owned(),
+        )),
+    }
+}
+
+fn resolve_remote_continuation_id(
+    remote_continuation_id: Option<String>,
+) -> Result<(String, bool), CliError> {
+    let Some(remote_continuation_id) = remote_continuation_id else {
+        return Ok((RemoteContinuationId::new().to_string(), true));
+    };
+    let parsed = remote_continuation_id
+        .parse::<RemoteContinuationId>()
+        .map_err(|_| CliError::InvalidRemoteContinuationId)?;
+    if parsed.to_string() != remote_continuation_id || parsed.as_uuid().get_version_num() != 7 {
+        return Err(CliError::InvalidRemoteContinuationId);
+    }
+    Ok((remote_continuation_id, false))
+}
+
+fn remote_continuation_expiry(expires_in_hours: u64) -> Result<i64, CliError> {
+    if !(1..=720).contains(&expires_in_hours) {
+        return Err(CliError::InvalidRemoteContinuationLifetime);
+    }
+    let now_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| CliError::InvalidRemoteContinuationLifetime)?
+        .as_millis();
+    let lifetime_ms = u128::from(expires_in_hours)
+        .checked_mul(60 * 60 * 1_000)
+        .ok_or(CliError::InvalidRemoteContinuationLifetime)?;
+    i64::try_from(
+        now_ms
+            .checked_add(lifetime_ms)
+            .ok_or(CliError::InvalidRemoteContinuationLifetime)?,
+    )
+    .map_err(|_| CliError::InvalidRemoteContinuationLifetime)
 }
 
 async fn submit_slack_channel_secrets(
@@ -8018,6 +8807,355 @@ async fn schedule_lifecycle_request(
     .send()
     .await?;
     decode(response).await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_automation(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    command: AutomationCommand,
+) -> Result<(), CliError> {
+    match command {
+        AutomationCommand::CreateOncePrompt {
+            session_id,
+            automation_id,
+            name,
+            at,
+            allow_approval_required_action,
+            prompt,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::SubmitPrompt {
+                    target_session_id: session_id,
+                    prompt,
+                    allow_approval_required_action,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::CreateOnceNotify {
+            session_id,
+            automation_id,
+            name,
+            at,
+            remote_continuation_id,
+            message,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id: session_id,
+                    message,
+                    remote_continuation_id,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::CreateEventNotify {
+            source_session_id,
+            target_session_id,
+            automation_id,
+            name,
+            event_type,
+            remote_continuation_id,
+            message,
+        } => {
+            create_automation_request(
+                client,
+                connection,
+                automation_id,
+                name,
+                AutomationTriggerRequest::SessionEvent {
+                    source_session_id,
+                    event_type,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id,
+                    message,
+                    remote_continuation_id,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditOncePrompt {
+            automation_id,
+            expected_revision,
+            session_id,
+            name,
+            at,
+            allow_approval_required_action,
+            prompt,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::SubmitPrompt {
+                    target_session_id: session_id,
+                    prompt,
+                    allow_approval_required_action,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditOnceNotify {
+            automation_id,
+            expected_revision,
+            session_id,
+            name,
+            at,
+            remote_continuation_id,
+            message,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::OneShot {
+                    due_at_ms: parse_automation_instant(&at)?,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id: session_id,
+                    message,
+                    remote_continuation_id,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::EditEventNotify {
+            automation_id,
+            expected_revision,
+            source_session_id,
+            target_session_id,
+            name,
+            event_type,
+            remote_continuation_id,
+            message,
+        } => {
+            edit_automation_request(
+                client,
+                connection,
+                &automation_id,
+                expected_revision,
+                name,
+                AutomationTriggerRequest::SessionEvent {
+                    source_session_id,
+                    event_type,
+                },
+                AutomationActionCommand::Notify {
+                    target_session_id,
+                    message,
+                    remote_continuation_id,
+                },
+            )
+            .await?;
+        }
+        AutomationCommand::List => {
+            let response = authorized(
+                client.get(format!("{}/v1/automations", connection.base_url)),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationsResponse>(response).await?)?;
+        }
+        AutomationCommand::Status { automation_id } => {
+            let response = authorized(
+                client.get(format!(
+                    "{}/v1/automations/{automation_id}",
+                    connection.base_url
+                )),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationResponse>(response).await?)?;
+        }
+        AutomationCommand::Pause {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "pause",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Resume {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "resume",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Cancel {
+            automation_id,
+            expected_revision,
+        } => {
+            print_json(
+                automation_lifecycle_request(
+                    client,
+                    connection,
+                    &automation_id,
+                    "cancel",
+                    expected_revision,
+                )
+                .await?,
+            )?;
+        }
+        AutomationCommand::Runs {
+            automation_id,
+            limit,
+        } => {
+            let response = authorized(
+                client
+                    .get(format!(
+                        "{}/v1/automations/{automation_id}/runs",
+                        connection.base_url
+                    ))
+                    .query(&[("limit", limit)]),
+                connection,
+            )
+            .send()
+            .await?;
+            print_json(decode::<AutomationRunsResponse>(response).await?)?;
+        }
+    }
+    Ok(())
+}
+
+async fn create_automation_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: Option<String>,
+    name: String,
+    trigger: AutomationTriggerRequest,
+    action: AutomationActionCommand,
+) -> Result<(), CliError> {
+    let (automation_id, generated) = resolve_automation_id(automation_id)?;
+    if generated {
+        eprintln!("MEALY_AUTOMATION_ID {automation_id}");
+    }
+    let response = authorized(
+        client.post(format!("{}/v1/automations", connection.base_url)),
+        connection,
+    )
+    .json(&CreateAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        automation_id,
+        name,
+        trigger,
+        action,
+    })
+    .send()
+    .await?;
+    print_json(decode::<AutomationResponse>(response).await?)
+}
+
+async fn edit_automation_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    expected_revision: u64,
+    name: String,
+    trigger: AutomationTriggerRequest,
+    action: AutomationActionCommand,
+) -> Result<(), CliError> {
+    let response = authorized(
+        client.patch(format!(
+            "{}/v1/automations/{automation_id}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .json(&EditAutomationRequest {
+        api_version: API_VERSION.to_owned(),
+        expected_revision,
+        name,
+        trigger,
+        action,
+    })
+    .send()
+    .await?;
+    print_json(decode::<AutomationResponse>(response).await?)
+}
+
+async fn automation_lifecycle_request(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    automation_id: &str,
+    operation: &str,
+    expected_revision: u64,
+) -> Result<AutomationResponse, CliError> {
+    let response = authorized(
+        client.post(format!(
+            "{}/v1/automations/{automation_id}/{operation}",
+            connection.base_url
+        )),
+        connection,
+    )
+    .json(&AutomationLifecycleRequest {
+        api_version: API_VERSION.to_owned(),
+        expected_revision,
+    })
+    .send()
+    .await?;
+    decode(response).await
+}
+
+fn parse_automation_instant(value: &str) -> Result<i64, CliError> {
+    if value.is_empty() || value.len() > 64 || value.trim() != value {
+        return Err(CliError::InvalidAutomationTime);
+    }
+    DateTime::parse_from_rfc3339(value)
+        .map(|instant| instant.timestamp_millis())
+        .map_err(|_| CliError::InvalidAutomationTime)
+}
+
+fn resolve_automation_id(automation_id: Option<String>) -> Result<(String, bool), CliError> {
+    let Some(automation_id) = automation_id else {
+        return Ok((AutomationId::new().to_string(), true));
+    };
+    let parsed = automation_id
+        .parse::<AutomationId>()
+        .map_err(|_| CliError::InvalidAutomationId)?;
+    if parsed.to_string() != automation_id || parsed.as_uuid().get_version_num() != 7 {
+        return Err(CliError::InvalidAutomationId);
+    }
+    Ok((automation_id, false))
 }
 
 async fn fetch_memories(
@@ -11969,6 +13107,22 @@ struct ProviderImageGenerationConfigurationResponse {
     restart_required: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryEmbeddingConfigurationResponse {
+    enabled: bool,
+    model: Option<String>,
+    dimensions: Option<u32>,
+    residency: Option<String>,
+    local: Option<bool>,
+    secret_id: Option<String>,
+    policy_digest: Option<String>,
+    configuration_path: String,
+    replaced_configuration_copy: String,
+    connectivity_tested: bool,
+    restart_required: bool,
+}
+
 #[derive(Clone, Copy)]
 struct ProviderCredentialImport<'a> {
     secret_id: &'a str,
@@ -11998,6 +13152,16 @@ struct InstalledSkillConfigRecord {
     manifest_digest: String,
     package_path: String,
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<InstalledSkillRegistryProvenance>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstalledSkillRegistryProvenance {
+    registry_id: String,
+    release_envelope_digest: String,
+    archive_digest: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -12009,16 +13173,25 @@ struct SkillPackageResponse {
     manifest_digest: String,
     installed: bool,
     enabled: bool,
+    instruction_authority_active: SkillInstructionAuthorityActive,
     package_path: Option<String>,
     total_asset_bytes: u64,
     instructions: Vec<SkillAsset>,
     resources: Vec<SkillAsset>,
     required_tools: Vec<SkillToolRequirement>,
     tool_authority: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry: Option<InstalledSkillRegistryProvenance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registry_policy: Option<RegistryInstalledPackagePolicy>,
     configuration_path: Option<String>,
     replaced_configuration_copy: Option<String>,
     restart_required: bool,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+struct SkillInstructionAuthorityActive(bool);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12619,6 +13792,35 @@ fn run_config_operation(home: &Path, command: &ConfigCommand) -> Result<(), CliE
         ConfigCommand::ProviderSecretRevoke { secret_id, approve } => {
             revoke_provider_secret(home, secret_id, *approve)
         }
+        ConfigCommand::MemoryEmbedding {
+            base_url,
+            model,
+            dimensions,
+            residency,
+            secret_id,
+            credential_env,
+            document_prefix,
+            query_prefix,
+            request_timeout_ms,
+            skip_connectivity_test,
+            approve,
+        } => configure_memory_embedding(
+            home,
+            base_url,
+            model,
+            *dimensions,
+            residency,
+            secret_id.as_deref(),
+            credential_env.as_deref(),
+            document_prefix,
+            query_prefix,
+            *request_timeout_ms,
+            *skip_connectivity_test,
+            *approve,
+        ),
+        ConfigCommand::MemoryEmbeddingDisable { approve } => {
+            disable_memory_embedding(home, *approve)
+        }
         ConfigCommand::WorkspaceGrant {
             workspace_id,
             root,
@@ -12894,6 +14096,7 @@ fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliErr
                 "inspected",
                 None,
                 None,
+                None,
                 false,
             ))
         }
@@ -12934,6 +14137,1553 @@ fn run_skill_operation(home: &Path, command: &SkillCommand) -> Result<(), CliErr
     }
 }
 
+fn run_registry_operation(home: &Path, command: &RegistryCommand) -> Result<(), CliError> {
+    match command {
+        RegistryCommand::RootInspect { root } => {
+            let now_ms = registry_now_ms()?;
+            let root = inspect_initial_registry_trust_root(
+                &read_registry_metadata(root, MAXIMUM_REGISTRY_ROOT_BYTES)?,
+                now_ms,
+            )?;
+            print_json(registry_root_response("root_verified", &root))
+        }
+        RegistryCommand::RootAdd { root, approve } => {
+            require_registry_approval(*approve)?;
+            let now_ms = registry_now_ms()?;
+            let root_bytes = read_registry_metadata(root, MAXIMUM_REGISTRY_ROOT_BYTES)?;
+            let inspected = inspect_initial_registry_trust_root(&root_bytes, now_ms)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let mut store = open_registry_write_store(&home, now_ms)?;
+            let state = bootstrap_registry_trust_root(&mut store, &root_bytes, now_ms)?;
+            if state != inspected.state() {
+                return Err(CliError::RegistryStateDrift);
+            }
+            print_json(registry_root_response("root_active", &inspected))
+        }
+        RegistryCommand::RootRotate {
+            registry_id,
+            envelope,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            validate_registry_id(registry_id)?;
+            let now_ms = registry_now_ms()?;
+            let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_ROOT_ROTATION_BYTES)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let mut store = open_registry_write_store(&home, now_ms)?;
+            let state = rotate_registry_trust_root(&mut store, registry_id, &envelope, now_ms)?;
+            let active = store
+                .registry_trust_root(registry_id)?
+                .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+            if active.state() != state {
+                return Err(CliError::RegistryStateDrift);
+            }
+            print_json(registry_root_response("root_active", &active))
+        }
+        RegistryCommand::Status { registry_id } => {
+            validate_registry_id(registry_id)?;
+            let (home, _instance_lock) = lock_stopped_home(home)?;
+            let home = fs::canonicalize(home)?;
+            let store = open_registry_read_store(&home)?;
+            let root = store
+                .registry_trust_root(registry_id)?
+                .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+            let snapshot = store.registry_snapshot_state(registry_id)?;
+            print_json(RegistryStatusResponse {
+                registry_id: registry_id.clone(),
+                root: RegistryRootSummary::from(&root),
+                snapshot,
+                network_access: false,
+                package_authority: false,
+            })
+        }
+        RegistryCommand::SnapshotInspect {
+            registry_id,
+            envelope,
+        } => run_registry_snapshot_file(home, registry_id, envelope, false),
+        RegistryCommand::SnapshotAccept {
+            registry_id,
+            envelope,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_snapshot_file(home, registry_id, envelope, true)
+        }
+        RegistryCommand::SnapshotFetch {
+            registry_id,
+            mirror,
+        } => run_registry_snapshot_mirror(home, registry_id, mirror, None),
+        RegistryCommand::SnapshotRefresh {
+            registry_id,
+            mirror,
+            expected_envelope_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_snapshot_mirror(home, registry_id, mirror, Some(expected_envelope_digest))
+        }
+        command @ (RegistryCommand::ReleaseFetch { .. }
+        | RegistryCommand::ReleaseAccept { .. }
+        | RegistryCommand::ReleaseStatus { .. }
+        | RegistryCommand::PackageFetch { .. }
+        | RegistryCommand::PackageStage { .. }
+        | RegistryCommand::PackagePlan { .. }
+        | RegistryCommand::PackageInstall { .. }) => run_registry_release_operation(home, command),
+    }
+}
+
+fn run_registry_release_operation(home: &Path, command: &RegistryCommand) -> Result<(), CliError> {
+    match command {
+        RegistryCommand::ReleaseFetch {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+        } => run_registry_release_mirror(home, registry_id, package_id, version, mirror, None),
+        RegistryCommand::ReleaseAccept {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+            expected_envelope_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_release_mirror(
+                home,
+                registry_id,
+                package_id,
+                version,
+                mirror,
+                Some(expected_envelope_digest),
+            )
+        }
+        RegistryCommand::ReleaseStatus {
+            registry_id,
+            package_id,
+            version,
+        } => run_registry_release_status(home, registry_id, package_id, version),
+        RegistryCommand::PackageFetch {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+        } => run_registry_package_mirror(home, registry_id, package_id, version, mirror, None),
+        RegistryCommand::PackageStage {
+            registry_id,
+            package_id,
+            version,
+            mirror,
+            expected_archive_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_package_mirror(
+                home,
+                registry_id,
+                package_id,
+                version,
+                mirror,
+                Some(expected_archive_digest),
+            )
+        }
+        RegistryCommand::PackagePlan {
+            registry_id,
+            package_id,
+            version,
+        } => run_registry_package_plan(home, registry_id, package_id, version),
+        RegistryCommand::PackageInstall {
+            registry_id,
+            package_id,
+            version,
+            expected_plan_digest,
+            approve,
+        } => {
+            require_registry_approval(*approve)?;
+            run_registry_package_install(
+                home,
+                registry_id,
+                package_id,
+                version,
+                expected_plan_digest,
+            )
+        }
+        _ => Err(CliError::InvalidRegistryMetadata),
+    }
+}
+
+fn run_registry_snapshot_file(
+    home: &Path,
+    registry_id: &str,
+    envelope: &Path,
+    accept: bool,
+) -> Result<(), CliError> {
+    validate_registry_id(registry_id)?;
+    let now_ms = registry_now_ms()?;
+    let envelope = read_registry_metadata(envelope, MAXIMUM_REGISTRY_SNAPSHOT_BYTES)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if accept {
+        open_registry_write_store(&home, now_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+    if accept {
+        let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
+        if state != inspected.state {
+            return Err(CliError::RegistryStateDrift);
+        }
+    }
+    let operation = if accept {
+        "snapshot_active"
+    } else {
+        "snapshot_verified"
+    };
+    print_json(registry_snapshot_response(operation, &inspected, false))
+}
+
+fn run_registry_snapshot_mirror(
+    home: &Path,
+    registry_id: &str,
+    base_url: &str,
+    expected_envelope_digest: Option<&str>,
+) -> Result<(), CliError> {
+    let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_envelope_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistrySnapshotDigest);
+    }
+    let opened_at_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if expected_envelope_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let envelope = fetch_registry_snapshot_envelope(&HttpsRegistryMirrorTransport, &mirror)?;
+    let now_ms = registry_now_ms()?;
+    let inspected = inspect_snapshot_against_store(&store, registry_id, &envelope, now_ms)?;
+    if let Some(expected_envelope_digest) = expected_envelope_digest {
+        require_registry_snapshot_review_digest(
+            &inspected.envelope_digest,
+            expected_envelope_digest,
+        )?;
+        let state = accept_registry_snapshot(&mut store, registry_id, &envelope, now_ms)?;
+        if state != inspected.state {
+            return Err(CliError::RegistryStateDrift);
+        }
+    }
+    let operation = if expected_envelope_digest.is_some() {
+        "snapshot_refreshed"
+    } else {
+        "snapshot_fetched_verified"
+    };
+    print_json(registry_snapshot_response(operation, &inspected, true))
+}
+
+fn require_registry_snapshot_review_digest(actual: &str, expected: &str) -> Result<(), CliError> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(CliError::RegistrySnapshotDrift)
+    }
+}
+
+fn run_registry_release_mirror(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    base_url: &str,
+    expected_envelope_digest: Option<&str>,
+) -> Result<(), CliError> {
+    let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_envelope_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistryReleaseDigest);
+    }
+    let opened_at_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if expected_envelope_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let snapshot = active_registry_snapshot(&store, registry_id, opened_at_ms)?;
+    let target = snapshot
+        .snapshot
+        .target(package_id, version)
+        .ok_or(RegistryError::InvalidRelease)?;
+    if target.withdrawal.is_some() {
+        return Err(RegistryError::Withdrawn.into());
+    }
+    let envelope = fetch_registry_content(
+        &HttpsRegistryMirrorTransport,
+        &mirror,
+        &target.release_envelope,
+    )?;
+    let now_ms = registry_now_ms()?;
+    let inspected = inspect_active_registry_release(
+        &store,
+        registry_id,
+        package_id,
+        version,
+        &envelope,
+        EXTENSION_HOST_API_VERSION,
+        now_ms,
+    )?;
+    let active_snapshot = active_registry_snapshot(&store, registry_id, now_ms)?;
+    let durable_state = if let Some(expected_envelope_digest) = expected_envelope_digest {
+        if inspected.envelope_digest != expected_envelope_digest {
+            return Err(CliError::RegistryReleaseDrift);
+        }
+        Some(accept_registry_release(
+            &mut store,
+            registry_id,
+            package_id,
+            version,
+            &envelope,
+            EXTENSION_HOST_API_VERSION,
+            now_ms,
+        )?)
+    } else {
+        None
+    };
+    let operation = if durable_state.is_some() {
+        "release_evidence_accepted"
+    } else {
+        "release_fetched_verified"
+    };
+    print_json(registry_release_response(
+        operation,
+        &inspected,
+        Some(&active_snapshot.state),
+        durable_state,
+        true,
+    ))
+}
+
+fn run_registry_release_status(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<(), CliError> {
+    validate_registry_id(registry_id)?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let store = open_registry_read_store(&home)?;
+    let (inspected, durable_state) = store
+        .registry_release(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryReleaseNotFound)?;
+    let active_snapshot = store.registry_snapshot_state(registry_id)?;
+    print_json(registry_release_response(
+        "release_evidence_status",
+        &inspected,
+        active_snapshot.as_ref(),
+        Some(durable_state),
+        false,
+    ))
+}
+
+fn run_registry_package_mirror(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    base_url: &str,
+    expected_archive_digest: Option<&str>,
+) -> Result<(), CliError> {
+    let mirror = validated_registry_mirror(registry_id, base_url)?;
+    if expected_archive_digest.is_some_and(|digest| !is_sha256_digest(digest)) {
+        return Err(CliError::InvalidRegistryPackageDigest);
+    }
+    let opened_at_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = if expected_archive_digest.is_some() {
+        open_registry_write_store(&home, opened_at_ms)?
+    } else {
+        open_registry_read_store(&home)?
+    };
+    let (accepted, durable_state) = store
+        .registry_release(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryReleaseNotFound)?;
+    let authorized_before_fetch = inspect_active_registry_release(
+        &store,
+        registry_id,
+        package_id,
+        version,
+        &accepted.envelope_bytes,
+        EXTENSION_HOST_API_VERSION,
+        opened_at_ms,
+    )?;
+    if authorized_before_fetch != accepted
+        || durable_state.envelope_digest != authorized_before_fetch.envelope_digest
+        || durable_state.payload_digest != authorized_before_fetch.payload_digest
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    let manifest_bytes = fetch_registry_content(
+        &HttpsRegistryMirrorTransport,
+        &mirror,
+        &authorized_before_fetch.release.manifest,
+    )?;
+    let archive_bytes = fetch_registry_content(
+        &HttpsRegistryMirrorTransport,
+        &mirror,
+        &authorized_before_fetch.release.package,
+    )?;
+    let verified_at_ms = registry_now_ms()?;
+    let active = inspect_active_registry_release(
+        &store,
+        registry_id,
+        package_id,
+        version,
+        &accepted.envelope_bytes,
+        EXTENSION_HOST_API_VERSION,
+        verified_at_ms,
+    )?;
+    if active != authorized_before_fetch
+        || durable_state.envelope_digest != active.envelope_digest
+        || durable_state.payload_digest != active.payload_digest
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    let inspected = inspect_registry_package_archive(&active, &manifest_bytes, &archive_bytes)?;
+    let durable_package_state = if let Some(expected_archive_digest) = expected_archive_digest {
+        if inspected.archive_digest() != expected_archive_digest {
+            return Err(CliError::RegistryPackageDrift);
+        }
+        let artifacts = FileArtifactBlobStore::new(
+            home.join("artifacts"),
+            MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES,
+        )?;
+        let manifest_blob = artifacts.commit(&manifest_bytes)?;
+        let package_blob = artifacts.commit(&archive_bytes)?;
+        let active_snapshot = active_registry_snapshot(&store, registry_id, verified_at_ms)?;
+        Some(store.commit_registry_package(
+            &inspected,
+            manifest_blob,
+            package_blob,
+            &active_snapshot.state,
+            EXTENSION_HOST_API_VERSION,
+            verified_at_ms,
+        )?)
+    } else {
+        None
+    };
+    print_json(registry_package_response(
+        &inspected,
+        durable_state,
+        durable_package_state,
+    ))
+}
+
+fn run_registry_package_plan(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+) -> Result<(), CliError> {
+    let now_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let store = open_registry_read_store(&home)?;
+    let (_package, plan) =
+        build_registry_package_plan(&home, &store, registry_id, package_id, version, now_ms)?;
+    print_json(plan)
+}
+
+fn run_registry_package_install(
+    home: &Path,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    expected_plan_digest: &str,
+) -> Result<(), CliError> {
+    if !is_sha256_digest(expected_plan_digest) {
+        return Err(CliError::InvalidRegistryPackagePlanDigest);
+    }
+    let now_ms = registry_now_ms()?;
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let home = fs::canonicalize(home)?;
+    let mut store = open_registry_write_store(&home, now_ms)?;
+    let (registry_package, plan) =
+        build_registry_package_plan(&home, &store, registry_id, package_id, version, now_ms)?;
+    if plan.plan_digest != expected_plan_digest {
+        return Err(CliError::RegistryPackagePlanDrift);
+    }
+    match &registry_package.manifest().manifest {
+        RegistryPackageManifest::Skill(_) => {
+            let package = inspected_registry_skill_package(&registry_package)?;
+            let provenance = InstalledSkillRegistryProvenance {
+                registry_id: registry_id.to_owned(),
+                release_envelope_digest: registry_package.release().envelope_digest.clone(),
+                archive_digest: registry_package.archive_digest().to_owned(),
+            };
+            print_json(apply_registry_skill_install(
+                &home,
+                &package,
+                &provenance,
+                &plan,
+            )?)
+        }
+        RegistryPackageManifest::Extension(_) => print_json(apply_registry_extension_install(
+            &home,
+            &mut store,
+            &registry_package,
+            &plan,
+        )?),
+    }
+}
+
+#[allow(clippy::too_many_lines)] // One config commit covers install, update, and evidence adoption.
+fn apply_registry_skill_install(
+    home: &Path,
+    package: &InspectedSkillPackage,
+    provenance: &InstalledSkillRegistryProvenance,
+    plan: &RegistryPackagePlanResponse,
+) -> Result<RegistryPackageInstallResponse, CliError> {
+    let (current, current_body, mut config, mut records) = load_skill_configuration(home)?;
+    let existing_index = records
+        .iter()
+        .position(|record| record.skill_id == package.manifest().skill_id);
+    if plan.action == "already_installed" {
+        let record = existing_index
+            .and_then(|index| records.get(index))
+            .ok_or(CliError::RegistryPackagePlanDrift)?;
+        return Ok(registry_package_install_response(
+            package,
+            record,
+            provenance,
+            &plan.plan_digest,
+            "already_installed",
+            None,
+            false,
+        ));
+    }
+    let installed = publish_skill_package(package, &home.join("skills"))?;
+    let expected_path = skill_package_relative_path(package.manifest_digest());
+    if installed != home.join(&expected_path) {
+        return Err(CliError::InvalidSkillConfiguration);
+    }
+    let operation = match (plan.action, existing_index) {
+        ("install", None) => {
+            if records.len() >= 32 {
+                return Err(CliError::InvalidSkillConfiguration);
+            }
+            records.push(InstalledSkillConfigRecord {
+                skill_id: package.manifest().skill_id.clone(),
+                version: package.manifest().version.clone(),
+                manifest_digest: package.manifest_digest().to_owned(),
+                package_path: expected_path,
+                enabled: false,
+                registry: Some(provenance.clone()),
+            });
+            "installed_disabled"
+        }
+        ("update", Some(index)) => {
+            let record = records
+                .get_mut(index)
+                .ok_or(CliError::RegistryPackagePlanDrift)?;
+            record.version.clone_from(&package.manifest().version);
+            package
+                .manifest_digest()
+                .clone_into(&mut record.manifest_digest);
+            record.package_path = expected_path;
+            record.enabled = false;
+            record.registry = Some(provenance.clone());
+            "updated_disabled"
+        }
+        ("adopt_evidence", Some(index)) => {
+            let record = records
+                .get_mut(index)
+                .ok_or(CliError::RegistryPackagePlanDrift)?;
+            if record.manifest_digest != package.manifest_digest()
+                || record.version != package.manifest().version
+            {
+                return Err(CliError::RegistryPackagePlanDrift);
+            }
+            record.registry = Some(provenance.clone());
+            "registry_evidence_adopted"
+        }
+        _ => return Err(CliError::RegistryPackagePlanDrift),
+    };
+    records.sort_by(|left, right| left.skill_id.cmp(&right.skill_id));
+    set_skill_records(&mut config, &records)?;
+    let record = records
+        .iter()
+        .find(|record| record.skill_id == package.manifest().skill_id)
+        .ok_or(CliError::RegistryPackagePlanDrift)?
+        .clone();
+    let timestamp = unix_timestamp_millis()?;
+    let history = home.join("config-history");
+    create_private_service_directory(&history)?;
+    let replaced = history.join(format!("pre-registry-skill-{timestamp}.json"));
+    atomic_write_service(&replaced, &current_body)?;
+    atomic_write_service(&current, &serde_json::to_vec_pretty(&config)?)?;
+    Ok(registry_package_install_response(
+        package,
+        &record,
+        provenance,
+        &plan.plan_digest,
+        operation,
+        Some(replaced.display().to_string()),
+        true,
+    ))
+}
+
+#[allow(clippy::too_many_lines)] // One stopped-home transaction covers all extension lifecycle actions.
+fn apply_registry_extension_install(
+    home: &Path,
+    store: &mut SqliteStore,
+    package: &mealy_infrastructure::InspectedRegistryPackageArchive,
+    plan: &RegistryPackagePlanResponse,
+) -> Result<RegistryExtensionPackageInstallResponse, CliError> {
+    let RegistryPackageManifest::Extension(candidate) = &package.manifest().manifest else {
+        return Err(CliError::RegistryPackagePlanDrift);
+    };
+    let ownership = registry_ownership(home)?;
+    let provenance = ExtensionRegistryProvenance {
+        registry_id: plan.registry_id.clone(),
+        package_id: plan.package_id.clone(),
+        version: plan.version.clone(),
+        release_envelope_digest: plan.release_envelope_digest.clone(),
+        archive_digest: plan.archive_digest.clone(),
+    };
+    if plan.action == "already_installed" {
+        let view = store.extension(ownership, candidate.manifest.extension_id)?;
+        if view.current_manifest_digest != plan.manifest_digest
+            || view
+                .manifest_history
+                .last()
+                .and_then(|revision| revision.registry_provenance.as_ref())
+                != Some(&provenance)
+        {
+            return Err(CliError::RegistryPackagePlanDrift);
+        }
+        return Ok(registry_extension_package_install_response(
+            &view,
+            provenance,
+            &plan.plan_digest,
+            "already_installed",
+            false,
+        ));
+    }
+
+    let installed = publish_registry_extension_package(package, &home.join("extensions/registry"))?;
+    let installation_root = installed
+        .installation_root()
+        .to_str()
+        .ok_or(CliError::InvalidRegistryMetadata)?
+        .to_owned();
+    let inspection = installed.inspection().clone();
+    let event_id = EventId::new();
+    let correlation_id = CorrelationId::new();
+    let occurred_at = SystemTime::now();
+    let (view, operation) = match plan.action {
+        "install" => (
+            store.install_extension(InstallExtensionCommit {
+                ownership,
+                inspection,
+                installation_root,
+                registry_provenance: Some(provenance.clone()),
+                event_id,
+                correlation_id,
+                installed_at: occurred_at,
+            })?,
+            "installed_disabled",
+        ),
+        "update" | "adopt_evidence" => {
+            let current = plan
+                .current
+                .as_ref()
+                .and_then(|current| current.revision)
+                .ok_or(CliError::RegistryPackagePlanDrift)?;
+            let operation = if plan.action == "update" {
+                "updated_disabled"
+            } else {
+                "registry_evidence_adopted_disabled"
+            };
+            (
+                store.stage_extension_manifest(StageExtensionManifestCommit {
+                    ownership,
+                    extension_id: candidate.manifest.extension_id,
+                    expected_revision: current,
+                    inspection,
+                    installation_root,
+                    registry_provenance: Some(provenance.clone()),
+                    event_id,
+                    correlation_id,
+                    staged_at: occurred_at,
+                })?,
+                operation,
+            )
+        }
+        _ => return Err(CliError::RegistryPackagePlanDrift),
+    };
+    Ok(registry_extension_package_install_response(
+        &view,
+        provenance,
+        &plan.plan_digest,
+        operation,
+        true,
+    ))
+}
+
+fn build_registry_package_plan(
+    home: &Path,
+    store: &SqliteStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    now_ms: i64,
+) -> Result<
+    (
+        mealy_infrastructure::InspectedRegistryPackageArchive,
+        RegistryPackagePlanResponse,
+    ),
+    CliError,
+> {
+    let (package, staged) =
+        load_staged_registry_package(home, store, registry_id, package_id, version, now_ms)?;
+    let release = &package.release().release;
+    let registry_provenance = InstalledSkillRegistryProvenance {
+        registry_id: release.registry_id.clone(),
+        release_envelope_digest: package.release().envelope_digest.clone(),
+        archive_digest: package.archive_digest().to_owned(),
+    };
+    let (action, current, permission_diff, content_changes, widens_authority, authority_reset) =
+        match &package.manifest().manifest {
+            RegistryPackageManifest::Skill(candidate) => registry_skill_install_plan(
+                home,
+                candidate,
+                package.manifest().manifest_digest.as_str(),
+                &registry_provenance,
+            )?,
+            RegistryPackageManifest::Extension(candidate) => {
+                let provenance = ExtensionRegistryProvenance {
+                    registry_id: registry_provenance.registry_id.clone(),
+                    package_id: release.package_id.clone(),
+                    version: release.version.clone(),
+                    release_envelope_digest: registry_provenance.release_envelope_digest.clone(),
+                    archive_digest: registry_provenance.archive_digest.clone(),
+                };
+                registry_extension_install_plan(home, store, candidate, &provenance)?
+            }
+        };
+    let review = RegistryPackagePlanReview {
+        required: action != "already_installed",
+        widens_authority,
+        authority_reset_on_apply: authority_reset,
+    };
+    let digest_material = RegistryPackagePlanDigestMaterial {
+        contract_version: "mealy.registry.install-plan.v1",
+        registry_id: &release.registry_id,
+        package_id: &release.package_id,
+        kind: release.kind,
+        version: &release.version,
+        publisher_id: &release.publisher_id,
+        release_envelope_digest: &package.release().envelope_digest,
+        manifest_digest: &package.manifest().manifest_digest,
+        archive_digest: package.archive_digest(),
+        staged_at_ms: staged.staged_at_ms,
+        action,
+        current: &current,
+        permission_diff: &permission_diff,
+        content_changes: &content_changes,
+        review: &review,
+    };
+    let plan_digest = sha256_digest(&serde_json::to_vec(&digest_material)?);
+    let plan = RegistryPackagePlanResponse {
+        operation: "package_install_planned",
+        plan_digest,
+        registry_id: release.registry_id.clone(),
+        package_id: release.package_id.clone(),
+        kind: release.kind,
+        version: release.version.clone(),
+        publisher_id: release.publisher_id.clone(),
+        release_envelope_digest: package.release().envelope_digest.clone(),
+        manifest_digest: package.manifest().manifest_digest.clone(),
+        archive_digest: package.archive_digest().to_owned(),
+        staged_at_ms: staged.staged_at_ms,
+        action,
+        current,
+        permission_diff,
+        content_changes,
+        review,
+        effects: RegistryPackagePlanEffects {
+            network_access: false,
+            filesystem_mutation: false,
+            package_authority: false,
+        },
+    };
+    Ok((package, plan))
+}
+
+fn load_staged_registry_package(
+    home: &Path,
+    store: &SqliteStore,
+    registry_id: &str,
+    package_id: &str,
+    version: &str,
+    now_ms: i64,
+) -> Result<
+    (
+        mealy_infrastructure::InspectedRegistryPackageArchive,
+        RegistryPackageState,
+    ),
+    CliError,
+> {
+    let staged = store
+        .registry_package(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryPackageNotFound)?;
+    let (accepted, release_state) = store
+        .registry_release(registry_id, package_id, version)?
+        .ok_or(CliError::RegistryReleaseNotFound)?;
+    let active = inspect_active_registry_release(
+        store,
+        registry_id,
+        package_id,
+        version,
+        &accepted.envelope_bytes,
+        EXTENSION_HOST_API_VERSION,
+        now_ms,
+    )?;
+    if active != accepted
+        || staged.release_envelope_digest != active.envelope_digest
+        || staged.manifest_blob.digest != release_state.manifest_digest
+        || staged.package_blob.digest != release_state.package_digest
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    let artifacts =
+        FileArtifactBlobStore::new(home.join("artifacts"), MAXIMUM_REGISTRY_PACKAGE_BLOB_BYTES)?;
+    let manifest_bytes = artifacts.read(&staged.manifest_blob)?;
+    let archive_bytes = artifacts.read(&staged.package_blob)?;
+    let package = inspect_registry_package_archive(&active, &manifest_bytes, &archive_bytes)?;
+    if package.manifest().manifest_digest != staged.manifest_blob.digest
+        || package.archive_digest() != staged.package_blob.digest
+        || u64::try_from(manifest_bytes.len()).ok() != Some(staged.manifest_blob.size_bytes)
+        || u64::try_from(archive_bytes.len()).ok() != Some(staged.package_blob.size_bytes)
+    {
+        return Err(CliError::RegistryStateDrift);
+    }
+    Ok((package, staged))
+}
+
+type RegistryPackagePlanParts = (
+    &'static str,
+    Option<RegistryInstalledPackageSummary>,
+    Value,
+    Value,
+    bool,
+    bool,
+);
+
+fn registry_skill_install_plan(
+    home: &Path,
+    candidate: &mealy_domain::SkillManifest,
+    candidate_manifest_digest: &str,
+    candidate_provenance: &InstalledSkillRegistryProvenance,
+) -> Result<RegistryPackagePlanParts, CliError> {
+    let (_current_path, _current_body, _config, records) = load_skill_configuration(home)?;
+    let Some(record) = records
+        .iter()
+        .find(|record| record.skill_id == candidate.skill_id)
+    else {
+        return Ok((
+            "install",
+            None,
+            json!({
+                "kind": "skill",
+                "addedRequiredTools": candidate.required_tools,
+                "removedRequiredTools": [],
+            }),
+            json!({
+                "instructionsChanged": !candidate.instructions.is_empty(),
+                "resourcesChanged": !candidate.resources.is_empty(),
+                "versionChanged": true,
+            }),
+            !candidate.required_tools.is_empty(),
+            false,
+        ));
+    };
+    let current_package = inspect_installed_skill(home, record)?;
+    let permission_diff = diff_skill_permissions(current_package.manifest(), candidate)?;
+    let instructions_changed = current_package.manifest().instructions != candidate.instructions;
+    let resources_changed = current_package.manifest().resources != candidate.resources;
+    let version_changed = current_package.manifest().version != candidate.version;
+    let manifest_changed = record.manifest_digest != candidate_manifest_digest;
+    let action = if manifest_changed {
+        "update"
+    } else if record.registry.as_ref() != Some(candidate_provenance) {
+        "adopt_evidence"
+    } else {
+        "already_installed"
+    };
+    Ok((
+        action,
+        Some(RegistryInstalledPackageSummary {
+            version: record.version.clone(),
+            manifest_digest: record.manifest_digest.clone(),
+            status: if record.enabled {
+                "enabled".to_owned()
+            } else {
+                "disabled".to_owned()
+            },
+            revision: None,
+            registry: record.registry.clone(),
+        }),
+        serde_json::to_value(&permission_diff)?,
+        json!({
+            "instructionsChanged": instructions_changed,
+            "resourcesChanged": resources_changed,
+            "versionChanged": version_changed,
+        }),
+        permission_diff.widens_authority(),
+        record.enabled && manifest_changed,
+    ))
+}
+
+fn registry_extension_install_plan(
+    home: &Path,
+    store: &SqliteStore,
+    candidate: &mealy_application::ExtensionManifestInspection,
+    candidate_provenance: &ExtensionRegistryProvenance,
+) -> Result<RegistryPackagePlanParts, CliError> {
+    let ownership = registry_ownership(home)?;
+    let current = match store.extension(ownership, candidate.manifest.extension_id) {
+        Ok(view) => Some(view),
+        Err(ExtensionStoreError::NotFound) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let Some(current) = current else {
+        let requested = &candidate.manifest.permissions;
+        return Ok((
+            "install",
+            None,
+            json!({
+                "kind": "extension",
+                "addedCapabilities": candidate
+                    .manifest
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.capability_id.as_str())
+                    .collect::<Vec<_>>(),
+                "removedCapabilities": [],
+                "changedCapabilities": [],
+                "filesystem": requested.filesystem,
+                "addedNetworkDestinations": requested.network_destinations,
+                "removedNetworkDestinations": [],
+                "addedSecretReferences": requested.secret_references,
+                "removedSecretReferences": [],
+                "processSpawnBefore": false,
+                "processSpawnAfter": requested.allow_process_spawn,
+            }),
+            json!({
+                "manifestChanged": true,
+                "executableChanged": true,
+                "runtimeFilesChanged": !candidate.manifest.entry_point.runtime_files.is_empty(),
+                "versionChanged": true,
+            }),
+            true,
+            false,
+        ));
+    };
+    let permission_diff = diff_extension_permissions(&current.manifest, &candidate.manifest)?;
+    let manifest_changed = current.current_manifest_digest != candidate.manifest_digest;
+    let executable_changed = current.manifest.entry_point.executable_digest
+        != candidate.manifest.entry_point.executable_digest;
+    let runtime_files_changed =
+        current.manifest.entry_point.runtime_files != candidate.manifest.entry_point.runtime_files;
+    let version_changed = current.manifest.version != candidate.manifest.version;
+    let current_provenance = current
+        .manifest_history
+        .last()
+        .and_then(|revision| revision.registry_provenance.clone());
+    let action = if manifest_changed {
+        "update"
+    } else if current_provenance.as_ref() != Some(candidate_provenance) {
+        "adopt_evidence"
+    } else {
+        "already_installed"
+    };
+    let current_registry =
+        current_provenance
+            .as_ref()
+            .map(|provenance| InstalledSkillRegistryProvenance {
+                registry_id: provenance.registry_id.clone(),
+                release_envelope_digest: provenance.release_envelope_digest.clone(),
+                archive_digest: provenance.archive_digest.clone(),
+            });
+    Ok((
+        action,
+        Some(RegistryInstalledPackageSummary {
+            version: current.manifest.version.clone(),
+            manifest_digest: current.current_manifest_digest.clone(),
+            status: extension_status_text(current.status).to_owned(),
+            revision: Some(current.revision),
+            registry: current_registry,
+        }),
+        serde_json::to_value(&permission_diff)?,
+        json!({
+            "manifestChanged": manifest_changed,
+            "executableChanged": executable_changed,
+            "runtimeFilesChanged": runtime_files_changed,
+            "versionChanged": version_changed,
+        }),
+        permission_diff.widens_authority(),
+        current.active_grant.is_some() && action != "already_installed",
+    ))
+}
+
+fn registry_ownership(home: &Path) -> Result<OwnershipContext, CliError> {
+    let connection = load_connection(home)?;
+    let principal_id = connection
+        .principal_id
+        .parse::<PrincipalId>()
+        .map_err(|_| CliError::InvalidConnection("principalId is malformed".to_owned()))?;
+    let channel_binding_id = connection
+        .channel_binding_id
+        .parse::<ChannelBindingId>()
+        .map_err(|_| CliError::InvalidConnection("channelBindingId is malformed".to_owned()))?;
+    Ok(OwnershipContext::new(principal_id, channel_binding_id))
+}
+
+const fn extension_status_text(status: mealy_domain::ExtensionStatus) -> &'static str {
+    match status {
+        mealy_domain::ExtensionStatus::Installed => "installed",
+        mealy_domain::ExtensionStatus::Enabled => "enabled",
+        mealy_domain::ExtensionStatus::Disabled => "disabled",
+        mealy_domain::ExtensionStatus::Failed => "failed",
+        mealy_domain::ExtensionStatus::Revoked => "revoked",
+    }
+}
+
+fn require_registry_approval(approve: bool) -> Result<(), CliError> {
+    if approve {
+        Ok(())
+    } else {
+        Err(CliError::RegistryApprovalRequired)
+    }
+}
+
+fn validate_registry_id(registry_id: &str) -> Result<(), CliError> {
+    if !registry_id.is_empty()
+        && registry_id.len() <= 255
+        && registry_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+    {
+        Ok(())
+    } else {
+        Err(CliError::InvalidRegistryIdentifier)
+    }
+}
+
+fn validated_registry_mirror(
+    registry_id: &str,
+    base_url: &str,
+) -> Result<RegistryMirror, CliError> {
+    validate_registry_id(registry_id)?;
+    let mirror = RegistryMirror {
+        registry_id: registry_id.to_owned(),
+        base_url: base_url.to_owned(),
+    };
+    mirror.validate()?;
+    Ok(mirror)
+}
+
+fn read_registry_metadata(path: &Path, maximum: u64) -> Result<Vec<u8>, CliError> {
+    let bytes = lifecycle::read_bounded_regular_file(path, maximum)
+        .map_err(|_| CliError::InvalidRegistryMetadata)?;
+    if bytes.is_empty() {
+        return Err(CliError::InvalidRegistryMetadata);
+    }
+    Ok(bytes)
+}
+
+fn registry_now_ms() -> Result<i64, CliError> {
+    i64::try_from(unix_timestamp_millis()?).map_err(|_| CliError::InvalidRegistryMetadata)
+}
+
+fn supported_registry_schema_version() -> Result<u64, CliError> {
+    u64::try_from(LATEST_SCHEMA_VERSION).map_err(|_| CliError::InvalidRegistryMetadata)
+}
+
+fn open_registry_write_store(home: &Path, now_ms: i64) -> Result<SqliteStore, CliError> {
+    let database = home.join("mealy.sqlite3");
+    let supported = supported_registry_schema_version()?;
+    match inspect_existing_schema_version(&database)? {
+        Some(found) if found == supported => {}
+        Some(found) => {
+            return Err(CliError::RegistrySchemaNotReady { found, supported });
+        }
+        None => return Err(CliError::RegistryDatabaseNotFound),
+    }
+    SqliteStore::open(&database, now_ms).map_err(CliError::RegistryStore)
+}
+
+fn open_registry_read_store(home: &Path) -> Result<SqliteStore, CliError> {
+    let database = home.join("mealy.sqlite3");
+    let supported = supported_registry_schema_version()?;
+    match inspect_existing_schema_version(&database)? {
+        Some(found) if found == supported => {}
+        Some(found) => {
+            return Err(CliError::RegistrySchemaNotReady { found, supported });
+        }
+        None => return Err(CliError::RegistryDatabaseNotFound),
+    }
+    SqliteStore::open_reader(&database).map_err(CliError::RegistryStore)
+}
+
+fn inspect_snapshot_against_store(
+    store: &SqliteStore,
+    registry_id: &str,
+    envelope: &[u8],
+    now_ms: i64,
+) -> Result<InspectedRegistrySnapshot, CliError> {
+    let root = store
+        .registry_trust_root(registry_id)?
+        .ok_or(RegistryMetadataStoreError::TrustRootNotFound)?;
+    let previous = store.registry_snapshot_state(registry_id)?;
+    inspect_registry_snapshot(envelope, &root.trust_root, previous.as_ref(), now_ms)
+        .map_err(Into::into)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryRootSummary {
+    registry_id: String,
+    root_version: u64,
+    root_digest: String,
+    threshold: u16,
+    key_ids: Vec<String>,
+    expires_at_ms: i64,
+}
+
+impl From<&InspectedRegistryTrustRoot> for RegistryRootSummary {
+    fn from(root: &InspectedRegistryTrustRoot) -> Self {
+        Self {
+            registry_id: root.trust_root.registry_id.clone(),
+            root_version: root.trust_root.root_version,
+            root_digest: root.root_digest.clone(),
+            threshold: root.trust_root.threshold,
+            key_ids: root
+                .trust_root
+                .keys
+                .iter()
+                .map(|key| key.key_id.clone())
+                .collect(),
+            expires_at_ms: root.trust_root.expires_at_ms,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryRootResponse {
+    operation: &'static str,
+    root: RegistryRootSummary,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_root_response(
+    operation: &'static str,
+    root: &InspectedRegistryTrustRoot,
+) -> RegistryRootResponse {
+    RegistryRootResponse {
+        operation,
+        root: RegistryRootSummary::from(root),
+        network_access: false,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistrySnapshotResponse {
+    operation: &'static str,
+    state: RegistrySnapshotState,
+    payload_digest: String,
+    generated_at_ms: i64,
+    publisher_count: usize,
+    target_count: usize,
+    withdrawn_target_count: usize,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_snapshot_response(
+    operation: &'static str,
+    snapshot: &InspectedRegistrySnapshot,
+    network_access: bool,
+) -> RegistrySnapshotResponse {
+    RegistrySnapshotResponse {
+        operation,
+        state: snapshot.state.clone(),
+        payload_digest: snapshot.payload_digest.clone(),
+        generated_at_ms: snapshot.snapshot.generated_at_ms,
+        publisher_count: snapshot.snapshot.publishers.len(),
+        target_count: snapshot.snapshot.targets.len(),
+        withdrawn_target_count: snapshot
+            .snapshot
+            .targets
+            .iter()
+            .filter(|target| target.withdrawal.is_some())
+            .count(),
+        network_access,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryReleaseResponse {
+    operation: &'static str,
+    registry_id: String,
+    package_id: String,
+    kind: RegistryPackageKind,
+    version: String,
+    publisher_id: String,
+    envelope_digest: String,
+    payload_digest: String,
+    manifest: RegistryContentDescriptor,
+    package: RegistryContentDescriptor,
+    dependencies: Vec<RegistryDependencyLock>,
+    minimum_host_api: u32,
+    maximum_host_api: u32,
+    published_at_ms: i64,
+    active_snapshot: Option<RegistrySnapshotState>,
+    durable_state: Option<RegistryReleaseState>,
+    network_access: bool,
+    package_authority: bool,
+}
+
+fn registry_release_response(
+    operation: &'static str,
+    release: &InspectedRegistryRelease,
+    active_snapshot: Option<&RegistrySnapshotState>,
+    durable_state: Option<RegistryReleaseState>,
+    network_access: bool,
+) -> RegistryReleaseResponse {
+    RegistryReleaseResponse {
+        operation,
+        registry_id: release.release.registry_id.clone(),
+        package_id: release.release.package_id.clone(),
+        kind: release.release.kind,
+        version: release.release.version.clone(),
+        publisher_id: release.release.publisher_id.clone(),
+        envelope_digest: release.envelope_digest.clone(),
+        payload_digest: release.payload_digest.clone(),
+        manifest: release.release.manifest.clone(),
+        package: release.release.package.clone(),
+        dependencies: release.release.dependencies.clone(),
+        minimum_host_api: release.release.minimum_host_api,
+        maximum_host_api: release.release.maximum_host_api,
+        published_at_ms: release.release.published_at_ms,
+        active_snapshot: active_snapshot.cloned(),
+        durable_state,
+        network_access,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageFileResponse {
+    relative_path: String,
+    size_bytes: usize,
+    digest: String,
+    executable: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageResponse {
+    operation: &'static str,
+    registry_id: String,
+    package_id: String,
+    kind: RegistryPackageKind,
+    version: String,
+    publisher_id: String,
+    release_envelope_digest: String,
+    manifest_digest: String,
+    archive_digest: String,
+    files: Vec<RegistryPackageFileResponse>,
+    requested_authority: serde_json::Value,
+    durable_release_state: RegistryReleaseState,
+    durable_package_state: Option<RegistryPackageState>,
+    network_access: bool,
+    filesystem_mutation: bool,
+    package_authority: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryInstalledPackageSummary {
+    version: String,
+    manifest_digest: String,
+    status: String,
+    revision: Option<u64>,
+    registry: Option<InstalledSkillRegistryProvenance>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanResponse {
+    operation: &'static str,
+    plan_digest: String,
+    registry_id: String,
+    package_id: String,
+    kind: RegistryPackageKind,
+    version: String,
+    publisher_id: String,
+    release_envelope_digest: String,
+    manifest_digest: String,
+    archive_digest: String,
+    staged_at_ms: i64,
+    action: &'static str,
+    current: Option<RegistryInstalledPackageSummary>,
+    permission_diff: Value,
+    content_changes: Value,
+    review: RegistryPackagePlanReview,
+    effects: RegistryPackagePlanEffects,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanReview {
+    required: bool,
+    widens_authority: bool,
+    authority_reset_on_apply: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanEffects {
+    network_access: bool,
+    filesystem_mutation: bool,
+    package_authority: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackagePlanDigestMaterial<'a> {
+    contract_version: &'static str,
+    registry_id: &'a str,
+    package_id: &'a str,
+    kind: RegistryPackageKind,
+    version: &'a str,
+    publisher_id: &'a str,
+    release_envelope_digest: &'a str,
+    manifest_digest: &'a str,
+    archive_digest: &'a str,
+    staged_at_ms: i64,
+    action: &'static str,
+    current: &'a Option<RegistryInstalledPackageSummary>,
+    permission_diff: &'a Value,
+    content_changes: &'a Value,
+    review: &'a RegistryPackagePlanReview,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallResponse {
+    operation: &'static str,
+    plan_digest: String,
+    registry: InstalledSkillRegistryProvenance,
+    skill: SkillPackageResponse,
+    activation: RegistryPackageInstallActivation,
+    effects: RegistryPackageInstallEffects,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallActivation {
+    instruction_authority_active: bool,
+    tool_authority_granted: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryPackageInstallEffects {
+    filesystem_mutation: bool,
+    restart_required: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryExtensionPackageInstallResponse {
+    operation: &'static str,
+    plan_digest: String,
+    registry: ExtensionRegistryProvenance,
+    extension: RegistryInstalledExtensionResponse,
+    activation: RegistryExtensionInstallActivation,
+    effects: RegistryPackageInstallEffects,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryInstalledExtensionResponse {
+    extension_id: String,
+    name: String,
+    publisher: String,
+    version: String,
+    manifest_digest: String,
+    status: String,
+    revision: u64,
+    retained_manifest_revisions: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryExtensionInstallActivation {
+    runtime_authority_active: bool,
+    fresh_grant_required: bool,
+}
+
+fn registry_package_install_response(
+    package: &InspectedSkillPackage,
+    record: &InstalledSkillConfigRecord,
+    provenance: &InstalledSkillRegistryProvenance,
+    plan_digest: &str,
+    operation: &'static str,
+    replaced_configuration_copy: Option<String>,
+    filesystem_mutation: bool,
+) -> RegistryPackageInstallResponse {
+    RegistryPackageInstallResponse {
+        operation,
+        plan_digest: plan_digest.to_owned(),
+        registry: provenance.clone(),
+        skill: skill_package_response(
+            package,
+            Some(record),
+            operation,
+            None,
+            None,
+            replaced_configuration_copy,
+            filesystem_mutation,
+        ),
+        activation: RegistryPackageInstallActivation {
+            instruction_authority_active: record.enabled,
+            tool_authority_granted: false,
+        },
+        effects: RegistryPackageInstallEffects {
+            filesystem_mutation,
+            restart_required: filesystem_mutation,
+        },
+    }
+}
+
+fn registry_extension_package_install_response(
+    view: &ExtensionView,
+    registry: ExtensionRegistryProvenance,
+    plan_digest: &str,
+    operation: &'static str,
+    filesystem_mutation: bool,
+) -> RegistryExtensionPackageInstallResponse {
+    let runtime_authority_active =
+        view.status == mealy_domain::ExtensionStatus::Enabled && view.active_grant.is_some();
+    RegistryExtensionPackageInstallResponse {
+        operation,
+        plan_digest: plan_digest.to_owned(),
+        registry,
+        extension: RegistryInstalledExtensionResponse {
+            extension_id: view.extension_id.to_string(),
+            name: view.manifest.name.clone(),
+            publisher: view.manifest.publisher.clone(),
+            version: view.manifest.version.clone(),
+            manifest_digest: view.current_manifest_digest.clone(),
+            status: extension_status_text(view.status).to_owned(),
+            revision: view.revision,
+            retained_manifest_revisions: view.manifest_history.len(),
+        },
+        activation: RegistryExtensionInstallActivation {
+            runtime_authority_active,
+            fresh_grant_required: !runtime_authority_active,
+        },
+        effects: RegistryPackageInstallEffects {
+            filesystem_mutation,
+            restart_required: filesystem_mutation,
+        },
+    }
+}
+
+fn registry_package_response(
+    package: &mealy_infrastructure::InspectedRegistryPackageArchive,
+    durable_release_state: RegistryReleaseState,
+    durable_package_state: Option<RegistryPackageState>,
+) -> RegistryPackageResponse {
+    let (operation, filesystem_mutation) = if durable_package_state.is_some() {
+        ("package_staged", true)
+    } else {
+        ("package_fetched_inspected", false)
+    };
+    let release = &package.release().release;
+    let requested_authority = match &package.manifest().manifest {
+        RegistryPackageManifest::Extension(inspection) => serde_json::json!({
+            "class": "extension",
+            "extensionKinds": inspection.manifest.kinds,
+            "capabilities": inspection.manifest.capabilities,
+            "filesystem": inspection.manifest.permissions.filesystem,
+            "networkDestinations": inspection.manifest.permissions.network_destinations,
+            "secretReferences": inspection.manifest.permissions.secret_references,
+            "allowProcessSpawn": inspection.manifest.permissions.allow_process_spawn,
+        }),
+        RegistryPackageManifest::Skill(skill) => serde_json::json!({
+            "class": "skill",
+            "instructions": skill.instructions,
+            "resources": skill.resources,
+            "requiredTools": skill.required_tools,
+            "executableAuthority": false,
+        }),
+    };
+    RegistryPackageResponse {
+        operation,
+        registry_id: release.registry_id.clone(),
+        package_id: release.package_id.clone(),
+        kind: release.kind,
+        version: release.version.clone(),
+        publisher_id: release.publisher_id.clone(),
+        release_envelope_digest: package.release().envelope_digest.clone(),
+        manifest_digest: package.manifest().manifest_digest.clone(),
+        archive_digest: package.archive_digest().to_owned(),
+        files: package
+            .files()
+            .values()
+            .map(|file| RegistryPackageFileResponse {
+                relative_path: file.relative_path().to_owned(),
+                size_bytes: file.bytes().len(),
+                digest: file.digest().to_owned(),
+                executable: file.executable(),
+            })
+            .collect(),
+        requested_authority,
+        durable_release_state,
+        durable_package_state,
+        network_access: true,
+        filesystem_mutation,
+        package_authority: false,
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistryStatusResponse {
+    registry_id: String,
+    root: RegistryRootSummary,
+    snapshot: Option<RegistrySnapshotState>,
+    network_access: bool,
+    package_authority: bool,
+}
+
 fn install_skill(
     home: &Path,
     manifest_path: &Path,
@@ -12966,6 +15716,7 @@ fn install_skill(
         manifest_digest: package.manifest_digest().to_owned(),
         package_path: skill_package_relative_path(package.manifest_digest()),
         enabled: false,
+        registry: None,
     };
     if installed != home.join(&record.package_path) {
         return Err(CliError::InvalidSkillConfiguration);
@@ -13018,6 +15769,7 @@ fn update_skill(
         .clone_into(&mut record.manifest_digest);
     record.package_path = skill_package_relative_path(package.manifest_digest());
     record.enabled = false;
+    record.registry = None;
     if installed != home.join(&record.package_path) {
         return Err(CliError::InvalidSkillConfiguration);
     }
@@ -13056,6 +15808,14 @@ fn set_skill_enabled(
     }
     let package = inspect_installed_skill(&home, &records[index])?;
     if enabled {
+        if records[index].registry.is_some() {
+            let registry_store = open_registry_read_store(&home)?;
+            let policy = installed_skill_registry_policy(Some(&registry_store), &records[index])?
+                .ok_or(CliError::RegistrySkillPolicyUnavailable)?;
+            if policy.disposition != RegistryInstalledPackageDisposition::Authorized {
+                return Err(CliError::RegistrySkillPolicyUnavailable);
+            }
+        }
         validate_enabled_skill_set(&home, &records, skill_id)?;
     }
     records[index].enabled = enabled;
@@ -13110,14 +15870,21 @@ fn validate_enabled_skill_set(
 fn list_skills(home: &Path) -> Result<(), CliError> {
     let home = readable_skill_home(home)?;
     let (current, _current_body, _value, records) = load_skill_configuration(&home)?;
+    let registry_store = records
+        .iter()
+        .any(|record| record.registry.is_some())
+        .then(|| open_registry_read_store(&home))
+        .transpose()?;
     let skills = records
         .iter()
         .map(|record| {
             let package = inspect_installed_skill(&home, record)?;
+            let registry_policy = installed_skill_registry_policy(registry_store.as_ref(), record)?;
             Ok(skill_package_response(
                 &package,
                 Some(record),
                 "status",
+                registry_policy,
                 Some(current.display().to_string()),
                 None,
                 false,
@@ -13135,10 +15902,17 @@ fn skill_status(home: &Path, skill_id: &str) -> Result<(), CliError> {
         .find(|record| record.skill_id == skill_id)
         .ok_or_else(|| CliError::SkillNotFound(skill_id.to_owned()))?;
     let package = inspect_installed_skill(&home, record)?;
+    let registry_store = record
+        .registry
+        .as_ref()
+        .map(|_| open_registry_read_store(&home))
+        .transpose()?;
+    let registry_policy = installed_skill_registry_policy(registry_store.as_ref(), record)?;
     print_json(skill_package_response(
         &package,
         Some(record),
         "status",
+        registry_policy,
         Some(current.display().to_string()),
         None,
         false,
@@ -13195,6 +15969,11 @@ fn validate_skill_records(records: &[InstalledSkillConfigRecord]) -> Result<(), 
             && valid_skill_identifier(&record.version, 128)
             && is_sha256_digest(&record.manifest_digest)
             && record.package_path == skill_package_relative_path(&record.manifest_digest)
+            && record.registry.as_ref().is_none_or(|registry| {
+                valid_skill_identifier(&registry.registry_id, 255)
+                    && is_sha256_digest(&registry.release_envelope_digest)
+                    && is_sha256_digest(&registry.archive_digest)
+            })
             && identities.insert(record.skill_id.as_str())
             && package_paths.insert(record.package_path.as_str())
     }) {
@@ -13235,6 +16014,28 @@ fn inspect_installed_skill(
     Ok(package)
 }
 
+fn installed_skill_registry_policy(
+    store: Option<&SqliteStore>,
+    record: &InstalledSkillConfigRecord,
+) -> Result<Option<RegistryInstalledPackagePolicy>, CliError> {
+    let Some(provenance) = &record.registry else {
+        return Ok(None);
+    };
+    let store = store.ok_or(CliError::RegistrySkillPolicyUnavailable)?;
+    inspect_installed_registry_package_policy(
+        store,
+        &provenance.registry_id,
+        &record.skill_id,
+        RegistryPackageKind::Skill,
+        &record.version,
+        &provenance.release_envelope_digest,
+        &record.manifest_digest,
+        &provenance.archive_digest,
+    )
+    .map(Some)
+    .map_err(Into::into)
+}
+
 fn set_skill_records(
     value: &mut Value,
     records: &[InstalledSkillConfigRecord],
@@ -13270,6 +16071,7 @@ fn publish_skill_configuration(
         package,
         Some(record),
         operation,
+        None,
         Some(current.display().to_string()),
         Some(replaced.display().to_string()),
         true,
@@ -13280,23 +16082,32 @@ fn skill_package_response(
     package: &InspectedSkillPackage,
     record: Option<&InstalledSkillConfigRecord>,
     operation: &str,
+    registry_policy: Option<RegistryInstalledPackagePolicy>,
     configuration_path: Option<String>,
     replaced_configuration_copy: Option<String>,
     restart_required: bool,
 ) -> SkillPackageResponse {
+    let enabled = record.is_some_and(|record| record.enabled);
+    let instruction_authority_active = enabled
+        && registry_policy.as_ref().is_none_or(|policy| {
+            policy.disposition == RegistryInstalledPackageDisposition::Authorized
+        });
     SkillPackageResponse {
         operation: operation.to_owned(),
         skill_id: package.manifest().skill_id.clone(),
         version: package.manifest().version.clone(),
         manifest_digest: package.manifest_digest().to_owned(),
         installed: record.is_some(),
-        enabled: record.is_some_and(|record| record.enabled),
+        enabled,
+        instruction_authority_active: SkillInstructionAuthorityActive(instruction_authority_active),
         package_path: record.map(|record| record.package_path.clone()),
         total_asset_bytes: package.total_asset_bytes(),
         instructions: package.manifest().instructions.clone(),
         resources: package.manifest().resources.clone(),
         required_tools: package.manifest().required_tools.iter().cloned().collect(),
         tool_authority: "references_only_no_authority_granted",
+        registry: record.and_then(|record| record.registry.clone()),
+        registry_policy,
         configuration_path,
         replaced_configuration_copy,
         restart_required,
@@ -14105,6 +16916,179 @@ fn list_provider_chain(home: &Path) -> Result<(), CliError> {
         fallbacks,
         credential_values_resolved: false,
         configuration_path: current.display().to_string(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn configure_memory_embedding(
+    home: &Path,
+    base_url: &str,
+    model: &str,
+    dimensions: u32,
+    residency: &str,
+    secret_id: Option<&str>,
+    credential_environment: Option<&str>,
+    document_prefix: &str,
+    query_prefix: &str,
+    request_timeout_ms: u64,
+    skip_connectivity_test: bool,
+    approve: bool,
+) -> Result<(), CliError> {
+    if !approve || secret_id.is_some() != credential_environment.is_some() {
+        return Err(if approve {
+            CliError::InvalidProviderConfiguration
+        } else {
+            CliError::ApprovalRequired
+        });
+    }
+    let credential_reference = secret_id.map(|secret_id| {
+        json!({
+            "source": "broker",
+            "secretId": secret_id,
+        })
+    });
+    let configuration = serde_json::from_value::<MemoryEmbeddingConfig>(json!({
+        "baseUrl": base_url,
+        "model": model,
+        "credential": credential_reference,
+        "residency": residency,
+        "dimensions": dimensions,
+        "documentPrefix": document_prefix,
+        "queryPrefix": query_prefix,
+        "requestTimeoutMs": request_timeout_ms,
+    }))?;
+    configuration
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let credential = credential_environment
+        .map(read_provider_credential_environment)
+        .transpose()?;
+    let adapter = OpenAiCompatibleMemoryEmbedder::new(
+        &configuration,
+        credential
+            .as_deref()
+            .map(|value| Zeroizing::new(value.to_owned())),
+    )
+    .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    if !skip_connectivity_test {
+        adapter
+            .embed_query("Mealy semantic memory compatibility probe")
+            .map_err(|_| {
+                CliError::ProviderConnectivity(
+                    "memory embedding compatibility probe failed".to_owned(),
+                )
+            })?;
+    }
+
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    if let (Some(secret_id), Some(credential)) = (secret_id, credential.as_ref()) {
+        let store = FileProviderSecretStore::new(home.join("provider-secrets"))?;
+        verify_provider_secret_preflight(&store, secret_id, credential.as_str())?;
+        store.put(secret_id, credential.as_str())?;
+    }
+    object.insert(
+        "memoryEmbedding".to_owned(),
+        serde_json::to_value(&configuration)?,
+    );
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-memory-embedding-{}-{}.json",
+        unix_timestamp_millis()?,
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    print_json(MemoryEmbeddingConfigurationResponse {
+        enabled: true,
+        model: Some(configuration.model().to_owned()),
+        dimensions: Some(configuration.dimensions()),
+        residency: Some(configuration.residency().to_owned()),
+        local: Some(
+            configuration
+                .is_local()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        secret_id: secret_id.map(str::to_owned),
+        policy_digest: Some(
+            configuration
+                .digest()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: !skip_connectivity_test,
+        restart_required: true,
+    })
+}
+
+fn disable_memory_embedding(home: &Path, approve: bool) -> Result<(), CliError> {
+    if !approve {
+        return Err(CliError::ApprovalRequired);
+    }
+    let (home, _instance_lock) = lock_stopped_home(home)?;
+    let current = home.join("config.json");
+    let current_body = fs::read(&current)?;
+    let mut value = serde_json::from_slice::<Value>(&current_body)?;
+    let object = value
+        .as_object_mut()
+        .filter(|object| valid_daemon_config_keys(object))
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let prior = object
+        .remove("memoryEmbedding")
+        .ok_or(CliError::InvalidProviderConfiguration)?;
+    let prior = serde_json::from_value::<MemoryEmbeddingConfig>(prior)
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    prior
+        .validate()
+        .map_err(|_| CliError::InvalidProviderConfiguration)?;
+    let updated = serde_json::to_vec_pretty(&value)?;
+    let replaced = home.join("config-history").join(format!(
+        "pre-memory-embedding-disable-{}-{}.json",
+        unix_timestamp_millis()?,
+        RunId::new()
+    ));
+    write_private_new_file(&replaced, &current_body)?;
+    sync_service_directory(
+        replaced
+            .parent()
+            .ok_or(CliError::InvalidProviderConfiguration)?,
+    )?;
+    atomic_write_service(&current, &updated)?;
+    print_json(MemoryEmbeddingConfigurationResponse {
+        enabled: false,
+        model: Some(prior.model().to_owned()),
+        dimensions: Some(prior.dimensions()),
+        residency: Some(prior.residency().to_owned()),
+        local: Some(
+            prior
+                .is_local()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        secret_id: prior
+            .credential()
+            .and_then(provider_credential_broker_secret_id)
+            .map(str::to_owned),
+        policy_digest: Some(
+            prior
+                .digest()
+                .map_err(|_| CliError::InvalidProviderConfiguration)?,
+        ),
+        configuration_path: current.display().to_string(),
+        replaced_configuration_copy: replaced.display().to_string(),
+        connectivity_tested: false,
+        restart_required: true,
     })
 }
 
@@ -17345,7 +20329,7 @@ fn inspect_mcp_executable(executable: &Path) -> Result<(PathBuf, String, Vec<u8>
         || !same_file_identity(&path_metadata, &metadata)
         || !metadata.is_file()
         || metadata.len() < 4
-        || metadata.len() > MAXIMUM_MCP_EXECUTABLE_BYTES
+        || metadata.len() > mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
     {
         return Err(CliError::InvalidMcpConfiguration);
     }
@@ -17356,9 +20340,10 @@ fn inspect_mcp_executable(executable: &Path) -> Result<(PathBuf, String, Vec<u8>
     let mut bytes = Vec::with_capacity(
         usize::try_from(metadata.len()).map_err(|_| CliError::InvalidMcpConfiguration)?,
     );
-    file.take(MAXIMUM_MCP_EXECUTABLE_BYTES.saturating_add(1))
+    file.take(mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_MCP_EXECUTABLE_BYTES
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX)
+        > mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES
         || bytes.len() < 4
         || &bytes[..4] != b"\x7fELF"
     {
@@ -18595,6 +21580,79 @@ fn valid_server_api_error(error: &ApiErrorResponse) -> bool {
         && !error.message.chars().any(unsafe_terminal_character)
 }
 
+fn read_evaluation_suite(path: &Path) -> Result<EvaluationSuite, CliError> {
+    let file = open_evaluation_suite(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAXIMUM_EVALUATION_SUITE_BYTES
+    {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    let mut bytes = Vec::with_capacity(
+        usize::try_from(metadata.len()).map_err(|_| CliError::InvalidEvaluationSuiteFile)?,
+    );
+    file.take(MAXIMUM_EVALUATION_SUITE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.is_empty()
+        || u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_EVALUATION_SUITE_BYTES
+    {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    let suite: EvaluationSuite = serde_json::from_slice(&bytes)?;
+    suite.validate().map_err(EvaluationError::from)?;
+    Ok(suite)
+}
+
+#[cfg(unix)]
+fn open_evaluation_suite(path: &Path) -> Result<File, CliError> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|error| CliError::Io(error.into()))
+}
+
+#[cfg(not(unix))]
+fn open_evaluation_suite(path: &Path) -> Result<File, CliError> {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(CliError::InvalidEvaluationSuiteFile);
+    }
+    File::open(path).map_err(CliError::Io)
+}
+
+fn validate_evaluation_suite(path: &Path) -> Result<(), CliError> {
+    let suite = read_evaluation_suite(path)?;
+    print_json(json!({
+        "contractVersion": mealy_evaluation::EVALUATION_SUITE_VERSION,
+        "suiteId": suite.suite_id,
+        "suiteDigest": suite.digest()?,
+        "cases": suite.cases.len(),
+        "valid": true,
+    }))
+}
+
+async fn run_evaluation_suite(
+    connection: &LocalConnectionInfo,
+    path: PathBuf,
+) -> Result<(), CliError> {
+    let connection = connection.clone();
+    let report = tokio::task::spawn_blocking(move || {
+        let suite = read_evaluation_suite(&path)?;
+        run_suite(&connection, &suite).map_err(CliError::from)
+    })
+    .await
+    .map_err(|_| CliError::EvaluationWorkerFailed)??;
+    let failed = report.summary.failed;
+    print_json(report)?;
+    if failed > 0 {
+        return Err(CliError::EvaluationFailed(failed));
+    }
+    Ok(())
+}
+
 fn load_connection(home: &Path) -> Result<LocalConnectionInfo, CliError> {
     let home = validate_private_connection_home(home)?;
     let path = home.join("connection.json");
@@ -18800,6 +21858,18 @@ enum CliError {
     /// JSON encoding or decoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Evaluation contract, typed client, or report construction failed.
+    #[error(transparent)]
+    Evaluation(#[from] EvaluationError),
+    /// Owner-selected suite was absent, linked, empty, non-regular, or oversized.
+    #[error("evaluation suite must be a nonempty bounded no-follow regular JSON file")]
+    InvalidEvaluationSuiteFile,
+    /// The isolated blocking evaluation worker could not be joined.
+    #[error("evaluation worker stopped before returning a report")]
+    EvaluationWorkerFailed,
+    /// One or more scenarios failed their explicit assertions.
+    #[error("{0} evaluation scenario(s) failed; inspect the report emitted above")]
+    EvaluationFailed(u64),
     /// Install provenance or lifecycle inspection failed.
     #[error(transparent)]
     Lifecycle(#[from] lifecycle::LifecycleError),
@@ -18923,6 +21993,111 @@ enum CliError {
     /// High-risk configuration activation omitted explicit owner approval.
     #[error("high-risk configuration activation requires --approve")]
     ApprovalRequired,
+    /// Registry trust, anti-rollback, or release-evidence mutation omitted explicit approval.
+    #[error("registry durable state activation requires --approve")]
+    RegistryApprovalRequired,
+    /// Owner-selected registry metadata was absent, redirected, oversized, or malformed.
+    #[error("registry metadata must be a nonempty bounded no-follow regular file")]
+    InvalidRegistryMetadata,
+    /// Owner-selected registry identity was empty, oversized, or non-canonical.
+    #[error(
+        "registry identity must be 1 through 255 ASCII letters, digits, dots, underscores, colons, or hyphens"
+    )]
+    InvalidRegistryIdentifier,
+    /// Mirror refresh did not bind one canonical SHA-256 snapshot envelope identity.
+    #[error(
+        "registry snapshot refresh requires the exact lowercase SHA-256 printed by snapshot-fetch"
+    )]
+    InvalidRegistrySnapshotDigest,
+    /// Release acceptance did not bind one canonical SHA-256 envelope identity.
+    #[error(
+        "registry release acceptance requires the exact lowercase SHA-256 printed by release-fetch"
+    )]
+    InvalidRegistryReleaseDigest,
+    /// Package staging did not bind one canonical SHA-256 archive identity.
+    #[error(
+        "registry package staging requires the exact lowercase SHA-256 printed by package-fetch"
+    )]
+    InvalidRegistryPackageDigest,
+    /// Package installation did not bind one canonical reviewed plan identity.
+    #[error(
+        "registry package installation requires the exact lowercase SHA-256 printed by package-plan"
+    )]
+    InvalidRegistryPackagePlanDigest,
+    /// Registry metadata commands require an initialized canonical database.
+    #[error("the Mealy home has no canonical database; initialize and stop the daemon first")]
+    RegistryDatabaseNotFound,
+    /// Registry metadata commands must not implicitly migrate an existing canonical database.
+    #[error(
+        "registry metadata requires canonical schema {supported}, but this stopped home has schema {found}; start the matching Mealy daemon to run its backup-protected migration, stop it, and retry"
+    )]
+    RegistrySchemaNotReady {
+        /// Existing schema revision.
+        found: u64,
+        /// Exact schema revision supported by this binary.
+        supported: u64,
+    },
+    /// Canonical registry state differed from the exact verified result.
+    #[error("canonical registry metadata changed unexpectedly; no further action was attempted")]
+    RegistryStateDrift,
+    /// The mirror changed after the owner reviewed the exact snapshot envelope.
+    #[error(
+        "registry mirror snapshot changed after review; run snapshot-fetch again and review the new digest"
+    )]
+    RegistrySnapshotDrift,
+    /// Immutable release bytes differed from the exact reviewed envelope.
+    #[error(
+        "registry release changed after review; run release-fetch again and review the new digest"
+    )]
+    RegistryReleaseDrift,
+    /// Immutable package bytes differed from the exact reviewed archive.
+    #[error(
+        "registry package changed after review; run package-fetch again and review the new digest"
+    )]
+    RegistryPackageDrift,
+    /// Installed state or staged evidence changed after the owner reviewed the plan.
+    #[error(
+        "registry package install plan changed after review; run package-plan again and review the new digest"
+    )]
+    RegistryPackagePlanDrift,
+    /// Current accepted registry policy no longer authorizes an installed skill revision.
+    #[error(
+        "the installed registry skill is not authorized by current accepted registry policy; inspect `skill status`, keep it disabled, and install an exact reviewed replacement or rollback"
+    )]
+    RegistrySkillPolicyUnavailable,
+    /// No durable release evidence exists for the exact requested identity.
+    #[error("registry release evidence was not found")]
+    RegistryReleaseNotFound,
+    /// No durable exact package bytes exist for the requested identity.
+    #[error("registry package evidence was not found; run package-fetch and package-stage first")]
+    RegistryPackageNotFound,
+    /// Cryptographic or semantic registry metadata verification failed.
+    #[error(transparent)]
+    RegistryVerification(#[from] RegistryError),
+    /// Canonical registry mirror validation or bounded HTTPS retrieval failed.
+    #[error(transparent)]
+    RegistryMirror(#[from] RegistryMirrorError),
+    /// Authenticated registry package bytes failed strict inert archive inspection.
+    #[error(transparent)]
+    RegistryPackageInspection(#[from] RegistryPackageArchiveError),
+    /// Authenticated registry extension bytes could not be published exactly and inertly.
+    #[error(transparent)]
+    RegistryExtensionPackage(#[from] RegistryExtensionPackageError),
+    /// Content-addressed registry package publication or verification failed.
+    #[error(transparent)]
+    RegistryPackageBlob(#[from] ArtifactBlobStoreError),
+    /// Registry use-case verification or atomic persistence failed.
+    #[error(transparent)]
+    RegistryUseCase(#[from] RegistryUseCaseError),
+    /// Canonical registry metadata lookup failed.
+    #[error(transparent)]
+    RegistryMetadataStore(#[from] RegistryMetadataStoreError),
+    /// Existing extension lifecycle evidence could not be projected for an install plan.
+    #[error(transparent)]
+    RegistryExtensionPlan(#[from] ExtensionStoreError),
+    /// Canonical `SQLite` storage could not be opened safely.
+    #[error("canonical registry store could not be opened safely: {0}")]
+    RegistryStore(#[source] StoreError),
     /// Guided setup input is missing, malformed, unbounded, or inconsistent with its provider.
     #[error("guided setup input is invalid; rerun `mealyctl setup --help`")]
     InvalidSetupInput,
@@ -18992,6 +22167,18 @@ enum CliError {
     /// Owner-entered memory namespace, content, confidence, or provenance is invalid.
     #[error("owner-entered governed memory is invalid")]
     InvalidMemoryOwnerEntry,
+    /// One-shot automation instant is not one bounded RFC 3339 timestamp.
+    #[error("automation --at must be one bounded RFC 3339 instant with an explicit UTC offset")]
+    InvalidAutomationTime,
+    /// Caller-proposed automation identity is not one canonical `UUIDv7`.
+    #[error("automation --automation-id must be one canonical UUIDv7")]
+    InvalidAutomationId,
+    /// Caller-proposed remote-continuation identity is not one canonical `UUIDv7`.
+    #[error("Slack continuation --remote-continuation-id must be one canonical UUIDv7")]
+    InvalidRemoteContinuationId,
+    /// Remote-continuation lifetime is not one through 720 whole hours.
+    #[error("Slack continuation --expires-in-hours must be between 1 and 720")]
+    InvalidRemoteContinuationLifetime,
     /// Explicit local text attachment is unsafe, unsupported, oversized, or not valid UTF-8.
     #[error(
         "local text attachment must be a nonempty no-follow regular UTF-8 file with a supported extension and at most 256 KiB"
@@ -19138,26 +22325,30 @@ enum CliError {
 #[cfg(test)]
 mod tests {
     use super::{
-        ApprovalCommand, Arguments, BrowserArguments, BrowserNamespace, ChannelCommand, ChatLine,
-        ChatMemoryCommand, CliError, Command, CompactionCommand, ConfigCommand, DelegationCommand,
-        DiscordPairMessage, DiscordPairUser, EffectCommand, ExtensionCommand,
-        ImageGenerationProtocolArgument, LifecycleArguments, LifecycleCommand,
-        MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES,
-        MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction, MediaArguments, MediaNamespace,
-        MediaOptions, MemoryCommand, OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode,
-        OnboardOptions, ProviderCommand, ProviderSwitchRecoveryRoute, ResumableChatTask,
-        SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand, SessionCommand,
-        SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument, SkillCommand,
-        TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
-        UpdateRecoveryRoute, browser_invocation, chat_usage_line,
-        configure_provider_image_generation, configure_workspace_grant, decode,
-        generate_discord_pair_challenge, generate_telegram_pair_challenge, initialize_setup_home,
-        inspect_mcp_executable, lifecycle_invocation, load_connection, media_invocation,
-        normalize_openrouter_display_name, observe_discord_pair_messages,
-        observe_resumable_chat_event, observe_telegram_pair_updates, onboard_chat_mode,
-        openrouter_price_is_zero, openrouter_price_microunits_per_million, parse_chat_line,
-        prepare_local_image_attachment, prepare_local_text_attachment,
-        provider_switch_recovery_route, resolve_default_operational_subcommand, resolve_setup,
+        ApprovalCommand, Arguments, AutomationCommand, AutomationId, BrowserArguments,
+        BrowserNamespace, ChannelCommand, ChatLine, ChatMemoryCommand, CliError, Command,
+        CompactionCommand, ConfigArguments, ConfigCommand, ConfigNamespace, DelegationCommand,
+        DiscordPairMessage, DiscordPairUser, EffectCommand, EvaluationArguments, EvaluationCommand,
+        EvaluationNamespace, ExtensionCommand, ImageGenerationProtocolArgument, LifecycleArguments,
+        LifecycleCommand, MAXIMUM_DAEMON_RESPONSE_BYTES, MAXIMUM_EVALUATION_SUITE_BYTES,
+        MAXIMUM_LOCAL_IMAGE_ATTACHMENT_BYTES, MAXIMUM_LOCAL_TEXT_ATTACHMENT_BYTES, MediaAction,
+        MediaArguments, MediaNamespace, MediaOptions, MemoryCommand,
+        OPENAI_SUBSCRIPTION_DEFAULT_MODEL, OnboardChatMode, OnboardOptions, ProviderCommand,
+        ProviderSwitchRecoveryRoute, RegistryArguments, RegistryCommand, RegistryNamespace,
+        ResumableChatTask, SETUP_PROVIDER_ESTIMATED_LATENCY_MS, ScheduleCommand, ServiceCommand,
+        SessionCommand, SessionExportFormatArgument, SessionProviderCommand, SetupProviderArgument,
+        SkillCommand, TelegramPairChat, TelegramPairMessage, TelegramPairUpdate, TelegramPairUser,
+        UpdateRecoveryRoute, browser_invocation, chat_usage_line, config_invocation,
+        configure_memory_embedding, configure_provider_image_generation, configure_workspace_grant,
+        decode, disable_memory_embedding, evaluation_invocation, generate_discord_pair_challenge,
+        generate_telegram_pair_challenge, initialize_setup_home, inspect_mcp_executable,
+        lifecycle_invocation, load_connection, media_invocation, normalize_openrouter_display_name,
+        observe_discord_pair_messages, observe_resumable_chat_event, observe_telegram_pair_updates,
+        onboard_chat_mode, openrouter_price_is_zero, openrouter_price_microunits_per_million,
+        parse_automation_instant, parse_chat_line, prepare_local_image_attachment,
+        prepare_local_text_attachment, provider_switch_recovery_route, read_evaluation_suite,
+        registry_invocation, registry_skill_install_plan, require_registry_snapshot_review_digest,
+        resolve_automation_id, resolve_default_operational_subcommand, resolve_setup,
         select_codex_subscription_model, setup_provider_config, should_open_onboard_chat,
         stable_default_mealy_home, telegram_pair_api_url, update_recovery_route,
         valid_daemon_config_keys, validate_anthropic_probe_envelope,
@@ -19174,7 +22365,12 @@ mod tests {
     };
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use clap::Parser;
-    use mealy_application::{AgentLoopLimits, ProviderConfig, default_daemon_config_document};
+    use mealy_application::{
+        AgentLoopLimits, MemoryEmbeddingConfig, ProviderConfig, default_daemon_config_document,
+    };
+    use mealy_domain::{
+        SKILL_MANIFEST_CONTRACT_VERSION, SkillAsset, SkillManifest, SkillToolRequirement,
+    };
     use mealy_infrastructure::CodexSubscriptionModel;
     use mealy_protocol::{
         API_VERSION, DeliveryMode, LocalConnectionInfo, TaskBudgetUsage, TimelineCursor,
@@ -19185,7 +22381,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     #[cfg(target_os = "linux")]
     use std::path::Path;
-    use std::{collections::BTreeMap, ffi::OsString, fs, io::Cursor, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        ffi::OsString,
+        fs,
+        io::Cursor,
+        path::PathBuf,
+    };
 
     fn connection(base_url: &str) -> LocalConnectionInfo {
         LocalConnectionInfo {
@@ -19823,6 +23025,30 @@ mod tests {
     }
 
     #[test]
+    fn config_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("config"),
+            OsString::from("provider-list"),
+        ];
+        assert!(config_invocation(&arguments));
+        assert!(!config_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed = ConfigArguments::try_parse_from(arguments)
+            .expect("separate configuration command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            ConfigNamespace::Config { command }
+                if matches!(command.as_ref(), ConfigCommand::ProviderList)
+        ));
+    }
+
+    #[test]
     fn media_parser_is_selected_without_growing_the_operational_command_graph() {
         let arguments = vec![
             OsString::from("mealyctl"),
@@ -19934,6 +23160,319 @@ mod tests {
     }
 
     #[test]
+    fn registry_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("registry"),
+            OsString::from("snapshot-accept"),
+            OsString::from("dev.mealy.registry"),
+            OsString::from("--envelope"),
+            OsString::from("/tmp/snapshot.json"),
+            OsString::from("--approve"),
+        ];
+        assert!(registry_invocation(&arguments));
+        assert!(!registry_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed =
+            RegistryArguments::try_parse_from(arguments).expect("separate registry command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::SnapshotAccept {
+                        registry_id,
+                        envelope,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && envelope == Path::new("/tmp/snapshot.json")
+                )
+        ));
+
+        let refresh = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "snapshot-refresh",
+            "dev.mealy.registry",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--approve",
+        ])
+        .expect("registry mirror refresh command");
+        assert!(matches!(
+            refresh.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::SnapshotRefresh {
+                        registry_id,
+                        mirror,
+                        expected_envelope_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_envelope_digest
+                            == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+        ));
+        assert!(
+            require_registry_snapshot_review_digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            require_registry_snapshot_review_digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            Err(CliError::RegistrySnapshotDrift)
+        ));
+    }
+
+    #[test]
+    fn evaluation_parser_is_selected_without_growing_the_operational_command_graph() {
+        let arguments = vec![
+            OsString::from("mealyctl"),
+            OsString::from("--home"),
+            OsString::from("/srv/mealy"),
+            OsString::from("eval"),
+            OsString::from("run"),
+            OsString::from("/tmp/core-eval.json"),
+        ];
+        assert!(evaluation_invocation(&arguments));
+        assert!(!evaluation_invocation(&[
+            OsString::from("mealyctl"),
+            OsString::from("status"),
+        ]));
+        let parsed = EvaluationArguments::try_parse_from(arguments)
+            .expect("separate evaluation command graph");
+        assert_eq!(parsed.home, PathBuf::from("/srv/mealy"));
+        assert!(matches!(
+            parsed.command,
+            EvaluationNamespace::Eval { command }
+                if matches!(
+                    command.as_ref(),
+                    EvaluationCommand::Run { suite }
+                        if suite == Path::new("/tmp/core-eval.json")
+                )
+        ));
+    }
+
+    #[test]
+    fn evaluation_suite_reads_are_strict_bounded_regular_and_no_follow() {
+        let directory = tempfile::tempdir().expect("evaluation suite directory");
+        let path = directory.path().join("suite.json");
+        let document = json!({
+            "contractVersion": "mealy.evaluation-suite.v1",
+            "suiteId": "cli.read",
+            "cases": [{
+                "caseId": "one",
+                "input": {"content": "private prompt"},
+                "expect": {
+                    "settledStatus": "succeeded",
+                    "replay": {},
+                    "forbiddenEvents": ["effect.dispatched"]
+                },
+                "timeoutMs": 1000,
+                "pollIntervalMs": 20
+            }]
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec(&document).expect("suite encoding"),
+        )
+        .expect("suite write");
+        let suite = read_evaluation_suite(&path).expect("strict suite read");
+        assert_eq!(suite.suite_id, "cli.read");
+
+        let oversized = directory.path().join("oversized.json");
+        let file = fs::File::create(&oversized).expect("oversized suite");
+        file.set_len(MAXIMUM_EVALUATION_SUITE_BYTES + 1)
+            .expect("oversized suite length");
+        assert!(matches!(
+            read_evaluation_suite(&oversized),
+            Err(CliError::InvalidEvaluationSuiteFile)
+        ));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let linked = directory.path().join("linked.json");
+            symlink(&path, &linked).expect("suite link");
+            assert!(read_evaluation_suite(&linked).is_err());
+        }
+    }
+
+    #[test]
+    fn registry_release_parser_preserves_exact_review_identity() {
+        let release = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "release-accept",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-envelope-digest",
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "--approve",
+        ])
+        .expect("registry release acceptance command");
+        assert!(matches!(
+            release.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::ReleaseAccept {
+                        registry_id,
+                        package_id,
+                        version,
+                        mirror,
+                        expected_envelope_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_envelope_digest
+                            == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                )
+        ));
+
+        let package = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-fetch",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+        ])
+        .expect("registry package fetch command");
+        assert!(matches!(
+            package.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackageFetch {
+                        registry_id,
+                        package_id,
+                        version,
+                        mirror,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                )
+        ));
+
+        let staged = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-stage",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+            "--mirror",
+            "https://registry.example.test/mealy/v1/",
+            "--expected-archive-digest",
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "--approve",
+        ])
+        .expect("registry package stage command");
+        assert!(matches!(
+            staged.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackageStage {
+                        registry_id,
+                        package_id,
+                        version,
+                        mirror,
+                        expected_archive_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                        && mirror == "https://registry.example.test/mealy/v1/"
+                        && expected_archive_digest
+                            == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                )
+        ));
+    }
+
+    #[test]
+    fn registry_package_plan_parser_preserves_exact_staged_identity() {
+        let plan = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-plan",
+            "dev.mealy.registry",
+            "dev.mealy.extension.clock",
+            "1.0.0",
+        ])
+        .expect("registry package plan command");
+        assert!(matches!(
+            plan.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackagePlan {
+                        registry_id,
+                        package_id,
+                        version,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.extension.clock"
+                        && version == "1.0.0"
+                )
+        ));
+
+        let install = RegistryArguments::try_parse_from([
+            "mealyctl",
+            "registry",
+            "package-install",
+            "dev.mealy.registry",
+            "dev.mealy.skill.review",
+            "1.0.0",
+            "--expected-plan-digest",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "--approve",
+        ])
+        .expect("registry package install command");
+        assert!(matches!(
+            install.command,
+            RegistryNamespace::Registry { command }
+                if matches!(
+                    command.as_ref(),
+                    RegistryCommand::PackageInstall {
+                        registry_id,
+                        package_id,
+                        version,
+                        expected_plan_digest,
+                        approve: true,
+                    } if registry_id == "dev.mealy.registry"
+                        && package_id == "dev.mealy.skill.review"
+                        && version == "1.0.0"
+                        && expected_plan_digest
+                            == "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                )
+        ));
+    }
+
+    #[test]
     fn stopped_home_configuration_commands_preserve_image_generation_authority() {
         let mut config = serde_json::json!({
             "agentLoopLimits": {},
@@ -20037,6 +23576,123 @@ mod tests {
         )
         .expect("disabled JSON");
         assert!(disabled.get("imageGeneration").is_none());
+        assert_eq!(
+            fs::read_dir(home.path().join("config-history"))
+                .expect("history")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn semantic_memory_configuration_is_explicit_archived_and_reversible() {
+        let parsed = ConfigArguments::try_parse_from([
+            "mealyctl",
+            "config",
+            "memory-embedding",
+            "--base-url",
+            "http://127.0.0.1:8080/v1",
+            "--model",
+            "nomic-embed-text",
+            "--dimensions",
+            "768",
+            "--residency",
+            "owner-host",
+            "--document-prefix",
+            "search_document: ",
+            "--query-prefix",
+            "search_query: ",
+            "--skip-connectivity-test",
+            "--approve",
+        ])
+        .expect("semantic memory command");
+        assert!(matches!(
+            parsed.command,
+            ConfigNamespace::Config { command }
+                if matches!(
+                    command.as_ref(),
+                    ConfigCommand::MemoryEmbedding {
+                        base_url,
+                        model,
+                        dimensions: 768,
+                        residency,
+                        secret_id: None,
+                        credential_env: None,
+                        document_prefix,
+                        query_prefix,
+                        request_timeout_ms: 30_000,
+                        skip_connectivity_test: true,
+                        approve: true,
+                    } if base_url == "http://127.0.0.1:8080/v1"
+                        && model == "nomic-embed-text"
+                        && residency == "owner-host"
+                        && document_prefix == "search_document: "
+                        && query_prefix == "search_query: "
+                )
+        ));
+
+        let home = tempfile::tempdir().expect("daemon home");
+        fs::create_dir(home.path().join("config-history")).expect("configuration history");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        assert!(matches!(
+            configure_memory_embedding(
+                home.path(),
+                "http://127.0.0.1:8080/v1",
+                "nomic-embed-text",
+                768,
+                "owner-host",
+                None,
+                None,
+                "search_document: ",
+                "search_query: ",
+                30_000,
+                true,
+                false,
+            ),
+            Err(CliError::ApprovalRequired)
+        ));
+        configure_memory_embedding(
+            home.path(),
+            "http://127.0.0.1:8080/v1",
+            "nomic-embed-text",
+            768,
+            "owner-host",
+            None,
+            None,
+            "search_document: ",
+            "search_query: ",
+            30_000,
+            true,
+            true,
+        )
+        .expect("enable semantic memory");
+        let configured: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("configured bytes"),
+        )
+        .expect("configured JSON");
+        let policy = serde_json::from_value::<MemoryEmbeddingConfig>(
+            configured
+                .get("memoryEmbedding")
+                .cloned()
+                .expect("memory embedding policy"),
+        )
+        .expect("typed memory embedding policy");
+        assert_eq!(policy.model(), "nomic-embed-text");
+        assert_eq!(policy.dimensions(), 768);
+        assert!(policy.is_local().expect("local policy"));
+
+        disable_memory_embedding(home.path(), true).expect("disable semantic memory");
+        let disabled: Value = serde_json::from_slice(
+            &fs::read(home.path().join("config.json")).expect("disabled bytes"),
+        )
+        .expect("disabled JSON");
+        assert!(disabled.get("memoryEmbedding").is_none());
         assert_eq!(
             fs::read_dir(home.path().join("config-history"))
                 .expect("history")
@@ -20486,7 +24142,7 @@ mod tests {
 
         let executable = canonical_home.join("oversized-server");
         let file = std::fs::File::create(&executable).expect("create sparse executable");
-        file.set_len(super::MAXIMUM_MCP_EXECUTABLE_BYTES + 1)
+        file.set_len(mealy_infrastructure::MAXIMUM_EXTERNAL_EXECUTABLE_BYTES + 1)
             .expect("oversized sparse executable");
         #[cfg(unix)]
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
@@ -20640,7 +24296,7 @@ mod tests {
         assert!(!openrouter_price_is_zero("0.0001"));
         assert!(!openrouter_price_is_zero("0.0000000000000"));
 
-        let discovery = Arguments::try_parse_from([
+        let discovery = ConfigArguments::try_parse_from([
             "mealyctl",
             "config",
             "provider-models-openrouter",
@@ -20650,7 +24306,7 @@ mod tests {
         .expect("OpenRouter discovery preset");
         assert!(matches!(
             discovery.command,
-            Command::Config {
+            ConfigNamespace::Config {
                 command
             } if matches!(
                 command.as_ref(),
@@ -20664,7 +24320,7 @@ mod tests {
                 && contains == "claude"
             )
         ));
-        let activation = Arguments::try_parse_from([
+        let activation = ConfigArguments::try_parse_from([
             "mealyctl",
             "config",
             "provider-openrouter",
@@ -20681,7 +24337,7 @@ mod tests {
         .expect("OpenRouter activation preset");
         assert!(matches!(
             activation.command,
-            Command::Config {
+            ConfigNamespace::Config {
                 command
             } if matches!(
                 command.as_ref(),
@@ -21214,9 +24870,8 @@ mod tests {
         .expect("parse governed memory proposal");
         assert!(matches!(
             memory.command,
-            Command::Memory {
-                command: MemoryCommand::Propose { .. }
-            }
+            Command::Memory { command }
+                if matches!(command.as_ref(), MemoryCommand::Propose { .. })
         ));
 
         let remember = Arguments::try_parse_from([
@@ -21231,9 +24886,11 @@ mod tests {
         .expect("parse direct governed memory activation");
         assert!(matches!(
             remember.command,
-            Command::Memory {
-                command: MemoryCommand::Remember { approve: true, .. }
-            }
+            Command::Memory { command }
+                if matches!(
+                    command.as_ref(),
+                    MemoryCommand::Remember { approve: true, .. }
+                )
         ));
 
         let history = Arguments::try_parse_from([
@@ -21263,12 +24920,14 @@ mod tests {
         .expect("parse governed memory rejection");
         assert!(matches!(
             rejection.command,
-            Command::Memory {
-                command: MemoryCommand::Reject {
-                    expected_revision: 0,
-                    ..
-                }
-            }
+            Command::Memory { command }
+                if matches!(
+                    command.as_ref(),
+                    MemoryCommand::Reject {
+                        expected_revision: 0,
+                        ..
+                    }
+                )
         ));
 
         let compaction = Arguments::try_parse_from([
@@ -21491,6 +25150,163 @@ mod tests {
             } if skill_id == "mealy.fixture.review"
                 && expected_manifest_digest == "b".repeat(64)
         ));
+    }
+
+    #[test]
+    fn registry_skill_plan_exposes_new_tool_references_without_installing() {
+        let home = tempfile::tempdir().expect("temporary skill plan home");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let candidate = SkillManifest {
+            contract_version: SKILL_MANIFEST_CONTRACT_VERSION.to_owned(),
+            skill_id: "dev.mealy.skill.review".to_owned(),
+            version: "1.0.0".to_owned(),
+            instructions: vec![SkillAsset {
+                relative_path: "instructions/review.md".to_owned(),
+                media_type: "text/markdown".to_owned(),
+                content_digest: "a".repeat(64),
+                size_bytes: 1,
+            }],
+            resources: Vec::new(),
+            required_tools: BTreeSet::from([SkillToolRequirement {
+                tool_id: "workspace.read".to_owned(),
+                version: "1".to_owned(),
+                input_schema_digest: "b".repeat(64),
+            }]),
+        };
+        let provenance = super::InstalledSkillRegistryProvenance {
+            registry_id: "dev.mealy.registry".to_owned(),
+            release_envelope_digest: "d".repeat(64),
+            archive_digest: "e".repeat(64),
+        };
+        let plan =
+            registry_skill_install_plan(home.path(), &candidate, &"c".repeat(64), &provenance)
+                .expect("new skill install plan");
+        assert_eq!(plan.0, "install");
+        assert!(plan.1.is_none());
+        assert_eq!(plan.2["addedRequiredTools"][0]["toolId"], "workspace.read");
+        assert_eq!(plan.2["removedRequiredTools"], json!([]));
+        assert_eq!(plan.3["instructionsChanged"], true);
+        assert!(plan.4);
+        assert!(!plan.5);
+        assert!(
+            !home.path().join("skills").exists(),
+            "planning must not publish package content"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // One proof covers publication, provenance, and activation refusal.
+    fn registry_skill_apply_publishes_disabled_provenance_bound_package() {
+        let home = tempfile::tempdir().expect("temporary registry skill home");
+        fs::write(
+            home.path().join("config.json"),
+            serde_json::to_vec_pretty(&default_daemon_config_document())
+                .expect("default configuration"),
+        )
+        .expect("configuration");
+        let source = home.path().join("source");
+        fs::create_dir(&source).expect("source directory");
+        let instruction = b"Review the requested change.\n";
+        fs::create_dir(source.join("instructions")).expect("instruction directory");
+        fs::write(source.join("instructions/review.md"), instruction).expect("instruction");
+        let manifest = SkillManifest {
+            contract_version: SKILL_MANIFEST_CONTRACT_VERSION.to_owned(),
+            skill_id: "dev.mealy.skill.review".to_owned(),
+            version: "1.0.0".to_owned(),
+            instructions: vec![SkillAsset {
+                relative_path: "instructions/review.md".to_owned(),
+                media_type: "text/markdown".to_owned(),
+                content_digest: mealy_application::sha256_digest(instruction),
+                size_bytes: u64::try_from(instruction.len()).expect("instruction size"),
+            }],
+            resources: Vec::new(),
+            required_tools: BTreeSet::new(),
+        };
+        let manifest_bytes = serde_json::to_vec(&manifest).expect("manifest");
+        fs::write(source.join("manifest.json"), &manifest_bytes).expect("manifest file");
+        let package = super::inspect_skill_package(
+            &source.join("manifest.json"),
+            &source,
+            Some(&mealy_application::sha256_digest(&manifest_bytes)),
+        )
+        .expect("inspect skill");
+        let provenance = super::InstalledSkillRegistryProvenance {
+            registry_id: "dev.mealy.registry".to_owned(),
+            release_envelope_digest: "d".repeat(64),
+            archive_digest: "e".repeat(64),
+        };
+        let plan = super::RegistryPackagePlanResponse {
+            operation: "package_install_planned",
+            plan_digest: "f".repeat(64),
+            registry_id: provenance.registry_id.clone(),
+            package_id: manifest.skill_id.clone(),
+            kind: mealy_application::RegistryPackageKind::Skill,
+            version: manifest.version.clone(),
+            publisher_id: "dev.mealy".to_owned(),
+            release_envelope_digest: provenance.release_envelope_digest.clone(),
+            manifest_digest: package.manifest_digest().to_owned(),
+            archive_digest: provenance.archive_digest.clone(),
+            staged_at_ms: 1,
+            action: "install",
+            current: None,
+            permission_diff: json!({
+                "kind": "skill",
+                "addedRequiredTools": [],
+                "removedRequiredTools": [],
+            }),
+            content_changes: json!({
+                "instructionsChanged": true,
+                "resourcesChanged": false,
+                "versionChanged": true,
+            }),
+            review: super::RegistryPackagePlanReview {
+                required: true,
+                widens_authority: false,
+                authority_reset_on_apply: false,
+            },
+            effects: super::RegistryPackagePlanEffects {
+                network_access: false,
+                filesystem_mutation: false,
+                package_authority: false,
+            },
+        };
+        let response =
+            super::apply_registry_skill_install(home.path(), &package, &provenance, &plan)
+                .expect("apply reviewed skill plan");
+        assert_eq!(response.operation, "installed_disabled");
+        assert!(!response.activation.instruction_authority_active);
+        assert!(!response.activation.tool_authority_granted);
+        assert!(response.effects.filesystem_mutation);
+        assert!(response.effects.restart_required);
+        let (_path, _body, _value, records) =
+            super::load_skill_configuration(home.path()).expect("installed configuration");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].registry.as_ref(), Some(&provenance));
+        assert!(!records[0].enabled);
+        super::inspect_installed_skill(home.path(), &records[0])
+            .expect("reinspect immutable installed skill");
+        drop(
+            mealy_infrastructure::SqliteStore::open(home.path().join("mealy.sqlite3"), 0)
+                .expect("empty registry store"),
+        );
+        assert!(matches!(
+            super::set_skill_enabled(
+                home.path(),
+                &manifest.skill_id,
+                package.manifest_digest(),
+                true,
+                true,
+            ),
+            Err(super::CliError::RegistrySkillPolicyUnavailable)
+        ));
+        let (_path, _body, _value, records) =
+            super::load_skill_configuration(home.path()).expect("blocked activation state");
+        assert!(!records[0].enabled);
     }
 
     #[test]
@@ -21790,9 +25606,102 @@ mod tests {
     }
 
     #[test]
+    fn automation_commands_require_explicit_time_and_revision_shapes() {
+        let create = Arguments::try_parse_from([
+            "mealyctl",
+            "automation",
+            "create-once-prompt",
+            "session-1",
+            "--name",
+            "review build",
+            "--at",
+            "2026-08-01T09:00:00+12:00",
+            "Review the build.",
+        ])
+        .expect("automation create command");
+        assert!(matches!(
+            create.command,
+            Command::Automation {
+                command: AutomationCommand::CreateOncePrompt {
+                    session_id,
+                    name,
+                    at,
+                    ..
+                }
+            } if session_id == "session-1"
+                && name == "review build"
+                && at == "2026-08-01T09:00:00+12:00"
+        ));
+
+        let edit = Arguments::try_parse_from([
+            "mealyctl",
+            "automation",
+            "edit-event-notify",
+            "automation-1",
+            "--expected-revision",
+            "4",
+            "--source-session-id",
+            "session-source",
+            "--target-session-id",
+            "session-target",
+            "--name",
+            "completion",
+            "--event-type",
+            "turn.completed",
+            "Done.",
+        ])
+        .expect("automation edit command");
+        assert!(matches!(
+            edit.command,
+            Command::Automation {
+                command: AutomationCommand::EditEventNotify {
+                    automation_id,
+                    expected_revision: 4,
+                    ..
+                }
+            } if automation_id == "automation-1"
+        ));
+
+        assert_eq!(
+            parse_automation_instant("2026-08-01T09:00:00+12:00").unwrap(),
+            parse_automation_instant("2026-07-31T21:00:00Z").unwrap()
+        );
+        let retry_id = "019f0000-0000-7000-8000-000000000001";
+        assert_eq!(
+            resolve_automation_id(Some(retry_id.to_owned())).unwrap(),
+            (retry_id.to_owned(), false)
+        );
+        assert!(matches!(
+            resolve_automation_id(Some("019f0000-0000-4000-8000-000000000001".to_owned())),
+            Err(CliError::InvalidAutomationId)
+        ));
+        let (generated, was_generated) = resolve_automation_id(None).unwrap();
+        assert!(was_generated);
+        assert_eq!(
+            generated
+                .parse::<AutomationId>()
+                .expect("generated automation ID")
+                .as_uuid()
+                .get_version_num(),
+            7
+        );
+        for invalid in [
+            "2026-08-01T09:00:00",
+            " 2026-08-01T09:00:00+12:00",
+            "2026-08-01",
+            "",
+        ] {
+            assert!(matches!(
+                parse_automation_instant(invalid),
+                Err(CliError::InvalidAutomationTime)
+            ));
+        }
+    }
+
+    #[test]
     fn configuration_rollback_requires_an_exact_digest_and_explicit_approval_shape() {
         let digest = "a".repeat(64);
-        let parsed = Arguments::try_parse_from([
+        let parsed = ConfigArguments::try_parse_from([
             "mealyctl",
             "--home",
             "/tmp/mealy",
@@ -21804,7 +25713,7 @@ mod tests {
         .expect("config rollback command");
         assert!(matches!(
             parsed.command,
-            Command::Config { command }
+            ConfigNamespace::Config { command }
                 if matches!(command.as_ref(), ConfigCommand::Rollback { approve: true, .. })
         ));
     }

@@ -108,6 +108,7 @@ if [[ ! -f $release/PAYLOAD-SHA256SUMS \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/REFERENCE_SYSTEMS.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md \
+  || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/V0_3_TO_V0_5_COMPLETION_AUDIT_2026-07-30.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/third-party-licenses.html \
   || ! -f $temporary/extracted/usr/share/doc/mealy/THREAT_MODEL.md ]]; then
   echo "Debian package is missing mandatory release metadata" >&2

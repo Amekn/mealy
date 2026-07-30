@@ -219,6 +219,8 @@ jobs:
           shellcheck packaging/*.sh scripts/*.sh
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
+      - name: Verify stable SDK packages through a clean downstream consumer
+        run: scripts/sdk-package-smoke.sh
       - run: cargo test --locked --workspace --doc --all-features
       - run: RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-deps
       - name: Validate checked documentation against public surfaces
@@ -261,7 +263,7 @@ jobs:
           docs/benchmarks/release-soak.json
           target/release/mealyd "$GITHUB_SHA"
           docs/benchmarks/release-soak-lineage.json
-      - name: Download and verify the public native-upgrade baseline
+      - name: Download and verify every public native-upgrade baseline
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -269,63 +271,10 @@ jobs:
           set -euo pipefail
           version=${GITHUB_REF_NAME#v}
           state_schema_version=$(target/release/mealyd --print-supported-schema-version)
-          baseline=$(scripts/validate-release-upgrade-baseline.sh \
+          scripts/fetch-release-upgrade-baselines.sh \
             packaging/release-upgrade-baseline.json \
-            "$version" "$state_schema_version")
-          baseline_tag=$(jq -er '.baselineTag' <<<"$baseline")
-          baseline_version=$(jq -er '.baselineVersion' <<<"$baseline")
-          baseline_schema=$(jq -er '.baselineStateSchemaVersion' <<<"$baseline")
-          checksums="SHA256SUMS-${MEALY_TARGET}"
-          case $MEALY_TARGET in
-            linux-x86_64-gnu)
-              deb="mealy_${baseline_version}_amd64.deb"
-              rpm="mealy-${baseline_version}-1.x86_64.rpm"
-              arch="mealy-${baseline_version}-1-x86_64.pkg.tar.zst"
-              assets=("$checksums" "$deb" "$rpm" "$arch")
-              ;;
-            linux-aarch64-gnu)
-              deb="mealy_${baseline_version}_arm64.deb"
-              rpm="mealy-${baseline_version}-1.aarch64.rpm"
-              arch=
-              assets=("$checksums" "$deb" "$rpm")
-              ;;
-            *)
-              echo "unsupported upgrade-baseline target: $MEALY_TARGET" >&2
-              exit 64
-              ;;
-          esac
-          mkdir baseline
-          arguments=()
-          for asset in "${assets[@]}"; do
-            arguments+=(--pattern "$asset")
-          done
-          gh release download "$baseline_tag" \
-            --repo "$GITHUB_REPOSITORY" --dir baseline "${arguments[@]}"
-          expected=$(printf '%s\n' "${assets[@]}" | sort)
-          actual=$(find baseline -mindepth 1 -maxdepth 1 -type f \
-            -exec basename {} \; | sort)
-          if [[ $actual != "$expected" \
-            || -n $(find baseline -mindepth 1 -maxdepth 1 ! -type f -print -quit) ]]; then
-            echo "native upgrade-baseline download inventory is not exact" >&2
-            exit 65
-          fi
-          for asset in "${assets[@]}"; do
-            gh release verify-asset "$baseline_tag" "baseline/$asset" \
-              --repo "$GITHUB_REPOSITORY" >/dev/null
-          done
-          : >baseline/PACKAGE-SHA256SUMS
-          for asset in "${assets[@]:1}"; do
-            grep -F "  $asset" "baseline/$checksums" \
-              >>baseline/PACKAGE-SHA256SUMS
-          done
-          (cd baseline && sha256sum --check --strict PACKAGE-SHA256SUMS)
-          {
-            printf 'MEALY_UPGRADE_BASELINE_VERSION=%s\n' "$baseline_version"
-            printf 'MEALY_UPGRADE_BASELINE_SCHEMA=%s\n' "$baseline_schema"
-            printf 'MEALY_UPGRADE_BASELINE_DEB=%s\n' "$deb"
-            printf 'MEALY_UPGRADE_BASELINE_RPM=%s\n' "$rpm"
-            printf 'MEALY_UPGRADE_BASELINE_ARCH=%s\n' "$arch"
-          } >>"$GITHUB_ENV"
+            "$version" "$state_schema_version" "$MEALY_TARGET" all \
+            baseline "$GITHUB_REPOSITORY" >/dev/null
       - name: Prepare isolated systemd user manager
         shell: bash
         run: |
@@ -472,50 +421,73 @@ jobs:
           trap - EXIT
           MEALY_INSTALLED_SMOKE_REQUIRE_SANDBOX=true scripts/installed-deb-smoke.sh \
             "dist/mealy_${debian_version}_${debian_architecture}.deb"
-          scripts/installed-native-upgrade-smoke.sh \
-            deb "baseline/$MEALY_UPGRADE_BASELINE_DEB" \
-            "dist/mealy_${debian_version}_${debian_architecture}.deb" \
-            "$MEALY_UPGRADE_BASELINE_VERSION" "$MEALY_UPGRADE_BASELINE_SCHEMA" \
-            "$version" "$state_schema_version"
+          while IFS= read -r baseline; do
+            baseline_version=$(jq -er '.version' <<<"$baseline")
+            baseline_schema=$(jq -er '.stateSchemaVersion' <<<"$baseline")
+            baseline_deb=$(jq -er '.packages.deb | select(length > 0)' \
+              <<<"$baseline")
+            scripts/installed-native-upgrade-smoke.sh \
+              deb "baseline/$baseline_version/$baseline_deb" \
+              "dist/mealy_${debian_version}_${debian_architecture}.deb" \
+              "$baseline_version" "$baseline_schema" \
+              "$version" "$state_schema_version"
+          done < <(jq -c '.baselines[]' baseline/index.json)
           case $MEALY_TARGET in
             linux-x86_64-gnu) rpm_architecture=x86_64 ;;
             linux-aarch64-gnu) rpm_architecture=aarch64 ;;
           esac
           docker run --rm --privileged \
+            --env MEALY_RELEASE_VERSION="$version" \
+            --env MEALY_RELEASE_SCHEMA="$state_schema_version" \
+            --env MEALY_RPM_ARCHITECTURE="$rpm_architecture" \
             --volume "$PWD:/workspace:ro" \
             --volume "$PWD/dist:/dist:ro" \
             --volume "$PWD/baseline:/baseline:ro" \
-            "$FEDORA_IMAGE" sh -lc "
+            "$FEDORA_IMAGE" bash -euo pipefail -c '
               dnf install --assumeyes bubblewrap ca-certificates jq libgcc
               install -d -m 0700 /mealy-smoke
               export MEALY_INSTALLED_SMOKE_ROOT=/mealy-smoke
               MEALY_INSTALLED_SMOKE_REQUIRE_SANDBOX=true \
                 /workspace/scripts/installed-rpm-smoke.sh \
-                /dist/mealy-${version}-1.${rpm_architecture}.rpm
-              /workspace/scripts/installed-native-upgrade-smoke.sh \
-                rpm /baseline/$MEALY_UPGRADE_BASELINE_RPM \
-                /dist/mealy-${version}-1.${rpm_architecture}.rpm \
-                $MEALY_UPGRADE_BASELINE_VERSION $MEALY_UPGRADE_BASELINE_SCHEMA \
-                $version $state_schema_version
-            "
+                "/dist/mealy-${MEALY_RELEASE_VERSION}-1.${MEALY_RPM_ARCHITECTURE}.rpm"
+              while IFS= read -r baseline; do
+                baseline_version=$(jq -er ".version" <<<"$baseline")
+                baseline_schema=$(jq -er ".stateSchemaVersion" <<<"$baseline")
+                baseline_rpm=$(jq -er \
+                  ".packages.rpm | select(length > 0)" <<<"$baseline")
+                /workspace/scripts/installed-native-upgrade-smoke.sh \
+                  rpm "/baseline/$baseline_version/$baseline_rpm" \
+                  "/dist/mealy-${MEALY_RELEASE_VERSION}-1.${MEALY_RPM_ARCHITECTURE}.rpm" \
+                  "$baseline_version" "$baseline_schema" \
+                  "$MEALY_RELEASE_VERSION" "$MEALY_RELEASE_SCHEMA"
+              done < <(jq -c ".baselines[]" /baseline/index.json)
+            '
           if [[ $MEALY_TARGET == linux-x86_64-gnu ]]; then
             docker run --rm --privileged \
+              --env MEALY_RELEASE_VERSION="$version" \
+              --env MEALY_RELEASE_SCHEMA="$state_schema_version" \
               --volume "$PWD:/workspace:ro" \
               --volume "$PWD/dist:/dist:ro" \
               --volume "$PWD/baseline:/baseline:ro" \
-              "$ARCH_IMAGE" sh -lc "
+              "$ARCH_IMAGE" bash -euo pipefail -c '
                 pacman -Syu --noconfirm bubblewrap jq
                 install -d -m 0700 /mealy-smoke
                 export MEALY_INSTALLED_SMOKE_ROOT=/mealy-smoke
                 MEALY_INSTALLED_SMOKE_REQUIRE_SANDBOX=true \
                   /workspace/scripts/installed-arch-smoke.sh \
-                  /dist/mealy-${version}-1-x86_64.pkg.tar.zst
-                /workspace/scripts/installed-native-upgrade-smoke.sh \
-                  arch /baseline/$MEALY_UPGRADE_BASELINE_ARCH \
-                  /dist/mealy-${version}-1-x86_64.pkg.tar.zst \
-                  $MEALY_UPGRADE_BASELINE_VERSION $MEALY_UPGRADE_BASELINE_SCHEMA \
-                  $version $state_schema_version
-              "
+                  "/dist/mealy-${MEALY_RELEASE_VERSION}-1-x86_64.pkg.tar.zst"
+                while IFS= read -r baseline; do
+                  baseline_version=$(jq -er ".version" <<<"$baseline")
+                  baseline_schema=$(jq -er ".stateSchemaVersion" <<<"$baseline")
+                  baseline_arch=$(jq -er \
+                    ".packages.arch | select(length > 0)" <<<"$baseline")
+                  /workspace/scripts/installed-native-upgrade-smoke.sh \
+                    arch "/baseline/$baseline_version/$baseline_arch" \
+                    "/dist/mealy-${MEALY_RELEASE_VERSION}-1-x86_64.pkg.tar.zst" \
+                    "$baseline_version" "$baseline_schema" \
+                    "$MEALY_RELEASE_VERSION" "$MEALY_RELEASE_SCHEMA"
+                done < <(jq -c ".baselines[]" /baseline/index.json)
+              '
           fi
           mv dist/SHA256SUMS "dist/SHA256SUMS-${MEALY_TARGET}"
           rm dist/install-mealy.sh dist/install-mealy-release.sh
@@ -666,6 +638,19 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Build reproducible stable SDK packages
+        run: scripts/build-sdk-packages.sh sdk
+      - name: Attest stable SDK packages and consumer lock
+        id: attest-sdk
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: 'sdk/*'
+      - name: Retain offline stable SDK provenance
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest-sdk.outputs.bundle-path }}
+        run: >-
+          install -m 0644 "$ATTESTATION_BUNDLE"
+          sdk/ATTESTATION-sdk.sigstore.json
       - name: Download all architecture-specific assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -688,6 +673,7 @@ jobs:
           install -m 0644 \
             repository-provenance/ATTESTATION-linux-repositories.sigstore.json \
             dist/ATTESTATION-linux-repositories.sigstore.json
+          install -m 0644 sdk/* dist/
       - name: Attest common installers
         id: attest-installers
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
@@ -945,10 +931,19 @@ jobs:
             linux-x86_64-gnu)
               rpm="mealy-${version}-1.x86_64.rpm"
               arch="mealy-${version}-1-x86_64.pkg.tar.zst"
+              sdk_assets=(
+                "mealy-domain-${version}.crate"
+                "mealy-protocol-${version}.crate"
+                "mealy-client-${version}.crate"
+                "mealy-sdk-${version}-Cargo.lock"
+                SHA256SUMS-sdk
+                ATTESTATION-sdk.sigstore.json
+              )
               ;;
             linux-aarch64-gnu)
               rpm="mealy-${version}-1.aarch64.rpm"
               arch=
+              sdk_assets=()
               ;;
             *)
               echo "unsupported public Linux release target: $MEALY_TARGET" >&2
@@ -988,6 +983,7 @@ jobs:
           if [[ -n $arch ]]; then
             assets+=("$arch")
           fi
+          assets+=("${sdk_assets[@]}")
           gh release view "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --json tagName,isDraft,isImmutable,isPrerelease,assets,url \
@@ -1021,6 +1017,16 @@ jobs:
             --bundle "downloaded/$architecture_bundle" \
             --deny-self-hosted-runners >/dev/null
           (cd downloaded && sha256sum --check --strict "$checksums")
+          if ((${#sdk_assets[@]} > 0)); then
+            gh attestation verify "downloaded/SHA256SUMS-sdk" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$GITHUB_REF_NAME" \
+              --source-digest "$GITHUB_SHA" \
+              --bundle "downloaded/ATTESTATION-sdk.sigstore.json" \
+              --deny-self-hosted-runners >/dev/null
+            scripts/verify-sdk-packages.sh downloaded "$version"
+          fi
       - name: Exercise the public rootless bootstrap through first chat
         env:
           MEALY_PROVIDER_SWITCH_SMOKE_ALLOW_HOST: 'true'
@@ -1187,55 +1193,15 @@ jobs:
           (cd downloaded && sha256sum --check --strict PACKAGE-SHA256SUMS)
           release_schema=$(jq -er '.releaseStateSchemaVersion' \
             packaging/release-upgrade-baseline.json)
-          baseline=$(scripts/validate-release-upgrade-baseline.sh \
-            packaging/release-upgrade-baseline.json "$version" "$release_schema")
-          baseline_tag=$(jq -er '.baselineTag' <<<"$baseline")
-          baseline_version=$(jq -er '.baselineVersion' <<<"$baseline")
-          baseline_schema=$(jq -er '.baselineStateSchemaVersion' <<<"$baseline")
-          case $MEALY_PACKAGE_FAMILY in
-            deb)
-              baseline_package="mealy_${baseline_version}_${MEALY_PACKAGE_ARCHITECTURE}.deb"
-              ;;
-            rpm)
-              baseline_package="mealy-${baseline_version}-1.${MEALY_PACKAGE_ARCHITECTURE}.rpm"
-              ;;
-            arch)
-              baseline_package="mealy-${baseline_version}-1-x86_64.pkg.tar.zst"
-              ;;
-          esac
-          baseline_checksums="SHA256SUMS-${MEALY_TARGET}"
-          mkdir downloaded/baseline
-          gh release download "$baseline_tag" \
-            --repo "$GITHUB_REPOSITORY" --dir downloaded/baseline \
-            --pattern "$baseline_checksums" \
-            --pattern "$baseline_package"
-          expected_baseline=$(printf '%s\n' \
-            "$baseline_checksums" "$baseline_package" | sort)
-          actual_baseline=$(find downloaded/baseline -mindepth 1 -maxdepth 1 \
-            -type f -exec basename {} \; | sort)
-          if [[ $actual_baseline != "$expected_baseline" \
-            || -n $(find downloaded/baseline -mindepth 1 -maxdepth 1 \
-              ! -type f -print -quit) ]]; then
-            echo "public upgrade-baseline inventory is not exact" >&2
-            exit 65
-          fi
-          for asset in "$baseline_checksums" "$baseline_package"; do
-            gh release verify-asset "$baseline_tag" \
-              "downloaded/baseline/$asset" \
-              --repo "$GITHUB_REPOSITORY" >/dev/null
-          done
-          grep -F "  $baseline_package" \
-            "downloaded/baseline/$baseline_checksums" \
-            >downloaded/baseline/PACKAGE-SHA256SUMS
-          (cd downloaded/baseline \
-            && sha256sum --check --strict PACKAGE-SHA256SUMS)
+          scripts/fetch-release-upgrade-baselines.sh \
+            packaging/release-upgrade-baseline.json \
+            "$version" "$release_schema" "$MEALY_TARGET" \
+            "$MEALY_PACKAGE_FAMILY" downloaded/baseline \
+            "$GITHUB_REPOSITORY" >/dev/null
           {
             printf 'MEALY_PUBLIC_PACKAGE=%s\n' "$package"
             printf 'MEALY_RELEASE_VERSION=%s\n' "$version"
             printf 'MEALY_RELEASE_SCHEMA=%s\n' "$release_schema"
-            printf 'MEALY_BASELINE_PACKAGE=%s\n' "$baseline_package"
-            printf 'MEALY_BASELINE_VERSION=%s\n' "$baseline_version"
-            printf 'MEALY_BASELINE_SCHEMA=%s\n' "$baseline_schema"
           } >>"$GITHUB_ENV"
       - name: Exercise the public native package on its distribution
         shell: bash
@@ -1267,16 +1233,20 @@ jobs:
           esac
           # shellcheck disable=SC2016 # Expanded by the container shell from explicit --env values.
           setup+='
-            /source/scripts/installed-native-upgrade-smoke.sh \
-              "$MEALY_PACKAGE_FAMILY" \
-              "/assets/baseline/$MEALY_BASELINE_PACKAGE" \
-              "/assets/$MEALY_PUBLIC_PACKAGE" \
-              "$MEALY_BASELINE_VERSION" "$MEALY_BASELINE_SCHEMA" \
-              "$MEALY_RELEASE_VERSION" "$MEALY_RELEASE_SCHEMA"'
+            while IFS= read -r baseline; do
+              baseline_version=$(jq -er ".version" <<<"$baseline")
+              baseline_schema=$(jq -er ".stateSchemaVersion" <<<"$baseline")
+              baseline_package=$(jq -er \
+                ".packages.$MEALY_PACKAGE_FAMILY | select(length > 0)" \
+                <<<"$baseline")
+              /source/scripts/installed-native-upgrade-smoke.sh \
+                "$MEALY_PACKAGE_FAMILY" \
+                "/assets/baseline/$baseline_version/$baseline_package" \
+                "/assets/$MEALY_PUBLIC_PACKAGE" \
+                "$baseline_version" "$baseline_schema" \
+                "$MEALY_RELEASE_VERSION" "$MEALY_RELEASE_SCHEMA"
+            done < <(jq -c ".baselines[]" /assets/baseline/index.json)'
           docker run --rm --privileged \
-            --env MEALY_BASELINE_PACKAGE \
-            --env MEALY_BASELINE_SCHEMA \
-            --env MEALY_BASELINE_VERSION \
             --env MEALY_PACKAGE_FAMILY \
             --env MEALY_PUBLIC_PACKAGE \
             --env MEALY_RELEASE_SCHEMA \

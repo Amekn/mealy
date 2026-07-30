@@ -229,7 +229,7 @@ endpoint: neither creates alternate media state, and dashboard preview revalidat
 artifact metadata/content endpoints before rendering. Line chat and channel upload are not part of
 this surface.
 
-### Schedules and governed memory
+### Schedules, automations, and governed memory
 
 | Method | Path | Request or query | Response |
 | --- | --- | --- | --- |
@@ -240,9 +240,17 @@ this surface.
 | `POST` | `/v1/schedules/{schedule_id}/resume` | `ScheduleLifecycleRequest` | `ScheduleResponse` |
 | `POST` | `/v1/schedules/{schedule_id}/cancel` | `ScheduleLifecycleRequest` | `ScheduleResponse` |
 | `GET` | `/v1/schedules/{schedule_id}/runs` | optional `limit` (default 100) | `ScheduleRunsResponse` |
+| `GET` | `/v1/automations` | - | `AutomationsResponse` |
+| `POST` | `/v1/automations` | `CreateAutomationRequest` | `AutomationResponse` |
+| `GET` | `/v1/automations/{automation_id}` | - | `AutomationResponse` |
+| `PATCH` | `/v1/automations/{automation_id}` | `EditAutomationRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/pause` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/resume` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `POST` | `/v1/automations/{automation_id}/cancel` | `AutomationLifecycleRequest` | `AutomationResponse` |
+| `GET` | `/v1/automations/{automation_id}/runs` | optional `limit` (default 100) | `AutomationRunsResponse` |
 | `GET` | `/v1/memories` | `workspaceIdentity`, optional `includeDeleted` | `MemoriesResponse` |
 | `POST` | `/v1/memories` | `ProposeMemoryRequest` | `MemoryResponse` |
-| `GET` | `/v1/memories/search` | `workspaceIdentity`, `query`, optional `maximumSensitivity`, optional `limit` | `MemorySearchResponse` |
+| `GET` | `/v1/memories/search` | `workspaceIdentity`, `query`, optional `maximumSensitivity`, optional `limit`, optional `retrievalMode` | `MemorySearchResponse` |
 | `GET` | `/v1/memories/{memory_id}` | `workspaceIdentity` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/activate` | `PromoteMemoryRequest` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/correct` | `CorrectMemoryRequest` | `MemoryResponse` |
@@ -251,6 +259,30 @@ this surface.
 | `POST` | `/v1/memories/{memory_id}/reject` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memories/{memory_id}/delete` | `MemoryLifecycleRequest` | `MemoryResponse` |
 | `POST` | `/v1/memory-index/rebuild` | `RebuildMemoryIndexRequest` | `MemoryIndexRebuildResponse` |
+
+`CreateAutomationRequest.automationId` is a canonical client-proposed UUIDv7 and durable creation
+key. Exact retries return the current projection even after the due time, event-cursor movement, or
+lifecycle advancement; a semantic mismatch conflicts. One-shot times are UTC epoch milliseconds.
+Event triggers observe one exact future direct-session event type after an exclusive cursor and
+accept only a static notification action. Edit and lifecycle requests carry the exact current
+revision. See [the automation contract](AUTOMATION.md).
+
+`retrievalMode` defaults to `lexical`. `hybrid` requests an explicitly configured semantic path
+and never silently claims it was used: the response returns actual `retrievalMode` as `hybrid` or
+`lexical_fallback`, plus `semanticStatus` as one of `healthy`, `disabled`, `not_built`, `stale`,
+`degraded`, `embedding_unavailable`, or `incompatible`. Hits retain the complete cited canonical
+`memory` projection and may include `lexicalRank`, `semanticSimilarity`, and deterministic
+`fusedRankScore`. Namespace, ownership, active status, sensitivity, and content-digest checks run
+before either rank contributes.
+
+`RebuildMemoryIndexRequest` accepts `{ "apiVersion": "v1", "semantic": true }`. Lexical rebuild
+always occurs first. Semantic rebuild is accepted only when the daemon has an explicit embedding
+privacy policy; it snapshots every active revision for that authenticated principal, embeds
+bounded batches outside the writer, and atomically replaces the complete derived set under exact
+revision/content/configuration fences. Its optional `semanticIndex` receipt reports the fixed
+status, non-secret policy digest, dimensions, active-revision count, last successful rebuild, and
+safe error code. Endpoint failure can yield a degraded semantic receipt while canonical lexical
+memory remains usable. See [the semantic-memory guide](SEMANTIC_MEMORY.md).
 
 ### Approvals, effects, and extensions
 
@@ -269,6 +301,12 @@ this surface.
 | `POST` | `/v1/extensions/{extension_id}/disable` | `ExtensionLifecycleRequest` | `ExtensionResponse` |
 | `POST` | `/v1/extensions/{extension_id}/revoke` | `ExtensionLifecycleRequest` | `ExtensionResponse` |
 | `POST` | `/v1/extensions/{extension_id}/invoke` | `InvokeExtensionRequest` | `ExtensionInvocationResponse` |
+
+Each `ExtensionManifestRevisionResponse` may include a `registry` object containing the exact
+`registryId`, `packageId`, `version`, `releaseEnvelopeDigest`, and `archiveDigest` retained for a
+signed-registry installation. Internal package paths remain omitted. Registry policy is enforced
+server-side before enablement and invocation; non-authorized evidence returns the normal conflict
+boundary without executing extension code.
 
 ### Channel administration
 
@@ -290,6 +328,10 @@ this surface.
 | `POST` | `/v1/channels/slack` | `CreateSlackChannelRequest` | `SlackChannelResponse` |
 | `GET` | `/v1/channels/slack/{binding_id}` | - | `SlackChannelResponse` |
 | `POST` | `/v1/channels/slack/{binding_id}/revoke` | `RevokeSlackChannelRequest` | `SlackChannelResponse` |
+| `GET` | `/v1/channels/slack/{binding_id}/remote-continuations` | - | `SlackRemoteContinuationsResponse` |
+| `POST` | `/v1/channels/slack/{binding_id}/remote-continuations` | `CreateSlackRemoteContinuationRequest` | `SlackRemoteContinuationResponse` |
+| `GET` | `/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}` | - | `SlackRemoteContinuationResponse` |
+| `POST` | `/v1/channels/slack/{binding_id}/remote-continuations/{remote_continuation_id}/revoke` | `RevokeSlackRemoteContinuationRequest` | `SlackRemoteContinuationResponse` |
 
 The ingress-only `POST /v1/channels/webhooks/{binding_id}/deliveries` route does not accept the
 local bearer. It requires exactly one `X-Mealy-Timestamp`, `X-Mealy-Nonce`, and
@@ -302,6 +344,14 @@ Slack administration is local-bearer authenticated. Creation accepts Socket Mode
 conversation, proves the app token can open Socket Mode, then brokers both token values outside
 SQLite. Responses expose only identity pins, lifecycle, revision, and secret-free health. Socket
 Mode itself is an outbound daemon connection: no public Slack webhook route is opened.
+
+A Slack remote-continuation creation carries a canonical client-proposed UUIDv7, an exact
+previously admitted thread root, and an exclusive expiry between one minute and 30 days after
+creation. The route captures a no-replay timeline cursor, permits only proactive static
+`automation.notification` output, and is terminally revision-fenced on revoke. Slack automation
+requests must include the exact active `remoteContinuationId`; it is invalid for non-Slack targets
+or prompt actions. Delivery revalidates the declared route and never selects a newer thread. See
+[the remote-continuation contract](REMOTE_CONTINUATION.md).
 
 ### Administration
 
@@ -371,10 +421,36 @@ Use the response's `retryable` value, bounded exponential backoff, and a retry c
 blindly retry a mutation with a new idempotency key. Do not infer authorization state from the
 difference between `403` and `404`.
 
+## Typed Rust client
+
+`crates/mealy-client` provides the first stable SDK over these exact DTOs. `MealyClient` is a
+blocking client intended for owner-local integrations and later HTTPS-protected single-owner
+continuation. It covers health/status, providers, session workbench, approvals, complete
+automation lifecycle/history, extensions, and webhook, Telegram, Discord, and Slack
+administration. Session workbench includes text/image admission plus task status, pause, resume,
+cancellation, recorded replay, and read-only list/detail inspection of durable child delegations.
+Import DTOs through `mealy_client::protocol` so client and wire-contract versions remain
+coordinated.
+
+The SDK accepts clear-text HTTP only for literal `127.0.0.0/8` or `::1` addresses and requires
+HTTPS elsewhere. URL credentials, base paths, queries, and fragments are invalid. Ambient proxies
+and redirects are disabled, bearer headers and debug output are redacted, request and response
+versions are checked, typed JSON commands have a fixed 8 MiB pre-dispatch ceiling and zeroizing
+source buffer, and JSON responses are streamed into an 8 MiB default ceiling rather than trusted
+from `Content-Length`. The response ceiling can be lowered or raised to at most 64 MiB through the
+builder. `MealyClient::from_connection` accepts an already trusted `LocalConnectionInfo`; it does
+not open `connection.json`, so an embedding application must retain Mealy's owner-private,
+no-symlink file boundary when loading that descriptor.
+
+See [`../crates/mealy-client/README.md`](../crates/mealy-client/README.md) and generated Rustdoc for
+the operation, packaged-release, and error contracts. Timeline SSE is not part of this blocking
+SDK; use bounded timeline pages or the documented raw SSE contract.
+
 ## Compatibility contract
 
 Clients must send `apiVersion: "v1"` on mutation DTOs and require `apiVersion == "v1"` in JSON
 responses. Additive response fields may appear within `v1`; tolerant readers should ignore fields
 they do not use. Field removal, semantic reinterpretation, or incompatible enum changes require a
-new API version. The authoritative compatibility tests live in `mealy-api`, `mealy-protocol`, and
-the real-daemon public-API scenario suites described in [TESTING.md](TESTING.md).
+new API version. The authoritative compatibility tests live in `mealy-api`, `mealy-protocol`, the
+frozen v0.2.1/v0.3/v0.4/v0.5 `mealy-client` daemon fixtures, the clean packaged-consumer proof,
+and the real-daemon public-API scenario suites described in [TESTING.md](TESTING.md).

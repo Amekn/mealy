@@ -480,6 +480,22 @@ impl OperationalStore for SqliteStore {
             &self.connection,
             "SELECT COUNT(*) FROM agent_schedule_run WHERE status = 'skipped'",
         )?;
+        let active_automations = count_query(
+            &self.connection,
+            "SELECT COUNT(*) FROM automation WHERE status = 'active'",
+        )?;
+        let paused_automations = count_query(
+            &self.connection,
+            "SELECT COUNT(*) FROM automation WHERE status = 'paused'",
+        )?;
+        let claimed_automation_runs = count_query(
+            &self.connection,
+            "SELECT COUNT(*) FROM automation_run WHERE status = 'claimed'",
+        )?;
+        let failed_automation_runs = count_query(
+            &self.connection,
+            "SELECT COUNT(*) FROM automation_run WHERE status = 'failed'",
+        )?;
         let recent_failures = load_recent_failures(&self.connection, ownership)?;
         Ok(OperationalSnapshot {
             start_id: CorrelationId::from_str(&run.0)
@@ -506,6 +522,10 @@ impl OperationalStore for SqliteStore {
             claimed_schedule_runs,
             failed_schedule_runs,
             skipped_schedule_runs,
+            active_automations,
+            paused_automations,
+            claimed_automation_runs,
+            failed_automation_runs,
             recent_failures,
             started_at_ms: run.6,
             ready_at_ms: run.7,

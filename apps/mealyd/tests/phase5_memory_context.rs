@@ -1,22 +1,31 @@
 //! Public-API proof for governed memory retrieval, manifest citations, deletion, and replay.
 
+use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use mealy_protocol::{
-    API_VERSION, CompactionResponse, ContextManifestEvidenceResponse, CreateCompactionRequest,
-    CreateSessionRequest, CreateSessionResponse, DeliveryMode, InputAdmissionResponse,
-    LocalConnectionInfo, MemoryCategoryCommand, MemoryLifecycleRequest, MemoryResponse,
-    MemoryRetentionCommand, MemorySensitivityCommand, MemorySourceCommand, MemoryStatusResponse,
-    PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse, SubmitInputRequest,
-    TaskReplayResponse, TaskResponse, TaskStatus, TimelinePageResponse,
+    API_VERSION, CompactionResponse, ContextManifestEvidenceResponse, CorrectMemoryRequest,
+    CreateCompactionRequest, CreateSessionRequest, CreateSessionResponse, DeliveryMode,
+    InputAdmissionResponse, LocalConnectionInfo, MemoryCategoryCommand, MemoryIndexRebuildResponse,
+    MemoryLifecycleRequest, MemoryResponse, MemoryRetentionCommand, MemoryRetrievalMode,
+    MemorySearchResponse, MemorySemanticStatus, MemorySensitivityCommand, MemorySourceCommand,
+    MemoryStatusResponse, PromoteMemoryRequest, ProposeMemoryRequest, ReadinessResponse,
+    RebuildMemoryIndexRequest, SubmitInputRequest, TaskReplayResponse, TaskResponse, TaskStatus,
+    TimelinePageResponse,
 };
 use reqwest::{Client, StatusCode};
+use serde_json::{Value, json};
 use std::{
     fs,
     path::Path,
     process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tempfile::TempDir;
-use tokio::time::{Instant, sleep};
+use tokio::{
+    net::TcpListener,
+    task::JoinHandle,
+    time::{Instant, sleep},
+};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(20);
@@ -42,7 +51,7 @@ impl Daemon {
             .env("RUST_LOG", "error")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .expect("mealyd process should start");
         Self { child }
@@ -62,6 +71,311 @@ impl Drop for Daemon {
             let _ = self.child.wait();
         }
     }
+}
+
+#[derive(Clone, Debug)]
+struct CapturedEmbeddingRequest {
+    authorization: Option<String>,
+    body: Value,
+}
+
+#[derive(Clone, Default)]
+struct EmbeddingFixtureState {
+    requests: Arc<Mutex<Vec<CapturedEmbeddingRequest>>>,
+}
+
+async fn embedding_fixture_handler(
+    State(state): State<EmbeddingFixtureState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    state
+        .requests
+        .lock()
+        .expect("embedding capture lock")
+        .push(CapturedEmbeddingRequest {
+            authorization: headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            body: body.clone(),
+        });
+    let inputs = body["input"]
+        .as_array()
+        .expect("embedding input should be an array");
+    let data = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            let input = input.as_str().expect("embedding input should be text");
+            json!({
+                "object": "embedding",
+                "index": index,
+                "embedding": semantic_fixture_vector(input),
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(json!({
+        "object": "list",
+        "model": body["model"],
+        "data": data,
+    }))
+}
+
+fn semantic_fixture_vector(input: &str) -> [f32; 3] {
+    if input.contains("ORCHID") || input.contains("flower") {
+        [1.0, 0.0, 0.0]
+    } else if input.contains("BASALT") || input.contains("rock") {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+async fn spawn_embedding_fixture() -> (String, EmbeddingFixtureState, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind embedding fixture");
+    let address = listener.local_addr().expect("embedding fixture address");
+    let state = EmbeddingFixtureState::default();
+    let app = Router::new()
+        .route("/v1/embeddings", post(embedding_fixture_handler))
+        .with_state(state.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("embedding fixture server");
+    });
+    (format!("http://{address}/v1"), state, server)
+}
+
+fn write_semantic_memory_config(home: &Path, base_url: &str) {
+    fs::create_dir_all(home).expect("create daemon home");
+    let config = json!({
+        "formatVersion": 1,
+        "drainDeadlineMs": 10_000,
+        "memoryEmbedding": {
+            "baseUrl": base_url,
+            "model": "semantic-fixture",
+            "residency": "loopback-test",
+            "dimensions": 3,
+            "documentPrefix": "search_document: ",
+            "queryPrefix": "search_query: ",
+            "requestTimeoutMs": 5_000
+        },
+        "artifactGcMinimumAgeHours": 24,
+        "forensicBackupOnOpenFailure": true
+    });
+    fs::write(
+        home.join("config.json"),
+        serde_json::to_vec_pretty(&config).expect("semantic memory config bytes"),
+    )
+    .expect("write semantic memory config");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn semantic_memory_rebuild_falls_back_when_stale_and_recovers_after_restart() {
+    let home = TempDir::new().expect("temporary daemon home");
+    let (embedding_url, embedding_state, embedding_server) = spawn_embedding_fixture().await;
+    write_semantic_memory_config(home.path(), &embedding_url);
+    let client = Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("HTTP client");
+    let mut daemon = Daemon::spawn(home.path());
+    let connection = wait_until_ready(&client, home.path()).await;
+
+    initialize_fixture_workspace(&client, &connection).await;
+    let orchid =
+        propose_and_activate_memory(&client, &connection, "The release codename is ORCHID.", 'a')
+            .await;
+    let _basalt =
+        propose_and_activate_memory(&client, &connection, "The archive codename is BASALT.", 'b')
+            .await;
+    let rebuilt: MemoryIndexRebuildResponse = authorized_post(
+        &client,
+        &connection,
+        "/v1/memory-index/rebuild",
+        &RebuildMemoryIndexRequest {
+            api_version: API_VERSION.to_owned(),
+            semantic: true,
+        },
+    )
+    .await;
+    let semantic = rebuilt
+        .semantic_index
+        .expect("semantic rebuild should return health");
+    assert_eq!(semantic.status, MemorySemanticStatus::Healthy);
+    assert_eq!(semantic.indexed_revision_count, 2);
+    assert_eq!(semantic.dimensions, 3);
+
+    let flower = authorized_hybrid_search(&client, &connection, "flower").await;
+    assert_eq!(flower.retrieval_mode, MemoryRetrievalMode::Hybrid);
+    assert_eq!(flower.semantic_status, Some(MemorySemanticStatus::Healthy));
+    assert_eq!(
+        flower.hits.first().map(|hit| hit.memory.memory_id.as_str()),
+        Some(orchid.memory_id.as_str())
+    );
+    assert!(flower.hits[0].semantic_similarity.is_some(), "{flower:?}");
+    assert!(flower.hits[0].fused_rank_score.is_some(), "{flower:?}");
+    let request_count_before_invalidation = embedding_state
+        .requests
+        .lock()
+        .expect("embedding capture lock")
+        .len();
+    assert_eq!(request_count_before_invalidation, 2);
+
+    let corrected: MemoryResponse = authorized_post(
+        &client,
+        &connection,
+        &format!("/v1/memories/{}/correct", orchid.memory_id),
+        &CorrectMemoryRequest {
+            api_version: API_VERSION.to_owned(),
+            expected_revision: orchid.revision,
+            content: "The release codename is CEDAR.".to_owned(),
+            confidence_basis_points: 9_000,
+            sensitivity: MemorySensitivityCommand::Internal,
+            retention: MemoryRetentionCommand::Standard,
+            sources: vec![MemorySourceCommand {
+                locator: "event://semantic-memory-correction".to_owned(),
+                digest: "c".repeat(64),
+            }],
+            authorization: None,
+        },
+    )
+    .await;
+    assert_eq!(corrected.status, MemoryStatusResponse::Active);
+
+    let stale = authorized_hybrid_search(&client, &connection, "flower").await;
+    assert_eq!(stale.retrieval_mode, MemoryRetrievalMode::LexicalFallback);
+    assert_eq!(stale.semantic_status, Some(MemorySemanticStatus::Stale));
+    assert!(stale.hits.is_empty(), "{stale:?}");
+    assert_eq!(
+        embedding_state
+            .requests
+            .lock()
+            .expect("embedding capture lock")
+            .len(),
+        request_count_before_invalidation,
+        "a stale index must not disclose a query to the embedding endpoint"
+    );
+
+    daemon.hard_kill();
+    fs::remove_file(home.path().join("connection.json"))
+        .expect("stale endpoint descriptor should be removable");
+    let _restarted_daemon = Daemon::spawn(home.path());
+    let restarted = wait_until_ready(&client, home.path()).await;
+    let stale_after_restart = authorized_hybrid_search(&client, &restarted, "flower").await;
+    assert_eq!(
+        stale_after_restart.retrieval_mode,
+        MemoryRetrievalMode::LexicalFallback
+    );
+    assert_eq!(
+        stale_after_restart.semantic_status,
+        Some(MemorySemanticStatus::Stale)
+    );
+    assert_eq!(
+        embedding_state
+            .requests
+            .lock()
+            .expect("embedding capture lock")
+            .len(),
+        request_count_before_invalidation,
+        "persisted staleness must fence embedding calls after restart"
+    );
+
+    let rebuilt_after_restart: MemoryIndexRebuildResponse = authorized_post(
+        &client,
+        &restarted,
+        "/v1/memory-index/rebuild",
+        &RebuildMemoryIndexRequest {
+            api_version: API_VERSION.to_owned(),
+            semantic: true,
+        },
+    )
+    .await;
+    assert_eq!(
+        rebuilt_after_restart
+            .semantic_index
+            .as_ref()
+            .map(|index| index.status),
+        Some(MemorySemanticStatus::Healthy)
+    );
+    let tree = authorized_hybrid_search(&client, &restarted, "tree").await;
+    assert_eq!(tree.retrieval_mode, MemoryRetrievalMode::Hybrid);
+    assert_eq!(
+        tree.hits.first().map(|hit| hit.memory.memory_id.as_str()),
+        Some(corrected.memory_id.as_str())
+    );
+
+    let requests = embedding_state
+        .requests
+        .lock()
+        .expect("embedding capture lock");
+    assert_eq!(requests.len(), 4, "embedding requests: {requests:?}");
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.authorization.is_none())
+    );
+    assert!(requests.iter().all(|request| {
+        request.body["model"] == "semantic-fixture" && request.body["encoding_format"] == "float"
+    }));
+    assert!(requests.iter().any(|request| {
+        request.body["input"].as_array().is_some_and(|inputs| {
+            inputs.iter().any(|input| {
+                input
+                    .as_str()
+                    .is_some_and(|input| input.starts_with("search_document: "))
+            })
+        })
+    }));
+    assert!(requests.iter().any(|request| {
+        request.body["input"].as_array().is_some_and(|inputs| {
+            inputs.iter().any(|input| {
+                input
+                    .as_str()
+                    .is_some_and(|input| input.starts_with("search_query: "))
+            })
+        })
+    }));
+    drop(requests);
+    embedding_server.abort();
+}
+
+async fn initialize_fixture_workspace(client: &Client, connection: &LocalConnectionInfo) {
+    let session: CreateSessionResponse = authorized_post(
+        client,
+        connection,
+        "/v1/sessions",
+        &CreateSessionRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+        },
+    )
+    .await;
+    let initialization: InputAdmissionResponse = authorized_post(
+        client,
+        connection,
+        &format!("/v1/sessions/{}/inputs", session.session_id),
+        &SubmitInputRequest {
+            api_version: API_VERSION.to_owned(),
+            provider_selection: None,
+            idempotency_key: "semantic-memory-initialize-context".to_owned(),
+            delivery_mode: DeliveryMode::Queue,
+            content: "Initialize the semantic-memory test workspace.".to_owned(),
+        },
+    )
+    .await;
+    let (task_id, _) = wait_for_task_and_run(
+        client,
+        connection,
+        &session.session_id,
+        initialization.cursor.0,
+    )
+    .await;
+    let _task = wait_until_task_succeeds(client, connection, &task_id).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -346,6 +660,69 @@ async fn retrieved_memory_is_cited_untrusted_and_replayable_after_deletion_and_r
     );
 }
 
+async fn propose_and_activate_memory(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    content: &str,
+    digest_character: char,
+) -> MemoryResponse {
+    let proposed: MemoryResponse = authorized_post(
+        client,
+        connection,
+        "/v1/memories",
+        &ProposeMemoryRequest {
+            api_version: API_VERSION.to_owned(),
+            workspace_identity: WORKSPACE.to_owned(),
+            content: content.to_owned(),
+            category: MemoryCategoryCommand::Fact,
+            confidence_basis_points: 9_000,
+            sensitivity: MemorySensitivityCommand::Internal,
+            retention: MemoryRetentionCommand::Standard,
+            sources: vec![MemorySourceCommand {
+                locator: "event://semantic-memory-owner-statement".to_owned(),
+                digest: digest_character.to_string().repeat(64),
+            }],
+        },
+    )
+    .await;
+    authorized_post(
+        client,
+        connection,
+        &format!("/v1/memories/{}/activate", proposed.memory_id),
+        &PromoteMemoryRequest {
+            api_version: API_VERSION.to_owned(),
+            revision_id: proposed.revisions[0].revision_id.clone(),
+            authorization: None,
+        },
+    )
+    .await
+}
+
+async fn authorized_hybrid_search(
+    client: &Client,
+    connection: &LocalConnectionInfo,
+    query: &str,
+) -> MemorySearchResponse {
+    let response = client
+        .get(format!("{}/v1/memories/search", connection.base_url))
+        .bearer_auth(&connection.bearer_token)
+        .query(&[
+            ("workspaceIdentity", WORKSPACE),
+            ("query", query),
+            ("maximumSensitivity", "private"),
+            ("limit", "10"),
+            ("retrievalMode", "hybrid"),
+        ])
+        .send()
+        .await
+        .expect("authorized hybrid memory search");
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .json()
+        .await
+        .expect("versioned hybrid memory response")
+}
+
 async fn wait_until_ready(client: &Client, home: &Path) -> LocalConnectionInfo {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
@@ -473,6 +850,13 @@ async fn authorized_post<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .expect("authorized POST");
-    assert_eq!(response.status(), StatusCode::OK);
-    response.json().await.expect("versioned JSON response")
+    let status = response.status();
+    let bytes = response.bytes().await.expect("versioned response bytes");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{path}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).expect("versioned JSON response")
 }

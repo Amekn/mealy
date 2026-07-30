@@ -28,15 +28,17 @@ use mealy_application::{
     RecordAgentEffectObservationCommit, RecordAgentEffectProposalCommit,
     RecordEffectAttemptOutcomeCommit, RecordEffectProposalCommit, RecordModelFailureCommit,
     RecordModelProgressCommit, RecordModelResultCommit, RecordReadToolResultCommit,
-    RecordValidationCommit, ResumeAgentEffectRunCommit, RunCompletionStatus,
+    RecordValidationCommit, RegistryInstalledPackageDisposition, RegistryInstalledPackagePolicy,
+    RegistryMetadataStore, RegistryPackageKind, ResumeAgentEffectRunCommit, RunCompletionStatus,
     VALIDATION_POLICY_VERSION, ValidationContextDraft, ValidationStore,
     agent_delegate_parallel_tool_descriptor, agent_delegate_tool_descriptor, bounded_deadline,
     browser_transaction_approval_subject, browser_transaction_policy_grant,
     canonical_arguments_digest, claim_next_work_with_concurrency, compile_context,
     complete_agent_run, complete_run, estimate_tokens, evaluate_browser_transaction_policy,
     evaluate_image_generation_policy, evaluate_mcp_effect_policy, heartbeat_lease,
-    image_generation_approval_subject, mcp_effect_approval_subject, provider_retry_delay,
-    route_provider, sha256_digest, validate_provider_chain, web_url_authorized_by_capabilities,
+    image_generation_approval_subject, inspect_installed_registry_package_policy,
+    mcp_effect_approval_subject, provider_retry_delay, route_provider, sha256_digest,
+    validate_provider_chain, web_url_authorized_by_capabilities,
 };
 use mealy_domain::{
     ArtifactId, CapabilityGrant, EffectClass, EffectStatus, LeaseFence, PolicyProfile, RiskClass,
@@ -48,6 +50,9 @@ use mealy_infrastructure::{
     MAXIMUM_ACTIVE_SKILL_INSTRUCTION_BYTES, McpHostError, McpHttpReadTool, McpReadTool,
     SkillResourceReadTool, SubscriptionCliProvider, SubscriptionCliSettings, SystemClock,
     SystemIdGenerator, WebReadTool, WorkspaceReadTool, inspect_skill_package,
+};
+use mealy_observability::{
+    AgentRunContext as TelemetryAgentRunContext, AgentRunOutcome, TelemetryRuntime,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -144,6 +149,7 @@ pub struct RuntimeSkillContext {
     baseline_appendix: String,
     evidence_digest: String,
     profile: Vec<serde_json::Value>,
+    registry_suppressions: Vec<RegistryInstalledPackagePolicy>,
     resource_tool: Option<SkillResourceReadTool>,
 }
 
@@ -152,6 +158,10 @@ impl std::fmt::Debug for RuntimeSkillContext {
         formatter
             .debug_struct("RuntimeSkillContext")
             .field("enabled_skill_count", &self.profile.len())
+            .field(
+                "registry_suppression_count",
+                &self.registry_suppressions.len(),
+            )
             .field("has_resource_tool", &self.resource_tool.is_some())
             .field("evidence_digest", &self.evidence_digest)
             .finish_non_exhaustive()
@@ -164,9 +174,31 @@ impl Default for RuntimeSkillContext {
             baseline_appendix: String::new(),
             evidence_digest: sha256_digest(b"[]"),
             profile: Vec::new(),
+            registry_suppressions: Vec::new(),
             resource_tool: None,
         }
     }
+}
+
+fn registry_skill_suppression(
+    config: &SkillConfig,
+    registry_store: &impl RegistryMetadataStore,
+) -> Result<Option<RegistryInstalledPackagePolicy>, Box<dyn Error + Send + Sync>> {
+    let Some((registry_id, release_envelope_digest, archive_digest)) = config.registry_provenance()
+    else {
+        return Ok(None);
+    };
+    let policy = inspect_installed_registry_package_policy(
+        registry_store,
+        registry_id,
+        config.skill_id(),
+        RegistryPackageKind::Skill,
+        config.version(),
+        release_envelope_digest,
+        config.manifest_digest(),
+        archive_digest,
+    )?;
+    Ok((policy.disposition != RegistryInstalledPackageDisposition::Authorized).then_some(policy))
 }
 
 impl RuntimeSkillContext {
@@ -176,11 +208,14 @@ impl RuntimeSkillContext {
     ///
     /// Returns an error for missing/tampered package evidence, config/manifest disagreement,
     /// excessive active instructions, or unsafe instruction text.
+    #[allow(clippy::too_many_lines)] // One pass verifies packages, policy, bounded text, and profile evidence.
     pub fn load(
         home: &Path,
         configs: &[SkillConfig],
+        registry_store: &impl RegistryMetadataStore,
     ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let mut enabled = Vec::new();
+        let mut registry_suppressions = Vec::new();
         for config in configs {
             let package_root = home.join(config.package_path());
             let package = inspect_skill_package(
@@ -194,6 +229,10 @@ impl RuntimeSkillContext {
                 return Err("installed skill metadata differs from its pinned manifest".into());
             }
             if config.enabled() {
+                if let Some(policy) = registry_skill_suppression(config, registry_store)? {
+                    registry_suppressions.push(policy);
+                    continue;
+                }
                 enabled.push(package);
             }
         }
@@ -277,6 +316,7 @@ impl RuntimeSkillContext {
             baseline_appendix: appendix,
             evidence_digest,
             profile,
+            registry_suppressions,
             resource_tool,
         })
     }
@@ -285,6 +325,12 @@ impl RuntimeSkillContext {
     #[must_use]
     pub fn enabled_count(&self) -> usize {
         self.profile.len()
+    }
+
+    /// Registry skills suppressed because current accepted policy no longer authorizes them.
+    #[must_use]
+    pub fn registry_suppressions(&self) -> &[RegistryInstalledPackagePolicy] {
+        &self.registry_suppressions
     }
 
     fn take_resource_tool(&mut self) -> Option<SkillResourceReadTool> {
@@ -1998,6 +2044,7 @@ fn utf8_prefix_length(value: &str, maximum: usize) -> usize {
 ///
 /// The function borrows a snapshot reader or the canonical writer for one storage boundary at a
 /// time. Provider, tool, and artifact I/O all run outside both lanes.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn drive_one_agent_run(
     store: &Arc<RuntimeStore>,
     worker_id: WorkerId,
@@ -2005,6 +2052,7 @@ pub fn drive_one_agent_run(
     tool: &Arc<RuntimeReadTools>,
     effect_runtime: Option<&PhaseThreeRuntime>,
     artifacts: &FileArtifactBlobStore,
+    telemetry: &TelemetryRuntime,
     policy: AgentDriverPolicy,
 ) -> Result<bool, Box<dyn Error + Send + Sync>> {
     resume_ready_effect_runs(store)?;
@@ -2028,6 +2076,29 @@ pub fn drive_one_agent_run(
         .read()
         .map_err(|_| "agent store lock is poisoned")?
         .load_agent_run(fence, SystemClock.now())?;
+    let telemetry_started_at = SystemTime::now();
+    let telemetry_started = Instant::now();
+    let telemetry_context = telemetry.is_enabled().then(|| {
+        TelemetryAgentRunContext::new(
+            trace.task_id.to_string(),
+            trace.run_id.to_string(),
+            trace.turn_id.to_string(),
+            trace.session_id.to_string(),
+            trace.correlation_id.to_string(),
+        )
+        .ok()
+    });
+    let telemetry_context = telemetry_context.flatten();
+    let record_telemetry = |outcome| {
+        if let Some(context) = telemetry_context.as_ref() {
+            telemetry.record_agent_run(
+                context,
+                outcome,
+                telemetry_started_at,
+                telemetry_started.elapsed(),
+            );
+        }
+    };
     let trace_span = tracing::info_span!(
         "agent_run",
         task_id = %trace.task_id,
@@ -2061,27 +2132,31 @@ pub fn drive_one_agent_run(
             } else {
                 RunCompletionStatus::Failed
             };
-            complete_run(
+            if let Err(completion_error) = complete_run(
                 &mut *guard,
                 &SystemClock,
                 &SystemIdGenerator,
                 fence,
                 status,
                 bounded,
-            )
-            .map_err(|completion_error| {
-                std::io::Error::other(format!(
+            ) {
+                record_telemetry(AgentRunOutcome::Failed);
+                return Err(std::io::Error::other(format!(
                     "agent loop error `{error}` could not commit its terminal boundary: \
                      {completion_error}"
                 ))
-            })?;
+                .into());
+            }
             if status == RunCompletionStatus::Cancelled {
+                record_telemetry(AgentRunOutcome::Cancelled);
                 return Ok(true);
             }
         }
+        record_telemetry(AgentRunOutcome::Failed);
         return Err(error);
     }
     tracing::debug!("durable agent run reached a committed boundary");
+    record_telemetry(AgentRunOutcome::CommittedBoundary);
     Ok(true)
 }
 
@@ -7131,6 +7206,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One proof covers compilation, policy suppression, and tamper rejection.
     fn enabled_skill_instructions_are_pinned_bounded_and_do_not_grant_tools() {
         let home = tempfile::tempdir().expect("home");
         let source = tempfile::tempdir().expect("source package");
@@ -7180,7 +7256,11 @@ mod tests {
             "enabled": true
         }))
         .expect("skill config");
-        let context = RuntimeSkillContext::load(home.path(), &[config]).expect("load skill");
+        let registry_store =
+            mealy_infrastructure::SqliteStore::open(home.path().join("registry.sqlite3"), 0)
+                .expect("registry store");
+        let context =
+            RuntimeSkillContext::load(home.path(), &[config], &registry_store).expect("load skill");
         assert_eq!(context.enabled_count(), 1);
         assert!(context.resource_tool.is_some());
         assert!(
@@ -7200,6 +7280,29 @@ mod tests {
             "references_only_no_authority_granted"
         );
 
+        let registry_config = serde_json::from_value::<SkillConfig>(json!({
+            "skillId": "mealy.fixture.review",
+            "version": "1.0.0",
+            "manifestDigest": digest,
+            "packagePath": format!("skills/{digest}"),
+            "enabled": true,
+            "registry": {
+                "registryId": "dev.mealy.registry",
+                "releaseEnvelopeDigest": "b".repeat(64),
+                "archiveDigest": "c".repeat(64)
+            }
+        }))
+        .expect("registry skill config");
+        let suppressed =
+            RuntimeSkillContext::load(home.path(), &[registry_config], &registry_store)
+                .expect("suppress unavailable registry skill");
+        assert_eq!(suppressed.enabled_count(), 0);
+        assert_eq!(suppressed.registry_suppressions().len(), 1);
+        assert_eq!(
+            suppressed.registry_suppressions()[0].disposition,
+            mealy_application::RegistryInstalledPackageDisposition::Unavailable
+        );
+
         fs::write(
             home.path()
                 .join("skills")
@@ -7216,6 +7319,6 @@ mod tests {
             "enabled": true
         }))
         .expect("skill config");
-        assert!(RuntimeSkillContext::load(home.path(), &[config]).is_err());
+        assert!(RuntimeSkillContext::load(home.path(), &[config], &registry_store).is_err());
     }
 }

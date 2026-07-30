@@ -571,6 +571,7 @@ impl TelegramChannelStore for SqliteStore {
                 | "session.interrupt_requested"
                 | "session.turn_completed"
                 | "effect.approval_requested"
+                | "automation.notification"
         ) {
             return Ok(None);
         }
