@@ -301,6 +301,7 @@ fi
 for expected in \
   '<title>Install Mealy on Linux</title>' \
   '<span class="badge">Stable 9.8.7</span>' \
+  'These short steps trust GitHub Pages TLS for the downloaded configuration.' \
   'file:///repository/mealy.sources' \
   'sudo apt install mealy' \
   'file:///repository/mealy.repo' \
