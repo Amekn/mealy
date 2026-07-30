@@ -167,6 +167,7 @@ jobs:
           runs=$(gh api --method GET \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/live-smoke.yml/runs" \
             -f head_sha="$GITHUB_SHA" \
+            -f branch=main \
             -f event=workflow_dispatch \
             -f status=success \
             -F per_page=100)
@@ -748,6 +749,7 @@ jobs:
           runs=$(gh api --method GET \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/live-smoke.yml/runs" \
             -f head_sha="$GITHUB_SHA" \
+            -f branch=main \
             -f event=workflow_dispatch \
             -f status=success \
             -F per_page=100)

@@ -52,6 +52,7 @@ if ! selected_urls=$(jq -er \
       [$runs[] | select(
         (.id | type == "number" and . > 0 and floor == .)
         and .head_sha == $sha
+        and .head_branch == "main"
         and .event == "workflow_dispatch"
         and .status == "completed"
         and .conclusion == "success"
