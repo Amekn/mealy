@@ -3,9 +3,14 @@ set -euo pipefail
 export LC_ALL=C
 
 usage() {
-  echo "usage: validate-public-release-record.sh RELEASE.json TAG OWNER/REPOSITORY REQUIRED_ASSET..." >&2
+  echo "usage: validate-public-release-record.sh [--exact] RELEASE.json TAG OWNER/REPOSITORY REQUIRED_ASSET..." >&2
 }
 
+exact_inventory=false
+if [[ ${1-} == --exact ]]; then
+  exact_inventory=true
+  shift
+fi
 if [[ $# -lt 4 ]]; then
   usage
   exit 64
@@ -94,6 +99,10 @@ if ! jq -e \
 fi
 
 actual_inventory=$(jq -er '.assets | map(.name) | .[]' "$release" | sort)
+if [[ $exact_inventory == true && $actual_inventory != "$required_inventory" ]]; then
+  echo "public release asset inventory does not exactly match the publisher inventory" >&2
+  exit 65
+fi
 for asset in "${required_assets[@]}"; do
   if ! grep -Fqx -- "$asset" <<<"$actual_inventory"; then
     echo "public release is missing required asset: $asset" >&2

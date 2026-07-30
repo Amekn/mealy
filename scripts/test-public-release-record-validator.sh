@@ -49,6 +49,18 @@ jq -n \
 "$validator" "$temporary/valid.json" "$tag" "$repository" \
   "$required" "$second" >"$temporary/valid.stdout"
 grep -Fq 'public release record: ok' "$temporary/valid.stdout"
+"$validator" --exact "$temporary/valid.json" "$tag" "$repository" \
+  "$required" "$second" >"$temporary/exact-valid.stdout"
+grep -Fq 'public release record: ok' "$temporary/exact-valid.stdout"
+"$validator" "$temporary/valid.json" "$tag" "$repository" \
+  "$required" >"$temporary/subset-valid.stdout"
+grep -Fq 'public release record: ok' "$temporary/subset-valid.stdout"
+
+if "$validator" --exact "$temporary/valid.json" "$tag" "$repository" \
+  "$required" >/dev/null 2>&1; then
+  echo "public-release record validator accepted an unexpected exact-inventory asset" >&2
+  exit 1
+fi
 
 expect_rejection() {
   local name=$1
