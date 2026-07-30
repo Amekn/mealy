@@ -278,7 +278,7 @@ after revision-fenced owner evidence, and replays with zero live calls.
 
 The `linux-browser-conformance` CI lane downloads only the repository-pinned Chrome Headless Shell
 archive through `scripts/fetch-browser-runtime.sh`, verifies its exact HTTPS artifact size and
-SHA-256, and sets `MEALY_BROWSER_BUNDLE` for three opt-in real-process suites.
+SHA-256, and sets `MEALY_BROWSER_BUNDLE` for four opt-in real-process suites.
 `crates/mealy-infrastructure/tests/browser_runtime.rs` proves complete bundle identity, isolated
 CDP `1.3`/product startup, private proxy routing, rendered accessibility output, exact accessible
 GET-link following, exact native form-free button activation, exact text/search fill, selected-
@@ -298,7 +298,12 @@ disable/re-enable/revoke, web-authority dependency, and retained rollback bytes.
 real-provider suite proves exact model schema exposure (including bounded attachment capture), safe GET-form filling, rendering through
 the normal agent loop, artifact-backed screenshot evidence, URL citation, and complete
 zero-live-call replay after the
-browser bundle is deleted. Maintenance fixtures cover every bundle file and executable-mode bit in
+browser bundle is deleted.
+`browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation` separately
+crosses the daemon/effect boundary with the real pinned browser: it proves exact approval, one
+same-origin POST, a hard death after durable dispatch, `outcome_unknown` recovery without retry,
+revision-fenced reconciliation, and complete zero-live-call replay. Maintenance fixtures cover
+every bundle file and executable-mode bit in
 complete backup, isolated restore verification, and migration reconstruction. These large tests
 are ignored in ordinary local runs but mandatory in CI and tag release workflows.
 
