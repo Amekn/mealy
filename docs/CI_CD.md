@@ -437,9 +437,10 @@ Do not move or reuse a published version tag. A correction uses a new semantic v
 - creates package-manager-native signed APT, DNF, and Pacman repositories with an owner-reviewed
   signing key, attests their complete manifest, and stages the exact Pages artifact;
 - assembles one exact release inventory and publishes deterministic evidence-bound notes;
-- waits for the published record to report `isImmutable: true`, validates every uploaded asset
-  name/digest/size/URL, and verifies GitHub's signed release attestation before any dependent
-  repository deployment or public acceptance can start;
+- waits for the published record to report `isImmutable: true`, requires its asset-name set to
+  equal the assembler's exact inventory, validates every uploaded digest/size/URL, and verifies
+  GitHub's signed release attestation before any dependent repository deployment or public
+  acceptance can start;
 - deploys the signed repositories only after the immutable GitHub release exists;
 - downloads the public release on native Linux runners, verifies release/asset integrity and
   provenance, uses the public tokenless rootless bootstrap without a repository override, and
