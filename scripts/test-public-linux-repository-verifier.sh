@@ -83,14 +83,43 @@ case ${url##*/} in
   repository-signing-key.asc)
     printf 'public key fixture\n' >"$output"
     ;;
+  mealy.sources)
+    printf 'Types: deb\nSigned-By: fixture\n' >"$output"
+    ;;
+  mealy.repo)
+    printf '[mealy]\ngpgcheck=1\nrepo_gpgcheck=1\n' >"$output"
+    if [[ ${MOCK_CORRUPT_CONTROL-} == mealy.repo ]]; then
+      printf 'gpgcheck=0\n' >>"$output"
+    fi
+    ;;
+  mealy.pacman.conf)
+    printf '[mealy]\nSigLevel = Required DatabaseRequired\n' >"$output"
+    ;;
   REPOSITORY-MANIFEST.json)
-    jq -n '{
+    key_sha=$(printf 'public key fixture\n' | sha256sum | awk '{print $1}')
+    key_bytes=$(printf 'public key fixture\n' | wc -c)
+    sources_sha=$(printf 'Types: deb\nSigned-By: fixture\n' | sha256sum | awk '{print $1}')
+    sources_bytes=$(printf 'Types: deb\nSigned-By: fixture\n' | wc -c)
+    repo_sha=$(printf '[mealy]\ngpgcheck=1\nrepo_gpgcheck=1\n' | sha256sum | awk '{print $1}')
+    repo_bytes=$(printf '[mealy]\ngpgcheck=1\nrepo_gpgcheck=1\n' | wc -c)
+    pacman_sha=$(printf '[mealy]\nSigLevel = Required DatabaseRequired\n' | sha256sum | awk '{print $1}')
+    pacman_bytes=$(printf '[mealy]\nSigLevel = Required DatabaseRequired\n' | wc -c)
+    jq -n \
+      --arg key_sha "$key_sha" --argjson key_bytes "$key_bytes" \
+      --arg sources_sha "$sources_sha" --argjson sources_bytes "$sources_bytes" \
+      --arg repo_sha "$repo_sha" --argjson repo_bytes "$repo_bytes" \
+      --arg pacman_sha "$pacman_sha" --argjson pacman_bytes "$pacman_bytes" '{
       schemaVersion: "mealy.linux-repositories.v1",
       version: "0.2.1",
       baseUrl: "https://amekn.github.io/mealy",
       publicationEpoch: 1785192800,
       signingFingerprint: "F8CB2DA307288C92757D731FFC798D3063749EA6",
-      files: [{path: "mealy.sources", sha256: ("a" * 64), bytes: 1}]
+      files: [
+        {path: "repository-signing-key.asc", sha256: $key_sha, bytes: $key_bytes},
+        {path: "mealy.sources", sha256: $sources_sha, bytes: $sources_bytes},
+        {path: "mealy.repo", sha256: $repo_sha, bytes: $repo_bytes},
+        {path: "mealy.pacman.conf", sha256: $pacman_sha, bytes: $pacman_bytes}
+      ]
     }' >"$output"
     ;;
   REPOSITORY-MANIFEST.json.asc)
@@ -139,6 +168,28 @@ grep -Fq \
 grep -Fq \
   'attestation verify' \
   "$temporary/gh.log"
+for control in \
+  repository-signing-key.asc mealy.sources mealy.repo mealy.pacman.conf; do
+  test -s "$output/$control"
+done
+
+corrupt_output=$temporary/corrupt-output
+if (
+  cd "$temporary/no-repository"
+  PATH="$temporary/bin:$PATH" \
+    MOCK_GH_LOG="$temporary/corrupt-gh.log" \
+    MOCK_OUTPUT="$corrupt_output" \
+    MOCK_CORRUPT_CONTROL=mealy.repo \
+    MEALY_PUBLIC_REPOSITORY_ATTEMPTS=1 \
+    "$verifier" \
+      Amekn/mealy v0.2.1 b8e9d8576f228fd43a523ad38704a86b4630b115 \
+      https://amekn.github.io/mealy \
+      F8CB2DA307288C92757D731FFC798D3063749EA6 \
+      "$corrupt_output"
+) >/dev/null 2>&1; then
+  echo "public repository verifier accepted a manifest-mismatched control file" >&2
+  exit 1
+fi
 
 if "$verifier" invalid v0.2.1 \
   b8e9d8576f228fd43a523ad38704a86b4630b115 \

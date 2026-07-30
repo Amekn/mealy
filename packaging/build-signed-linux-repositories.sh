@@ -451,8 +451,10 @@ a { color: #2457c5; }
   <p class="lede">Signed native packages for Ubuntu, Debian, Fedora, and Arch Linux.
   Choose your distribution, install through its normal package manager, then let one guided
   command configure the provider, owner service, health checks, and first chat.</p>
-  <p class="note">These steps download small configuration files for inspection before privileged
-  installation. They never pipe a remote program into a privileged shell.</p>
+  <p class="note">These short steps trust GitHub Pages TLS for the downloaded configuration.
+  They never pipe a remote program into a privileged shell. Use the independently attested
+  manifest procedure linked below when first trust must be bound to this exact release before
+  privilege is used.</p>
 </header>
 
 <section aria-labelledby="install">

@@ -462,6 +462,13 @@ dependent verification harness was defective. It runs only from protected `main`
 annotated tag to its exact commit, requires that commit in `main`, verifies the original release
 workflow attestation, and aggregates all five public repository lanes.
 
+The verifier authenticates the signed manifest and its retained tag-workflow attestation, then
+downloads the repository signing key and all three package-manager configuration files into one
+digest-checked local snapshot. The installer rechecks those bytes against that exact manifest and
+mounts the snapshot read-only; it never fetches configuration a second time. This closes the
+Pages-deployment time-of-check/time-of-use boundary while ordinary package metadata and payload
+signatures continue to protect later network reads.
+
 The one-time Pages, signing Environment, offline-key, and rotation controls are in
 [LINUX_REPOSITORIES.md](LINUX_REPOSITORIES.md#maintainer-activation). A missing Pages site,
 unapproved signing Environment, empty key secret, base-URL mismatch, wrong fingerprint, unusable

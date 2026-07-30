@@ -872,6 +872,7 @@ jobs:
           "$MEALY_REPOSITORY_FAMILY" "$MEALY_REPOSITORY_IMAGE"
           "$MEALY_REPOSITORY_BASE_URL" "$MEALY_REPOSITORY_FINGERPRINT"
           "${GITHUB_REF_NAME#v}"
+          "$RUNNER_TEMP/mealy-public-repository"
 
   public-linux-acceptance:
     name: Verify public Linux install on ${{ matrix.target }}

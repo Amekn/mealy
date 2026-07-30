@@ -244,8 +244,13 @@ bootstrap plus archive and Debian lifecycle smokes on Ubuntu 24.04, then repeats
 package lifecycle on clean pinned Ubuntu 26.04, Debian 13, Fedora 44, and Arch Linux environments.
 A release workflow is green only after every public Linux delivery check passes. It also waits for
 the Pages deployment, verifies the public manifest's OpenPGP signature and exact tagged identity,
-verifies its retained GitHub attestation bundle, and clean-installs the public repository package
-on Ubuntu, Debian ARM64, Fedora x86-64/ARM64, and Arch x86-64.
+verifies its retained GitHub attestation bundle, downloads the repository key plus APT/DNF/Pacman
+configuration into one manifest-digest-checked snapshot, and mounts those same verified control
+files read-only into the clean package-manager containers. APT uses the verified embedded key,
+DNF imports and overrides its key URL with the verified local key, and Pacman imports the same
+verified key/configuration. No acceptance lane re-downloads a mutable control file after
+verification. The workflow then clean-installs the public repository package on Ubuntu, Debian
+ARM64, Fedora x86-64/ARM64, and Arch x86-64.
 
 If those dependent repository jobs fail before exercising the public artifacts because of a
 verifier-harness defect, merge the focused correction through protected `main` and dispatch

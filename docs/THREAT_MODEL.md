@@ -824,6 +824,19 @@ can reveal equality or allow guesses of low-entropy content, so reports remain s
 rather than automatically public. The report digest is integrity evidence, not signer identity;
 release publication must place it in the ordinary attestation chain.
 
+### Public repository controls change after manifest verification
+
+Controls: the checkout-free verifier authenticates the complete repository manifest with both its
+OpenPGP signature and retained tag-workflow attestation while constructing one local snapshot of
+the repository key plus the APT, DNF, and Pacman configuration. Each path must occur exactly once
+in the bounded manifest and match its declared SHA-256 and byte count. The installer rechecks that
+snapshot and mounts it read-only into the clean container instead of downloading the controls
+again. APT therefore uses the verified embedded key, DNF rewrites the one authenticated remote-key
+location to a retained local verified key, and Pacman imports the verified key/configuration.
+Later mutable Pages reads remain constrained by the package-manager metadata and package
+signatures; a changed control file cannot weaken those checks between verification and
+installation.
+
 ## Explicit non-boundaries
 
 - prompt instructions;
