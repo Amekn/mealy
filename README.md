@@ -135,10 +135,13 @@ reviewed free-provider acceptance, tag promotion, attestation, and public clean-
 > ceiling remains a conservative 128,000 tokens unless explicitly overridden. ChatGPT subscriptions
 > are not OpenAI API keys, and this
 > owner-local bridge is not the unattended release-acceptance provider path. Anthropic's current
-> [legal and compliance guidance](https://code.claude.com/docs/en/legal-and-compliance) prohibits
-> third-party products from routing Claude Free, Pro, or Max subscription credentials, so Mealy
-> rejects that legacy route before mutation or client execution. Use the Anthropic API, strict-free
-> OpenRouter, a custom endpoint, or Claude Code directly instead. A
+> [Agent SDK guidance](https://code.claude.com/docs/en/agent-sdk/overview) does not allow an
+> unapproved third-party product to offer Claude.ai login or subscription rate limits, so Mealy
+> rejects that legacy route before mutation or client execution. Anthropic separately documents
+> subscription-backed scripting for its own Claude Code client; that is not permission to expose
+> the subscription as a Mealy provider. See the dated
+> [authentication-boundary review](docs/research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md).
+> Use the Anthropic API, strict-free OpenRouter, a custom endpoint, or Claude Code directly instead. A
 > concurrent first-party chat REPL provides durable queue/steer/interrupt controls, bounded
 > owner-selected local UTF-8 text-file admission, model/tool
 > progress, and exact-subject approval commands. On Linux, real-provider runs can use bounded,

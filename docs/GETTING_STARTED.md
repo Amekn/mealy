@@ -46,10 +46,10 @@ Choose one route:
 | ChatGPT subscription | The official `codex` client and its existing ChatGPT session, or consent to its official browser/device sign-in. |
 | OpenAI or Anthropic API | The corresponding API key for an advanced direct route. |
 
-Remote keys can come from the named environment variable or a bounded hidden terminal prompt.
-Mealy never puts a credential in command history or configuration. ChatGPT credentials remain
-owned by the official Codex client. Claude Free, Pro, and Max subscription routing is not
-supported because Anthropic prohibits third-party use; the Anthropic API remains supported.
+Remote keys can come from the named environment variable or a bounded hidden terminal prompt. Mealy never puts a credential in command history or configuration.
+ChatGPT credentials remain owned by the official Codex client. Claude.ai subscription routing is unsupported: Anthropic does not allow an unapproved third-party product to offer its login or plan rate limits, and its Claude Code script mode does not authorize a Mealy provider.
+See the [primary-source decision record](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md);
+the Anthropic API remains supported.
 
 The guided flow discovers eligible models, derives limits and prices when available, live-probes
 the selected route, displays a non-secret plan, and asks you to type `APPROVE`. It then installs

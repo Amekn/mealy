@@ -29,9 +29,10 @@ provider deadline only as far as its declared latency estimate and total run wal
 official-client input overhead is included in the durable token reservation.
 
 The legacy `provider-subscription-claude` surface fails closed before configuration mutation or
-client execution. Anthropic currently prohibits third-party products from offering Claude.ai
-login or routing Free, Pro, or Max subscription credentials. Use `provider-anthropic`,
-strict-free OpenRouter, a custom endpoint, or the official Claude Code product instead.
+client execution. Anthropic currently does not allow an unapproved third-party product to offer
+Claude.ai login or plan rate limits. Its subscription-backed script mode applies to the official
+Claude Code client, not a Mealy provider. Use `provider-anthropic`, strict-free OpenRouter, a
+custom endpoint, or the official Claude Code product instead.
 
 The selected home must remain a canonical owner-private directory rather than a symlink. Before
 using the daemon bearer, the client validates that parent boundary, opens `connection.json`
