@@ -34,10 +34,14 @@ consented browser/device login when required, and select the current
 account-catalog recommendation. Mealy retains a conservative 128,000-token
 context ceiling unless the owner uses an explicit override; the lower-level
 already-authenticated command retains the official `gpt-5.6` alias as its
-automation default. A post-audit upstream-terms review also found that Anthropic
-explicitly prohibits third-party developers from routing Claude Free, Pro, or
-Max subscription credentials. The prior experimental Claude subscription
-bridge is therefore retired and fails before mutation or client invocation;
+automation default. A post-audit upstream-terms review, refreshed on 2026-07-30, found that
+Anthropic's [Agent SDK guidance](https://code.claude.com/docs/en/agent-sdk/overview) does not allow
+an unapproved third-party product to offer Claude.ai login or plan rate limits. Anthropic's
+subscription-token permission is scoped to its own Claude Code CI/script mode and does not
+authorize a Mealy provider bridge. The
+[primary-source decision record](CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md) preserves the
+evidence and reopening criteria. The prior experimental Claude subscription bridge is therefore
+retired and fails before mutation or client invocation;
 Anthropic API, strict-free OpenRouter, custom endpoints, and Claude Code itself
 remain the supported alternatives.
 
@@ -653,9 +657,11 @@ operations:
 
 The Claude subscription item in the original recommendation was superseded by
 the first-party terms review. Anthropic's
-[legal and compliance guidance](https://code.claude.com/docs/en/legal-and-compliance)
-does not permit a third-party Mealy login or routing bridge for Free, Pro, or
-Max credentials. OpenAI's documented
+[Agent SDK guidance](https://code.claude.com/docs/en/agent-sdk/overview)
+does not permit an unapproved third-party Mealy login or plan-rate-limit bridge.
+The [2026-07-30 decision record](CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md) distinguishes
+Claude Code's own documented subscription scripting from third-party product integration.
+OpenAI's documented
 [Codex app-server](https://learn.chatgpt.com/docs/app-server) and
 [authentication flow](https://learn.chatgpt.com/docs/auth) provide
 upstream-supported account/login/model integration for the ChatGPT route.

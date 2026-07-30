@@ -423,9 +423,12 @@ Mealy does not download or execute that external installer.
 
 The retired `claude-subscription` alias and `config provider-subscription-claude` command remain
 recognizable only to give existing scripts an actionable error. They fail before home mutation or
-client invocation because Anthropic prohibits third-party routing of Free, Pro, and Max
-subscription credentials. Supported alternatives are `anthropic-api`, `openrouter-free`, a
-`custom` endpoint, or Claude Code itself.
+client invocation because Anthropic does not allow an unapproved third-party product to offer
+Claude.ai login or plan rate limits. Anthropic's documented subscription-backed script mode is for
+its own Claude Code client and does not authorize a Mealy provider; see the
+[primary-source decision record](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md).
+Supported alternatives are `anthropic-api`, `openrouter-free`, a `custom` endpoint, or Claude Code
+itself.
 
 Before mutation, onboarding prints a non-secret provider digest and its service action, then
 requires the exact word `APPROVE` unless `--approve` was given. A pre-existing configuration is
