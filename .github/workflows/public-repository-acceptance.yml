@@ -170,6 +170,7 @@ jobs:
           "$MEALY_REPOSITORY_FAMILY" "$MEALY_REPOSITORY_IMAGE"
           "$MEALY_REPOSITORY_BASE_URL" "$MEALY_REPOSITORY_FINGERPRINT"
           "$MEALY_RELEASE_VERSION"
+          "$RUNNER_TEMP/mealy-public-repository"
 
   acceptance:
     name: Public repository acceptance

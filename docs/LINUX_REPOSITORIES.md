@@ -25,7 +25,10 @@ different `baseUrl`.
 ## Quick package-manager setup
 
 These paths deliberately install a small configuration file before invoking the distribution's
-normal package manager. They do not pipe a remote program into a privileged shell.
+normal package manager. They do not pipe a remote program into a privileged shell. They trust
+GitHub Pages TLS for that configuration file; use
+[Independent first-trust verification](#independent-first-trust-verification) when the
+configuration and signing key must be bound to the tagged release before privilege is used.
 
 ### Ubuntu and Debian
 
@@ -99,10 +102,11 @@ resume the latest conversation and `mealyctl doctor` whenever you want an explic
 ## Independent first-trust verification
 
 The quick path relies on GitHub Pages TLS and the distribution package manager. For an independent
-first trust, bind the repository key and configuration to the tagged GitHub release before
-installing anything:
+first trust, bind the repository key and every package-manager configuration to the tagged GitHub
+release before installing anything:
 
 ```sh
+set -euo pipefail
 repository=Amekn/mealy
 base_url=https://amekn.github.io/mealy
 version=$(gh release view --repo "$repository" --json tagName --jq .tagName)
@@ -110,7 +114,7 @@ tmp=$(mktemp -d)
 gh release download "$version" --repo "$repository" \
   --pattern ATTESTATION-linux-repositories.sigstore.json --dir "$tmp"
 for file in REPOSITORY-MANIFEST.json REPOSITORY-MANIFEST.json.asc \
-  repository-signing-key.asc; do
+  repository-signing-key.asc mealy.sources mealy.repo mealy.pacman.conf; do
   curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     "$base_url/$file" --output "$tmp/$file"
 done
@@ -121,6 +125,43 @@ gh attestation verify "$tmp/REPOSITORY-MANIFEST.json" \
   --bundle "$tmp/ATTESTATION-linux-repositories.sigstore.json" \
   --deny-self-hosted-runners
 fingerprint=$(jq -er '.signingFingerprint' "$tmp/REPOSITORY-MANIFEST.json")
+jq -e --arg base_url "$base_url" --arg version "${version#v}" \
+  --arg fingerprint "$fingerprint" '
+    (keys | sort) == [
+      "baseUrl", "files", "publicationEpoch", "schemaVersion",
+      "signingFingerprint", "version"
+    ]
+    and .schemaVersion == "mealy.linux-repositories.v1"
+    and .baseUrl == $base_url
+    and .version == $version
+    and .signingFingerprint == $fingerprint
+    and (.publicationEpoch | type == "number" and floor == . and . >= 1)
+    and (.files | type == "array" and length >= 1 and length <= 512)
+    and ([.files[].path] | length == (unique | length))
+    and all(.files[];
+      (.path | type == "string"
+        and test("^[A-Za-z0-9][A-Za-z0-9._/+~-]*$")
+        and (contains("..") | not))
+      and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+      and (.bytes | type == "number" and floor == . and . > 0
+        and . <= 536870912))
+  ' "$tmp/REPOSITORY-MANIFEST.json" >/dev/null
+for file in repository-signing-key.asc mealy.sources mealy.repo \
+  mealy.pacman.conf; do
+  metadata=$(jq -er --arg path "$file" '
+    [.files[] | select(.path == $path)]
+    | select(length == 1)
+    | .[0]
+    | [.sha256, (.bytes | tostring)]
+    | @tsv
+  ' "$tmp/REPOSITORY-MANIFEST.json")
+  IFS='	' read -r expected_sha256 expected_bytes <<EOF
+$metadata
+EOF
+  test ! -L "$tmp/$file"
+  test "$(stat -c '%s' "$tmp/$file")" = "$expected_bytes"
+  test "$(sha256sum "$tmp/$file" | awk '{print $1}')" = "$expected_sha256"
+done
 test "$(gpg --batch --show-keys --with-colons "$tmp/repository-signing-key.asc" |
   awk -F: '$1 == "pub" {want = 1; next}
     want && $1 == "fpr" {print toupper($10); exit}')" = "$fingerprint"
@@ -134,7 +175,50 @@ gpg --batch --verify "$tmp/REPOSITORY-MANIFEST.json.asc" \
 
 The GitHub attestation establishes the exact manifest produced by the release workflow. The
 manifest then establishes the repository signing fingerprint plus the SHA-256 and byte count of
-every published file; its OpenPGP signature provides a package-manager-native trust chain.
+every downloaded control; its OpenPGP signature provides a package-manager-native trust chain.
+Keep `$tmp` until the selected installation below completes so the verified snapshot—not a second
+download—is the input to the privileged step.
+
+For Ubuntu or Debian:
+
+```sh
+sudo install -m 0644 "$tmp/mealy.sources" \
+  /etc/apt/sources.list.d/mealy.sources
+sudo apt update
+sudo apt install mealy
+```
+
+For Fedora, retain the verified key locally and derive only its `gpgkey` location from the
+verified configuration:
+
+```sh
+sudo install -m 0644 "$tmp/repository-signing-key.asc" \
+  /etc/pki/rpm-gpg/RPM-GPG-KEY-mealy
+awk -v expected="gpgkey=$base_url/repository-signing-key.asc" \
+  -v replacement='gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-mealy' '
+    $0 == expected { print replacement; replacements += 1; next }
+    { print }
+    END { if (replacements != 1) exit 65 }
+  ' "$tmp/mealy.repo" >"$tmp/mealy-local.repo"
+sudo install -m 0644 "$tmp/mealy-local.repo" /etc/yum.repos.d/mealy.repo
+sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-mealy
+sudo dnf install mealy
+```
+
+For Arch Linux:
+
+```sh
+sudo pacman-key --add "$tmp/repository-signing-key.asc"
+sudo pacman-key --lsign-key "$fingerprint"
+sudo install -m 0644 "$tmp/mealy.pacman.conf" /etc/pacman.d/mealy.conf
+grep -Fqx 'Include = /etc/pacman.d/mealy.conf' /etc/pacman.conf ||
+  printf '\nInclude = /etc/pacman.d/mealy.conf\n' |
+    sudo tee -a /etc/pacman.conf
+sudo pacman -Syu mealy
+```
+
+Remove `$tmp` only after installation. APT retains its embedded verified key, Fedora retains the
+verified key at the local path written above, and Pacman retains the explicitly trusted key.
 
 ## Post-publication revalidation
 

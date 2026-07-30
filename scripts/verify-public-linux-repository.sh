@@ -38,7 +38,7 @@ if [[ ! $attempts =~ ^[1-9][0-9]*$ || ! $retry_delay =~ ^[0-9]+$ ]]; then
   exit 64
 fi
 
-for command in curl gh gpg jq; do
+for command in curl gh gpg jq sha256sum stat; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required public repository verification command is unavailable: $command" >&2
     exit 69
@@ -64,6 +64,25 @@ download_public_file() {
     "$base_url/$name" --output "$output_directory/$name"
 }
 
+verify_manifest_file() {
+  local name=$1
+  local candidate=$output_directory/$name
+  local metadata expected_sha256 expected_bytes
+  if ! metadata=$(jq -er --arg path "$name" '
+    [.files[] | select(.path == $path)]
+    | select(length == 1)
+    | .[0]
+    | [.sha256, (.bytes | tostring)]
+    | @tsv
+  ' "$output_directory/REPOSITORY-MANIFEST.json"); then
+    return 1
+  fi
+  IFS=$'\t' read -r expected_sha256 expected_bytes <<<"$metadata"
+  [[ ! -L $candidate && -f $candidate \
+    && $(stat -c '%s' "$candidate") == "$expected_bytes" \
+    && $(sha256sum "$candidate" | awk '{print $1}') == "$expected_sha256" ]]
+}
+
 version=${release_tag#v}
 verified=false
 for ((attempt = 1; attempt <= attempts; attempt++)); do
@@ -81,13 +100,36 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
       --arg base_url "$base_url" \
       --arg fingerprint "$signing_fingerprint" \
       --arg version "$version" '
-        .schemaVersion == "mealy.linux-repositories.v1"
+        (keys | sort) == [
+          "baseUrl",
+          "files",
+          "publicationEpoch",
+          "schemaVersion",
+          "signingFingerprint",
+          "version"
+        ]
+        and .schemaVersion == "mealy.linux-repositories.v1"
         and .baseUrl == $base_url
         and .signingFingerprint == $fingerprint
         and .version == $version
-        and (.publicationEpoch | type == "number" and . >= 1)
-        and (.files | type == "array" and length >= 1)
-      ' "$output_directory/REPOSITORY-MANIFEST.json" >/dev/null; then
+        and (.publicationEpoch | type == "number" and floor == . and . >= 1)
+        and (.files | type == "array" and length >= 1 and length <= 512)
+        and ([.files[].path] | length == (unique | length))
+        and all(.files[];
+          (.path | type == "string"
+            and test("^[A-Za-z0-9][A-Za-z0-9._/+~-]*$")
+            and (contains("..") | not))
+          and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+          and (.bytes | type == "number" and floor == . and . > 0
+            and . <= 536870912))
+      ' "$output_directory/REPOSITORY-MANIFEST.json" >/dev/null \
+    && verify_manifest_file repository-signing-key.asc \
+    && download_public_file mealy.sources \
+    && verify_manifest_file mealy.sources \
+    && download_public_file mealy.repo \
+    && verify_manifest_file mealy.repo \
+    && download_public_file mealy.pacman.conf \
+    && verify_manifest_file mealy.pacman.conf; then
     verified=true
     break
   fi
