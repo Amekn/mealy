@@ -415,6 +415,11 @@ jobs:
           cargo test --locked -p mealyd --all-features --test real_provider
           configured_browser_is_rendered_isolated_cited_and_replays_without_live_chrome
           -- --ignored
+      - name: Verify transactional browser crash, reconciliation, and replay boundary
+        run: >-
+          cargo test --locked -p mealyd --all-features --test real_provider
+          browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation
+          -- --ignored --exact
       - name: Verify stopped-home browser configuration lifecycle
         run: >-
           cargo test --locked -p mealyctl --all-features --test browser_configuration

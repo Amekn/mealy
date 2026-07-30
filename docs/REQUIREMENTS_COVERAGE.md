@@ -117,4 +117,8 @@ cargo test --workspace --doc
 # Large pinned-browser gates used by CI/release:
 MEALY_BROWSER_BUNDLE=/reviewed/chrome-headless-shell-linux64 \
   cargo test -p mealy-infrastructure --test browser_runtime -- --ignored
+MEALY_BROWSER_BUNDLE=/reviewed/chrome-headless-shell-linux64 \
+  cargo test -p mealyd --test real_provider \
+    browser_transaction_dispatch_crash_never_retries_and_replays_after_reconciliation \
+    -- --ignored --exact
 ```
