@@ -35,6 +35,7 @@ jq -n \
       {
         id: 100,
         head_sha: $sha,
+        head_branch: "main",
         event: "workflow_dispatch",
         status: "completed",
         conclusion: "success",
@@ -46,6 +47,7 @@ jq -n \
       {
         id: 101,
         head_sha: $sha,
+        head_branch: "main",
         event: "workflow_dispatch",
         status: "completed",
         conclusion: "success",
@@ -57,6 +59,7 @@ jq -n \
       {
         id: 102,
         head_sha: $sha,
+        head_branch: "main",
         event: "workflow_dispatch",
         status: "completed",
         conclusion: "failure",
@@ -89,6 +92,8 @@ expect_rejection private-provider-only '.workflow_runs |= map(select(.id == 100)
 expect_rejection openrouter-provider-only '.workflow_runs |= map(select(.id != 100))'
 expect_rejection stale-sha '.workflow_runs |= map(select(.id == 101) | .head_sha = ("b" * 40))'
 expect_rejection stale-private-sha '.workflow_runs |= map(if .id == 100 then .head_sha = ("b" * 40) else . end)'
+expect_rejection wrong-branch '.workflow_runs |= map(select(.id == 101) | .head_branch = "release")'
+expect_rejection wrong-private-branch '.workflow_runs |= map(if .id == 100 then .head_branch = "release" else . end)'
 expect_rejection failed-run '.workflow_runs |= map(select(.id == 101) | .conclusion = "failure")'
 expect_rejection failed-private-run '.workflow_runs |= map(if .id == 100 then .conclusion = "failure" else . end)'
 expect_rejection incomplete-run '.workflow_runs |= map(select(.id == 101) | .status = "in_progress")'
