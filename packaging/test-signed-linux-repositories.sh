@@ -45,12 +45,30 @@ fi
 # Use RSA only for this disposable cross-implementation fixture: some GnuPG
 # EdDSA binding signatures are nondeterministically rejected by RPM's Sequoia
 # verifier. Stable releases still exercise the owner-controlled Ed25519 key.
+# Generate the certificate and signing subkey in one unattended transaction;
+# mutating a just-created key with quick-add-key can race GnuPG agent startup.
 key_epoch=$(($(date --utc +%s) - 300))
-gpg --batch --homedir "$key_home" --passphrase '' \
+key_parameters=$temporary/repository-key.parameters
+key_generation_log=$temporary/repository-key-generation.stderr
+printf '%s\n' \
+  '%no-protection' \
+  'Key-Type: RSA' \
+  'Key-Length: 3072' \
+  'Key-Usage: cert' \
+  'Subkey-Type: RSA' \
+  'Subkey-Length: 3072' \
+  'Subkey-Usage: sign' \
+  'Name-Real: Mealy repository acceptance fixture' \
+  'Name-Email: repository-fixture@mealy.invalid' \
+  'Expire-Date: 2d' \
+  '%commit' >"$key_parameters"
+if ! gpg --batch --pinentry-mode loopback --homedir "$key_home" \
   --faked-system-time "$key_epoch" \
-  --quick-generate-key \
-  'Mealy repository acceptance fixture <repository-fixture@mealy.invalid>' \
-  rsa3072 cert 2d >/dev/null 2>&1
+  --generate-key "$key_parameters" >/dev/null 2>"$key_generation_log"; then
+  echo "fixture signing key generation failed" >&2
+  sed -n '1,20p' "$key_generation_log" >&2
+  exit 70
+fi
 fingerprint=$(
   gpg --batch --homedir "$key_home" --with-colons --list-secret-keys |
     awk -F: '
@@ -62,9 +80,6 @@ if [[ ! $fingerprint =~ ^[0-9A-F]{40}$ ]]; then
   echo "fixture signing key did not produce one v4 fingerprint" >&2
   exit 70
 fi
-gpg --batch --homedir "$key_home" --passphrase '' \
-  --faked-system-time "$key_epoch" \
-  --quick-add-key "$fingerprint" rsa3072 sign 2d >/dev/null 2>&1
 gpg --batch --homedir "$key_home" --armor \
   --export-secret-subkeys "$fingerprint" >"$private_key"
 
