@@ -876,6 +876,11 @@ byte-identically twice, while tag/version drift, a foreign workflow URL, a short
 incomplete turns, corrupt SQLite, and residual work must all fail. The tag publisher uses that same
 renderer to bind the exact commit, approved live-provider run, release workflow, daemon digest,
 and checked soak measurements into the immutable release notes.
+The public-release record fixtures separately reject mutable/draft/prerelease records, malformed
+or duplicate assets, missing required assets, and unexpected assets in publisher exact-inventory
+mode. Architecture-specific and repository-only consumers retain an explicit subset mode while
+still requiring every published asset record to carry a canonical SHA-256 digest, size, state, and
+repository/tag-derived URL.
 `scripts/test-public-license-validator.sh` separately accepts synthetic Apache-2.0, MIT, and dual
 MIT/Apache workspaces with either matching SPDX metadata or the existing exact `LICENSE`-file
 inheritance, while rejecting restrictive terms, redirected/mismatched metadata, an unsupported

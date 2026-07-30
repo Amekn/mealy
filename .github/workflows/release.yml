@@ -788,7 +788,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --json tagName,isDraft,isImmutable,isPrerelease,assets,url \
               >"$release_record" 2>>"$release_error" \
-              && scripts/validate-public-release-record.sh \
+              && scripts/validate-public-release-record.sh --exact \
                 "$release_record" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" \
                 "${release_assets[@]}" >>"$release_error" 2>&1 \
               && gh release verify "$GITHUB_REF_NAME" \
