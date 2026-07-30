@@ -104,6 +104,7 @@ if [[ ! -f $release/PAYLOAD-SHA256SUMS \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/GETTING_STARTED.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/benchmarks/README.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/benchmarks/release-soak-subject.json \
+  || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/REFERENCE_SYSTEMS.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md \
   || ! -f $temporary/extracted/usr/share/doc/mealy/docs/research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md \
