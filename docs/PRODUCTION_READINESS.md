@@ -95,9 +95,13 @@ bridge passed a live ChatGPT-sign-in activation probe and a complete governed-to
 on 2026-07-15. Its two model calls reported 8,156 and 11,660 input tokens against 16,754 and
 19,581-token reservations, proposed one `workspace.read`, returned the verified workspace citation,
 settled at zero cost, passed deterministic validation, and replayed with zero live calls.
-Anthropic's current third-party terms prohibit routing Claude Free, Pro, or Max subscription
-credentials, so the prior Claude bridge is retired and fails before mutation or invocation. The
-direct Anthropic Messages API adapter remains supported.
+Anthropic's current
+[Agent SDK guidance](https://code.claude.com/docs/en/agent-sdk/overview) does not allow an
+unapproved third-party product to offer Claude.ai login or plan rate limits. Its separate
+subscription-token permission applies to Claude Code's own CI/script mode, not a Mealy provider.
+The [dated primary-source review](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md) records
+that distinction. The prior Claude bridge is therefore retired and fails before mutation or
+invocation. The direct Anthropic Messages API adapter remains supported.
 
 | Area | P0 acceptance | Current evidence | Gap |
 |---|---|---|---|

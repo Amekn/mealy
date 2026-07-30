@@ -145,8 +145,11 @@ only within the existing total run wall-time. Official-client-added input tokens
 a conservative capability allowance and included in the durable reservation and replay evidence.
 
 The legacy Claude subscription provider is retired and fails validation before process dispatch.
-Anthropic prohibits third-party products from routing Free, Pro, or Max subscription credentials.
-To migrate an old stopped home, activate `provider-anthropic`, strict-free OpenRouter, or a custom
+Anthropic does not allow an unapproved third-party product to offer Claude.ai login or plan rate
+limits. Its subscription-backed script mode applies to the official Claude Code client, not a Mealy
+provider; see the
+[primary-source decision record](research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md). To
+migrate an old stopped home, activate `provider-anthropic`, strict-free OpenRouter, or a custom
 endpoint before restarting the service. Claude Code remains available as its own official product.
 
 Run directly:
