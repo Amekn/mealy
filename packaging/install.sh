@@ -117,6 +117,7 @@ release_documents=(
   decisions/0022-revisioned-future-event-automation.md
   decisions/0023-exact-thread-slack-remote-continuation.md
   decisions/README.md
+  research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
   research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md
