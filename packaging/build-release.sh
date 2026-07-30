@@ -81,6 +81,7 @@ release_documents=(
   decisions/0011-session-lineage-and-thin-workbench-clients.md
   decisions/0012-transactional-provider-primary-switch.md
   decisions/README.md
+  research/CLAUDE_SUBSCRIPTION_AUTH_BOUNDARY_2026-07-30.md
   research/GAP_MATRIX.md
   research/ONBOARDING_COMPLETION_AUDIT_2026-07-24.md
   research/PRODUCT_OPERATIONS_BENCHMARK_2026-07-24.md
