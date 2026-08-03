@@ -130,10 +130,12 @@ jobs:
             scripts/installed-rpm-smoke.sh
             scripts/normalize-stacked-release-candidate.sh
             scripts/preflight-release-environments.sh
+            scripts/promote-release-soak-report.sh
             scripts/render-release-notes.sh
             scripts/run-soak.sh
             scripts/select-live-provider-acceptance.sh
             scripts/select-protected-ci-run.sh
+            scripts/supervise-release-soak.sh
             scripts/systemd-service-smoke.sh
             scripts/system-package-runtime-smoke.sh
             scripts/test-live-provider-acceptance-selector.sh
@@ -146,6 +148,8 @@ jobs:
             scripts/test-release-environment-preflight.sh
             scripts/test-release-notes.sh
             scripts/test-release-soak-lineage-generator.sh
+            scripts/test-release-soak-report-promotion.sh
+            scripts/test-release-soak-supervisor.sh
             scripts/test-release-soak-validator.sh
             scripts/test-release-tag-validator.sh
             scripts/test-release-upgrade-baseline-validator.sh
@@ -154,6 +158,7 @@ jobs:
             scripts/validate-public-license.sh
             scripts/validate-public-release-record.sh
             scripts/validate-release-soak-candidate.sh
+            scripts/validate-release-soak-supervisor-receipt.sh
             scripts/validate-release-upgrade-baseline.sh
             scripts/verify-public-linux-repository.sh
             scripts/validate-release-soak.sh
@@ -170,6 +175,8 @@ jobs:
       - name: Verify release-soak evidence gate
         run: |
           scripts/test-release-soak-lineage-generator.sh
+          scripts/test-release-soak-report-promotion.sh
+          scripts/test-release-soak-supervisor.sh
           scripts/test-release-soak-validator.sh
       - name: Verify stacked release normalization gate
         run: scripts/test-stacked-release-normalization.sh

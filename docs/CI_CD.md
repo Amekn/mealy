@@ -331,8 +331,17 @@ jq -n --arg repository "$repository" --argjson release_id "$release_id" \
   ' >docs/benchmarks/release-soak-subject.json
 ```
 
-Copy the terminal report without editing its measurements, then verify a fresh authenticated
-download before committing either JSON file. The fetcher deliberately requires an explicit
+Promote the terminal report byte-for-byte with the atomic helper; it preserves even the source's
+exact final-byte/newline state, rejects symlink substitution, and proves the resulting byte count
+and SHA-256 before replacing the checked report:
+
+```sh
+scripts/promote-release-soak-report.sh \
+  "$report" docs/benchmarks/release-soak.json
+```
+
+Then verify a fresh authenticated download before committing either JSON file. The fetcher
+deliberately requires an explicit
 `GH_TOKEN` even when the maintainer already has a valid GitHub CLI session, matching the narrower
 workflow credential boundary instead of silently selecting ambient authentication:
 

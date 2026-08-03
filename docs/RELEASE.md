@@ -90,11 +90,12 @@ That exact v0.1.0 daemon completed the preserved clean
 [promotion manifest](benchmarks/2026-07-23-schema16-release-soak-subject.json) remains checked
 historical evidence.
 
-The most recently qualified release subject is the retained v0.2.1 `mealyd` from protected
+The most recently qualified public release subject is the retained v0.2.1 `mealyd` from protected
 revision `eec96a8f`,
 SHA-256 `63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`. It completed the
-canonical clean [release soak](benchmarks/release-soak.json) for 86,425.487 seconds, 19,248 turns,
-and 48 hard restarts. It recovered 53 interrupted-provider turns, retained complete recorded-only
+preserved clean
+[v0.2.1 release soak](benchmarks/2026-07-27-v0.2.1-release-soak.json) for 86,425.487 seconds,
+19,248 turns, and 48 hard restarts. It recovered 53 interrupted-provider turns, retained complete recorded-only
 replay and SQLite integrity `ok`, drained cleanly, and left zero residue. The report names the
 parent of this evidence tree directly, so no lineage proof is required. Two clean auditable builds
 were byte-identical, exact archive/Debian/RPM/Arch installed lifecycles passed, and the observed
@@ -106,6 +107,21 @@ verifier failed before reading an artifact; the corrected verifier passed protec
 non-publishing [acceptance run
 30324688498](https://github.com/Amekn/mealy/actions/runs/30324688498) qualified the unchanged tag,
 attestation, manifest, and all five public package-manager lanes.
+
+The current canonical [release soak](benchmarks/release-soak.json) qualifies exact v0.3.0 daemon
+revision `d679d04e`, SHA-256
+`05d293add133726b07256c8519c04974dd17c3769b1aabdfacb02e12dd24794a`. It ran for 86,406.720
+seconds, completed 20,152 turns, survived 50 hard restarts, recovered 211 interrupted-provider
+turns and 94 undispatched model turns, retained complete replay and SQLite integrity `ok`, drained
+cleanly, and left zero residue. Required GitHub rebase merge changed commit identities; the
+generated [lineage proof](benchmarks/release-soak-lineage.json) rehashes the original commit and
+maps its exact Git tree to protected-main commit `bf4abafd`. The merged runtime tree passed all 16
+protected checks in [run 30791956202](https://github.com/Amekn/mealy/actions/runs/30791956202),
+and the metadata-derived [promotion manifest](benchmarks/release-soak-subject.json) identifies one
+private draft asset whose fresh authenticated download is byte-identical and validator-clean. This
+closes the v0.3 long-duration/runtime-staging gate without inheriting publication status: the
+evidence-only protected-main CI, two exact final-commit live-provider acceptances, stable tag
+workflow, attestations, and public package/repository acceptance still gate the public release.
 
 The v0.2.0 report and subject remain preserved as
 [historical evidence](benchmarks/2026-07-25-v0.2.0-release-soak.json). Its exact private

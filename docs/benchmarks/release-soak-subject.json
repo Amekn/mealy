@@ -1,12 +1,12 @@
 {
   "schemaVersion": "mealy.soak-subject.v1",
   "repository": "Amekn/mealy",
-  "releaseId": 360739824,
-  "releaseTag": "soak-subject-eec96a8f91718679b258c754e00f04056e629430",
-  "assetName": "mealy-soak-eec96a8f91718679b258c754e00f04056e629430-linux-x86_64-gnu-mealyd",
-  "assetSha256": "63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371",
-  "assetBytes": 27360488,
-  "revision": "eec96a8f91718679b258c754e00f04056e629430",
+  "releaseId": 364039460,
+  "releaseTag": "soak-subject-d679d04e6bc8d7f2b92a413bd3f223a6eb857a19",
+  "assetName": "mealy-soak-d679d04e6bc8d7f2b92a413bd3f223a6eb857a19-linux-x86_64-gnu-mealyd",
+  "assetSha256": "05d293add133726b07256c8519c04974dd17c3769b1aabdfacb02e12dd24794a",
+  "assetBytes": 27768552,
+  "revision": "d679d04e6bc8d7f2b92a413bd3f223a6eb857a19",
   "target": {
     "os": "linux",
     "architecture": "x86_64"

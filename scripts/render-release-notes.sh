@@ -24,7 +24,7 @@ repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 lineage_proof=$repository_root/docs/benchmarks/release-soak-lineage.json
 release_summary=$repository_root/docs/releases/$tag.md
 
-for command in cat install jq mktemp stat; do
+for command in cat install jq mktemp sha256sum stat; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required release-note command is unavailable: $command" >&2
     exit 69
@@ -184,6 +184,43 @@ database_bytes=${fields[20]}
 filesystem=${fields[21]}
 observed_seconds=$((observed_ms / 1000))
 
+include_lineage=false
+if [[ -e $lineage_proof || -L $lineage_proof ]]; then
+  if [[ -L $lineage_proof || ! -f $lineage_proof ]]; then
+    echo "release-note lineage proof is not a real file" >&2
+    exit 65
+  fi
+  lineage_bytes=$(stat -c '%s' "$lineage_proof")
+  if (( lineage_bytes < 2 || lineage_bytes > 64 * 1024 )) \
+    || ! jq -e '
+      select(
+        .schemaVersion == "mealy.soak-lineage.v1"
+        and (.reportSha256 | type == "string" and test("^[0-9a-f]{64}$"))
+        and (.observedRevision | type == "string" and test("^[0-9a-f]{40}$"))
+        and (.observedGitTree | type == "string" and test("^[0-9a-f]{40}$"))
+        and (.observedCommitPayload | type == "string"
+          and (length >= 1 and length <= 4096))
+        and (.releaseLineageRevision | type == "string" and test("^[0-9a-f]{40}$"))
+        and (.releaseLineageGitTree | type == "string" and test("^[0-9a-f]{40}$"))
+        and .transformation == "github_rebase_merge"
+      )
+    ' "$lineage_proof" >/dev/null; then
+    echo "release-note lineage proof is malformed or exceeds its 64 KiB bound" >&2
+    exit 65
+  fi
+  lineage_observed=$(jq -er .observedRevision "$lineage_proof")
+  if [[ $lineage_observed == "$revision" ]]; then
+    report_sha256=$(sha256sum "$report")
+    report_sha256=${report_sha256%% *}
+    if ! jq -e --arg report_sha256 "$report_sha256" \
+      '.reportSha256 == $report_sha256' "$lineage_proof" >/dev/null; then
+      echo "release-note lineage proof does not bind the supplied report" >&2
+      exit 65
+    fi
+    include_lineage=true
+  fi
+fi
+
 temporary=$(mktemp "${TMPDIR:-/tmp}/mealy-release-notes.XXXXXX")
 cleanup() {
   rm -f -- "$temporary"
@@ -228,7 +265,7 @@ trap cleanup EXIT
     "$peak_rss" "$database_bytes"
   printf -- "- Unedited soak report: [\`docs/benchmarks/release-soak.json\`](https://github.com/%s/blob/%s/docs/benchmarks/release-soak.json)\n\n" \
     "$repository" "$tag"
-  if [[ -f $lineage_proof && ! -L $lineage_proof ]]; then
+  if [[ $include_lineage == true ]]; then
     printf -- "- Rebase-safe identical-tree lineage proof: [\`docs/benchmarks/release-soak-lineage.json\`](https://github.com/%s/blob/%s/docs/benchmarks/release-soak-lineage.json)\n\n" \
       "$repository" "$tag"
   fi
