@@ -31,36 +31,54 @@ harness's deliberate restart schedule. A pre-dispatch deadline can expire safely
 host pressure without charging a provider call; the report counts that retired-attempt lineage,
 while each deliberate restart round must separately retain at least one dispatched recovery.
 
-For a paced 24-hour durability run, use a large enough filesystem and an explicit interval:
+For a paced 24-hour durability run, use a large enough filesystem and an explicit interval. Wrap
+the harness with the durable supervisor receipt when the process is detached through systemd,
+tmux, or another local supervisor:
 
 ```sh
-scripts/run-soak.sh --release \
+report=target/soak/24-hour.json
+receipt=target/soak/24-hour-supervisor.json
+scripts/supervise-release-soak.sh "$report" "$receipt" -- \
+  scripts/run-soak.sh --release \
   --duration-seconds 86400 \
   --sessions 8 \
   --restart-every-rounds 50 \
   --provider-delay-ms 250 \
   --round-interval-ms 30000 \
-  --report target/soak/24-hour.json
+  --report "$report"
+scripts/validate-release-soak-supervisor-receipt.sh "$receipt" "$report"
 ```
 
-The checked [release soak](release-soak.json) is the clean packaged-binary durability observation.
-It ran for 86,425.487 seconds, completed 19,248 turns across eight sessions, survived 48 hard
-restarts, retained 1,129 exact duplicate admissions, and recovered 53 interrupted-provider turns.
-It finished with SQLite integrity `ok`, complete recorded-only replay, clean drain, and zero
-residual work. It binds clean v0.2.1 revision `eec96a8f`, exact external `mealyd` SHA-256
-`63068abbc5b270f68c16adcf82b773ffcb64d96c1208012337241280dd480371`, and a retained disk-backed
-Btrfs home. Peak RSS was 313,872 KiB; p95/p99 latency was 8.360/10.315 seconds while the database
-grew to 1,694,420,992 bytes, or 88,031 bytes per completed turn. These are observed durability
-measurements, not portable resource or latency guarantees.
-The unedited report SHA-256 is
-`32f9d36d1f74b1976c9d608cdf76e40d61b105586573feaf717093fc05364582`. After clean drain, the
-stopped retained database independently returned `ok` from a full SQLite `integrity_check`, and a
-fresh authenticated download of the manifest-pinned draft asset was byte-identical to the retained
-daemon before the evidence change was committed.
+The receipt is published atomically only after the harness process exits successfully and binds
+the exact report name, revision, byte count, and SHA-256. A missing, failed, or mismatched receipt
+fails closed. A detached systemd unit's live state remains useful for monitoring, but it is not a
+durable completion record: systemd may garbage-collect a finished transient unit before a later
+poll. Use the receipt plus the canonical report validator as the terminal result, so a vanished
+unit cannot create a false negative and an interrupted wrapper cannot create a false success.
 
-The report remains byte-for-byte identical to the harness output and names a clean commit that is
-an ancestor of the report-bearing and release commits, so the current release gate needs no
-lineage transformation. The superseded schema-15
+The checked [release soak](release-soak.json) is the clean v0.3.0 packaged-binary durability
+observation. It ran for 86,406.720 seconds, completed 20,152 turns across eight sessions, survived
+50 hard restarts, retained 1,185 exact duplicate admissions, recovered 211 interrupted-provider
+turns, and resumed 94 model turns whose prior attempt had not dispatched. It finished with SQLite
+integrity `ok`, complete recorded-only replay, clean drain, and zero residual work. It binds clean
+revision `d679d04e`, exact external `mealyd` SHA-256
+`05d293add133726b07256c8519c04974dd17c3769b1aabdfacb02e12dd24794a`, and a retained disk-backed
+Btrfs home. Peak RSS was 256,852 KiB; p95/p99 latency was 7.901/9.461 seconds while the database
+grew to 1,746,124,800 bytes, or 86,647 bytes per completed turn. These are observed durability
+measurements, not portable resource or latency guarantees. The unedited 14,938-byte report
+SHA-256 is `2ac125cf00c05bc4f3d771728ddad9183d1659698f60da238b7ddfdf6a50f2c5`.
+After the mapped tree entered `main` and all 16 jobs passed in protected
+[run 30791956202](https://github.com/Amekn/mealy/actions/runs/30791956202), the exact daemon was
+staged as the sole asset on its private draft release. The metadata-derived
+[promotion manifest](release-soak-subject.json) binds the numeric release ID, dedicated tag, asset
+name, byte count, GitHub digest, revision, and target; a fresh authenticated download was
+byte-identical to the retained daemon and passed both canonical release validators.
+
+The report remains byte-for-byte identical to the harness output. Required linear-history rebase
+changed commit identities, so the generated [lineage proof](release-soak-lineage.json) rehashes the
+original `d679d04e` commit payload and maps its exact Git tree to protected-main commit `bf4abafd`.
+The validator binds that mapped ancestor to every later evidence/release commit without relabeling
+the observed revision. The superseded schema-15
 [`release report`](2026-07-16-schema15-release-soak.json) and its exact
 [`rebase proof`](2026-07-16-schema15-release-soak-lineage.json) remain preserved as historical
 evidence. The v0.1.0
@@ -73,6 +91,10 @@ The v0.2.0
 [`onboarding report`](2026-07-25-v0.2.0-release-soak.json) and its
 [`promotion manifest`](2026-07-25-v0.2.0-release-soak-subject.json) are preserved after that
 version's pre-publication package-metadata failure rather than relabeled for v0.2.1.
+The public v0.2.1
+[`release report`](2026-07-27-v0.2.1-release-soak.json) and
+[`promotion manifest`](2026-07-27-v0.2.1-release-soak-subject.json) are likewise preserved exactly
+after the canonical paths advance to v0.3.
 The release validator independently verifies report identity, commit ancestry, daemon
 digest/version, duration, recovery accounting, retained storage, integrity, and zero residue.
 
@@ -183,7 +205,8 @@ v0.1.1 [schema-16 release soak](2026-07-24-v0.1.1-release-soak.json) subsequentl
 runtime's gate. The preserved v0.2.0
 [release soak](2026-07-25-v0.2.0-release-soak.json) then repeated the complete long-duration proof
 for the integrated onboarding candidate before its pre-publication Debian metadata failure. The
-current v0.2.1 [release soak](release-soak.json) independently repeats that proof for the
+public v0.2.1
+[release soak](2026-07-27-v0.2.1-release-soak.json) independently repeats that proof for the
 version-distinct correction.
 
 The first v0.3.0 candidate
@@ -212,4 +235,9 @@ closed canonical attempt/tool/retry shapes wherever they occur, requires each de
 round to retain a dispatched recovery of its own, and writes bounded evidence before rejecting an
 unknown shape. The unchanged daemon then completed a 120.748-second rehearsal with 600 turns, 15
 hard restarts, 90 interrupted-provider recoveries, ten undispatched resumes, complete replay,
-integrity, clean drain, and zero residual work. A new formal 86,400-second clock is still required.
+integrity, clean drain, and zero residual work. The corrected exact daemon subsequently completed
+the 86,406.720-second canonical v0.3 observation above with all final assertions green. The source
+test's journal recorded success; a later helper's only failure was querying `LoadState` after
+systemd had garbage-collected the completed transient unit. The atomically published report and
+canonical validators remain authoritative, and the durable supervisor receipt above prevents that
+monitoring race in future v0.4/v0.5 runs.

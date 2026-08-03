@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "mealy.soak-lineage.v1",
+  "reportSha256": "2ac125cf00c05bc4f3d771728ddad9183d1659698f60da238b7ddfdf6a50f2c5",
+  "observedRevision": "d679d04e6bc8d7f2b92a413bd3f223a6eb857a19",
+  "observedGitTree": "662e047084043728bf75adf2df589e6446e1df52",
+  "observedCommitPayload": "tree 662e047084043728bf75adf2df589e6446e1df52\nparent bf1da97b30bf5fd0a0c621b06ad161d27ef3341d\nauthor Mealy release simulation <mealy@example.invalid> 1785352169 +1200\ncommitter Mealy release simulation <mealy@example.invalid> 1785352169 +1200\n\nbuild: qualify Rust 1.97.1 for release\n",
+  "releaseLineageRevision": "bf4abafd75ec9ac5afd92c9a0cc6ca6a10bf55c5",
+  "releaseLineageGitTree": "662e047084043728bf75adf2df589e6446e1df52",
+  "transformation": "github_rebase_merge"
+}

@@ -47,7 +47,7 @@ Every slice must preserve the v0.2.1 production contract:
 
 ## v0.3 — daily-use parity
 
-Status update (2026-07-28): the canonical title/search/checkpoint/fork/export workbench and
+Status update (2026-08-03): the canonical title/search/checkpoint/fork/export workbench and
 provider-selection boundaries are implemented across schema 18, daemon API, scriptable CLI,
 full-screen terminal client, and the thin dashboard adapter. The TUI includes session/search
 navigation, verified conversation rendering, bounded composition, provider/context/cost status,
@@ -56,8 +56,11 @@ and an active-route model picker with separate conversation and next-turn scope.
 proofs cover terminal enforcement, alternate-screen cleanup, Ctrl-C during stalled admission, and
 persistent daemon loss. Focused storage, API, process, real-provider, artifact-integrity,
 exact-owner, terminal, and browser-boundary tests are green. Plan-first transactional route-set
-switching and its installed-package service-manager acceptance are implemented; final package,
-upgrade, soak, protected-CI, live-provider, and publication gates remain in progress. The native
+switching and its installed-package service-manager acceptance are implemented. The exact v0.3
+daemon completed its fresh 86,406.720-second soak with 20,152 successful turns, 50 hard restarts,
+complete replay/integrity/drain, and zero residue; required rebase lineage preserves the observed
+tree. Final evidence-only protected CI, live-provider, tag/attestation, and public-package gates
+remain in progress. The native
 upgrade gate now verifies the attested public v0.2.1 baseline, preserves one completed durable task
 through schema 16-to-18 migration, checks the immutable rollback snapshot, then exercises v0.3
 titles/checkpoints and state-preserving uninstall. Local Ubuntu, Fedora, and Arch executions pass;

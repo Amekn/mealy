@@ -107,6 +107,19 @@ if grep -Fq "docs/benchmarks/release-soak-lineage.json" "$temporary/first.md"; t
   exit 1
 fi
 
+render "$repository_root/docs/benchmarks/release-soak.json" \
+  "$temporary/lineage.md" v0.3.0
+grep -Fq "docs/benchmarks/release-soak-lineage.json" "$temporary/lineage.md"
+
+lineage_mismatch=$temporary/lineage-mismatch.json
+jq '.peakResidentSetKiB += 1' \
+  "$repository_root/docs/benchmarks/release-soak.json" >"$lineage_mismatch"
+if render "$lineage_mismatch" "$temporary/lineage-mismatch.md" v0.3.0 \
+  >"$temporary/lineage-mismatch.stdout" 2>"$temporary/lineage-mismatch.stderr"; then
+  echo "release notes accepted a same-revision lineage/report digest mismatch" >&2
+  exit 1
+fi
+
 expect_rejection() {
   local name=$1
   local filter=$2
