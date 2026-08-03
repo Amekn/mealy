@@ -96,7 +96,7 @@ fi
 receipt_parent=$(dirname -- "$receipt")
 receipt_name=$(basename -- "$receipt")
 temporary=$(mktemp "$receipt_parent/.${receipt_name}.XXXXXX")
-# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+# shellcheck disable=SC2317,SC2329 # Invoked by the EXIT trap.
 cleanup() {
   rm -f -- "$temporary"
 }
